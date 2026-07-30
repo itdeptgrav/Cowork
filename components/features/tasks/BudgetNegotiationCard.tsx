@@ -14,6 +14,7 @@ import {
   waitingOnLabel,
 } from "@/lib/rules/tasks/budgetNegotiation";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
+import { DurationField } from "./DurationField";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -31,7 +32,6 @@ import type { TaskView } from "@/lib/repositories";
  * which is the state the loop exists to prevent.
  */
 
-const HOUR_OPTIONS = [1, 2, 4, 6, 8, 12, 16, 24, 40];
 
 export function BudgetNegotiationCard({
   view,
@@ -50,14 +50,15 @@ export function BudgetNegotiationCard({
   /* Seeded one step above what is on the table: somebody opening this form
      wants a different number, so starting at the same one would make their
      first action undo a default. */
-  const [hours, setHours] = useState(() => {
-    const on = Math.max(1, Math.round(turn.currentSecs / 3600));
-    return HOUR_OPTIONS.find((h) => h > on) ?? on * 2;
-  });
+  /* Seeded one hour above what is on the table, in seconds now rather than whole
+     hours, so the counter can be any hours:minutes figure. */
+  const [secs, setSecs] = useState(() =>
+    Math.max(3600, turn.currentSecs + 3600),
+  );
 
   const [accept, acceptState] = useAction((r) => r.acceptBudget(view.task.id));
   const [counter, counterState] = useAction((r) =>
-    r.counterBudget(view.task.id, hours * 3600, reason || undefined),
+    r.counterBudget(view.task.id, secs, reason || undefined),
   );
 
   const busy = acceptState.isPending || counterState.isPending;
@@ -119,23 +120,12 @@ export function BudgetNegotiationCard({
               label="What do you think it is worth?"
               hint="This goes back to the other side. Nothing is settled until one of you accepts."
             >
-              <div className="flex flex-wrap gap-1.5">
-                {HOUR_OPTIONS.map((h) => (
-                  <button
-                    key={h}
-                    type="button"
-                    onClick={() => setHours(h)}
-                    data-figure
-                    className={`rounded-full px-3 py-1 text-[12px] transition-colors ${
-                      hours === h
-                        ? "bg-ink text-[var(--body-bg)]"
-                        : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)]"
-                    }`}
-                  >
-                    {formatDurationTimer(h * 3600)}
-                  </button>
-                ))}
-              </div>
+              <DurationField
+                secs={secs}
+                onChange={setSecs}
+                minSecs={60}
+                aria-label="Working time you propose"
+              />
             </Field>
 
             <Field label="Why?" className="mt-3" hint="Optional, and the other side sees it.">
@@ -162,7 +152,7 @@ export function BudgetNegotiationCard({
                   }
                 }}
               >
-                Send {formatDurationTimer(hours * 3600)}
+                Send {formatDurationTimer(secs)}
               </Button>
               <Button size="sm" disabled={busy} onClick={() => setCountering(false)}>
                 Cancel

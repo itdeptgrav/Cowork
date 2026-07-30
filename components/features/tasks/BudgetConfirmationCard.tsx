@@ -15,6 +15,7 @@ import {
   UNOWNED_TURN_NOTICE,
 } from "@/lib/rules/tasks/extensionAuthority";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
+import { DurationField } from "./DurationField";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -41,7 +42,6 @@ import type { TaskView } from "@/lib/repositories";
  */
 
 /** Totals a person actually asks for. Round numbers, because they are spoken. */
-const HOUR_OPTIONS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 40];
 
 export function BudgetConfirmationCard({
   view,
@@ -65,23 +65,21 @@ export function BudgetConfirmationCard({
   const actions = getExtensionActions(viewerId, { budget: record });
 
   const agreedSecs = record ? agreedOrRequestedSecs(record) : 0;
-  const [hours, setHours] = useState(0);
+  const [secs, setSecs] = useState<number | null>(null);
   /* Seeded from what is on the table, one option up: somebody opening this form
      wants MORE than they were granted, so starting at the same figure would make
      their first action undo a default. Derived rather than stored in an effect —
      `hours` of 0 means "not chosen yet". */
-  const chosenHours =
-    hours > 0
-      ? hours
-      : (HOUR_OPTIONS.find((h) => h * 3600 > agreedSecs) ??
-        Math.max(1, Math.round(agreedSecs / 3600) * 2));
+  /* Null means "not chosen yet" — the default is one hour above what was
+     granted, since somebody opening this wants more than that. */
+  const chosenSecs = secs ?? agreedSecs + 3600;
 
   const [accept, acceptState] = useAction((r) =>
     r.confirmTimeBudgetExtension(record!.id, "accept"),
   );
   const [counter, counterState] = useAction((r) =>
     r.confirmTimeBudgetExtension(record!.id, "counter", {
-      counterSecs: chosenHours * 3600,
+      counterSecs: chosenSecs,
       reason: reason || undefined,
     }),
   );
@@ -226,25 +224,13 @@ export function BudgetConfirmationCard({
             Ask for a different total. This goes back to{" "}
             {approverName ?? "your manager"}.
           </p>
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {HOUR_OPTIONS.map((h) => {
-              const on = h === chosenHours;
-              return (
-                <button
-                  key={h}
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => setHours(h)}
-                  className={`rounded-full px-3 py-1.5 text-xs font-medium transition-colors ${
-                    on
-                      ? "bg-ink text-[var(--body-bg)]"
-                      : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
-                  }`}
-                >
-                  <span data-figure>{h}h</span>
-                </button>
-              );
-            })}
+          <div className="mt-2">
+            <DurationField
+              secs={chosenSecs}
+              onChange={setSecs}
+              minSecs={60}
+              aria-label="Total working time you want"
+            />
           </div>
           <Field
             label="Why (optional)"
@@ -268,12 +254,14 @@ export function BudgetConfirmationCard({
                 if (r.ok) {
                   setCountering(false);
                   setReason("");
-                  setHours(0);
+                  setSecs(null);
                   onChange();
                 }
               }}
             >
-              {busy ? "Sending…" : `Ask for ${chosenHours}h in total`}
+              {busy
+                ? "Sending…"
+                : `Ask for ${formatDurationTimer(chosenSecs)} in total`}
             </Button>
             <Button
               tone="ghost"

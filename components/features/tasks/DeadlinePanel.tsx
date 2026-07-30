@@ -9,7 +9,6 @@ import {
   Input,
   Panel,
   ProvisionalBadge,
-  Select,
   SkeletonRows,
   Textarea,
 } from "@/components/ui/Primitives";
@@ -19,10 +18,10 @@ import { BudgetNegotiationCard } from "./BudgetNegotiationCard";
 import { BudgetConfirmationCard } from "./BudgetConfirmationCard";
 import { extensionFromAddition, extensionOf } from "@/lib/rules/tasks/deadlineExtension";
 import {
-  WINDOW_OPTIONS,
   deriveDueAt,
   describeWindow,
 } from "@/lib/rules/tasks/workingWindow";
+import { DurationField } from "./DurationField";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { windowOnOffer } from "./statusMeta";
 import {
@@ -350,15 +349,12 @@ function ProposeForm({
   counterTo?: number | null;
   onCancel?: () => void;
 }) {
-  const [optionId, setOptionId] = useState(WINDOW_OPTIONS[1].id);
-  const [customHours, setCustomHours] = useState(2);
+  /* A custom hours:minutes window, defaulting to one hour. The preset dropdown
+     (1 working day, 3 days, …) is gone — the estimate is entered directly. */
+  const [requestSecs, setRequestSecs] = useState(3600);
   const [reason, setReason] = useState("");
 
-  const isCustom = optionId === "custom";
-  const chosenSecs = isCustom
-    ? Math.max(1, Math.round(customHours * 3600))
-    : (WINDOW_OPTIONS.find((o) => o.id === optionId)?.secs ??
-      WINDOW_OPTIONS[1].secs);
+  const chosenSecs = Math.max(60, requestSecs);
 
   /*
    * **An extension is an addition; the wire wants a total.**
@@ -412,17 +408,18 @@ function ProposeForm({
 
       <Field
         label={extension.isExtension ? "Extra time needed" : "Working window"}
+        hint="Hours and minutes of work."
         required
         className="mt-3"
       >
-        <Select value={optionId} onChange={(e) => setOptionId(e.target.value)}>
-          {WINDOW_OPTIONS.map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.label}
-            </option>
-          ))}
-          <option value="custom">Custom duration</option>
-        </Select>
+        <DurationField
+          secs={requestSecs}
+          onChange={setRequestSecs}
+          minSecs={60}
+          aria-label={
+            extension.isExtension ? "Extra time needed" : "Working window"
+          }
+        />
       </Field>
 
       {/* The sum, spelled out. A control that says "+2 hours" and a request
@@ -442,22 +439,6 @@ function ProposeForm({
             {formatDurationTimer(extension.totalSecs)}
           </span>
         </p>
-      )}
-
-      {isCustom && (
-        <Field
-          label={extension.isExtension ? "Extra hours" : "Hours of work"}
-          required
-          className="mt-3"
-        >
-          <Input
-            type="number"
-            min={1}
-            step={1}
-            value={customHours}
-            onChange={(e) => setCustomHours(Number(e.target.value))}
-          />
-        </Field>
       )}
 
       <Field label="Reason" className="mt-3">
@@ -503,7 +484,7 @@ function DecideProposal({
   onChange: () => void;
 }) {
   const [reason, setReason] = useState("");
-  const [counterHours, setCounterHours] = useState(3);
+  const [counterSecs, setCounterSecs] = useState(3 * 3600);
   const [mode, setMode] = useState<"decide" | "counter">("decide");
   const [waive, setWaive] = useState(true);
 
@@ -533,8 +514,8 @@ function DecideProposal({
   const [counter, counterState] = useAction((r) =>
     r.counterProposal(
       proposal.id,
-      new Date(Date.now() + counterHours * 3600_000).toISOString(),
-      counterHours * 3600,
+      new Date(Date.now() + counterSecs * 1000).toISOString(),
+      counterSecs,
       reason,
     ),
   );
@@ -622,17 +603,18 @@ function DecideProposal({
       )}
 
       {mode === "counter" && (
-        <Field label="Counter with" required className="mt-3">
-          <Select
-            value={String(counterHours)}
-            onChange={(e) => setCounterHours(Number(e.target.value))}
-          >
-            {[1, 2, 3, 4, 6, 8, 12].map((h) => (
-              <option key={h} value={h}>
-                {h} hours
-              </option>
-            ))}
-          </Select>
+        <Field
+          label="Counter with"
+          hint="Hours and minutes of working time."
+          required
+          className="mt-3"
+        >
+          <DurationField
+            secs={counterSecs}
+            onChange={setCounterSecs}
+            minSecs={60}
+            aria-label="Counter working time"
+          />
         </Field>
       )}
 
@@ -711,7 +693,7 @@ function ExtensionForm({
   view: TaskView;
   onChange: () => void;
 }) {
-  const [hours, setHours] = useState(2);
+  const [addedSecs, setAddedSecs] = useState(2 * 3600);
   const [reason, setReason] = useState("");
 
   /* The window being extended, from the one budget resolver. The request
@@ -721,7 +703,7 @@ function ExtensionForm({
   const previousWindowSecs = view.task.estimatedEffortSecs ?? 0;
   const extension = extensionFromAddition({
     previousWindowSecs,
-    addedSecs: hours * 3600,
+    addedSecs,
   });
 
   /*
@@ -778,17 +760,13 @@ function ExtensionForm({
         </span>
       </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
-        <Field label="Additional time" required>
-          <Select
-            value={String(hours)}
-            onChange={(e) => setHours(Number(e.target.value))}
-          >
-            {[1, 2, 3, 4, 6, 8].map((h) => (
-              <option key={h} value={h}>
-                +{h} hours
-              </option>
-            ))}
-          </Select>
+        <Field label="Additional time" hint="Hours and minutes to add." required>
+          <DurationField
+            secs={addedSecs}
+            onChange={setAddedSecs}
+            minSecs={60}
+            aria-label="Additional time"
+          />
         </Field>
         <Field
           label="Reason"
