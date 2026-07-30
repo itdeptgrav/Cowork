@@ -812,6 +812,20 @@ function Row({
     displayRank !== null
       ? `P${displayRank}`
       : formatRankDisplay(rankFor(view, rankSubject));
+  /* Priority is only real once the time budget is settled. In an assignee group
+     the parent already works this out (`notInQueueReason`); everywhere else,
+     catch the budget-still-in-negotiation case here so no grouping shows a
+     P-tag on a task whose hours nobody has agreed yet. A closed task keeps its
+     "was P3" and is not affected — its budget was settled long ago. */
+  const isClosed =
+    view.task.status === "completed" ||
+    view.task.status === "cancelled" ||
+    view.task.status === "assignment_rejected";
+  const heldReason =
+    notInQueueReason ??
+    (!isClosed && !isBudgetSettled(view.budgetNegotiation?.state ?? null)
+      ? "Not in the queue yet — the time budget isn't settled. Priority takes effect once it's agreed."
+      : null);
   const action = nextAction(view, viewerId ?? "");
   const ownerEmp = view.owner;
   const progress = progressOf(view);
@@ -867,11 +881,11 @@ function Row({
           still needs and announced it as disabled to a screen reader. Not
           interactive is a span, not a disabled button — the same treatment the
           task detail already gives it. */}
-      {notInQueueReason ? (
+      {heldReason ? (
         /* Held out of the queue: no live position, no reorder. The em-dash says
            "no rank here"; the tooltip says why. */
         <span
-          title={notInQueueReason}
+          title={heldReason}
           className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
         >
           <span data-figure>—</span>
@@ -1036,7 +1050,7 @@ function Row({
             <MenuItem icon="tasks">
               <Link href={`/tasks/${view.task.id}`}>Open task</Link>
             </MenuItem>
-            {onPriority && (
+            {onPriority && !heldReason && (
               <MenuItem icon="flag" onClick={onPriority}>
                 Change priority
               </MenuItem>

@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { formatRankDisplay, rankFor, rankTitle } from "@/lib/rules/tasks/priorityDisplay";
+import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
@@ -204,27 +205,32 @@ export function TaskDetail({
             </h1>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <Chip tone={meta.tone}>{meta.label}</Chip>
-              {mayChangePriority ? (
-                <button
-                  type="button"
-                  onClick={() => setPriorityOpen(true)}
-                  className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control-hover)]"
-                >
-                  <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
-                </button>
-              ) : (
-                /* Still shown, because your rank is a fact about your day even
-                   when you cannot change it. It is simply not a button. */
-                <span
-                  /* Names WHOSE rank this is. The static "your priority" was
-                     wrong for a manager looking at a report's task — the
-                     number shown is the assignee's, not theirs. */
-                  title={rankTitle(rankFor(v, me))}
-                  className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[11px] text-ink-muted"
-                >
-                  <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
-                </span>
-              )}
+              {/* Priority is only meaningful once the time budget is decided —
+                  a task still in budget negotiation (or waiting on a manager to
+                  set the hours) holds no real queue position, so a P-tag there
+                  would be a number that drives nothing. Hidden until settled. */}
+              {isBudgetSettled(v.budgetNegotiation?.state ?? null) &&
+                (mayChangePriority ? (
+                  <button
+                    type="button"
+                    onClick={() => setPriorityOpen(true)}
+                    className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control-hover)]"
+                  >
+                    <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
+                  </button>
+                ) : (
+                  /* Still shown, because your rank is a fact about your day even
+                     when you cannot change it. It is simply not a button. */
+                  <span
+                    /* Names WHOSE rank this is. The static "your priority" was
+                       wrong for a manager looking at a report's task — the
+                       number shown is the assignee's, not theirs. */
+                    title={rankTitle(rankFor(v, me))}
+                    className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[11px] text-ink-muted"
+                  >
+                    <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
+                  </span>
+                ))}
               {v.task.isBlocked && <Chip tone="blocked">Blocked</Chip>}
               {v.reworkCount > 0 && (
                 <Chip tone="rework">{v.reworkCount} rework</Chip>
@@ -805,6 +811,23 @@ function FactsRail({
                 {v.assignees.map((a) => a.firstName).join(", ")}
               </span>
             </span>
+          ) : v.pendingAssignees.length ? (
+            /* A cross-department task holds its assignee in `pendingAssignees`
+               until both departments approve — showing "Unassigned" there was
+               wrong, the person IS chosen, the handover just has not landed. */
+            <span className="flex items-center gap-2">
+              <AvatarStack
+                people={v.pendingAssignees.map((a) => ({
+                  initials: a.initials,
+                  hue: a.hue,
+                  name: a.displayName,
+                }))}
+              />
+              <span className="truncate text-sm text-ink">
+                {v.pendingAssignees.map((a) => a.firstName).join(", ")}
+                <span className="text-ink-faint"> · pending approval</span>
+              </span>
+            </span>
           ) : (
             <span className="text-sm text-ink-faint">Unassigned</span>
           )}
@@ -820,24 +843,29 @@ function FactsRail({
           </p>
         )}
 
-        <Fact label="Priority">
-          {onPriority ? (
-            <button
-              type="button"
-              onClick={onPriority}
-              className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink transition-colors hover:bg-[var(--control-hover)]"
-            >
-              <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
-            </button>
-          ) : (
-            <span
-              title="Your priority is set by your manager"
-              className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink"
-            >
-              <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
-            </span>
-          )}
-        </Fact>
+        {/* Priority only once the time budget is decided — see the header chip.
+            Until then the task holds no live queue position, so the whole row is
+            omitted rather than showing a rank that means nothing yet. */}
+        {isBudgetSettled(v.budgetNegotiation?.state ?? null) && (
+          <Fact label="Priority">
+            {onPriority ? (
+              <button
+                type="button"
+                onClick={onPriority}
+                className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink transition-colors hover:bg-[var(--control-hover)]"
+              >
+                <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
+              </button>
+            ) : (
+              <span
+                title="Your priority is set by your manager"
+                className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink"
+              >
+                <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
+              </span>
+            )}
+          </Fact>
+        )}
 
         {/* WHEN IT WILL BE DONE, from the assignee's real queue. Placed above
             the requested date because it is the operational answer — the one a
