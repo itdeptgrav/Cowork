@@ -1,0 +1,815 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Avatar, AvatarStack } from "@/components/ui/Avatar";
+import { Icon } from "@/components/ui/Icons";
+import { WorkspaceHead } from "@/components/ui/Workspace";
+import {
+  Button,
+  InlineError,
+  Panel,
+  QueryError,
+  SkeletonRows,
+  Textarea,
+} from "@/components/ui/Primitives";
+import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { useViewerId } from "@/lib/hooks/usePermissions";
+import { NewChatDialog } from "./NewChatDialog";
+import { formatRelative } from "@/lib/utils/format";
+import { useNow } from "@/lib/hooks/useNow";
+import type { Conversation, Employee, Message } from "@/lib/domain";
+
+/**
+ * Messages.
+ *
+ * The surface had one real defect and it was not cosmetic: there was no way to
+ * start a conversation. `createConversation` did not exist on the repository at
+ * all, so anybody whose seeded threads were empty — most profiles — met a card
+ * saying "No conversations" with nothing to do about it. An empty state that
+ * cannot be left is a dead end, not an empty state.
+ *
+ * The layout is a two-pane thread view, and it renders **at every state**,
+ * including with nothing in it. A single empty card in the middle of the page
+ * tells you the feature is broken; a real list beside a real thread pane, both
+ * empty, tells you it is new. The panes are Cowork's own frosted panels on the
+ * iridescent field — the field is seen around and between them, never through
+ * one carrying text.
+ *
+ * Messages are bubbles rather than a table of rows. That is a legibility
+ * decision before a stylistic one: a conversation is read as an exchange, and
+ * repeating the sender's name against every line makes a two-person thread
+ * three times longer than the words in it. Own messages take deck ink — the
+ * same fill as a primary control, so no new colour enters the system — and
+ * everything else takes the raised surface. Per The Four Channels Rule nothing
+ * here borrows a C1–C4 hue: saturated colour in Cowork means "score component".
+ */
+
+type ConversationView = Conversation & { participants: Employee[] };
+
+export function MessagesPage({ conversationId }: { conversationId?: string }) {
+  const router = useRouter();
+  const viewerId = useViewerId();
+  const conversations = useQuery((r) => r.listConversations(), []);
+  const [newChat, setNewChat] = useState<null | "direct" | "group">(null);
+  const [search, setSearch] = useState("");
+
+  const all = useMemo(
+    () => sortByRecency(conversations.data ?? []),
+    [conversations.data],
+  );
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return all;
+    return all.filter((c) =>
+      [
+        conversationTitle(c, viewerId),
+        c.lastMessagePreview ?? "",
+        ...c.participants.map((p) => p.displayName),
+      ].some((v) => v.toLowerCase().includes(q)),
+    );
+  }, [all, search, viewerId]);
+
+  /* The route is the source of truth for what is open; the first conversation
+     is only a default for the wide layout, where an empty right pane beside a
+     full list reads as a loading failure. */
+  const active = conversationId ?? (all.length ? all[0].id : undefined);
+  const activeConversation = all.find((c) => c.id === active) ?? null;
+  const unreadTotal = all.reduce((s, c) => s + c.unreadCount, 0);
+
+  function openCreated(id: string) {
+    setNewChat(null);
+    conversations.refetch();
+    router.push(`/messages/${id}`);
+  }
+
+  return (
+    <>
+      <WorkspaceHead
+        title="Messages"
+        count={
+          conversations.data ? (
+            <>
+              <span data-figure>{all.length}</span>
+              {all.length === 1 ? " conversation" : " conversations"}
+              {unreadTotal > 0 && (
+                <>
+                  {" · "}
+                  <span data-figure>{unreadTotal}</span> unread
+                </>
+              )}
+            </>
+          ) : undefined
+        }
+        action={
+          <Button tone="primary" size="sm" onClick={() => setNewChat("direct")}>
+            <Icon.plus className="h-3.5 w-3.5" />
+            New message
+          </Button>
+        }
+      />
+
+      {conversations.error ? (
+        <QueryError
+          queries={[conversations]}
+          message="Your conversations could not be loaded."
+        />
+      ) : (
+        /* One fixed-height region rather than two independently growing panels:
+           a thread scrolls inside itself, so the composer stays on screen and
+           the page itself never grows a second scrollbar. */
+        <div className="grid grid-cols-1 gap-4 deck:h-[calc(100vh-232px)] deck:min-h-[520px] deck:grid-cols-12">
+          <div
+            className={`min-h-0 deck:col-span-4 ${conversationId ? "hidden deck:block" : ""}`}
+          >
+            <ConversationList
+              conversations={filtered}
+              total={all.length}
+              loading={conversations.isLoading}
+              activeId={active}
+              viewerId={viewerId}
+              search={search}
+              onSearch={setSearch}
+              onNew={() => setNewChat("direct")}
+            />
+          </div>
+
+          <div
+            className={`min-h-0 deck:col-span-8 ${!conversationId ? "hidden deck:block" : ""}`}
+          >
+            {activeConversation ? (
+              <Thread
+                key={activeConversation.id}
+                conversation={activeConversation}
+                viewerId={viewerId}
+                onRead={() => conversations.refetch()}
+                onSent={() => conversations.refetch()}
+              />
+            ) : (
+              <NoThread
+                loading={conversations.isLoading}
+                empty={all.length === 0}
+                onDirect={() => setNewChat("direct")}
+                onGroup={() => setNewChat("group")}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {newChat && (
+        <NewChatDialog
+          initialKind={newChat}
+          onClose={() => setNewChat(null)}
+          onCreated={openCreated}
+        />
+      )}
+    </>
+  );
+}
+
+/* ── Left pane ────────────────────────────────────────────────────────────── */
+
+function ConversationList({
+  conversations,
+  total,
+  loading,
+  activeId,
+  viewerId,
+  search,
+  onSearch,
+  onNew,
+}: {
+  conversations: ConversationView[];
+  total: number;
+  loading: boolean;
+  activeId?: string;
+  viewerId: string | null;
+  search: string;
+  onSearch: (v: string) => void;
+  onNew: () => void;
+}) {
+  return (
+    <Panel padded={false} label="Conversations" className="flex h-full flex-col">
+      <div className="flex items-center gap-2 px-3 pt-3 pb-2.5">
+        <div className="relative min-w-0 flex-1">
+          <span className="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2 text-ink-faint">
+            <Icon.search className="h-4 w-4" />
+          </span>
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search conversations"
+            aria-label="Search conversations"
+            className="h-9 w-full rounded-full bg-[var(--surface-sunken)] pr-3 pl-9 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onNew}
+          aria-label="New message"
+          title="New message"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[var(--control)] text-ink transition-colors duration-[180ms] ease-[var(--ease-deck)] hover:bg-[var(--control-hover)]"
+        >
+          <Icon.plus className="h-4 w-4" />
+        </button>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 scroll-slim">
+        {loading ? (
+          <div className="px-3 py-2">
+            <SkeletonRows rows={5} />
+          </div>
+        ) : conversations.length === 0 ? (
+          <p className="px-3 py-8 text-center text-xs leading-relaxed text-ink-faint">
+            {total === 0
+              ? "Nothing here yet. Start a conversation and it will appear in this list."
+              : `No conversation matches “${search}”.`}
+          </p>
+        ) : (
+          <ul>
+            {conversations.map((c) => (
+              <li key={c.id}>
+                <ConversationRow
+                  conversation={c}
+                  viewerId={viewerId}
+                  active={c.id === activeId}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+function ConversationRow({
+  conversation: c,
+  viewerId,
+  active,
+}: {
+  conversation: ConversationView;
+  viewerId: string | null;
+  active: boolean;
+}) {
+  /* Real clock, resolved after mount — see `useNow`. */
+  const now = useNow();
+  const others = c.participants.filter((p) => p.id !== viewerId);
+  const unread = c.unreadCount > 0;
+
+  return (
+    <Link
+      href={`/messages/${c.id}`}
+      aria-current={active ? "page" : undefined}
+      className={`flex items-center gap-3 rounded-inset px-2.5 py-2.5 transition-colors duration-[180ms] ease-[var(--ease-deck)] ${
+        active ? "bg-[var(--control-active)]" : "hover:bg-[var(--control)]"
+      }`}
+    >
+      {c.kind === "group" ? (
+        <AvatarStack
+          people={others.slice(0, 2).map((p) => ({
+            initials: p.initials,
+            hue: p.hue,
+            name: p.displayName,
+          }))}
+          overflow={Math.max(0, others.length - 2)}
+        />
+      ) : others[0] ? (
+        <Avatar
+          initials={others[0].initials}
+          hue={others[0].hue}
+          name={others[0].displayName}
+          size="md"
+        />
+      ) : (
+        <Avatar initials="—" hue={4} name="Empty conversation" size="md" />
+      )}
+
+      <span className="min-w-0 flex-1">
+        <span className="flex items-baseline gap-2">
+          <span
+            className={`min-w-0 flex-1 truncate text-sm ${unread ? "font-medium text-ink" : "text-ink"}`}
+          >
+            {conversationTitle(c, viewerId)}
+          </span>
+          {c.lastMessageAt && (
+            <span
+              data-figure
+              className="shrink-0 text-[11px] text-ink-faint"
+              title={new Date(c.lastMessageAt).toISOString()}
+            >
+              {relativeTime(c.lastMessageAt, now)}
+            </span>
+          )}
+        </span>
+        <span className="mt-0.5 flex items-center gap-2">
+          <span
+            className={`min-w-0 flex-1 truncate text-[11px] ${unread ? "text-ink-muted" : "text-ink-faint"}`}
+          >
+            {c.lastMessagePreview ?? "No messages yet"}
+          </span>
+          {/* A count, not a dot: "3 waiting" and "1 waiting" are different
+              amounts of obligation and the list is where that is decided. */}
+          {unread && (
+            <span
+              data-figure
+              className="grid h-[18px] min-w-[18px] shrink-0 place-items-center rounded-full bg-ink px-1 text-[11px] leading-none text-[var(--body-bg)]"
+            >
+              {c.unreadCount}
+              <span className="sr-only"> unread</span>
+            </span>
+          )}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+/* ── Right pane ───────────────────────────────────────────────────────────── */
+
+/**
+ * The empty and unselected states, which are the same panel with different
+ * words.
+ *
+ * Both carry the two actions, because the answer to "there is nothing here" and
+ * to "nothing is open" is the same in a messaging product: start something. A
+ * dead end with no control on it is what this surface had.
+ */
+function NoThread({
+  loading,
+  empty,
+  onDirect,
+  onGroup,
+}: {
+  loading: boolean;
+  empty: boolean;
+  onDirect: () => void;
+  onGroup: () => void;
+}) {
+  return (
+    <Panel label="No conversation open" className="grid h-full place-items-center">
+      {loading ? (
+        <div className="w-full max-w-[360px]">
+          <SkeletonRows rows={3} />
+        </div>
+      ) : (
+        <div className="max-w-[44ch] px-6 py-10 text-center">
+          <span
+            aria-hidden="true"
+            className="mx-auto mb-5 grid h-14 w-14 place-items-center rounded-full bg-[var(--surface-sunken)] text-ink-faint"
+          >
+            <Icon.chat className="h-6 w-6" />
+          </span>
+          <p className="text-[17px] leading-tight font-medium tracking-[-0.02em] text-ink">
+            {empty ? "No conversations yet" : "Nothing open"}
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-ink-muted">
+            {empty
+              ? "Direct messages and group chats live here. You can reach anyone in the organisation — there is no request to send first."
+              : "Choose a conversation from the list, or start a new one."}
+          </p>
+          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+            <Button tone="primary" size="sm" onClick={onDirect}>
+              <Icon.chat className="h-3.5 w-3.5" />
+              Start a conversation
+            </Button>
+            <Button size="sm" onClick={onGroup}>
+              <Icon.team className="h-3.5 w-3.5" />
+              Create a group
+            </Button>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function Thread({
+  conversation: c,
+  viewerId,
+  onRead,
+  onSent,
+}: {
+  conversation: ConversationView;
+  viewerId: string | null;
+  onRead: () => void;
+  onSent: () => void;
+}) {
+  const repo = useRepo();
+  const [text, setText] = useState("");
+  const messages = useQuery((r) => r.listMessages(c.id), [c.id]);
+  const [send, state] = useAction((r) => r.sendMessage(c.id, text));
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  const others = c.participants.filter((p) => p.id !== viewerId);
+  const list = messages.data ?? [];
+
+  /* Opening a thread is what marks it read — the list's badge is a fact about
+     the reader, so it clears where the reading happens rather than on a query
+     somebody might mount twice. `onRead` refreshes the list so the badge goes
+     at the same moment the messages appear. */
+  useEffect(() => {
+    if (c.unreadCount === 0) return;
+    let cancelled = false;
+    repo.markConversationRead(c.id).then((r) => {
+      if (!cancelled && r.ok) onRead();
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c.id, c.unreadCount]);
+
+  /* Pinned to the newest message, the way every thread in every messaging
+     product opens. Without this a long conversation opens at its oldest line
+     and the composer sits below content nobody asked to re-read. */
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [list.length, c.id]);
+
+  async function submit() {
+    if (!text.trim() || state.isPending) return;
+    const r = await send();
+    if (r.ok) {
+      setText("");
+      messages.refetch();
+      onSent();
+    }
+  }
+
+  return (
+    <Panel padded={false} label="Conversation" className="flex h-full flex-col">
+      <header className="flex items-center gap-3 border-b border-hairline px-4 py-3">
+        <Link
+          href="/messages"
+          aria-label="All conversations"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink deck:hidden"
+        >
+          <Icon.chevronRight className="h-4 w-4 rotate-180" />
+        </Link>
+
+        {c.kind === "group" ? (
+          <AvatarStack
+            people={others.slice(0, 3).map((p) => ({
+              initials: p.initials,
+              hue: p.hue,
+              name: p.displayName,
+            }))}
+            overflow={Math.max(0, others.length - 3)}
+          />
+        ) : (
+          others[0] && (
+            <Avatar
+              initials={others[0].initials}
+              hue={others[0].hue}
+              name={others[0].displayName}
+              size="md"
+            />
+          )
+        )}
+
+        <div className="min-w-0 flex-1">
+          <h2 className="truncate text-[15px] leading-tight font-medium tracking-[-0.012em] text-ink">
+            {conversationTitle(c, viewerId)}
+          </h2>
+          <p className="mt-0.5 truncate text-[11px] text-ink-faint">
+            {c.kind === "group"
+              ? `${c.participants.length} people · ${others
+                  .slice(0, 3)
+                  .map((p) => p.firstName)
+                  .join(", ")}${others.length > 3 ? " and others" : ""}`
+              : (others[0]?.designation ?? "Direct message")}
+          </p>
+        </div>
+
+        {c.kind === "direct" && others[0] && (
+          <Link
+            href={`/team/${others[0].id}`}
+            className="hidden shrink-0 rounded-full bg-[var(--control)] px-3 py-1.5 text-xs text-ink transition-colors hover:bg-[var(--control-hover)] sm:inline-flex"
+          >
+            View profile
+          </Link>
+        )}
+      </header>
+
+      <div
+        ref={scrollRef}
+        className="min-h-0 flex-1 overflow-y-auto px-4 py-4 scroll-slim"
+      >
+        {messages.error ? (
+          <QueryError
+            compact
+            queries={[messages]}
+            message="These messages could not be loaded."
+          />
+        ) : messages.isLoading ? (
+          <SkeletonRows rows={4} />
+        ) : list.length === 0 ? (
+          <div className="grid h-full place-items-center px-6 text-center">
+            <div className="max-w-[38ch]">
+              <p className="text-sm font-medium text-ink">No messages yet</p>
+              <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
+                Say something to{" "}
+                {c.kind === "group"
+                  ? "the group"
+                  : (others[0]?.firstName ?? "them")}
+                . Nobody is notified until you send.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <MessageList
+            messages={list}
+            participants={c.participants}
+            viewerId={viewerId}
+            group={c.kind === "group"}
+          />
+        )}
+      </div>
+
+      <div className="border-t border-hairline px-4 py-3">
+        {state.error && (
+          <div className="mb-2">
+            <InlineError compact message={state.error} code={state.errorCode} />
+          </div>
+        )}
+        <div className="flex items-end gap-2">
+          <button
+            type="button"
+            /* Present and honestly disabled. Attachments have a place in the
+               model — `Message.attachmentIds` — and no upload path behind them,
+               and a control that silently does nothing is worse than one that
+               says why it cannot. */
+            disabled
+            aria-label="Attach a file"
+            title="Attachments are not available yet"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+          >
+            <Icon.attach className="h-4 w-4" />
+          </button>
+
+          <Textarea
+            rows={1}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={(e) => {
+              /* Enter sends, Shift+Enter breaks the line — the convention every
+                 messaging product shares, and the reason the field is one row
+                 tall rather than a form control. */
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+            placeholder={`Message ${
+              c.kind === "group"
+                ? conversationTitle(c, viewerId)
+                : (others[0]?.firstName ?? "")
+            }`.trim()}
+            aria-label="Write a message"
+            /* `Textarea`'s base sets `resize-y`, and which of two Tailwind
+               utilities wins depends on their order in the emitted stylesheet
+               rather than on the order here — so the drag handle is removed in
+               the one place that cannot lose. A composer that can be dragged
+               taller than its own panel is a scrollbar waiting to happen. */
+            style={{ resize: "none" }}
+            className="max-h-32 min-h-[38px] py-2"
+          />
+
+          <button
+            type="button"
+            onClick={submit}
+            disabled={state.isPending || !text.trim()}
+            aria-label="Send"
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-[var(--body-bg)] transition-opacity duration-[180ms] ease-[var(--ease-deck)] hover:opacity-90 disabled:opacity-30"
+          >
+            <Icon.send className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * The exchange.
+ *
+ * Runs of messages from one person collapse: the avatar and the name appear on
+ * the first of a run and the rest are bare bubbles, which is what makes a long
+ * back-and-forth read as two voices rather than as a log. Day separators come
+ * from the message dates rather than from a fixed window, so a quiet week does
+ * not produce empty headings.
+ */
+function MessageList({
+  messages,
+  participants,
+  viewerId,
+  group,
+}: {
+  messages: Message[];
+  participants: Employee[];
+  viewerId: string | null;
+  group: boolean;
+}) {
+  return (
+    <ol className="flex flex-col gap-0.5">
+      {messages.map((m, i) => {
+        const prev = messages[i - 1];
+        const next = messages[i + 1];
+        const mine = m.senderId === viewerId;
+        const sameRun = continues(prev, m);
+        /* The time goes on the LAST message of a run, not on every line. A
+           stamp against each bubble turns a fast exchange into a column of
+           near-identical numbers, and the one people actually look for is when
+           the other person stopped talking. */
+        const endsRun = !continues(m, next);
+        const newDay = !prev || !sameDay(prev.createdAt, m.createdAt);
+        const sender = participants.find((p) => p.id === m.senderId);
+
+        return (
+          <li key={m.id}>
+            {newDay && (
+              <div className="flex items-center gap-3 py-3">
+                <span className="h-px flex-1 bg-hairline" />
+                <span
+                  data-figure
+                  className="shrink-0 text-[11px] tracking-[0.02em] text-ink-faint"
+                >
+                  {dayLabel(m.createdAt)}
+                </span>
+                <span className="h-px flex-1 bg-hairline" />
+              </div>
+            )}
+
+            {/* Three stacked parts — name, bubble row, time — rather than one
+                flex row. The avatar has to align to the bottom of the BUBBLE,
+                and with the timestamp inside the same aligned box it lined up
+                against the timestamp instead, leaving the picture floating
+                below the message it belongs to. The 36px inset on the name and
+                the time is the avatar column plus its gap, so all three parts
+                share one edge. */}
+            <div
+              className={`flex flex-col ${mine ? "items-end" : "items-start"} ${
+                sameRun ? "mt-0.5" : "mt-3 first:mt-0"
+              }`}
+            >
+              {group && !mine && !sameRun && (
+                <span className="mb-1 ps-9 text-[11px] text-ink-faint">
+                  {sender?.displayName ?? m.senderName}
+                </span>
+              )}
+
+              <div
+                className={`flex max-w-[min(78%,60ch)] items-end gap-2 ${mine ? "flex-row-reverse" : ""}`}
+              >
+                {/* Always present, so every bubble in a run keeps one edge;
+                    only the picture is conditional. Empty it has no height, so
+                    `items-end` seats the avatar against the bubble's baseline. */}
+                <span className="w-7 shrink-0">
+                  {!mine && !sameRun && sender && (
+                    <Avatar
+                      initials={sender.initials}
+                      hue={sender.hue}
+                      name={sender.displayName}
+                      size="sm"
+                    />
+                  )}
+                </span>
+                <span
+                  className={`min-w-0 rounded-inset px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                    mine
+                      ? "bg-ink text-[var(--body-bg)]"
+                      : "bg-[var(--surface-raised)] text-ink shadow-[inset_0_0_0_1px_var(--color-hairline)]"
+                  }`}
+                >
+                  {m.text}
+                </span>
+              </div>
+
+              {endsRun && (
+                <span
+                  data-figure
+                  className={`mt-1 text-[11px] text-ink-faint ${mine ? "pe-9" : "ps-9"}`}
+                >
+                  {clock(m.createdAt)}
+                </span>
+              )}
+            </div>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
+
+/**
+ * What to call a conversation.
+ *
+ * A group uses its title. A direct message is named for the other person, never
+ * for the pair — you do not think of it as "Maya and Tobias", you think of it
+ * as "Tobias". The degenerate case of a conversation with nobody else in it is
+ * named rather than left blank, because a blank row looks like a render bug.
+ */
+function conversationTitle(
+  c: ConversationView,
+  viewerId: string | null,
+): string {
+  if (c.title) return c.title;
+  const others = c.participants.filter((p) => p.id !== viewerId);
+  if (others.length === 0) return "Just you";
+  return others.map((p) => p.displayName).join(", ");
+}
+
+/** Newest first, and a brand-new thread with no messages sorts to the top. */
+function sortByRecency(list: ConversationView[]): ConversationView[] {
+  return [...list].sort((a, b) => {
+    if (!a.lastMessageAt && !b.lastMessageAt) return a.id < b.id ? 1 : -1;
+    if (!a.lastMessageAt) return -1;
+    if (!b.lastMessageAt) return 1;
+    return b.lastMessageAt.localeCompare(a.lastMessageAt);
+  });
+}
+
+/**
+ * All the time formatting below reads UTC, matching `lib/format.ts`.
+ *
+ * That is a deliberate consistency rather than an oversight: the product
+ * renders every timestamp in one zone so server and client agree, and a message
+ * list that disagreed with the task list about what "14:03" means would be the
+ * worse bug.
+ */
+function clock(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+
+const MONTHS = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+function dayKey(iso: string): string {
+  const d = new Date(iso);
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
+
+function sameDay(a: string, b: string): boolean {
+  return dayKey(a) === dayKey(b);
+}
+
+/**
+ * Whether `b` continues `a`'s run: same person, same day, within ten minutes.
+ *
+ * One predicate rather than two inline conditions, because the run's start and
+ * its end are the same question asked from either side — and when they were
+ * written separately the avatar and the timestamp disagreed about where a run
+ * ended.
+ */
+function continues(a: Message | undefined, b: Message | undefined): boolean {
+  if (!a || !b) return false;
+  return (
+    a.senderId === b.senderId &&
+    sameDay(a.createdAt, b.createdAt) &&
+    minutesBetween(a.createdAt, b.createdAt) < 10
+  );
+}
+
+function minutesBetween(a: string, b: string): number {
+  return Math.abs(new Date(b).getTime() - new Date(a).getTime()) / 60000;
+}
+
+function dayLabel(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
+}
+
+/**
+ * How long ago, against the PROTOTYPE clock rather than the wall clock.
+ *
+ * This matters more than it looks. The mock store stamps records from
+ * `seed.NOW` plus however far the session has advanced, so measuring against
+ * the real `Date.now()` labelled a message sent one second ago as "2d" —
+ * the gap between the fixture's today and the reader's. `formatRelative` and
+ * the shared `NOW` are the product's existing answer to exactly this, and the
+ * task table already reads it the same way.
+ *
+ * Past a week the interval stops helping, so it becomes a date.
+ */
+function relativeTime(iso: string, now: Date | null): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+  /* No clock yet (server render). The absolute day is always true, so it is the
+     honest fallback — a relative interval needs a "now" to be relative to. */
+  if (!now) return dayLabel(iso);
+  if (Math.abs(now.getTime() - then) > 7 * 86400000) return dayLabel(iso);
+  return formatRelative(iso, now).replace(/ ago$/, "");
+}

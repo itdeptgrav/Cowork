@@ -1,0 +1,425 @@
+/**
+ * Goals, conduct, attendance, and collaboration surfaces.
+ */
+
+import type { EmployeeId } from "./identity";
+import type { TaskId } from "./tasks";
+
+/* ── Goals (C2 · Goal Attainment) ─────────────────────────────────────────── */
+
+export type GoalId = string;
+
+export interface Goal {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: GoalId;
+  title: string;
+  description: string | null;
+  ownerId: EmployeeId;
+  periodKey: string;
+  /** The active pool must sum to ≤ 100 — a hard block, carried from legacy. */
+  weightPercent: number;
+  maximumPoints: number;
+  targetValue: number | null;
+  achievedValue: number;
+  unit: string | null;
+  status: "draft" | "active" | "completed" | "cancelled";
+  createdById: EmployeeId;
+  createdAt: string;
+}
+
+export type GoalActivityStatus =
+  "pending" | "in_progress" | "submitted" | "approved" | "rejected";
+
+export interface GoalActivity {
+  id: string;
+  goalId: GoalId;
+  heading: string;
+  description: string | null;
+  points: number;
+  dueAt: string | null;
+  assigneeIds: EmployeeId[];
+  status: GoalActivityStatus;
+  /** Earns only when done AND not late — carried from legacy C2. */
+  submittedLate: boolean;
+  report: {
+    text: string;
+    attachmentIds: string[];
+    submittedAt: string;
+    submittedById: EmployeeId;
+  } | null;
+  reportRequestedAt: string | null;
+  reportRequestedById: EmployeeId | null;
+  linkedTaskId: TaskId | null;
+}
+
+/* ── Conduct (C3 · Conduct & Policy) ──────────────────────────────────────── */
+
+export type ConductSeverity =
+  "minor" | "moderate" | "serious" | "falsification" | "idle_pool";
+
+export interface ConductPolicy {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: string;
+  name: string;
+  description: string;
+  severity: ConductSeverity;
+  scope: "global" | "department";
+  departmentIds: string[];
+  isActive: boolean;
+}
+
+export interface ConductEvent {
+  id: string;
+  employeeId: EmployeeId;
+  policyId: string;
+  policyName: string;
+  severity: ConductSeverity;
+  description: string;
+  occurredOn: string;
+  appliedById: EmployeeId;
+  appliedByName: string;
+  appliedAt: string;
+  /** Disputes resolve by REVERSAL, never by mutating the original. */
+  disputeStatus: "none" | "requested" | "upheld" | "overturned";
+  disputeNote: string | null;
+  reversalLedgerEntryId: string | null;
+}
+
+/* ── Attendance (C4 · Attendance) ─────────────────────────────────────────── */
+
+export type AttendanceStatus =
+  "present" | "absent" | "half_day" | "leave" | "holiday" | "week_off";
+
+export interface AttendanceDay {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: string;
+  employeeId: EmployeeId;
+  date: string;
+  /**
+   * From the work calendar, NOT from whether events happen to exist. Legacy
+   * derived its denominator from ledger entries, so a missed sync silently
+   * inflated the score (docs/specs/SCORING_LOGIC_SPEC.md §4.3).
+   */
+  isExpectedWorkingDay: boolean;
+  scheduledStart: string | null;
+  scheduledEnd: string | null;
+  actualStart: string | null;
+  actualEnd: string | null;
+  /** Stored in minutes (owner-confirmed). */
+  lateMinutes: number;
+  earlyDepartureMinutes: number;
+  status: AttendanceStatus;
+}
+
+export interface AttendanceEvent {
+  id: string;
+  employeeId: EmployeeId;
+  occurredAt: string;
+  kind:
+    | "punch_in"
+    | "punch_out"
+    | "leave_approved"
+    | "holiday"
+    | "manual_correction";
+  source: "biometric" | "hr_system" | "manual";
+  sourceRef: string | null;
+}
+
+/* ── Collaboration ────────────────────────────────────────────────────────── */
+
+export interface Conversation {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: string;
+  kind: "direct" | "group";
+  participantIds: EmployeeId[];
+  title: string | null;
+  groupId: string | null;
+  lastMessageAt: string | null;
+  lastMessagePreview: string | null;
+  unreadCount: number;
+}
+
+/**
+ * The identity of a direct conversation: its two people, order-independent.
+ *
+ * A direct thread is defined by the PAIR, not by who opened it. Without a
+ * canonical key, "message Tobias" from either side produces a second thread
+ * beside the first and neither person can tell which one the other reads — the
+ * failure that makes a message list untrustworthy.
+ *
+ * It lives in the domain rather than inside a repository because every
+ * implementation has to agree on it: a server that keyed on creation order
+ * while the client deduped on the pair would disagree about how many
+ * conversations exist.
+ */
+export function directConversationKey(participantIds: EmployeeId[]): string {
+  return [...new Set(participantIds)].sort().join("|");
+}
+
+export interface Message {
+  id: string;
+  conversationId: string;
+  senderId: EmployeeId;
+  senderName: string;
+  text: string;
+  attachmentIds: string[];
+  replyToId: string | null;
+  createdAt: string;
+  readBy: EmployeeId[];
+}
+
+export interface Group {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: string;
+  name: string;
+  description: string | null;
+  memberIds: EmployeeId[];
+  ownerId: EmployeeId;
+  createdAt: string;
+}
+
+/**
+ * Where a meeting is in its life.
+ *
+ * `waiting` and `archived` were added for the room; the other four already
+ * existed and keep their spellings so nothing that reads a meeting today has to
+ * change. `waiting` is the room being open before the organiser starts it —
+ * people can arrive, and the meeting has not begun.
+ */
+export type MeetingStatus =
+  | "scheduled"
+  | "waiting"
+  | "live"
+  | "completed"
+  | "cancelled"
+  | "archived";
+
+export interface Meeting {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: string;
+  title: string;
+  description: string | null;
+  organiserId: EmployeeId;
+  participantIds: EmployeeId[];
+  startsAt: string;
+  endsAt: string;
+  status: MeetingStatus;
+  joinToken: string | null;
+  recordingEnabled: boolean;
+  /** Optional and opt-in. Cowork is not positioned as an AI product (D22). */
+  hasSummary: boolean;
+
+  /**
+   * The LiveKit room this meeting occupies.
+   *
+   * Derived from the meeting id and stored, so the name a token is minted for
+   * and the name the client joins can never be computed differently. Null until
+   * the room is first opened — a scheduled meeting occupies no room.
+   */
+  livekitRoomName: string | null;
+  /** Agenda, one line per item. Empty is normal, not a gap. */
+  agenda: string[];
+  /** What this meeting is about, if it is about a specific piece of work. */
+  taskId: TaskId | null;
+  projectId: string | null;
+
+  /** Set when the organiser starts and ends it. Null before each happens. */
+  startedAt: string | null;
+  endedAt: string | null;
+  /**
+   * Wall-clock length of the actual meeting, in seconds.
+   *
+   * Measured from `startedAt` to `endedAt` rather than from the schedule, so a
+   * meeting booked for an hour that ran twenty minutes records twenty.
+   */
+  actualDurationSecs: number | null;
+
+  /**
+   * Placeholders, deliberately inert.
+   *
+   * The shape a transcript and its action items will occupy, so the record does
+   * not have to change when they arrive. Nothing writes them today and no AI
+   * runs — D22 keeps Cowork from being positioned as an AI product, and an
+   * empty field is an honest statement that the feature is not here yet.
+   */
+  transcriptId: string | null;
+  actionItems: string[];
+}
+
+/** Why somebody is in the room. Decides their LiveKit grants and nothing else. */
+export type MeetingRole = "organiser" | "participant";
+
+export interface MeetingParticipant {
+  id: string;
+  meetingId: string;
+  employeeId: EmployeeId;
+  role: MeetingRole;
+  /** Null until they first join. */
+  joinedAt: string | null;
+  /** Null while they are in the room; set on leave, reset on rejoin. */
+  leftAt: string | null;
+  attendanceStatus: "invited" | "joined" | "left" | "absent";
+}
+
+export type MeetingEventType =
+  | "created"
+  | "updated"
+  | "participant_added"
+  | "participant_removed"
+  | "opened"
+  | "started"
+  | "joined"
+  | "left"
+  | "ended"
+  | "cancelled"
+  | "archived";
+
+/** The audit trail. Append-only, like every other event log in the product. */
+export interface MeetingEvent {
+  id: string;
+  meetingId: string;
+  type: MeetingEventType;
+  actorId: EmployeeId;
+  actorName: string;
+  detail: string;
+  createdAt: string;
+}
+
+/* ── Notifications ────────────────────────────────────────────────────────── */
+
+export type NotificationChannel = "in_app" | "push" | "email" | "socket";
+
+export interface Notification {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto each directly-queried entity rather than joined through
+   * a parent — that is what lets one predicate isolate a tenant, and it is the
+   * shape a Postgres row-level-security policy expects. Phase 2 adds the
+   * composite foreign key that makes it impossible for this to disagree with
+   * the parent's tenant.
+   */
+  organisationId: string;
+  id: string;
+  recipientId: EmployeeId;
+  type: string;
+  title: string;
+  body: string;
+  data: Record<string, unknown>;
+  sourceType: string | null;
+  sourceId: string | null;
+  channels: NotificationChannel[];
+  /** Per-item read. Legacy had read-all only. */
+  readAt: string | null;
+  createdAt: string;
+}
+
+/* ── Workload flow ────────────────────────────────────────────────────────── */
+
+/**
+ * Work arriving against work leaving, per week.
+ *
+ * The dashboard's principal graph asks one operational question: are you taking
+ * on work faster than you clear it? Channels above the baseline are arrivals,
+ * channels below are departures, and the baseline is zero net change — so the
+ * curves converge on a balanced week and fan apart on an unbalanced one.
+ *
+ * Every value is counted from timestamps that already exist on the record
+ * (`createdAt`, `assignedAt`, `requestedAt`, `reviewedAt`, `completedAt`).
+ * Nothing here is synthesised; a week with no movement is a genuine zero and
+ * draws on the baseline.
+ */
+export type FlowDirection = "in" | "out";
+
+export type FlowChannelId =
+  | "created"
+  | "assigned"
+  | "rework"
+  | "completed"
+  | "approved"
+  | "cancelled";
+
+export interface FlowChannel {
+  id: FlowChannelId;
+  label: string;
+  direction: FlowDirection;
+  /**
+   * A key from the FIELD palette, never a C1–C4 hue. The Four Channels Rule
+   * reserves channel colour for score components; the flow graph is the second
+   * sanctioned use of the iridescent field palette, after avatar monograms.
+   */
+  hue: string;
+}
+
+export interface FlowPoint {
+  /** ISO date of the Monday that opens the week. */
+  weekStart: string;
+  /** Short axis label, e.g. "12 May". */
+  label: string;
+  values: Record<FlowChannelId, number>;
+  /** arrivals − departures for the week. Positive means the queue grew. */
+  net: number;
+}
+
+export interface WorkloadFlow {
+  channels: FlowChannel[];
+  points: FlowPoint[];
+  /** Largest single-channel value across the series — the axis maximum. */
+  peak: number;
+  /** Sum of net across the window. */
+  netTotal: number;
+}

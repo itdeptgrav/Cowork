@@ -1,0 +1,107 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { readFileSync } from "node:fs";
+
+/**
+ * The repository fetches; the rule decides.
+ *
+ * The whole risk in wiring this was that the repository would grow its own
+ * version of the queue simulation or its own idea of active workload. These
+ * pin that it did not.
+ */
+
+const code = (p: string) =>
+  readFileSync(p, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+const REPO = "lib/repositories/legacy/index.ts";
+const RULE = "lib/rules/tasks/deadlineFeasibility.ts";
+
+function method(): string {
+  const src = code(REPO);
+  const at = src.indexOf("async previewDeadlineFeasibility(");
+  return src.slice(at, at + 3200);
+}
+
+test("the queue is the EVALUATED employee's, never the viewer's", () => {
+  /* A sales manager previewing for a production employee is asking about the
+     production employee's week. The query is by assignee, so the caller's
+     identity cannot leak into the answer. */
+  const fn = method();
+  assert.match(fn, /array-contains", employeeId/);
+  assert.equal(
+    /this\.#ctx\.employeeId/.test(fn),
+    false,
+    "the viewer's identity reached the workload query",
+  );
+});
+
+test("the repository does no simulation of its own", () => {
+  /* One place knows about queue movement, chaining and buffers. */
+  const fn = method();
+  assert.match(fn, /calculateDeadlineFeasibility\(\{/);
+  for (const own of ["splice(", "chainDeadlines(", "bufferSeconds", "simulatedPosition"]) {
+    assert.equal(fn.includes(own), false, `the repository computes "${own}" itself`);
+  }
+});
+
+test("workload filtering is left to the shared rule", () => {
+  /* No second definition of active — the rule calls `isActivePriorityTask`. */
+  const fn = method();
+  assert.equal(
+    /status !== "completed"|=== "ACCEPTED"/.test(fn),
+    false,
+    "the repository filters workload itself",
+  );
+  assert.match(code(RULE), /isActivePriorityTask\(/);
+});
+
+test("only a SETTLED budget contributes time", () => {
+  /* Planning against a proposed window would promise time nobody agreed. */
+  assert.match(method(), /senderTimerWindowSecs: resolveTimeBudget\(t\)/);
+});
+
+test("priority comes from production's own source", () => {
+  /* `assigneePriorities` then `priority` — the rule resolves it with `rankOf`,
+     the same function the real queue sorts on. */
+  const fn = method();
+  assert.match(fn, /assigneePriorities: t\.assigneePriorities/);
+  assert.match(fn, /priority: t\.priority/);
+  assert.match(code(RULE), /rankOf\(a, employeeId\)/);
+});
+
+test("the calendar is production's, including this person's leave", () => {
+  const fn = method();
+  assert.match(fn, /this\.getOfficePolicy\(\)/);
+  assert.match(fn, /this\.listBlockedDates\(employeeId, from, to\)/);
+  assert.match(fn, /addWorkingSecs\(anchorMs, windowSecs, policy\.schedule/);
+});
+
+test("a failed blocked-date read degrades rather than failing the preview", () => {
+  /* Optimistic by at most the holidays in the window, rather than wrong in
+     kind — and far better than no answer at all. */
+  assert.match(method(), /\.catch\(\(\) => \[\]\)/);
+});
+
+test("the trace uses the map form, so a skipped day says WHY", () => {
+  /* `explainAddWorkingSecs` takes a Map rather than a Set precisely so it can
+     name the holiday instead of only reporting "closed". */
+  const fn = method();
+  assert.match(fn, /blockedInfo/);
+  assert.match(fn, /\{ type: b\.kind, name: b\.label \}/);
+  assert.match(fn, /\)\.steps,/);
+});
+
+test("nothing is written", () => {
+  /* A preview that mutated would be a very expensive way to ask a question. */
+  const fn = method();
+  for (const write of ["setDoc(", "updateDoc(", "addDoc(", "writeBatch(", "deleteDoc("]) {
+    assert.equal(fn.includes(write), false, `the preview performs "${write}"`);
+  }
+  assert.equal(
+    /notifyRepositoryChanged\(\)/.test(fn),
+    false,
+    "a read-only preview invalidated caches",
+  );
+});

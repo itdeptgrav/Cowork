@@ -1,0 +1,858 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useState } from "react";
+import { Icon } from "@/components/ui/Icons";
+import { FileUploader } from "@/components/features/attachments/Attachments";
+import { Breadcrumb } from "@/components/ui/Workspace";
+import {
+  Button,
+  Field,
+  InlineError,
+  Input,
+  Panel,
+  ProvisionalBadge,
+  Select,
+  Textarea,
+} from "@/components/ui/Primitives";
+import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
+import {
+  assignmentGate,
+  assignmentRelationship,
+  upwardApprovers,
+} from "@/lib/auth/assignment";
+import { RELATIONSHIP_COPY } from "./relationshipCopy";
+import { allowsMultipleAssignees } from "@/lib/rules/tasks/assignment";
+import type { TaskType } from "@/lib/domain";
+
+/**
+ * Task creation.
+ *
+ * Grouped and progressively disclosed rather than one flat form: the type
+ * chosen first determines which groups are relevant, so a standard task never
+ * shows recurrence fields and a self-assigned one asks for an approver instead
+ * of an assignor. The brief is explicit that every field in one unstructured
+ * form is the wrong shape.
+ */
+
+const TYPES: {
+  id: TaskType;
+  label: string;
+  body: string;
+  icon: keyof typeof Icon;
+}[] = [
+  {
+    id: "standard",
+    label: "Standard",
+    body: "Assigned to one or more people.",
+    icon: "tasks",
+  },
+  {
+    id: "self_assigned",
+    label: "Self-assigned",
+    body: "You take it on; an approver signs off.",
+    icon: "user",
+  },
+  {
+    id: "recurring",
+    label: "Repeating",
+    body: "Runs on a cadence. Not scored.",
+    icon: "history",
+  },
+  {
+    id: "goal",
+    label: "Goal-linked",
+    body: "Feeds C2 · Goal Attainment.",
+    icon: "score",
+  },
+  {
+    id: "external",
+    label: "Third-party",
+    body: "Vendor work you coordinate. Not scored.",
+    icon: "link",
+  },
+];
+
+/**
+ * The placeholder line of a picker whose options come from a query.
+ *
+ * An empty `<select>` with a cheerful "Choose an approver" is a dead end: the
+ * person reads it as "there is nobody", tries again tomorrow, and never learns
+ * that a request failed. The placeholder is the only place in a native select
+ * where that can be said.
+ */
+function optionLabel(
+  query: { isLoading: boolean; error: string | null; data: unknown[] | null },
+  ready: string,
+): string {
+  if (query.isLoading) return "Loading…";
+  if (query.error) return "Could not be loaded";
+  if (!query.data?.length) return "None available";
+  return ready;
+}
+
+export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
+  const me = useViewerId();
+  const router = useRouter();
+  const [type, setType] = useState<TaskType>("standard");
+  const [title, setTitle] = useState("");
+  /* Chosen but not yet sent — see the create handler for why they cannot go
+     up before the task exists. */
+  const [stagedFiles, setStagedFiles] = useState<File[]>([]);
+  const [uploadFailures, setUploadFailures] = useState<string[]>([]);
+  const repo = useRepo();
+  const [description, setDescription] = useState("");
+  const [requirements, setRequirements] = useState<string[]>([]);
+  const [reqDraft, setReqDraft] = useState("");
+  const [assignees, setAssignees] = useState<string[]>([]);
+  const [approverId, setApproverId] = useState("");
+  const [projectId, setProjectId] = useState(presetProjectId ?? "");
+  const [parentTaskId, setParentTaskId] = useState("");
+  const [goalId, setGoalId] = useState("");
+  const [assigneeSearch, setAssigneeSearch] = useState("");
+  const [filterDept, setFilterDept] = useState("");
+  const [filterRole, setFilterRole] = useState("");
+  const [reportsOnly, setReportsOnly] = useState(false);
+  const roles = useQuery((r) => r.listRoles(), []);
+  const departments = useQuery((r) => r.listDepartments(), []);
+  const myProfile = useQuery((r) => r.getCurrentEmployee(), []);
+  const viewer = useQuery((r) => r.getViewer(), []);
+  const perms = usePermissions();
+
+  const [fixedDueAt, setFixedDueAt] = useState("2026-08-01T17:00");
+  const [hours, setHours] = useState(4);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+
+  /* Everyone, for the approver picker — approving is a different capability
+     from creating, so the assignee scope is the wrong list to offer there. */
+  const people = useQuery((r) => r.listEmployees(), []);
+  /* The people this viewer may actually create work for. Scoped by the
+     repository against the same rule `createTask` refuses on, so what is
+     offered and what is accepted cannot disagree. */
+  const assignable = useQuery((r) => r.listAssignableEmployees(), []);
+  const assignablePeople = assignable.data ?? [];
+  const assignableIds = new Set(assignablePeople.map((p) => p.id));
+
+  /* A selection that is no longer permitted — the profile switcher changed
+     identity, or an administrator narrowed a role, while this form was open.
+     Submission is blocked before the request rather than after it, because
+     being refused by the server is how the reader found out last time. */
+  /* A self-assigned task is assigned to whoever is raising it, and the picker
+     deliberately does not list the viewer — so it needs no selection. Every
+     other type needs at least one person, which is legacy's rule
+     (`CreateTaskModal.jsx:681`) stated before submitting rather than after. */
+  const needsAssignee = type !== "self_assigned" && assignees.length === 0;
+
+  const forbiddenAssignees = assignees.filter((id) => !assignableIds.has(id));
+  const hasForbidden =
+    assignable.data !== null && forbiddenAssignees.length > 0;
+  const assignScope = perms.scopeFor("task.create");
+
+  /* Which deadline model applies, and why — from the SAME resolver `createTask`
+     decides with, so the form cannot predict one thing and the repository do
+     another. It used to hold its own copy of the rule, and both copies had the
+     same bug: a department boundary outranked a reporting line that spanned it.
+     `createTask` remains the authority; this only shows what it will conclude. */
+  const hierarchy = viewer.data?.hierarchyIds ?? [];
+  const relationshipKnown = assignees.length > 0;
+  /* Always the creator's own department: the form no longer offers an override,
+     so there is nothing else it could be. */
+  const owningDept = myProfile.data?.departmentId ?? null;
+  const relationship = assignmentRelationship({
+    creatorId: me,
+    assigneeIds: assignees,
+    hierarchyIds: hierarchy,
+    directReportIds: viewer.data?.directReportIds ?? [],
+    creatorDepartmentId: owningDept,
+    departmentOf: (id) =>
+      (people.data ?? []).find((p) => p.id === id)?.departmentId ?? null,
+  });
+  const crossesDepartment = relationship.crossesDepartment;
+  const mode = relationship.deadlineMode;
+  const relationCopy = RELATIONSHIP_COPY[relationship.relation];
+
+  /* Which approval this assignment will need, from the same resolver the
+     repository routes it with. Shown before anything is saved — legacy created
+     the task and let the gate appear afterwards, so the assigner had no idea
+     their work would sit waiting until they went looking for it. */
+  const gate = perms.ctx
+    ? assignmentGate(perms.ctx, assignees, crossesDepartment)
+    : "none";
+  const upward = perms.ctx ? upwardApprovers(perms.ctx, assignees) : [];
+  const upwardNames = upward
+    .map((id) => (people.data ?? []).find((p) => p.id === id)?.displayName)
+    .filter(Boolean);
+
+  /* Filtering narrows the list; it never drops a chosen assignee, so changing
+     a filter cannot silently unselect somebody. The list it narrows is already
+     permission-scoped, so no filter combination can surface a person this
+     viewer may not assign to. */
+  const visiblePeople = assignablePeople.filter((p) => {
+    if (assignees.includes(p.id)) return true;
+    if (
+      assigneeSearch &&
+      !p.displayName.toLowerCase().includes(assigneeSearch.toLowerCase())
+    )
+      return false;
+    if (filterDept && p.departmentId !== filterDept) return false;
+    if (filterRole && !p.roleIds.includes(filterRole)) return false;
+    if (reportsOnly && p.id !== me && !hierarchy.includes(p.id)) return false;
+    return true;
+  });
+  const projects = useQuery((r) => r.listProjects({}).then((p) => p.items), []);
+  const goals = useQuery((r) => r.listGoals(), []);
+  const tasks = useQuery(
+    (r) => r.listTasks({ scope: "all" }).then((p) => p.items),
+    [],
+  );
+
+  const multiAllowed = allowsMultipleAssignees(type);
+  /* Changing the type to one that holds a single person must not leave a stale
+     multi-selection behind — the submit would be refused with a selection the
+     reader can still see on screen. Derived rather than stored, so there is no
+     effect to forget. */
+  const effectiveAssignees = multiAllowed ? assignees : assignees.slice(0, 1);
+
+  const [create, state] = useAction((r) =>
+    r.createTask({
+      title,
+      description: description || null,
+      requirements,
+      type,
+      assigneeIds: effectiveAssignees,
+      /* Not sent. The owning department is the creator's, and `createTask`
+         reads that off the acting employee — passing a value from here would
+         be this form asserting something it was never told. */
+      departmentId: null,
+      projectId: projectId || null,
+      parentTaskId: parentTaskId || null,
+      goalId: goalId || null,
+      approverId: type === "self_assigned" ? approverId || null : null,
+      deadlineMode: mode,
+      fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
+      senderWindowSecs: mode === "timer" ? hours * 3600 : null,
+      /* Only when a budget was actually entered. This previously sent four
+         hours of "estimated effort" on every deadline-based task, taken from a
+         control the reader never saw — a number nobody chose, recorded as
+         though they had. */
+      estimatedEffortSecs: mode === "timer" ? hours * 3600 : null,
+    }),
+  );
+
+  const isMulti = assignees.length > 1;
+
+  return (
+    <>
+      <Breadcrumb
+        items={[
+          { label: "Tasks", href: "/tasks?view=tasks" },
+          { label: "New task" },
+        ]}
+      />
+      <h1 className="mt-2 mb-4 text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
+        New task
+      </h1>
+
+      <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
+        <div className="flex flex-col gap-4 deck:col-span-8">
+          {/* 1 — type first, because it gates everything below. */}
+          <Panel>
+            <h2 className="text-sm font-medium text-ink">Type</h2>
+            <div className="mt-3 grid gap-2 sm:grid-cols-3">
+              {TYPES.map((t) => {
+                const Ico = Icon[t.icon];
+                const on = type === t.id;
+                return (
+                  <button
+                    key={t.id}
+                    type="button"
+                    onClick={() => setType(t.id)}
+                    aria-pressed={on}
+                    className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
+                      on
+                        ? "bg-[var(--control-active)] shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
+                        : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
+                    }`}
+                  >
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
+                      <Ico />
+                      {t.label}
+                    </span>
+                    <span className="mt-1 block text-[11px] text-ink-faint">
+                      {t.body}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </Panel>
+
+          {/* 2 — the brief. */}
+          <Panel>
+            <h2 className="text-sm font-medium text-ink">Brief</h2>
+            <Field
+              label="Title"
+              required
+              className="mt-3"
+              error={state.errorField === "title" ? state.error : null}
+            >
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder="What needs doing"
+                data-help="task-title-field"
+              />
+            </Field>
+            {/* No owning-department field. It is derived from the creator in
+                the repository and never asked for here: it decides whether the
+                work needs two department heads to approve it, so it is not a
+                preference, and a field that asks is a field that can be
+                answered wrongly. Administrators can still file on another
+                department's behalf — that override lives in admin settings,
+                which is where filing work you are not part of belongs. */}
+
+            <Field label="Description" className="mt-3">
+              <Textarea
+                rows={3}
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </Field>
+
+            <div className="mt-3">
+              <span className="mb-1.5 block text-sm font-medium text-ink">
+                Acceptance criteria
+              </span>
+              {requirements.length > 0 && (
+                <ul className="mb-2 space-y-1">
+                  {requirements.map((r, i) => (
+                    <li
+                      key={i}
+                      className="flex items-center gap-2 text-sm text-ink-muted"
+                    >
+                      <Icon.check className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                      <span className="min-w-0 flex-1">{r}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setRequirements((c) => c.filter((_, j) => j !== i))
+                        }
+                        aria-label={`Remove ${r}`}
+                        className="text-ink-faint hover:text-ink"
+                      >
+                        <Icon.close className="h-3 w-3" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="flex gap-2">
+                <Input
+                  value={reqDraft}
+                  onChange={(e) => setReqDraft(e.target.value)}
+                  placeholder="Add a criterion"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && reqDraft.trim()) {
+                      e.preventDefault();
+                      setRequirements((c) => [...c, reqDraft.trim()]);
+                      setReqDraft("");
+                    }
+                  }}
+                />
+                <Button
+                  onClick={() => {
+                    if (!reqDraft.trim()) return;
+                    setRequirements((c) => [...c, reqDraft.trim()]);
+                    setReqDraft("");
+                  }}
+                >
+                  Add
+                </Button>
+              </div>
+            </div>
+          </Panel>
+
+          {/* 3 — people. */}
+          <Panel>
+            <h2 className="text-sm font-medium text-ink">People</h2>
+            <Field
+              label={
+                type === "self_assigned"
+                  ? "You are the assignee"
+                  : "Assignees"
+              }
+              required={type !== "self_assigned"}
+              className="mt-3"
+              hint={
+                multiAllowed
+                  ? isMulti
+                    ? undefined
+                    : "Choose one or more."
+                  : "One person is responsible for this task."
+              }
+              error={state.errorField === "assigneeIds" ? state.error : null}
+            >
+              {/* Why this list is the length it is. Without it, somebody
+                  whose role reaches only themselves sees a picker with one
+                  name in it and reasonably concludes the page is broken. */}
+              {assignable.data !== null && assignScope !== "organisation" && (
+                <p className="mb-2.5 rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
+                  {assignScope === null
+                    ? "Your role does not include creating tasks, so there is nobody to assign to."
+                    : assignScope === "self"
+                      ? "Your role lets you create work for yourself, so you are the only person listed."
+                      : assignScope === "direct_reports"
+                        ? "You can create work for yourself and your direct reports. Everyone else is left out of this list rather than offered and then refused."
+                        : "You can create work for yourself and anyone in your reporting line."}
+                </p>
+              )}
+
+              {/* Filters, because a chip per employee stops being usable at
+                  about thirty people and this has to work at three hundred.
+                  They narrow the SAME list rather than replacing it, so the
+                  selection survives changing a filter. Hidden when there is
+                  nothing to narrow — four filters over one name is furniture. */}
+              <div
+                className={`mb-2.5 flex-wrap items-center gap-2 ${
+                  assignablePeople.length > 1 ? "flex" : "hidden"
+                }`}
+              >
+                <Input
+                  data-help="task-assignee-field"
+                  aria-label="Search employees"
+                  placeholder="Search name"
+                  value={assigneeSearch}
+                  onChange={(e) => setAssigneeSearch(e.target.value)}
+                  className="!w-[190px]"
+                />
+                <Select
+                  aria-label="Filter by department"
+                  value={filterDept}
+                  onChange={(e) => setFilterDept(e.target.value)}
+                  className="!w-[168px]"
+                >
+                  <option value="">Any department</option>
+                  {(departments.data ?? []).map((d) => (
+                    <option key={d.id} value={d.id}>
+                      {d.name}
+                    </option>
+                  ))}
+                </Select>
+                <Select
+                  aria-label="Filter by role"
+                  value={filterRole}
+                  onChange={(e) => setFilterRole(e.target.value)}
+                  className="!w-[168px]"
+                >
+                  <option value="">Any role</option>
+                  {(roles.data ?? []).map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.displayName}
+                    </option>
+                  ))}
+                </Select>
+                <button
+                  type="button"
+                  aria-pressed={reportsOnly}
+                  onClick={() => setReportsOnly((v) => !v)}
+                  title="Only people in your reporting line — the ones you can assign to without a cross-department approval."
+                  className={`rounded-full px-3 py-1.5 text-[11px] font-medium transition-colors ${
+                    reportsOnly
+                      ? "bg-ink text-[var(--body-bg)]"
+                      : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
+                  }`}
+                >
+                  My reporting line
+                </button>
+                {/* Of the people you may assign to — not of the company.
+                    Counting against the whole directory would advertise a
+                    reach the viewer does not have. */}
+                <span className="text-[11px] text-ink-faint">
+                  <span data-figure>{visiblePeople.length}</span> of{" "}
+                  <span data-figure>{assignablePeople.length}</span>
+                </span>
+              </div>
+
+              <div className="flex flex-wrap gap-1.5">
+                {visiblePeople.map((p) => {
+                  const on = assignees.includes(p.id);
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      /* Single-select where the type says so: picking somebody
+                         REPLACES the current choice rather than adding to it.
+                         `allowsMultipleAssignees` is the same predicate
+                         `createTask` refuses with, so the control can never
+                         build a selection the write rejects. */
+                      onClick={() =>
+                        setAssignees((c) =>
+                          c.includes(p.id)
+                            ? c.filter((x) => x !== p.id)
+                            : multiAllowed
+                              ? [...c, p.id]
+                              : [p.id],
+                        )
+                      }
+                      aria-pressed={on}
+                      className={`rounded-full px-2.5 py-1 text-sm transition-colors ${
+                        on
+                          ? "bg-ink text-[var(--body-bg)]"
+                          : "bg-[var(--control)] text-ink-muted hover:text-ink"
+                      }`}
+                    >
+                      {p.displayName}
+                    </button>
+                  );
+                })}
+              </div>
+            </Field>
+
+            {/* The consent this assignment needs. Legacy's model, and the
+                reason nobody is hidden from the list above: work may be
+                raised for anyone, and the gate — not a refusal — is what
+                holds it until the right person agrees. */}
+            {gate === "upward" && (
+              <p className="mt-2 rounded-inset bg-[color-mix(in_srgb,var(--state-extension)_18%,transparent)] px-3 py-2 text-[11px] leading-relaxed text-[var(--state-extension-ink)]">
+                {upwardNames.join(" and ")}{" "}
+                {upwardNames.length > 1 ? "sit" : "sits"} above you, so this
+                task waits for {upwardNames.length > 1 ? "them" : "them"} to
+                accept it before it starts. You can still create it.
+              </p>
+            )}
+
+            {isMulti && (
+              <p className="mt-2 flex flex-wrap items-center gap-2 rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-[11px] text-ink-faint">
+                Only the first assignee is scored on this task.
+                <ProvisionalBadge
+                  decisionId="O9"
+                  label="Multi-assignee attribution"
+                />
+              </p>
+            )}
+
+            {type === "self_assigned" && (
+              <Field
+                label="Approver"
+                required
+                className="mt-3"
+                hint="They sign off before work starts."
+              >
+                <Select
+                  value={approverId}
+                  onChange={(e) => setApproverId(e.target.value)}
+                >
+                  <option value="">
+                    {optionLabel(people, "Choose an approver")}
+                  </option>
+                  {(people.data ?? [])
+                    .filter((p) => p.id !== me)
+                    .map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName}
+                      </option>
+                    ))}
+                </Select>
+              </Field>
+            )}
+          </Panel>
+
+          {/* 4 — deadline.
+              Not a choice, and so not presented as one. Which model applies is
+              decided by the relationship between you and the assignee, and the
+              repository decides it again on the way in — a control here could
+              only ever disagree with the answer. What the form owes the reader
+              is the answer and the reason for it, then the one value that
+              model actually needs. */}
+          <Panel>
+            <h2 className="text-sm font-medium text-ink">Deadline</h2>
+              {!relationshipKnown ? (
+                <p
+                  data-help="task-deadline-mode"
+                  className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5 text-[11px] leading-relaxed text-ink-faint"
+                >
+                  Choose an assignee first. How this task&rsquo;s deadline works
+                  depends on your relationship to them, so Cowork settles it
+                  once it knows who the work is for.
+                </p>
+              ) : (
+                <>
+                  <div
+                    data-help="task-deadline-mode"
+                    className={`mt-3 rounded-inset px-3 py-2.5 ${
+                      mode === "fixed"
+                        ? "bg-[color-mix(in_srgb,var(--state-extension)_18%,transparent)]"
+                        : "bg-[var(--surface-sunken)]"
+                    }`}
+                  >
+                    {/* Both lines come from the relationship the resolver
+                        returned, so what the form promises here is what
+                        `createTask` will actually do. */}
+                    <span
+                      className={`text-sm font-medium ${
+                        mode === "fixed"
+                          ? "text-[var(--state-extension-ink)]"
+                          : "text-ink"
+                      }`}
+                    >
+                      {relationCopy.label}
+                    </span>
+                    <span
+                      className={`mt-1 block text-[11px] leading-relaxed ${
+                        mode === "fixed"
+                          ? "text-[var(--state-extension-ink)]"
+                          : "text-ink-muted"
+                      }`}
+                    >
+                      {relationCopy.forecast}
+                    </span>
+                  </div>
+
+                  {mode === "timer" ? (
+                    <Field
+                      label="Budget"
+                      className="mt-3"
+                      hint="The window the assignee plans inside."
+                    >
+                      <Select
+                        value={String(hours)}
+                        onChange={(e) => setHours(Number(e.target.value))}
+                      >
+                        {[1, 2, 3, 4, 6, 8, 12, 16, 24, 40].map((h) => (
+                          <option key={h} value={h}>
+                            {h} hours
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  ) : (
+                    <Field label="Due" className="mt-3">
+                      <Input
+                        type="datetime-local"
+                        value={fixedDueAt}
+                        onChange={(e) => setFixedDueAt(e.target.value)}
+                      />
+                    </Field>
+                  )}
+                </>
+              )}
+          </Panel>
+
+          {/* 5 — placement, disclosed on demand. */}
+          <Panel>
+            <button
+              type="button"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="flex w-full items-center gap-2 text-left"
+              aria-expanded={showAdvanced}
+            >
+              <h2 className="text-sm font-medium text-ink">
+                Placement and links
+              </h2>
+              <span className="ml-auto text-ink-faint">
+                {showAdvanced ? <Icon.chevronDown /> : <Icon.chevronRight />}
+              </span>
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                <Field label="Project">
+                  <Select
+                    value={projectId}
+                    onChange={(e) => setProjectId(e.target.value)}
+                  >
+                    <option value="">None</option>
+                    {(projects.data ?? []).map((p) => (
+                      <option key={p.project.id} value={p.project.id}>
+                        {p.project.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label="Parent task" hint="Makes this a subtask.">
+                  <Select
+                    value={parentTaskId}
+                    onChange={(e) => setParentTaskId(e.target.value)}
+                  >
+                    <option value="">None</option>
+                    {(tasks.data ?? []).slice(0, 20).map((t) => (
+                      <option key={t.task.id} value={t.task.id}>
+                        {t.task.title}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {type === "goal" && (
+                  <Field label="Goal" required>
+                    <Select
+                      value={goalId}
+                      onChange={(e) => setGoalId(e.target.value)}
+                    >
+                      <option value="">
+                        {optionLabel(goals, "Choose a goal")}
+                      </option>
+                      {(goals.data ?? []).map((g) => (
+                        <option key={g.id} value={g.id}>
+                          {g.title}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
+              </div>
+            )}
+          </Panel>
+
+          {/* A selection that has stopped being permitted. Named rather than
+              counted: "one assignee is no longer allowed" leaves the reader to
+              work out which of five it is. */}
+          {hasForbidden && (
+            <InlineError
+              code="permission_denied"
+              message={`You can no longer create work for ${forbiddenAssignees
+                .map(
+                  (id) =>
+                    (people.data ?? []).find((p) => p.id === id)?.displayName ??
+                    "someone selected",
+                )
+                .join(", ")}. Remove them to continue.`}
+            />
+          )}
+
+          {/* The shared uploader in staging mode. Not a task-specific one. */}
+          <div className="mt-1">
+            <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+              Attachments
+            </p>
+            <p className="mt-0.5 mb-2 text-[12px] text-ink-faint">
+              Optional. Reference material the assignee should work from.
+            </p>
+            <FileUploader
+              entityType="task"
+              entityId={null}
+              attachments={[]}
+              onChange={() => {}}
+              staged={stagedFiles}
+              onStagedChange={setStagedFiles}
+              label="Attach reference files"
+            />
+          </div>
+
+          {uploadFailures.length > 0 && (
+            <InlineError
+              message={`The task was created, but these files did not upload: ${uploadFailures.join(", ")}. You can add them on the task.`}
+            />
+          )}
+
+          {state.error && !state.errorField && (
+            <InlineError message={state.error} code={state.errorCode} />
+          )}
+
+          <div className="flex justify-end gap-2">
+            <Button onClick={() => router.back()}>Cancel</Button>
+            <Button
+              data-help="task-create-submit"
+              tone="primary"
+              disabled={
+                state.isPending || !title.trim() || hasForbidden || needsAssignee
+              }
+              onClick={async () => {
+                const r = await create();
+                if (!r.ok) return;
+                /*
+                 * Files go up AFTER the task exists.
+                 *
+                 * The engine checks permission against the task, so an upload
+                 * before there is one has nothing to check and is refused. That
+                 * inverts the obvious order — upload then create — but it is the
+                 * order the permission model allows, and it means a file can
+                 * never be stored against a task that failed to be created.
+                 *
+                 * A failed upload does NOT fail the task: the task is already
+                 * real and discarding it would lose the work. The person is told
+                 * which files did not make it and can add them on the task.
+                 */
+                const failed: string[] = [];
+                for (const file of stagedFiles) {
+                  const up = await repo.uploadAttachment({
+                    file,
+                    entityType: "task",
+                    entityId: r.data.id,
+                  });
+                  if (!up.ok) failed.push(file.name);
+                }
+                if (failed.length) setUploadFailures(failed);
+                router.push(`/tasks/${r.data.id}`);
+              }}
+            >
+              {state.isPending ? "Creating…" : "Create task"}
+            </Button>
+          </div>
+        </div>
+
+        {/* What will happen — the consequences of the current choices. */}
+        <div className="deck:col-span-4">
+          <Panel>
+            <h2 className="text-sm font-medium text-ink">What happens next</h2>
+            <ul className="mt-3 space-y-2.5 text-sm text-ink-muted">
+              <Consequence>
+                {type === "self_assigned"
+                  ? "The task waits for your approver before you can start."
+                  : "Each assignee receives it at the bottom of their priority list."}
+              </Consequence>
+              {relationshipKnown && (
+                <Consequence>
+                  {mode === "timer"
+                    ? "No deadline is set yet — the assignee proposes one inside your budget and you decide."
+                    : "The deadline is fixed and scored from the date you set."}
+                </Consequence>
+              )}
+              {gate === "cross_department" && (
+                <Consequence>
+                  Both department heads approve before it reaches anyone. It
+                  stays pending until they do.
+                </Consequence>
+              )}
+              {gate === "upward" && (
+                <Consequence>
+                  It waits for {upwardNames.join(" and ")} to accept before any
+                  work starts.
+                </Consequence>
+              )}
+              <Consequence>
+                {type === "recurring" || type === "external"
+                  ? "This type is not scored, so it will not affect C1."
+                  : "On approval this settles one C1 · Task Execution unit worth 1.0 point."}
+              </Consequence>
+              {projectId && (
+                <Consequence>
+                  Project progress recalculates immediately.
+                </Consequence>
+              )}
+            </ul>
+
+            {(type === "recurring" || type === "external") && (
+              <p className="mt-3 flex flex-wrap items-center gap-2 border-t border-hairline pt-3 text-[11px] text-ink-faint">
+                Whether these types should score is unresolved.
+                <ProvisionalBadge
+                  decisionId="O20"
+                  label="Scoring eligibility by type"
+                />
+              </p>
+            )}
+          </Panel>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function Consequence({ children }: { children: React.ReactNode }) {
+  return (
+    <li className="flex items-start gap-2">
+      <Icon.chevronRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" />
+      <span>{children}</span>
+    </li>
+  );
+}

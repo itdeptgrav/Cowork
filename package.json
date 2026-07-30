@@ -1,0 +1,37 @@
+{
+  "name": "nodeinit",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "check-secrets": "node scripts/check-secrets.mjs",
+    "verify": "npm run lint && npx tsc --noEmit && npm test && npm run build && npm run check-secrets",
+    "test": "node --test \"lib/**/*.test.ts\" \"components/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@livekit/components-react": "^2.9.23",
+    "@livekit/components-styles": "^1.2.0",
+    "firebase": "^12.16.0",
+    "firebase-admin": "^14.2.0",
+    "livekit-client": "^2.21.0",
+    "livekit-server-sdk": "^2.17.0",
+    "next": "16.2.11",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.11",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  }
+}

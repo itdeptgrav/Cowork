@@ -1,0 +1,634 @@
+"use client";
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import {
+  DEFAULT_MUSIC_PREFERENCES,
+  type MusicErrorCode,
+  type MusicPage,
+  type MusicPreferences,
+  type MusicResult,
+} from "@/lib/domain";
+import { getRepository } from "@/lib/repositories";
+import {
+  pickLocally,
+  autoplayQuery,
+  type AutoplaySources,
+} from "@/lib/music/autoplay";
+
+/**
+ * All music state, held above the router so playback survives navigation.
+ *
+ * The provider is mounted in the app shell, not in `/music`. That is the whole
+ * mechanism behind "keep playing while I move around Cowork": the route subtree
+ * unmounts, this does not, and the single iframe lives in a shell-owned element
+ * that is never removed from the document — it only changes size and position.
+ *
+ * Nothing in here is reported anywhere. No scoring, no attendance, no timers,
+ * no manager surface — see `lib/domain/music.ts`.
+ */
+
+/**
+ * What to show when a search fails.
+ *
+ * A server-shaped failure carries copy written for a person. A transport
+ * failure carries whatever the browser threw — "Failed to fetch" — which is a
+ * diagnostic, not a sentence, and never belongs in front of a reader.
+ */
+function searchFailure(e: unknown): { code: MusicErrorCode; message: string } {
+  const err = e as Error & { code?: MusicErrorCode };
+  return err.code
+    ? { code: err.code, message: err.message }
+    : {
+        code: "network",
+        message:
+          "Cowork could not reach the music service. Check your connection and try again.",
+      };
+}
+
+interface SearchState {
+  query: string;
+  status: "idle" | "searching" | "loading_more" | "ready" | "empty" | "error";
+  items: MusicResult[];
+  nextPageToken: string | null;
+  cached: boolean;
+  errorCode: MusicErrorCode | null;
+  errorMessage: string | null;
+}
+
+const EMPTY_SEARCH: SearchState = {
+  query: "",
+  status: "idle",
+  items: [],
+  nextPageToken: null,
+  cached: false,
+  errorCode: null,
+  errorMessage: null,
+};
+
+interface MusicValue {
+  enabled: boolean;
+  search: SearchState;
+  runSearch(q: string): Promise<void>;
+  loadMore(): Promise<void>;
+  clearSearch(): void;
+
+  recentSearches: string[];
+  clearRecentSearches(): void;
+  favourites: MusicResult[];
+  isFavourite(id: string): boolean;
+  toggleFavourite(item: MusicResult): Promise<void>;
+  recentlyPlayed: MusicResult[];
+
+  queue: MusicResult[];
+  currentIndex: number;
+  current: MusicResult | null;
+  playNow(item: MusicResult): void;
+  enqueue(item: MusicResult): void;
+  removeAt(index: number): void;
+  moveItem(from: number, to: number): void;
+  clearQueue(): void;
+  next(): void;
+  previous(): void;
+  /** Play the current track again from the start. */
+  replay(): void;
+
+  /**
+   * The queue ran out and nothing replaced it. A named state rather than an
+   * absence, because "it stopped" has to look deliberate.
+   */
+  queueFinished: boolean;
+
+  prefs: MusicPreferences;
+  setPrefs(patch: Partial<MusicPreferences>): void;
+
+  /** How the current track was chosen. Named so provenance is never implied. */
+  autoplayNotice: string | null;
+  /** Set by the player host so other surfaces can reflect real state. */
+  reportPlaying(playing: boolean): void;
+  playing: boolean;
+  /** Requested transport intent, consumed by the player host. */
+  intent: { action: "play" | "pause" | "replay" | "none"; nonce: number };
+  requestPlay(): void;
+  requestPause(): void;
+
+  /**
+   * Where the video should be drawn.
+   *
+   * `/music` registers a rectangle and the player fills it; with no rectangle
+   * registered the player falls back to the compact bar. The iframe itself
+   * never moves in the DOM — only this changes.
+   */
+  stage: DOMRect | null;
+  registerStage(el: HTMLElement | null): void;
+}
+
+const Ctx = createContext<MusicValue | null>(null);
+
+export function MusicProvider({
+  enabled,
+  children,
+}: {
+  enabled: boolean;
+  children: ReactNode;
+}) {
+  const [search, setSearch] = useState<SearchState>(EMPTY_SEARCH);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const [favourites, setFavourites] = useState<MusicResult[]>([]);
+  const [recentlyPlayed, setRecentlyPlayed] = useState<MusicResult[]>([]);
+  const [queue, setQueue] = useState<MusicResult[]>([]);
+  const [currentIndex, setCurrentIndex] = useState(-1);
+  const [prefs, setPrefsState] = useState<MusicPreferences>(
+    DEFAULT_MUSIC_PREFERENCES,
+  );
+  const [autoplayNotice, setAutoplayNotice] = useState<string | null>(null);
+  const [queueFinished, setQueueFinished] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [intent, setIntent] = useState<{
+    action: "play" | "pause" | "replay" | "none";
+    nonce: number;
+  }>({ action: "none", nonce: 0 });
+  const [hydrated, setHydrated] = useState(false);
+  const [stage, setStage] = useState<DOMRect | null>(null);
+
+  /* Everything the session has seen, for Cowork Autoplay's free tiers. */
+  const seenRef = useRef<MusicResult[]>([]);
+  const playedIdsRef = useRef<Set<string>>(new Set());
+  const abortRef = useRef<AbortController | null>(null);
+
+  const current = currentIndex >= 0 ? (queue[currentIndex] ?? null) : null;
+
+  /* ── Hydrate from the repository once ────────────────────────────────── */
+  useEffect(() => {
+    if (!enabled) return;
+    let cancelled = false;
+    const r = getRepository();
+    Promise.all([
+      r.getMusicQueue(),
+      r.listMusicFavourites(),
+      r.listMusicSearches(),
+      r.listMusicPlayed(),
+      r.getMusicPreferences(),
+    ]).then(([q, favs, searches, played, p]) => {
+      if (cancelled) return;
+      setQueue(q.items);
+      setCurrentIndex(q.currentIndex);
+      setFavourites(favs);
+      setRecentSearches(searches);
+      setRecentlyPlayed(played);
+      setPrefsState(p);
+      seenRef.current = [...q.items, ...favs, ...played];
+      setHydrated(true);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [enabled]);
+
+  /* ── Persist the queue whenever it settles ───────────────────────────── */
+  useEffect(() => {
+    if (!hydrated) return;
+    getRepository().saveMusicQueue({ items: queue, currentIndex });
+  }, [queue, currentIndex, hydrated]);
+
+  /* ── Follow the stage element while it moves ──────────────────────────────
+     `/music` puts a placeholder in the page and the fixed player is drawn over
+     it. The placeholder is sticky, so it stays on screen while the page
+     scrolls; this keeps the two in agreement through scroll, resize and any
+     layout change beneath it. */
+  const stageElRef = useRef<HTMLElement | null>(null);
+  const [staged, setStaged] = useState(false);
+  const registerStage = useCallback((el: HTMLElement | null) => {
+    stageElRef.current = el;
+    setStaged(!!el);
+    setStage(el ? el.getBoundingClientRect() : null);
+  }, []);
+
+  useEffect(() => {
+    if (!staged) return;
+    /* Polled with rAF rather than driven by scroll events.
+       Which element scrolls is not something this can afford to be wrong
+       about — a page, a pane or a sticky container each dispatch differently,
+       and a missed event leaves the video parked where the page used to be.
+       A rect read per frame, only while `/music` is open, is the cheap and
+       certain version of the same thing. */
+    let frame = 0;
+    const tick = () => {
+      const node = stageElRef.current;
+      if (node) {
+        const next = node.getBoundingClientRect();
+        setStage((prev) =>
+          prev &&
+          prev.top === next.top &&
+          prev.left === next.left &&
+          prev.width === next.width &&
+          prev.height === next.height
+            ? prev
+            : next,
+        );
+      }
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+
+    /* rAF is suspended while a tab is hidden, and a layout can still change in
+       that state — a resize, a restored window, a bfcache return. These cover
+       the gap; they are cheap because `sync` only writes when the rect moved. */
+    const sync = () => {
+      const node = stageElRef.current;
+      if (!node) return;
+      const next = node.getBoundingClientRect();
+      setStage((prev) =>
+        prev &&
+        prev.top === next.top &&
+        prev.left === next.left &&
+        prev.width === next.width &&
+        prev.height === next.height
+          ? prev
+          : next,
+      );
+    };
+    window.addEventListener("scroll", sync, { passive: true, capture: true });
+    window.addEventListener("resize", sync, { passive: true });
+    document.addEventListener("visibilitychange", sync);
+    const ro = new ResizeObserver(sync);
+    if (stageElRef.current) ro.observe(stageElRef.current);
+
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+      window.removeEventListener("scroll", sync, { capture: true });
+      window.removeEventListener("resize", sync);
+      document.removeEventListener("visibilitychange", sync);
+    };
+  }, [staged]);
+
+  const remember = useCallback((items: MusicResult[]) => {
+    const byId = new Map(seenRef.current.map((r) => [r.id, r]));
+    for (const i of items) byId.set(i.id, i);
+    seenRef.current = [...byId.values()].slice(-400);
+  }, []);
+
+  /* ── Search ──────────────────────────────────────────────────────────── */
+  const fetchPage = useCallback(
+    async (q: string, pageToken: string | null): Promise<MusicPage> => {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+
+      const url = new URL("/api/music/search", window.location.origin);
+      url.searchParams.set("q", q);
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+      const res = await fetch(url, { signal: ac.signal });
+      const body: unknown = await res.json().catch(() => null);
+      if (!res.ok) {
+        const e = (body ?? {}) as { error?: MusicErrorCode; message?: string };
+        const err = new Error(e.message ?? "Search failed") as Error & {
+          code?: MusicErrorCode;
+        };
+        err.code = e.error ?? "upstream_error";
+        throw err;
+      }
+      return body as MusicPage;
+    },
+    [],
+  );
+
+  const runSearch = useCallback(
+    async (q: string) => {
+      const term = q.trim();
+      if (term.length < 2) return;
+      setSearch({ ...EMPTY_SEARCH, query: term, status: "searching" });
+
+      try {
+        const page = await fetchPage(term, null);
+        remember(page.items);
+        setSearch({
+          query: term,
+          status: page.items.length ? "ready" : "empty",
+          items: page.items,
+          nextPageToken: page.nextPageToken,
+          cached: page.cached,
+          errorCode: null,
+          errorMessage: null,
+        });
+        await getRepository().recordMusicSearch(term);
+        setRecentSearches(await getRepository().listMusicSearches());
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+        const { code, message } = searchFailure(e);
+        setSearch((s) => ({
+          ...s,
+          status: "error",
+          errorCode: code,
+          errorMessage: message,
+        }));
+      }
+    },
+    [fetchPage, remember],
+  );
+
+  const loadMore = useCallback(async () => {
+    if (!search.nextPageToken || search.status === "loading_more") return;
+    setSearch((s) => ({ ...s, status: "loading_more" }));
+    try {
+      const page = await fetchPage(search.query, search.nextPageToken);
+      remember(page.items);
+      setSearch((s) => ({
+        ...s,
+        status: "ready",
+        items: [...s.items, ...page.items],
+        nextPageToken: page.nextPageToken,
+      }));
+    } catch (e) {
+      const { code, message } = searchFailure(e);
+      setSearch((s) => ({
+        ...s,
+        status: "error",
+        errorCode: code,
+        errorMessage: message,
+      }));
+    }
+  }, [fetchPage, remember, search.nextPageToken, search.query, search.status]);
+
+  const clearSearch = useCallback(() => {
+    abortRef.current?.abort();
+    setSearch(EMPTY_SEARCH);
+  }, []);
+
+  /* ── Queue ───────────────────────────────────────────────────────────── */
+  const markPlayed = useCallback((item: MusicResult) => {
+    playedIdsRef.current.add(item.id);
+    getRepository()
+      .recordMusicPlayed(item)
+      .then(() => getRepository().listMusicPlayed())
+      .then(setRecentlyPlayed);
+  }, []);
+
+  const playNow = useCallback(
+    (item: MusicResult) => {
+      setAutoplayNotice(null);
+      setQueueFinished(false);
+      remember([item]);
+      setQueue((q) => {
+        const existing = q.findIndex((x) => x.id === item.id);
+        if (existing >= 0) {
+          setCurrentIndex(existing);
+          return q;
+        }
+        const at = currentIndex >= 0 ? currentIndex + 1 : q.length;
+        const next = [...q.slice(0, at), item, ...q.slice(at)];
+        setCurrentIndex(at);
+        return next;
+      });
+      markPlayed(item);
+      setIntent((i) => ({ action: "play", nonce: i.nonce + 1 }));
+    },
+    [currentIndex, markPlayed, remember],
+  );
+
+  const enqueue = useCallback(
+    (item: MusicResult) => {
+      remember([item]);
+      setQueueFinished(false);
+      setQueue((q) => (q.some((x) => x.id === item.id) ? q : [...q, item]));
+      setCurrentIndex((i) => (i < 0 ? 0 : i));
+    },
+    [remember],
+  );
+
+  const removeAt = useCallback((index: number) => {
+    setQueue((q) => q.filter((_, i) => i !== index));
+    setCurrentIndex((i) =>
+      index < i ? i - 1 : index === i ? Math.min(i, 0) : i,
+    );
+  }, []);
+
+  const moveItem = useCallback((from: number, to: number) => {
+    setQueue((q) => {
+      if (to < 0 || to >= q.length || from === to) return q;
+      const next = [...q];
+      const [moved] = next.splice(from, 1);
+      next.splice(to, 0, moved);
+      return next;
+    });
+    setCurrentIndex((i) => (i === from ? to : i));
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    setQueue([]);
+    setCurrentIndex(-1);
+    setAutoplayNotice(null);
+    setQueueFinished(false);
+  }, []);
+
+  /**
+   * Advance. The manual queue always has priority; Cowork Autoplay only acts
+   * once the queue is spent, and stops cleanly when it has nothing reliable.
+   */
+  const next = useCallback(() => {
+    setAutoplayNotice(null);
+    if (currentIndex + 1 < queue.length) {
+      const item = queue[currentIndex + 1];
+      setCurrentIndex(currentIndex + 1);
+      setQueueFinished(false);
+      markPlayed(item);
+      setIntent((i) => ({ action: "play", nonce: i.nonce + 1 }));
+      return;
+    }
+
+    if (!prefs.autoplay) {
+      setQueueFinished(true);
+      return;
+    }
+
+    const sources: AutoplaySources = {
+      seen: seenRef.current,
+      favourites,
+      recentlyPlayed,
+      playedIds: playedIdsRef.current,
+    };
+    const pick = pickLocally(current, sources);
+    if (pick) {
+      setQueue((q) => [...q, pick.item]);
+      setCurrentIndex(queue.length);
+      setAutoplayNotice(`Cowork Autoplay · ${pick.reason}`);
+      markPlayed(pick.item);
+      setIntent((i) => ({ action: "play", nonce: i.nonce + 1 }));
+      return;
+    }
+
+    /* Last resort: one search, and only if we can name what to search for.
+       A hundred quota units is a real cost, so this never fires speculatively. */
+    const q = autoplayQuery(current, sources);
+    if (!q) {
+      setQueueFinished(true);
+      setAutoplayNotice(
+        "Cowork Autoplay stopped — nothing reliable left to play.",
+      );
+      return;
+    }
+    fetchPage(q, null)
+      .then((page) => {
+        remember(page.items);
+        const candidate = page.items.find(
+          (r) =>
+            r.embeddable !== false &&
+            r.liveState === "none" &&
+            !playedIdsRef.current.has(r.id),
+        );
+        if (!candidate) {
+          setQueueFinished(true);
+          setAutoplayNotice(
+            "Cowork Autoplay stopped — nothing reliable left to play.",
+          );
+          return;
+        }
+        setQueue((prev) => [...prev, candidate]);
+        setCurrentIndex(queue.length);
+        setAutoplayNotice(`Cowork Autoplay · searched for ${q}`);
+        markPlayed(candidate);
+        setIntent((i) => ({ action: "play", nonce: i.nonce + 1 }));
+      })
+      .catch(() => {
+        setQueueFinished(true);
+        setAutoplayNotice("Cowork Autoplay stopped — could not reach YouTube.");
+      });
+  }, [
+    current,
+    currentIndex,
+    favourites,
+    fetchPage,
+    markPlayed,
+    prefs.autoplay,
+    queue,
+    recentlyPlayed,
+    remember,
+  ]);
+
+  const previous = useCallback(() => {
+    setAutoplayNotice(null);
+    setQueueFinished(false);
+    setCurrentIndex((i) => {
+      const at = Math.max(0, i - 1);
+      const item = queue[at];
+      if (item) {
+        markPlayed(item);
+        setIntent((x) => ({ action: "play", nonce: x.nonce + 1 }));
+      }
+      return at;
+    });
+  }, [markPlayed, queue]);
+
+  const replay = useCallback(() => {
+    setQueueFinished(false);
+    setIntent((i) => ({ action: "replay", nonce: i.nonce + 1 }));
+  }, []);
+
+  /* ── Favourites and preferences ──────────────────────────────────────── */
+  const toggleFavourite = useCallback(async (item: MusicResult) => {
+    await getRepository().toggleMusicFavourite(item);
+    setFavourites(await getRepository().listMusicFavourites());
+  }, []);
+
+  const isFavourite = useCallback(
+    (id: string) => favourites.some((f) => f.id === id),
+    [favourites],
+  );
+
+  const setPrefs = useCallback((patch: Partial<MusicPreferences>) => {
+    setPrefsState((p) => ({ ...p, ...patch }));
+    getRepository().saveMusicPreferences(patch);
+  }, []);
+
+  const value = useMemo<MusicValue>(
+    () => ({
+      enabled,
+      search,
+      runSearch,
+      loadMore,
+      clearSearch,
+      recentSearches,
+      clearRecentSearches: () => {
+        getRepository().clearMusicSearches();
+        setRecentSearches([]);
+      },
+      favourites,
+      isFavourite,
+      toggleFavourite,
+      recentlyPlayed,
+      queue,
+      currentIndex,
+      current,
+      playNow,
+      enqueue,
+      removeAt,
+      moveItem,
+      clearQueue,
+      next,
+      previous,
+      replay,
+      queueFinished,
+      prefs,
+      setPrefs,
+      autoplayNotice,
+      reportPlaying: setPlaying,
+      playing,
+      intent,
+      requestPlay: () =>
+        setIntent((i) => ({ action: "play", nonce: i.nonce + 1 })),
+      requestPause: () =>
+        setIntent((i) => ({ action: "pause", nonce: i.nonce + 1 })),
+      stage,
+      registerStage,
+    }),
+    [
+      autoplayNotice,
+      clearQueue,
+      clearSearch,
+      current,
+      currentIndex,
+      enabled,
+      enqueue,
+      favourites,
+      intent,
+      isFavourite,
+      loadMore,
+      moveItem,
+      next,
+      playNow,
+      playing,
+      prefs,
+      previous,
+      queue,
+      queueFinished,
+      recentSearches,
+      recentlyPlayed,
+      registerStage,
+      removeAt,
+      replay,
+      runSearch,
+      search,
+      setPrefs,
+      stage,
+      toggleFavourite,
+    ],
+  );
+
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+}
+
+export function useMusic(): MusicValue {
+  const ctx = useContext(Ctx);
+  if (!ctx) throw new Error("useMusic must be used inside <MusicProvider>");
+  return ctx;
+}

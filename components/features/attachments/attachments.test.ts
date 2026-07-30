@@ -1,0 +1,414 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+import { readFileSync } from "node:fs";
+import {
+  fileGlyph,
+  formatBytes,
+  isPdf,
+  isPreviewableImage,
+  localRefusal,
+} from "./attachmentRules.ts";
+
+/**
+ * The reusable attachment layer.
+ *
+ * The rule everything here serves: a Cowork file is reachable only through the
+ * engine's authenticated route. No component may construct a storage URL, and
+ * no preview may skip the permission check a download performs.
+ */
+
+const code = (p: string) =>
+  readFileSync(p, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
+const COMPONENTS = "components/features/attachments/Attachments.tsx";
+const RULES = "components/features/attachments/attachmentRules.ts";
+const WIRE = "lib/legacy/attachments.ts";
+
+function file(name: string, size: number, type = ""): File {
+  return { name, size, type } as File;
+}
+
+/* ── Local validation, before a round trip ────────────────────────────────── */
+
+test("an oversized file is refused before it is sent", () => {
+  /* The engine refuses it too — this only saves somebody uploading 60 MB to be
+     told no. */
+  assert.match(localRefusal(file("big.pdf", 51 * 1024 * 1024))!, /50 MB/);
+  assert.equal(localRefusal(file("ok.pdf", 49 * 1024 * 1024)), null);
+});
+
+test("an empty file is refused", () => {
+  assert.match(localRefusal(file("empty.pdf", 0))!, /empty/);
+});
+
+test("the local check is not the authority", () => {
+  /* It cannot be: it sees a name and a size, and the engine reads the bytes.
+     A comment saying so is not enough — this asserts the component sends every
+     accepted file to the engine rather than deciding types itself. */
+  const src = code(COMPONENTS);
+  assert.equal(
+    /sniff|magic/.test(code(RULES)),
+    false,
+    "the component is deciding a file's real type",
+  );
+  assert.match(src, /repo\.uploadAttachment\(/);
+});
+
+/* ── Presentation helpers ─────────────────────────────────────────────────── */
+
+test("a file's kind is shown from its type, then its name", () => {
+  assert.equal(fileGlyph("image/png"), "🖼");
+  assert.equal(fileGlyph("application/pdf"), "📄");
+  assert.equal(fileGlyph("", "quarterly.xlsx"), "📊");
+  assert.equal(fileGlyph("", "deck.pptx"), "📽");
+  assert.equal(fileGlyph("", "notes.docx"), "📝");
+  assert.equal(fileGlyph("application/x-thing", "unknown.bin"), "📎");
+});
+
+test("only formats a browser can render inline are previewed", () => {
+  for (const t of ["image/png", "image/jpeg", "image/webp"]) {
+    assert.equal(isPreviewableImage(t), true, t);
+  }
+  /* SVG is deliberately absent: it can carry script, and it is not on the
+     engine's allow-list either. */
+  for (const t of ["image/svg+xml", "application/pdf", "text/html"]) {
+    assert.equal(isPreviewableImage(t), false, t);
+  }
+  assert.equal(isPdf("application/pdf"), true);
+});
+
+test("sizes read as sizes, and nothing is shown for an unknown one", () => {
+  assert.equal(formatBytes(512), "512 B");
+  assert.equal(formatBytes(2048), "2 KB");
+  assert.equal(formatBytes(5 * 1024 * 1024), "5.0 MB");
+  assert.equal(formatBytes(0), "");
+  assert.equal(formatBytes(Number.NaN), "");
+});
+
+/* ── The security properties ──────────────────────────────────────────────── */
+
+test("no component ever builds a storage URL", () => {
+  /* The whole point. A Drive link on screen is a way to the file with none of
+     the checks the route performs. */
+  const src = code(COMPONENTS);
+  for (const leak of ["drive.google", "googleusercontent", "webViewLink", "storageFileId"]) {
+    assert.equal(src.includes(leak), false, `a storage URL leaked: ${leak}`);
+  }
+});
+
+test("bytes reach the page only as a blob from the repository", () => {
+  const src = code(COMPONENTS);
+  assert.match(src, /repo\.downloadAttachment\(/);
+  assert.match(src, /URL\.createObjectURL\(/);
+  /* And no raw fetch: a component calling the API directly would bypass the
+     repository seam and the token it holds. */
+  assert.equal(/\bfetch\(/.test(src), false, "a component is calling fetch");
+});
+
+test("every object URL is revoked", () => {
+  /* Otherwise each previewed image leaks a live handle for the tab's lifetime,
+     and a leaked handle is a shareable one. */
+  const src = code(COMPONENTS);
+  assert.equal(
+    (src.match(/URL\.revokeObjectURL\(/g) ?? []).length,
+    (src.match(/URL\.createObjectURL\(/g) ?? []).length,
+  );
+});
+
+test("a preview is fetched through the same checked path as a download", () => {
+  /* A thumbnail that skipped the check would be the leak this system exists to
+     prevent — which is also why `next/image` is disabled here: it re-fetches
+     the src from its own server, with no viewer token. */
+  const src = readFileSync(COMPONENTS, "utf8");
+  assert.match(src, /no-img-element/);
+  assert.match(src, /cannot carry the viewer's\s*\n?\s*token/);
+});
+
+test("an unauthorised download surfaces the engine's refusal", () => {
+  const src = code(COMPONENTS);
+  assert.match(src, /if \(!r\.ok\) \{[\s\S]{0,120}setError\(r\.message\)/);
+});
+
+/* ── The wire ─────────────────────────────────────────────────────────────── */
+
+test("upload and download both carry the bearer token", () => {
+  const src = code(WIRE);
+  assert.equal((src.match(/Authorization/g) ?? []).length, 4);
+});
+
+test("a refusal is not offered a retry, a dropped connection is", () => {
+  const src = code(WIRE);
+  assert.match(src, /status === 403\s*\n?\s*\?\s*"permission"/);
+  assert.match(src, /status === 0\s*\n?\s*\?\s*"network"/);
+});
+
+test("progress is reported, because a silent upload looks hung", () => {
+  const src = code(WIRE);
+  assert.match(src, /xhr\.upload\.onprogress/);
+  assert.match(src, /e\.loaded \/ e\.total/);
+});
+
+test("the review sends attachment IDs, never bytes", () => {
+  /* The file is stored and permission-checked before the review request is
+     made, so that request cannot become a second upload path. */
+  const panel = code("components/features/tasks/ReviewPanel.tsx");
+  assert.match(panel, /reworkAttachmentIds: decision === "rework" \? files\.map\(\(f\) => f\.id\) : \[\]/);
+  assert.match(panel, /<FileUploader/);
+  /* And the shared component, not a rework-specific one. */
+  assert.equal(/ReworkUploader|TaskUploader/.test(panel), false);
+});
+
+test("the employee reads files through the authenticated component", () => {
+  const panel = code("components/features/tasks/ReworkPanel.tsx");
+  /* `rework`, not `task` — correction files are a separate group now, which is
+     the fix this assertion was updated for. */
+  assert.match(panel, /<EntityAttachments entityType="rework"/);
+});
+
+/* ── Integration: creation, details, rework ───────────────────────────────── */
+
+const NEW_TASK = "components/features/tasks/NewTaskForm.tsx";
+const FILES = "components/features/tasks/TaskFiles.tsx";
+
+test("the three kinds of file are never mixed into one list", () => {
+  /* Reference material, deliverables and correction files answer different
+     questions — "what am I working from", "what did they hand in", "what has to
+     change". The engine separates them by entityType; so does the screen. */
+  const src = code(FILES);
+  /* Submissions are no longer one group — each attempt renders separately —
+     so the check is on the entity types reaching the component rather than on
+     a static list. */
+  for (const kind of ["task", "submission", "rework"]) {
+    assert.ok(
+      new RegExp(`entityType="${kind}"`).test(src) ||
+        src.includes(`entityType: "${kind}" as const`),
+      `missing ${kind}`,
+    );
+  }
+  assert.match(src, /Reference files/);
+  assert.match(src, /Submitted work/);
+  assert.match(src, /Correction files/);
+});
+
+test("rework files are attached as rework, not as task reference files", () => {
+  /* This was wrong when first shipped: correction screenshots landed in the
+     creator's own reference list. */
+  const panel = code("components/features/tasks/ReviewPanel.tsx");
+  assert.match(panel, /entityType="rework"/);
+  assert.equal(
+    /<FileUploader\s+entityType="task"/.test(panel),
+    false,
+    "correction files are mixing into the task's reference list",
+  );
+});
+
+test("an untitled empty group renders nothing at all", () => {
+  /* An untitled group is embedded in somebody else's layout and stays silent
+     when it has nothing. A TITLED one now says "No files attached" instead —
+     the reader asked for that group by name and deserves an answer. */
+  const src = code(COMPONENTS);
+  const fn = src.slice(src.indexOf("export function EntityAttachments("));
+  assert.match(fn.slice(0, 2600), /if \(!title\) return null;/);
+  assert.match(fn.slice(0, 2600), /No files attached/);
+});
+
+test("loading, empty and error are three distinct states", () => {
+  /* Before this, a section still loading and a section with nothing looked
+     identical, so a slow response read as "no files". */
+  const fn = code(COMPONENTS).slice(
+    code(COMPONENTS).indexOf("export function EntityAttachments("),
+  );
+  assert.match(fn.slice(0, 2600), /if \(!settled\) \{/);
+  assert.match(fn.slice(0, 2600), /Unable to load files/);
+  assert.match(fn.slice(0, 2600), /No files attached/);
+});
+
+test("a previous entity's files never show under a new one", () => {
+  /* The state is keyed, so switching task shows ITS loading state rather than
+     the last task's list. */
+  const fn = code(COMPONENTS).slice(
+    code(COMPONENTS).indexOf("export function EntityAttachments("),
+  );
+  assert.match(fn.slice(0, 2600), /state\?\.key === key \? state : null/);
+});
+
+test("task creation stages files and uploads AFTER the task exists", () => {
+  /* The engine checks permission against the task, so an upload before there
+     is one has nothing to check. That inverts the obvious order and is the
+     only order the permission model allows. */
+  const src = code(NEW_TASK);
+  assert.match(src, /entityId=\{null\}/);
+  const handler = src.slice(src.indexOf("const r = await create()"));
+  const createAt = handler.indexOf("create()");
+  const uploadAt = handler.indexOf("repo.uploadAttachment");
+  assert.ok(createAt >= 0 && uploadAt > createAt, "files upload before create");
+  assert.match(handler.slice(0, 900), /entityId: r\.data\.id/);
+});
+
+test("a failed upload does not discard the created task", () => {
+  /* The task is already real; throwing it away would lose the work. The person
+     is told which files did not make it. */
+  const src = code(NEW_TASK);
+  assert.match(src, /setUploadFailures\(failed\)/);
+  assert.match(src, /did not upload/);
+});
+
+test("staging reuses the shared uploader rather than a second one", () => {
+  const src = code(NEW_TASK);
+  assert.match(src, /<FileUploader/);
+  assert.equal(/TaskUploader|CreateUploader/.test(src), false);
+});
+
+test("staged files are refused locally before the task is even created", () => {
+  /* So an oversized file is caught while it can still be swapped, not after a
+     task has been made for it. */
+  const src = code(COMPONENTS);
+  const fn = src.slice(src.indexOf("if (isStaging) {"));
+  assert.match(fn.slice(0, 900), /localRefusal\(file\)/);
+});
+
+/* ── Submissions ──────────────────────────────────────────────────────────── */
+
+const SUBMISSION = "components/features/tasks/SubmissionPanel.tsx";
+
+test("submission files are staged, then uploaded once the submission exists", () => {
+  /* Same ordering constraint as task creation: nothing to attach to until the
+     record is made. */
+  const src = code(SUBMISSION);
+  assert.match(src, /entityId=\{null\}/);
+  const handler = src.slice(src.indexOf("const r = await submit()"));
+  assert.ok(
+    handler.indexOf("submit()") < handler.indexOf("repo.uploadAttachment"),
+    "files upload before the submission exists",
+  );
+});
+
+test("each attempt's files hang off THAT submission, not the task", () => {
+  /* Pooling them on the task would merge every attempt into one list and lose
+     the trail rework depends on: "#1 had the old document, #2 the corrected". */
+  const src = code(SUBMISSION);
+  assert.match(src, /entityType: "submission",\s*\n?\s*entityId: target/);
+  assert.match(src, /repo\.listSubmissions\(taskId\)/);
+  assert.equal(
+    /entityType: "submission",\s*\n?\s*entityId: taskId/.test(src),
+    false,
+    "submission files are pooled on the task",
+  );
+});
+
+test("the submission id is read back, never assumed", () => {
+  /* The engine assigns it. */
+  const src = code(SUBMISSION);
+  assert.match(src, /const fresh = await repo\.listSubmissions\(taskId\)/);
+  assert.match(src, /fresh\[0\]\?\.id \?\? null/);
+});
+
+test("a failed upload does not retract the submission", () => {
+  /* The work is already with the reviewer; retracting it would be worse than a
+     missing file the person can still add. */
+  const src = code(SUBMISSION);
+  assert.match(src, /did not upload/);
+  assert.match(src, /setUploadFailures\(failed\)/);
+});
+
+test("submitting without files still works", () => {
+  /* The upload block is skipped entirely, so an empty submission takes no extra
+     round trip and cannot fail on attachments. */
+  const src = code(SUBMISSION);
+  assert.match(src, /if \(staged\.length > 0\)/);
+});
+
+test("the reviewer sees each attempt separately, oldest first", () => {
+  const src = code(FILES);
+  assert.match(src, /listSubmissions\(taskId\)/);
+  assert.match(src, /attempt \$\{i \+ 1\}/);
+  assert.match(src, /\.reverse\(\)/);
+});
+
+test("composite entity ids resolve to their task for the permission check", (t) => {
+  /* `T634#submission-2` must gate against T634. Without this the per-submission
+     id would 404 and every submitted file would be unreachable. */
+  const backend = "/Users/risheeray/Documents/cowork-old-backend/routes/task_routes/coworkAttachments.js";
+  let src: string;
+  try {
+    src = code(backend);
+  } catch {
+    return t.skip("backend not present");
+  }
+  const fn = src.slice(src.indexOf("function taskIdFor("));
+  assert.match(fn.slice(0, 800), /raw\.indexOf\("#"\)/);
+  assert.match(fn.slice(0, 800), /raw\.slice\(0, at\)/);
+});
+
+/* ── Why nothing is visible yet ───────────────────────────────────────────── */
+
+test("the assignee is granted access by the SERVER, not by the client", () => {
+  /* The permission question is settled in `mayViewTask`, which lists the
+     assignee first. No component filters attachments, so a "creator sees them,
+     assignee does not" split cannot originate in the UI. */
+  const backend =
+    "/Users/risheeray/Documents/cowork-old-backend/routes/task_routes/coworkAttachments.js";
+  let src: string;
+  try {
+    src = code(backend);
+  } catch {
+    return;
+  }
+  const fn = src.slice(src.indexOf("async function mayViewTask("));
+  assert.match(fn.slice(0, 1200), /task\.assigneeIds \|\| \[\]/);
+  /* And the same gate serves upload, download and list — one rule, so the three
+     cannot disagree about one person. */
+  assert.equal((src.match(/mayViewTask\(/g) ?? []).length, 5);
+});
+
+test("no component filters attachments by viewer", () => {
+  /* A client-side filter would be both a second permission model and a way for
+     the two to drift. The engine returns what the viewer may see; the UI shows
+     all of it. */
+  for (const path of [
+    COMPONENTS,
+    "components/features/tasks/TaskFiles.tsx",
+    "components/features/tasks/ReworkPanel.tsx",
+  ]) {
+    const src = code(path);
+    assert.equal(
+      /viewerId|uploadedBy ===|\.filter\(\(a\) => a\.uploadedBy/.test(src),
+      false,
+      `${path} filters attachments client-side`,
+    );
+  }
+});
+
+test("the files section is mounted for every viewer of a task", () => {
+  /* Not behind a role check, so an assignee opening a task runs the same fetch
+     a creator does. */
+  const detail = code("components/features/tasks/TaskDetail.tsx");
+  assert.match(detail, /<TaskFiles view=\{view\} \/>/);
+  const at = detail.indexOf("<TaskFiles");
+  const before = detail.slice(Math.max(0, at - 400), at);
+  assert.equal(
+    /isCreator|isManager|role ===|can\(/.test(before),
+    false,
+    "the files section is gated by role",
+  );
+});
+
+test("a failed list is reported, never flattened to an empty array", () => {
+  /* Reversed deliberately. This used to assert `r.ok ? r.data : []` — and that
+     flattening is exactly what made a storage outage look like a task with no
+     files, so the fault was chased through the UI for two rounds before anyone
+     read the collection. */
+  const repo = code("lib/repositories/legacy/index.ts");
+  const fn = repo.slice(repo.indexOf("async getAttachments("));
+  assert.equal(/return r\.ok \? r\.data : \[\]/.test(fn.slice(0, 900)), false);
+  assert.match(fn.slice(0, 900), /if \(!r\.ok\) \{/);
+});
+
+test("the UI shows the failure rather than rendering nothing", () => {
+  const src = code(COMPONENTS);
+  assert.match(src, /Unable to load files — \{error\}/);
+  /* And an empty section still means genuinely zero files. */
+  assert.match(src, /if \(files\.length === 0\) \{/);
+});

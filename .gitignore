@@ -1,0 +1,14 @@
+.env.local
+.env*
+!.env.example
+
+# Server-side identity store — accounts, sessions, password hashes.
+.data/
+
+# Editor and build artefacts
+.DS_Store
+*.tsbuildinfo
+
+node_modules/
+.next/
+out/

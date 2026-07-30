@@ -1,0 +1,6 @@
+{
+  "//": "Deploy config for the Cowork Firestore indexes. Without this file `firestore.indexes.json` is documentation that nothing reads — `firebase deploy --only firestore:indexes` needs this to know where the index definitions live. Rules are deliberately NOT declared here: they belong to the legacy project and are not managed from this repository.",
+  "firestore": {
+    "indexes": "firestore.indexes.json"
+  }
+}

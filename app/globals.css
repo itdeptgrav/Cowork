@@ -1,0 +1,808 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────
+   Cowork — "Chrome Under Frost"
+   Tokens are normative in DESIGN.md; this file is their build.
+
+   TWO THEMES, SEPARATELY TUNED. Dark mode is not an inversion:
+   the three materials keep their ORDER (field → frost → slab)
+   but each gets its own values, because a light deck inverted to
+   dark loses the slab's distinction as the measurement material.
+   Values that intentionally differ are noted inline.
+   ───────────────────────────────────────────────────────────── */
+
+@theme {
+  /* Non-colour tokens are shared across both themes. */
+  --font-sans: var(--font-geist-sans), system-ui, -apple-system, sans-serif;
+
+  --radius-slab: 28px;
+  --radius-panel: 22px;
+  --radius-inset: 14px;
+  /* The dashboard reference's cards sit a step tighter than a hero slab and a
+     step softer than an inset — a card radius, distinct from both. */
+  --radius-card: 18px;
+
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-deck: cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 1180px, expressed in rem ON PURPOSE. Tailwind emits breakpoint blocks in
+     the order it can sort them, and it cannot order a px value against the
+     built-in rem scale — declared as `1180px` this variant was emitted BEFORE
+     `sm`, so `sm:grid-cols-2 deck:grid-cols-4` resolved to two columns at
+     1470px. 73.75rem sorts between `lg` (64rem) and `xl` (80rem), which is
+     where it belongs. Found by reading the compiled stylesheet after the
+     rendered page disagreed with the markup. */
+  --breakpoint-deck: 73.75rem;
+
+  /* Colour tokens resolve to CSS variables so a single attribute on <html>
+     switches the whole system without Tailwind emitting two class trees. */
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+
+  --color-slab: var(--slab);
+  --color-slab-ink: var(--slab-ink);
+  --color-slab-ink-muted: var(--slab-ink-muted);
+  --color-slab-screen: var(--slab-screen);
+
+  --color-frost-bar: var(--frost-bar);
+  --color-frost-panel: var(--frost-panel);
+  --color-hairline: var(--hairline);
+  --color-hairline-slab: var(--hairline-slab);
+
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-control: var(--control);
+  --color-control-hover: var(--control-hover);
+  --color-control-active: var(--control-active);
+
+  --color-c1: var(--c1);
+  --color-c2: var(--c2);
+  --color-c3: var(--c3);
+  --color-c4: var(--c4);
+
+  /* The iridescent field — background only, never a component. These are
+     theme-independent: the field's own tokens (base, saturation, blob opacity)
+     do the dark-mode work, so the six hues stay constant and the field remains
+     recognisably the same material in both themes. */
+  --color-field-ivory: #f2e6d2;
+  --color-field-gold: #e6c79c;
+  --color-field-rose: #d9a4b0;
+  --color-field-mauve: #b39cc6;
+  --color-field-slate: #8b9fbc;
+  --color-field-deep: #474c59;
+
+  --color-state-risk: var(--state-risk);
+  --color-state-rework: var(--state-rework);
+  --color-state-extension: var(--state-extension);
+  --color-state-blocked: var(--state-blocked);
+  --color-state-overdue: var(--state-overdue);
+  --color-state-positive: var(--state-positive);
+
+  --shadow-deck-seat: var(--deck-seat);
+}
+
+/* ── LIGHT ──────────────────────────────────────────────────────
+   Optimised for daylight: controlled off-white rather than pure
+   white canvas, real separation between panels, and text set
+   against the FROSTED COMPOSITE (~#dcdcde) rather than the flat
+   token — anything lighter fails AA at 12px.                     */
+:root,
+:root[data-theme="light"] {
+  --ink: #0a0a0a;
+  /* DESIGN.md's documented values. A previous pass raised these to lift text
+     that sits directly on the field — the wrong fix: The Field Is Not A Text
+     Surface Rule records that the backdrop changes as the page scrolls, so no
+     token value can be certified there. The fix is geometry, and the offending
+     text has been moved onto a surface instead. */
+  --ink-muted: #565656;
+  --ink-faint: #5f5f5f;
+
+  --slab: #262626;
+  --slab-ink: #f5f5f5;
+  --slab-ink-muted: #949494;
+  --slab-screen: rgba(0, 0, 0, 0.34);
+
+  --frost-bar: rgba(248, 248, 250, 0.94);
+  --frost-panel: rgba(232, 232, 234, 0.8);
+  --hairline: rgba(10, 10, 10, 0.12);
+  --hairline-slab: rgba(255, 255, 255, 0.1);
+
+  /* Interaction surfaces. Light uses tinted BLACK so hover reads as
+     pressure into the deck. */
+  --surface-raised: rgba(255, 255, 255, 0.5);
+  --surface-sunken: rgba(10, 10, 10, 0.04);
+  --control: rgba(10, 10, 10, 0.06);
+  --control-hover: rgba(10, 10, 10, 0.1);
+  --control-active: rgba(10, 10, 10, 0.14);
+
+  --c1: #00b26b;
+  --c2: #c3d02e;
+  --c3: #c22a9e;
+  --c4: #8e8e8e;
+
+  /* State washes. None borrows a C1–C4 hue or a field hue, per
+     The Four Channels Rule. Text values are set for ≥4.5:1 against
+     their own wash on the frosted deck. */
+  --state-risk: #6f8296;
+  --state-risk-ink: #2f3d4a;
+  --state-rework: #b08a63;
+  --state-rework-ink: #5b3b1f;
+  --state-extension: #8079a3;
+  --state-extension-ink: #3d3757;
+  --state-blocked: #97706e;
+  --state-blocked-ink: #532f2d;
+  --state-overdue: #a35f5f;
+  --state-overdue-ink: #5a2626;
+  --state-positive: #5f8a72;
+  --state-positive-ink: #24422f;
+
+  /* ── The flow graph's environment ──────────────────────────────────────
+     The graph is the dashboard's signature, and it is two different materials
+     rather than one material with the lights turned down.
+
+     LIGHT is pearlescent glass, from `iridescentgraphlight`. A pale plate,
+     saturated but unlit strokes, and a soft tinted wash under the bundle where
+     the strands crowd — the colour of an oil sheen on glass, not a gradient
+     laid on for decoration. No bloom: glow in daylight reads as neon, which is
+     the one thing this must never be. */
+  --graph-ground: #f3f1f6;
+  --graph-ground-2: #eae7f0;
+  --graph-haze-warm: rgba(214, 176, 168, 0.34);
+  --graph-haze-cool: rgba(164, 172, 206, 0.3);
+  --graph-wash: rgba(146, 118, 186, 0.24);
+  --graph-grid: rgba(10, 10, 10, 0.07);
+  --graph-axis: rgba(10, 10, 10, 0.12);
+  --graph-glow: 0;
+  --graph-stroke-w: 2.1;
+  --graph-node: #ffffff;
+  --graph-node-ring: rgba(10, 10, 10, 0.22);
+  --graph-scrub: rgba(10, 10, 10, 0.26);
+  --graph-ink: #1b1b1f;
+  --graph-ink-muted: #5c5c66;
+  --graph-chip: rgba(255, 255, 255, 0.82);
+  --graph-chip-ink: #2a2a30;
+
+  /* Deepened field hues. Chromatic enough to separate every strand on a pale
+     plate, dark enough that none of them reads as a highlighter. */
+  --flow-created: #4560ad;
+  --flow-assigned: #7a45b0;
+  --flow-rework: #c03f76;
+  --flow-completed: #b08a2e;
+  --flow-approved: #c9821f;
+  --flow-cancelled: #b0415f;
+
+  --deck-seat: 0 8px 24px -10px rgba(10, 10, 10, 0.14);
+  --slab-seat: drop-shadow(0 16px 34px rgba(10, 10, 10, 0.26));
+
+  /* FULL PRESENCE, restored. The previous pass dimmed the field to buy
+     contrast headroom for text sitting on it. Nothing sits on it any more —
+     the deck is opaque and the field is seen in the negative space around it —
+     so the dimming has no justification left and the signature comes back. */
+  --field-base: #b9b9bd;
+  --field-saturation: 1.35;
+  --field-spec-light: 0.5;
+  --field-spec-dark: 0.42;
+  --field-vignette: rgba(24, 24, 28, 0.38);
+  --body-bg: #cfcfcf;
+
+  --row-hover: rgba(10, 10, 10, 0.04);
+  --row-live: rgba(10, 10, 10, 0.055);
+
+  color-scheme: light;
+}
+
+/* ── DARK ───────────────────────────────────────────────────────
+   Optimised for low light. The material ORDER is preserved but the
+   values are re-derived, not inverted:
+
+   · The field loses saturation and gains depth — a bright
+     iridescent field behind dark frost turns to mud.
+   · The deck is OPAQUE in both themes. Dark gets its depth from a
+     genuinely deep ground and a crisp lit edge, not from smoke —
+     the field is seen around the bands, never through them.
+   · The slab goes DARKER than the deck rather than lighter. It stays
+     the most present material because it is the deepest surface
+     with the brightest content and the most defined lit edge —
+     exactly the relationship light mode has, preserved rather than
+     mirrored.
+   · Interaction surfaces switch to tinted WHITE, because hover as
+     "pressure into the surface" reads inverted on a dark ground.
+   · Channel hues lift slightly in lightness at identical hue, so
+     C3 magenta does not sink into a near-black slab. Sanctioned by
+     the theme-specific-optimisation rule in DESIGN.md.            */
+:root[data-theme="dark"] {
+  /* DARK is cinematic, from `iridescentgraphdark`. Near-black, with a warm
+     haze bleeding in from the lower right and a cool one from the upper left,
+     so the plate has weather rather than a flat backdrop. Strokes are lit:
+     every strand carries a bloom, which is what makes the bundle read as light
+     passing through a prism instead of lines drawn on a chart. */
+  --graph-ground: #08080b;
+  --graph-ground-2: #101016;
+  --graph-haze-warm: rgba(150, 44, 58, 0.42);
+  --graph-haze-cool: rgba(64, 70, 150, 0.26);
+  --graph-wash: rgba(120, 96, 168, 0.16);
+  --graph-grid: rgba(255, 255, 255, 0.06);
+  --graph-axis: rgba(255, 255, 255, 0.09);
+  --graph-glow: 0.42;
+  --graph-stroke-w: 2.35;
+  --graph-node: #ffffff;
+  --graph-node-ring: rgba(255, 255, 255, 0.28);
+  --graph-scrub: rgba(255, 255, 255, 0.3);
+  --graph-ink: #f6f5f8;
+  --graph-ink-muted: #9a98a4;
+  --graph-chip: rgba(255, 255, 255, 0.1);
+  --graph-chip-ink: #f6f5f8;
+
+  /* Lit hues. Cool above the baseline, warm below, cream at the pinch — the
+     reference's own ordering, in Cowork's field palette. */
+  --flow-created: #6f8fe0;
+  --flow-assigned: #b98ce6;
+  --flow-rework: #e894b8;
+  --flow-completed: #f6ecd8;
+  --flow-approved: #f0c98f;
+  --flow-cancelled: #dd8390;
+
+  --ink: #f1f1f3;
+  --ink-muted: #a9a9b0;
+  --ink-faint: #9a9aa2;
+
+  --slab: #121215;
+  --slab-ink: #f7f7f8;
+  --slab-ink-muted: #9e9ea6;
+  /* The halftone screen lightens rather than darkens on a near-black
+     slab; a black screen over near-black is invisible. */
+  --slab-screen: rgba(255, 255, 255, 0.16);
+
+  --frost-bar: rgba(24, 24, 28, 0.92);
+  --frost-panel: rgba(32, 32, 37, 0.74);
+  --hairline: rgba(255, 255, 255, 0.11);
+  --hairline-slab: rgba(255, 255, 255, 0.09);
+
+  --surface-raised: rgba(255, 255, 255, 0.05);
+  --surface-sunken: rgba(0, 0, 0, 0.24);
+  --control: rgba(255, 255, 255, 0.08);
+  --control-hover: rgba(255, 255, 255, 0.13);
+  --control-active: rgba(255, 255, 255, 0.18);
+
+  --c1: #10c47c;
+  --c2: #cfdc3c;
+  --c3: #d94ab4;
+  --c4: #a2a2a9;
+
+  /* State washes lift for a dark ground; the INK values invert to
+     light so a tinted chip stays legible. */
+  --state-risk: #7c93aa;
+  --state-risk-ink: #cfe0ef;
+  --state-rework: #c79a6d;
+  --state-rework-ink: #f4e2ce;
+  --state-extension: #9a92c4;
+  --state-extension-ink: #e3dffa;
+  --state-blocked: #b58582;
+  --state-blocked-ink: #f7dedc;
+  --state-overdue: #c47575;
+  --state-overdue-ink: #fbdcdc;
+  --state-positive: #74a88a;
+  --state-positive-ink: #d8f0e2;
+
+  /* Shadows do almost nothing on a dark ground — depth comes from the
+     lit top edge and the blur instead. Kept shallow so panels do not
+     smear into one another. */
+  --deck-seat: 0 8px 24px -12px rgba(0, 0, 0, 0.7);
+  --slab-seat: drop-shadow(0 14px 30px rgba(0, 0, 0, 0.55));
+
+  --field-base: #17171b;
+  --field-saturation: 0.85;
+  --field-spec-light: 0.16;
+  --field-spec-dark: 0.5;
+  --field-vignette: rgba(0, 0, 0, 0.5);
+
+  --row-hover: rgba(255, 255, 255, 0.05);
+  --row-live: rgba(255, 255, 255, 0.07);
+  --body-bg: #0c0c0e;
+
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    background-color: var(--body-bg);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    letter-spacing: -0.008em;
+  }
+
+  /* Numbers in this product sit in columns and change in place. */
+  :where(output, [data-figure]) {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The outline follows each element's own radius; never restate one here or
+     focused pills and slabs get squared off. */
+  :focus-visible {
+    outline: 2px solid var(--color-ink);
+    outline-offset: 2px;
+  }
+
+  /* On the slab the deck ink outline would vanish, so focus flips to slab ink. */
+  .slab :focus-visible,
+  [data-on-slab] :focus-visible {
+    outline-color: var(--color-slab-ink);
+  }
+
+  ::selection {
+    background: var(--color-ink);
+    color: var(--body-bg);
+  }
+
+  /* Firefox has no backdrop-filter parity in every config; keep frost opaque
+     enough that text contrast never depends on the blur landing. */
+  @supports not (backdrop-filter: blur(1px)) {
+    .frost-bar {
+      background-color: color-mix(
+        in srgb,
+        var(--body-bg) 20%,
+        var(--frost-bar)
+      );
+    }
+    .frost-panel {
+      background-color: color-mix(
+        in srgb,
+        var(--body-bg) 30%,
+        var(--frost-panel)
+      );
+    }
+  }
+
+  /* Theme transition is restrained on purpose — a full-page cross-fade on
+     every switch is a distraction in a tool people sit in all day. Only the
+     surfaces move, and never during the initial paint. */
+  html.theme-ready * {
+    transition:
+      background-color 180ms var(--ease-deck),
+      border-color 180ms var(--ease-deck),
+      color 180ms var(--ease-deck);
+  }
+  html.theme-ready *:where(.field, .field-blob, .field-spec) {
+    transition: none;
+  }
+}
+
+@layer components {
+  /* ── The frosted deck ─────────────────────────────────────── */
+
+  .frost-bar {
+    background-color: var(--color-frost-bar);
+    backdrop-filter: blur(28px) saturate(1.6);
+    -webkit-backdrop-filter: blur(28px) saturate(1.6);
+    box-shadow:
+      var(--shadow-deck-seat),
+      inset 0 1px 0 var(--frost-lip, rgba(255, 255, 255, 0.6));
+  }
+
+  .frost-panel {
+    background-color: var(--color-frost-panel);
+    backdrop-filter: blur(24px) saturate(1.4);
+    -webkit-backdrop-filter: blur(24px) saturate(1.4);
+    box-shadow:
+      var(--shadow-deck-seat),
+      inset 0 1px 0 var(--frost-lip, rgba(255, 255, 255, 0.45));
+  }
+
+  /* The lit top edge is what separates stacked panels. On a dark ground a
+     45%-white lip is a glowing outline, so it drops to a hairline. */
+  :root[data-theme="dark"] {
+    --frost-lip: rgba(255, 255, 255, 0.08);
+  }
+
+  /* ── The stepped slab ─────────────────────────────────────────
+     Composed from a body plus a tab and a radial-gradient fillet,
+     never a clip-path, so the radii stay true at any size.       */
+
+  .slab-wrap {
+    filter: var(--slab-seat);
+    padding-top: var(--tab-rise, 72px);
+  }
+
+  .slab {
+    position: relative;
+    background-color: var(--color-slab);
+    border-radius: var(--slab-radius, 28px);
+    color: var(--color-slab-ink);
+    box-shadow: inset 0 1px 0 var(--slab-lip, rgba(255, 255, 255, 0.08));
+  }
+
+  /* The slab MATERIAL without the stepped silhouette.
+     `.slab` composes the step from two pseudo-elements, and the tab one is
+     `top: -72px; height: 102px` — so on a card that wants the material but not
+     the shape, 30px of it hangs INSIDE the box and paints an opaque band over
+     whatever is at the top. `overflow-hidden` clips the overhang and leaves
+     exactly that band, which is how it reached a heading and a video frame
+     without looking like a shape bug. Per The Earned Step Rule the step is
+     reserved for a card carrying an identity, so a media frame and a plain
+     measurement panel take this instead. */
+  .slab-flat::before,
+  .slab-flat::after {
+    display: none;
+  }
+
+  /* In dark mode the slab sits BELOW the deck in value, so it needs a
+     stronger lit edge and a faint ring to stay separate from the field. */
+  :root[data-theme="dark"] .slab {
+    --slab-lip: rgba(255, 255, 255, 0.14);
+    box-shadow:
+      inset 0 1px 0 var(--slab-lip),
+      0 0 0 1px rgba(255, 255, 255, 0.06);
+  }
+
+  .slab::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: calc(var(--tab-rise, 72px) * -1);
+    width: var(--step-at, 71%);
+    height: calc(var(--tab-rise, 72px) + var(--slab-radius, 28px) + 2px);
+    background-color: var(--color-slab);
+    border-radius: var(--slab-radius, 28px) var(--slab-radius, 28px) 0 0;
+    box-shadow: inset 0 1px 0 var(--slab-lip, rgba(255, 255, 255, 0.08));
+  }
+
+  .slab::after {
+    content: "";
+    position: absolute;
+    left: var(--step-at, 71%);
+    top: calc(var(--slab-radius, 28px) * -1);
+    width: var(--slab-radius, 28px);
+    height: var(--slab-radius, 28px);
+    background: radial-gradient(
+      circle at top right,
+      transparent var(--slab-radius, 28px),
+      var(--color-slab) calc(var(--slab-radius, 28px) + 0.5px)
+    );
+  }
+
+  .slab-content {
+    position: relative;
+    z-index: 1;
+  }
+
+  /* ── The iridescent field ─────────────────────────────────────
+     Six large soft hues drifting on independent cycles. In dark mode
+     saturation drops and the specular layer inverts its balance —
+     a bright field behind dark frost reads as mud, and frost over
+     mud has nothing to distort.                                   */
+
+  .field {
+    position: fixed;
+    inset: -20%;
+    z-index: -1;
+    background-color: var(--field-base);
+  }
+
+  .field-blob {
+    position: absolute;
+    border-radius: 50%;
+    filter: blur(46px) saturate(var(--field-saturation));
+    opacity: var(--field-blob-opacity, 1);
+    will-change: transform;
+    animation: field-drift var(--dur, 44s) var(--ease-deck) infinite alternate;
+    animation-delay: var(--delay, 0s);
+  }
+
+  :root[data-theme="dark"] .field-blob {
+    --field-blob-opacity: 0.42;
+  }
+
+  .field-spec {
+    position: absolute;
+    mix-blend-mode: overlay;
+    border-radius: 50%;
+    filter: blur(14px);
+    will-change: transform;
+    animation: field-drift var(--dur, 52s) var(--ease-deck) infinite alternate;
+    animation-delay: var(--delay, 0s);
+    background: repeating-linear-gradient(
+      var(--angle, 108deg),
+      rgba(255, 255, 255, var(--field-spec-light)) 0,
+      rgba(255, 255, 255, var(--field-spec-light)) 3%,
+      rgba(255, 255, 255, 0) 9%,
+      rgba(0, 0, 0, var(--field-spec-dark)) 16%,
+      rgba(0, 0, 0, 0) 24%
+    );
+  }
+
+  .field-vignette {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(
+      120% 90% at 50% 30%,
+      transparent 44%,
+      var(--field-vignette) 100%
+    );
+  }
+
+  @keyframes field-drift {
+    from {
+      transform: translate3d(0, 0, 0) scale(1);
+    }
+    to {
+      transform: translate3d(var(--dx, 6%), var(--dy, -5%), 0)
+        scale(var(--ds, 1.18));
+    }
+  }
+
+  /* ── The C1–C4 component band ───────────────────────────────── */
+
+  .band-fill {
+    background-image:
+      radial-gradient(
+        circle,
+        var(--color-slab-screen) 0.5px,
+        transparent 0.6px
+      ),
+      linear-gradient(
+        to bottom,
+        rgba(255, 255, 255, 0.14) 0%,
+        rgba(255, 255, 255, 0) 22%,
+        rgba(0, 0, 0, 0.16) 78%,
+        rgba(0, 0, 0, 0.3) 100%
+      );
+    background-size:
+      3px 3px,
+      100% 100%;
+    box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.34);
+  }
+
+  .band-grow {
+    animation: band-grow 900ms var(--ease-out-expo) both;
+    animation-delay: var(--delay, 0ms);
+  }
+
+  @keyframes band-grow {
+    from {
+      transform: scaleY(0);
+    }
+    to {
+      transform: scaleY(1);
+    }
+  }
+
+  .rise {
+    animation: rise 620ms var(--ease-out-expo) both;
+    animation-delay: var(--delay, 0ms);
+  }
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(14px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
+  /* Scroll rails: neighbours bleed off both edges deliberately. */
+  .rail {
+    scrollbar-width: none;
+  }
+  .rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  /* Dense scroll regions keep a visible thumb — hiding it in a data table
+     removes the only cue that content continues. */
+  .scroll-slim {
+    scrollbar-width: thin;
+    scrollbar-color: var(--control-active) transparent;
+  }
+  .scroll-slim::-webkit-scrollbar {
+    height: 8px;
+    width: 8px;
+  }
+  .scroll-slim::-webkit-scrollbar-thumb {
+    background: var(--control-active);
+    border-radius: 99px;
+  }
+  .scroll-slim::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* ── Skeletons ────────────────────────────────────────────────
+     Tuned per theme: a white shimmer on a light deck is invisible,
+     and a black shimmer on a dark deck is a hole.                 */
+  /* Text-line skeletons take the pill radius; block skeletons standing in for
+     a panel take the inset radius. Both are documented tokens — nothing in
+     Cowork is square-cornered and nothing invents a radius. */
+  .skeleton {
+    background: linear-gradient(
+      90deg,
+      var(--control) 25%,
+      var(--control-hover) 37%,
+      var(--control) 63%
+    );
+    background-size: 400% 100%;
+    animation: skeleton 1400ms ease-in-out infinite;
+    border-radius: 9999px;
+  }
+
+  .skeleton-block {
+    border-radius: var(--radius-inset);
+  }
+
+  @keyframes skeleton {
+    from {
+      background-position: 100% 50%;
+    }
+    to {
+      background-position: 0 50%;
+    }
+  }
+
+  /* ── Walkthrough spotlight ────────────────────────────────────────────
+     A ring that breathes rather than blinks. The deck has no other pulsing
+     element, so this is the one place attention is demanded — and it is
+     demanded only while a walkthrough is running. Under reduced motion the
+     ring stays, the movement stops: the target must remain obvious either
+     way, because the pulse is emphasis and the ring is the information. */
+  .help-spotlight {
+    animation: help-pulse 2s var(--ease-deck) infinite;
+  }
+
+  @keyframes help-pulse {
+    0%,
+    100% {
+      box-shadow:
+        0 0 0 2px var(--color-ink),
+        0 0 0 9999px color-mix(in srgb, var(--body-bg) 62%, transparent),
+        0 0 0 2px color-mix(in srgb, var(--color-ink) 0%, transparent);
+    }
+    50% {
+      box-shadow:
+        0 0 0 2px var(--color-ink),
+        0 0 0 9999px color-mix(in srgb, var(--body-bg) 62%, transparent),
+        0 0 0 10px color-mix(in srgb, var(--color-ink) 18%, transparent);
+    }
+  }
+
+  /* Hatched track for the timeline — "nothing tracked", encoded without
+     colour so it survives both themes and colour-vision differences. */
+  .hatch {
+    background-image: repeating-linear-gradient(
+      -45deg,
+      var(--control) 0,
+      var(--control) 1.5px,
+      transparent 1.5px,
+      transparent 6px
+    );
+  }
+}
+
+/* The floating music bar reserves no space, but the bottom of a page must not
+   sit permanently underneath it. `MusicStage` publishes its measured height
+   here while the bar is on screen, and zero otherwise. */
+#main {
+  padding-bottom: calc(
+    clamp(32px, 5vw, 64px) + var(--music-bar-clearance, 0px)
+  );
+}
+
+/* Content is visible by default; motion is the enhancement. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ── Low-end device mode ──────────────────────────────────────────────────────
+ *
+ * `<html data-perf="low">`, set by an inline script before first paint so a weak
+ * machine never renders one frosted frame and then drops it.
+ *
+ * **Why this lives in CSS rather than in the components.** A component that
+ * forgets to read the mode still loses its blur here. The React profile handles
+ * only what CSS cannot express — whether to MOUNT a chart, how often to redraw a
+ * timer — and everything expressible as a style is expressed once, here.
+ *
+ * The costs being removed, in the order they matter on integrated graphics:
+ *
+ *  1. `backdrop-filter`. Each element carrying one is promoted to its own layer,
+ *     reads back what is behind it and re-runs a wide blur kernel every frame
+ *     that content moves underneath. The top bar carries one permanently, at
+ *     28px, over a surface that is 94% opaque — the full cost to reveal almost
+ *     nothing.
+ *  2. Transitions and animation. Individually small, but there are ~180 of them
+ *     and `transition-colors` repaints rather than compositing.
+ *  3. Long shadows. Cheap alone, additive down a list of forty rows.
+ */
+:root[data-perf="low"] {
+  /* The frost colours are already near-opaque, so dropping the filter changes
+     the look far less than the cost suggests. Raised the last few percent so the
+     surface reads as deliberate rather than as a failed effect. */
+  --frost-bar: rgb(248, 248, 250);
+  --frost-panel: rgb(238, 238, 240);
+  --surface-raised: rgb(250, 250, 252);
+}
+
+:root[data-theme="dark"][data-perf="low"] {
+  --frost-bar: rgb(24, 24, 28);
+  --frost-panel: rgb(32, 32, 37);
+  --surface-raised: rgb(30, 30, 35);
+}
+
+:root[data-perf="low"] .frost-bar,
+:root[data-perf="low"] .frost-panel {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  /* The inset lip goes with the blur — it reads as a glass edge, and without the
+     glass it is just a bright line. The seat shadow stays: it is what separates
+     a panel from the page, and removing it would flatten the hierarchy rather
+     than lighten it. */
+  box-shadow: var(--shadow-deck-seat);
+}
+
+/* Every Tailwind `backdrop-blur-*` utility, in one place. Utilities are emitted
+   with a filter variable, so clearing it disables them all without having to
+   name each site. */
+:root[data-perf="low"] * {
+  --tw-backdrop-blur: ;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* Motion. Not `display: none` on anything — an element that animates in must
+   still arrive, it simply arrives at once. */
+:root[data-perf="low"] *,
+:root[data-perf="low"] *::before,
+:root[data-perf="low"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+  scroll-behavior: auto !important;
+}
+
+/* Decorative depth. Controls keep their focus ring — that is not decoration. */
+:root[data-perf="low"] .frost-panel,
+:root[data-perf="low"] [class*="shadow-"] {
+  box-shadow: none;
+}
+:root[data-perf="low"] :where(a, button, input, select, textarea):focus-visible {
+  box-shadow: var(--focus-ring, 0 0 0 2px currentColor);
+}
+
+/* The chrome field — the single largest cost in the app, and the one that runs
+ * AT REST. Six 46vw blobs at `filter: blur(46px)` plus four specular bands, each
+ * carrying `will-change: transform` (so ten permanent compositing layers, which
+ * on shared-memory graphics is real VRAM) and each animating `infinite
+ * alternate` — forever, whether or not anybody is interacting.
+ *
+ * Removed entirely rather than paused, and that is coherent rather than merely
+ * cheaper: the field exists so the frosted surfaces have something to look
+ * through — "glass over a flat backdrop is not glass, it is grey". With the blur
+ * gone there is no glass, so there is nothing for it to be behind. Low mode is
+ * flat on purpose, top to bottom.
+ *
+ * The component also skips rendering these nodes in low mode, so the layers are
+ * never created. This rule is the backstop for a stale DOM mid-switch. */
+:root[data-perf="low"] .field,
+:root[data-perf="low"] .field-blob,
+:root[data-perf="low"] .field-spec {
+  display: none;
+}
+
+/* ── High performance ─────────────────────────────────────────────────────────
+ * Nothing to add: it is the stylesheet as authored. Named here so the three
+ * modes are legible in one place rather than two being implicit.
+ */

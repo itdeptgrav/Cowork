@@ -1,0 +1,140 @@
+{
+  "employeeId": "GR0045",
+  "quarter": 3,
+  "year": 2026,
+  "dayInQuarter": 30,
+  "c1": {
+    "net": null,
+    "max": 40,
+    "qualityRate": null,
+    "taskCount": 0,
+    "tasks": [],
+    "sopPts": 0
+  },
+  "c2": {
+    "net": null,
+    "max": 59,
+    "ptsEarned": 0,
+    "ptsPastDeadline": 0,
+    "score": null,
+    "taskCount": 0,
+    "tasks": [],
+    "sopPts": 0
+  },
+  "c3": {
+    "net": 0,
+    "totalDeductions": 0,
+    "breachCount": 0,
+    "breaches": [],
+    "sopPts": 0
+  },
+  "c4": {
+    "net": 92.5,
+    "basePoints": 8,
+    "dayCount": 8,
+    "penalty": 0.6,
+    "finalPoints": 7.4,
+    "breachCount": 3,
+    "breaches": [
+      {
+        "sopName": "Late Arrival",
+        "points": 0.2,
+        "date": "2026-07-19",
+        "cutByName": "HR Manager"
+      },
+      {
+        "sopName": "Late Arrival",
+        "points": 0.2,
+        "date": "2026-07-04",
+        "cutByName": "HR Manager"
+      },
+      {
+        "sopName": "Late Arrival",
+        "points": 0.2,
+        "date": "2026-07-03",
+        "cutByName": "HR Manager"
+      }
+    ],
+    "sopPts": 4.4
+  },
+  "pace": {
+    "score": 92.5,
+    "rating": {
+      "label": "Strong",
+      "color": "#5BA3F5",
+      "bgColor": "#0d1f33",
+      "class": "strong"
+    },
+    "breakdown": [
+      {
+        "label": "C4%",
+        "value": 92.5
+      }
+    ],
+    "c3Net": 0,
+    "formula": "(C4%) / 1 − C3%"
+  },
+  "rawQuarterScore": 92.5,
+  "annual": {
+    "live": 46.25,
+    "projected": 46.25,
+    "rating": {
+      "label": "Critical",
+      "color": "#E24B4A",
+      "bgColor": "#2a0f0f",
+      "class": "critical"
+    },
+    "quarters": [
+      {
+        "quarter": 1,
+        "score": null,
+        "status": "closed",
+        "weight": 0.1,
+        "c1": null,
+        "c2": null,
+        "c3": 0,
+        "c4": null
+      },
+      {
+        "quarter": 2,
+        "score": null,
+        "status": "closed",
+        "weight": 0.2,
+        "c1": null,
+        "c2": null,
+        "c3": 0,
+        "c4": null
+      },
+      {
+        "quarter": 3,
+        "score": 92.5,
+        "projectedScore": 92.5,
+        "status": "live",
+        "weight": 0.3,
+        "dayInQuarter": 30,
+        "c1": null,
+        "c2": null,
+        "c3": 0,
+        "c4": 92.5
+      },
+      {
+        "quarter": 4,
+        "score": null,
+        "status": "future",
+        "weight": 0.4
+      }
+    ]
+  },
+  "gap": {
+    "gap": 3.75,
+    "nextRating": "Developing",
+    "nextThreshold": 50
+  },
+  "flags": [
+    {
+      "key": "ON-TRACK",
+      "label": "✓ On track",
+      "type": "ok"
+    }
+  ]
+}

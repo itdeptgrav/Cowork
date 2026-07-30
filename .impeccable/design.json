@@ -1,0 +1,441 @@
+{
+ "schemaVersion": 2,
+ "generatedAt": "2026-07-25T14:34:17.000Z",
+ "title": "Design System: Cowork",
+ "extensions": {
+  "colorMeta": {
+   "ink": {
+    "role": "primary",
+    "displayName": "Deck Ink",
+    "canonical": "oklch(14.5% 0 0)",
+    "tonalRamp": [
+     "#0a0a0a",
+     "#1d1d1d",
+     "#333333",
+     "#4d4d4d",
+     "#6b6b6b",
+     "#8f8f8f",
+     "#b8b8b8",
+     "#e6e6e6"
+    ]
+   },
+   "slab": {
+    "role": "primary",
+    "displayName": "Measurement Slab",
+    "canonical": "oklch(26.5% 0 0)",
+    "tonalRamp": [
+     "#141414",
+     "#1d1d1d",
+     "#262626",
+     "#2f2f2f",
+     "#3d3d3d",
+     "#575757",
+     "#8a8a8a",
+     "#cfcfcf"
+    ]
+   },
+   "c1-execution": {
+    "role": "secondary",
+    "displayName": "Execution Emerald",
+    "canonical": "oklch(66% 0.155 158)",
+    "tonalRamp": [
+     "#00301d",
+     "#004a2e",
+     "#006f42",
+     "#008d54",
+     "#00b26b",
+     "#2fcb8a",
+     "#7ee0b5",
+     "#c9f2df"
+    ]
+   },
+   "c2-goals": {
+    "role": "secondary",
+    "displayName": "Goal Lime",
+    "canonical": "oklch(81% 0.155 112)",
+    "tonalRamp": [
+     "#333a06",
+     "#4b540b",
+     "#6a7612",
+     "#8d9c1c",
+     "#c3d02e",
+     "#d3dd63",
+     "#e4ea9b",
+     "#f4f7d5"
+    ]
+   },
+   "c3-policy": {
+    "role": "secondary",
+    "displayName": "Policy Magenta",
+    "canonical": "oklch(52% 0.235 330)",
+    "tonalRamp": [
+     "#2f0726",
+     "#490b3a",
+     "#6c1155",
+     "#951d76",
+     "#c22a9e",
+     "#d55eb8",
+     "#e795d3",
+     "#f7d3ec"
+    ]
+   },
+   "c4-attendance": {
+    "role": "neutral",
+    "displayName": "Attendance Grey",
+    "canonical": "oklch(64% 0 0)",
+    "tonalRamp": [
+     "#1f1f1f",
+     "#333333",
+     "#4d4d4d",
+     "#6e6e6e",
+     "#8e8e8e",
+     "#b0b0b0",
+     "#d2d2d2",
+     "#f0f0f0"
+    ]
+   },
+   "ink-muted": {
+    "role": "neutral",
+    "displayName": "Muted Ink",
+    "canonical": "oklch(43% 0 0)",
+    "tonalRamp": [
+     "#141414",
+     "#242424",
+     "#383838",
+     "#474747",
+     "#565656",
+     "#7d7d7d",
+     "#a8a8a8",
+     "#d6d6d6"
+    ]
+   },
+   "ink-faint": {
+    "role": "neutral",
+    "displayName": "Faint Ink",
+    "canonical": "oklch(46% 0 0)",
+    "tonalRamp": [
+     "#171717",
+     "#272727",
+     "#3b3b3b",
+     "#4d4d4d",
+     "#5f5f5f",
+     "#858585",
+     "#aeaeae",
+     "#d9d9d9"
+    ]
+   },
+   "slab-screen": {
+    "role": "neutral",
+    "displayName": "Slab Screen",
+    "canonical": "rgba(0,0,0,0.34)",
+    "tonalRamp": [
+     "rgba(0,0,0,0.08)",
+     "rgba(0,0,0,0.14)",
+     "rgba(0,0,0,0.2)",
+     "rgba(0,0,0,0.27)",
+     "rgba(0,0,0,0.34)",
+     "rgba(0,0,0,0.44)",
+     "rgba(0,0,0,0.58)",
+     "rgba(0,0,0,0.76)"
+    ]
+   },
+   "frost-panel": {
+    "role": "neutral",
+    "displayName": "Frosted Deck",
+    "canonical": "rgba(232,232,234,0.80)",
+    "tonalRamp": [
+     "#6e6e6e",
+     "#8a8a8a",
+     "#a3a3a3",
+     "#bcbcbc",
+     "#d2d2d2",
+     "#dcdcde",
+     "#efeff0",
+     "#fafafa"
+    ]
+   },
+   "field-rose": {
+    "role": "tertiary",
+    "displayName": "Field Rose",
+    "canonical": "oklch(76% 0.075 5)",
+    "tonalRamp": [
+     "#3d1f24",
+     "#5c2f37",
+     "#80434e",
+     "#a86470",
+     "#d9a4b0",
+     "#e6c1c9",
+     "#f0dade",
+     "#faf1f3"
+    ]
+   },
+   "field-slate": {
+    "role": "tertiary",
+    "displayName": "Field Slate",
+    "canonical": "oklch(68% 0.055 255)",
+    "tonalRamp": [
+     "#1f2530",
+     "#2f3947",
+     "#425064",
+     "#5e7089",
+     "#8b9fbc",
+     "#adbcd1",
+     "#cdd7e3",
+     "#ecf1f6"
+    ]
+   }
+  },
+  "typographyMeta": {
+   "display": {
+    "displayName": "Display",
+    "purpose": "Greeting and the composite score figure. One per view."
+   },
+   "headline": {
+    "displayName": "Headline",
+    "purpose": "A person's name on a slab card."
+   },
+   "wordmark": {
+    "displayName": "Wordmark",
+    "purpose": "The lowercase 'cowork' logotype beside the mark, and nowhere else. Two points above Title so identity outranks navigation in the same pill."
+   },
+   "title": {
+    "displayName": "Title",
+    "purpose": "Navigation, panel headings, task names, control labels."
+   },
+   "figure": {
+    "displayName": "Figure",
+    "purpose": "Every number that is a value rather than prose. Always tabular."
+   },
+   "body": {
+    "displayName": "Body",
+    "purpose": "Prose and list content, capped at 68ch."
+   },
+   "caption": {
+    "displayName": "Caption",
+    "purpose": "Metadata, column headers, secondary stat units."
+   },
+   "label": {
+    "displayName": "Label",
+    "purpose": "The single tracked uppercase kicker in the greeting row. Nowhere else."
+   },
+   "figureLarge": {
+    "displayName": "Figure Large",
+    "purpose": "The headline number in a metric-strip cell, where four or six figures are compared across one row. A figure step, never a heading."
+   }
+  },
+  "shadows": [
+   {
+    "name": "deck-seat",
+    "value": "0 8px 24px -10px rgba(10,10,10,0.14)",
+    "purpose": "Seats the top bar and frosted panels."
+   },
+   {
+    "name": "slab-silhouette",
+    "value": "drop-shadow(0 16px 34px rgba(10,10,10,0.26))",
+    "purpose": "Applied to the wrapper of a stepped card, because a composed silhouette cannot cast a correct box-shadow."
+   },
+   {
+    "name": "slab-highlight",
+    "value": "inset 0 1px 0 rgba(255,255,255,0.08)",
+    "purpose": "Lit top edge, applied to BOTH the tab and the body so the highlight runs continuously across the stepped profile. Lighting only the tab leaves the lower edge dead and the step reads as a seam."
+   },
+   {
+    "name": "band-highlight",
+    "value": "inset 0 1.5px 0 rgba(255,255,255,0.34)",
+    "purpose": "Hard lit top edge on a channel fill, part of the screen-printed bar treatment."
+   },
+   {
+    "name": "panel-highlight",
+    "value": "inset 0 1px 0 rgba(255,255,255,0.45)",
+    "purpose": "Top-inner hairline on frosted panels."
+   },
+   {
+    "name": "bar-highlight",
+    "value": "inset 0 1px 0 rgba(255,255,255,0.6)",
+    "purpose": "Top-inner hairline on the floating navigation pill."
+   }
+  ],
+  "motion": [
+   {
+    "name": "ease-out-expo",
+    "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+    "purpose": "Default for entrances, bar growth, and lens transitions."
+   },
+   {
+    "name": "ease-deck",
+    "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+    "purpose": "Hover and small state changes on controls."
+   },
+   {
+    "name": "dur-control",
+    "value": "180ms",
+    "purpose": "Control hover and focus."
+   },
+   {
+    "name": "dur-card",
+    "value": "420ms",
+    "purpose": "Card focus/blur in a strip, lens content swap."
+   },
+   {
+    "name": "dur-bar",
+    "value": "900ms",
+    "purpose": "Component band growth on mount, staggered 70ms per channel."
+   },
+   {
+    "name": "dur-field",
+    "value": "44s",
+    "purpose": "One full drift cycle of the iridescent background field."
+   }
+  ],
+  "breakpoints": [
+   {
+    "name": "compact",
+    "value": "768px"
+   },
+   {
+    "name": "deck",
+    "value": "1180px"
+   },
+   {
+    "name": "wide",
+    "value": "1360px"
+   }
+  ]
+ },
+ "components": [
+  {
+   "name": "Top Bar",
+   "kind": "nav",
+   "refersTo": "topbar",
+   "description": "The floating frosted navigation pill. Never docks to the viewport top.",
+   "html": "<nav class=\"ds-topbar\"><span class=\"ds-mark\"></span><a class=\"ds-nav-link ds-nav-link--active\" href=\"#\">Home</a><a class=\"ds-nav-link\" href=\"#\">Tasks</a><a class=\"ds-nav-link\" href=\"#\">Goals</a></nav>",
+   "css": ".ds-topbar { display: flex; align-items: center; gap: 6px; height: 60px; padding: 0 20px; border-radius: 9999px; background: rgba(248,248,250,0.94); backdrop-filter: blur(28px) saturate(1.6); box-shadow: 0 8px 24px -10px rgba(10,10,10,0.14), inset 0 1px 0 rgba(255,255,255,0.6); } .ds-mark { width: 20px; height: 20px; margin-right: 14px; border-radius: 5px; background: #0a0a0a; } .ds-nav-link { font: 500 15px/1.3 Geist, system-ui, sans-serif; letter-spacing: -0.012em; color: #565656; text-decoration: none; padding: 8px 14px; border-radius: 9999px; transition: color 180ms cubic-bezier(0.4,0,0.2,1), background 180ms cubic-bezier(0.4,0,0.2,1); } .ds-nav-link:hover { color: #0a0a0a; background: rgba(10,10,10,0.04); } .ds-nav-link:focus-visible { outline: 2px solid #0a0a0a; outline-offset: 2px; } .ds-nav-link--active { color: #0a0a0a; background: rgba(10,10,10,0.06); }"
+  },
+  {
+   "name": "Lens Toggle",
+   "kind": "custom",
+   "refersTo": "lens-segment",
+   "description": "The Private / Team switch. The boundary between what an individual may see and what a manager may see.",
+   "html": "<div class=\"ds-lens\" role=\"radiogroup\" aria-label=\"Score lens\"><button class=\"ds-lens-seg ds-lens-seg--on\" role=\"radio\" aria-checked=\"true\">Private</button><button class=\"ds-lens-seg\" role=\"radio\" aria-checked=\"false\">Team</button></div>",
+   "css": ".ds-lens { display: inline-flex; padding: 3px; gap: 2px; border-radius: 9999px; background: rgba(10,10,10,0.05); } .ds-lens-seg { font: 500 15px/1.3 Geist, system-ui, sans-serif; letter-spacing: -0.012em; color: #565656; background: none; border: 0; padding: 7px 16px; border-radius: 9999px; cursor: pointer; transition: color 180ms cubic-bezier(0.4,0,0.2,1), background 180ms cubic-bezier(0.4,0,0.2,1); } .ds-lens-seg:hover { color: #0a0a0a; } .ds-lens-seg:focus-visible { outline: 2px solid #0a0a0a; outline-offset: 2px; } .ds-lens-seg--on { background: #0a0a0a; color: #ffffff; }"
+  },
+  {
+   "name": "Slab Card",
+   "kind": "card",
+   "refersTo": "slab-card",
+   "description": "The signature stepped silhouette. Reserved for cards about a person or a score; identity sits in the tab.",
+   "html": "<div class=\"ds-slab-wrap\"><div class=\"ds-slab\"><div class=\"ds-slab-body\"><div class=\"ds-slab-av\"></div><h3 class=\"ds-slab-name\">Maya Ferreira</h3><p class=\"ds-slab-role\">Product Designer</p></div></div></div>",
+   "css": ".ds-slab-wrap { filter: drop-shadow(0 16px 34px rgba(10,10,10,0.26)); padding-top: 72px; } .ds-slab { position: relative; background: #262626; border-radius: 28px; padding: 24px; color: #f5f5f5; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); } .ds-slab::before { content: ''; position: absolute; left: 0; top: -72px; width: 71%; height: 100px; background: #262626; border-radius: 28px 28px 0 0; box-shadow: inset 0 1px 0 rgba(255,255,255,0.08); } .ds-slab::after { content: ''; position: absolute; left: 71%; top: -28px; width: 28px; height: 28px; background: radial-gradient(circle at top right, transparent 28px, #262626 28.5px); } .ds-slab-body { position: relative; z-index: 1; margin-top: -60px; } .ds-slab-av { width: 56px; height: 56px; border-radius: 9999px; background: linear-gradient(150deg, #d9a4b0, #b39cc6); margin-bottom: 24px; } .ds-slab-name { font: 350 2rem/1.1 Geist, system-ui, sans-serif; letter-spacing: -0.03em; margin: 0; } .ds-slab-role { font: 400 14px/1.5 Geist, system-ui, sans-serif; color: #949494; margin: 2px 0 0; }"
+  },
+  {
+   "name": "Component Band",
+   "kind": "custom",
+   "refersTo": "slab-card",
+   "description": "The C1-C4 ribbon. Four adjacent channels on independent baselines; C3 hangs downward because it is deduction-only. Every channel carries a faint full-height track so a near-zero deduction reads as measured rather than missing.",
+   "html": "<div class=\"ds-band\"><div class=\"ds-chan\"><div class=\"ds-track\"><span class=\"ds-fill ds-fill--c1\" style=\"height:84%\"></span></div><span class=\"ds-lead\"></span><span class=\"ds-dot ds-dot--c1\"></span><span class=\"ds-chan-label\"><b>C1</b> · Task Execution</span><span class=\"ds-chan-val\">84%</span></div><div class=\"ds-chan\"><div class=\"ds-track\"><span class=\"ds-fill ds-fill--c3 ds-fill--hang\" style=\"height:6%\"></span></div><span class=\"ds-lead\"></span><span class=\"ds-dot ds-dot--c3\"></span><span class=\"ds-chan-label\"><b>C3</b> · Policy</span><span class=\"ds-chan-val\">−6%</span></div></div>",
+   "css": ".ds-band { display: flex; align-items: stretch; background: #262626; padding-top: 8px; } .ds-chan { flex: 1; display: flex; flex-direction: column; min-width: 0; } .ds-track { position: relative; height: 92px; background: rgba(255,255,255,0.045); } .ds-fill { position: absolute; left: 0; right: 0; bottom: 0; background-image: radial-gradient(circle, rgba(0,0,0,0.34) 0.5px, transparent 0.6px), linear-gradient(to bottom, rgba(255,255,255,0.14) 0%, rgba(255,255,255,0) 22%, rgba(0,0,0,0.16) 78%, rgba(0,0,0,0.3) 100%); background-size: 3px 3px, 100% 100%; box-shadow: inset 0 1.5px 0 rgba(255,255,255,0.34); } .ds-fill--hang { bottom: auto; top: 0; } .ds-fill--c1 { background-color: #00b26b; } .ds-fill--c3 { background-color: #c22a9e; } .ds-lead { display: block; width: 1px; height: 32px; background: rgba(255,255,255,0.16); } .ds-dot { display: block; width: 6px; height: 6px; border-radius: 9999px; margin: 0 0 10px -2.5px; } .ds-dot--c1 { background: #00b26b; } .ds-dot--c3 { background: #c22a9e; } .ds-chan-label { font: 400 12px/1.2 Geist, system-ui, sans-serif; color: #949494; } .ds-chan-label b { font-weight: 400; color: rgba(245,245,245,0.7); } .ds-chan-val { font: 400 22px/1 Geist, system-ui, sans-serif; letter-spacing: -0.025em; font-variant-numeric: tabular-nums; color: #f5f5f5; margin-top: 4px; }"
+  },
+  {
+   "name": "Frosted Panel",
+   "kind": "card",
+   "refersTo": "glass-panel",
+   "description": "Secondary information. No silhouette — the step is earned only by identity or measurement.",
+   "html": "<section class=\"ds-panel\"><h4 class=\"ds-panel-h\">Active tasks</h4><div class=\"ds-row\"><span>Q3 onboarding revamp</span><span class=\"ds-chip\">Rework</span></div><div class=\"ds-row\"><span>Pricing page copy</span><span class=\"ds-chip\">On track</span></div></section>",
+   "css": ".ds-panel { border-radius: 22px; padding: 20px 24px; background: rgba(232,232,234,0.80); backdrop-filter: blur(24px) saturate(1.4); box-shadow: 0 8px 24px -10px rgba(10,10,10,0.14), inset 0 1px 0 rgba(255,255,255,0.45); color: #0a0a0a; } .ds-panel-h { font: 500 15px/1.3 Geist, system-ui, sans-serif; letter-spacing: -0.012em; margin: 0 0 12px; } .ds-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 0; font: 400 14px/1.5 Geist, system-ui, sans-serif; border-top: 1px solid rgba(10,10,10,0.12); } .ds-chip { font: 400 12px/1.35 Geist, system-ui, sans-serif; padding: 5px 11px; border-radius: 9999px; background: rgba(176,138,99,0.28); color: #5b3b1f; white-space: nowrap; }"
+  },
+  {
+   "name": "Score Pill",
+   "kind": "chip",
+   "refersTo": "score-pill",
+   "description": "The ambient composite score. Persistent in the shell so the score is present while working, not a destination.",
+   "html": "<span class=\"ds-score\"><span class=\"ds-score-v\">82%</span><span class=\"ds-score-t\">+2</span></span>",
+   "css": ".ds-score { display: inline-flex; align-items: baseline; gap: 6px; padding: 6px 12px; border-radius: 9999px; background: rgba(10,10,10,0.06); } .ds-score-v { font: 400 15px/1 Geist, system-ui, sans-serif; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: #0a0a0a; } .ds-score-t { font: 400 12px/1 Geist, system-ui, sans-serif; font-variant-numeric: tabular-nums; color: #5c5c5c; }"
+  }
+ ],
+ "narrative": {
+  "northStar": "Chrome Under Frost",
+  "overview": "Cowork is a frosted instrument deck suspended over a slow-moving iridescent form. Three materials, always in this order: a living chrome field at the back that drifts and never repeats; a frosted glass deck in the middle that holds navigation and secondary panels; and matte dark slabs on top that carry measurement. Depth is honest — you are always looking through something at something else, and the chrome you glimpse through the frost is the only part of the interface that moves on its own.\n\nThe register is instrument, not dashboard. People live here for eight hours, so the deck is quiet, the density is real, and expression is spent on material and silhouette rather than on color-coding every surface. Measurement earns the darkest, most present material in the system because measurement is what this product is for.\n\nThe one liberty this system takes is silhouette. Every slab is cut with a stepped tab along its top edge — the shape the whole identity hangs on, down to the logo. It is the only ornament, and it is load-bearing: the tab is where identity sits, which is why the step exists at all.",
+  "keyCharacteristics": [
+   "Three stacked materials: chrome field → frosted deck → matte dark slab. Never reorder them.",
+   "One stepped silhouette, used at every scale from logo to hero card.",
+   "Neutral everywhere; saturated color reserved exclusively for the four score components.",
+   "The background is the only thing that moves at rest.",
+   "Tabular figures throughout. Numbers are the content."
+  ],
+  "rules": [
+   {
+    "name": "The Four Channels Rule",
+    "body": "Saturated color in Cowork means \"this is a score component.\" Four hues, four components, no exceptions. A status, a priority, a chart series, or a brand accent may never borrow C1–C4's hues, because the moment a second meaning attaches to Execution Emerald the component band stops being readable.",
+    "section": "colors"
+   },
+   {
+    "name": "The No Weighting Rule",
+    "body": "The four components render as four independent channels with independent baselines. Never stack them, never draw them as slices of one total, never size them relative to one another. Their weights are an undecided product fact, and any composition that implies a split is asserting something Cowork has not decided.",
+    "section": "colors"
+   },
+   {
+    "name": "The Deduction Hangs Rule",
+    "body": "C3 is deduction-only. It renders filling downward from the top of the band while C1, C2, and C4 fill upward from the baseline. Direction carries the semantics, so a large deduction can never be misread as a strong result.",
+    "section": "colors"
+   },
+   {
+    "name": "The One Kicker Rule",
+    "body": "Uppercase tracked type appears exactly once per view, in the greeting row, naming the current lens. It is a wayfinding device, not a section grammar. A second tracked eyebrow anywhere on the page is a defect.",
+    "section": "typography"
+   },
+   {
+    "name": "The Tabular Rule",
+    "body": "Every figure carries font-variant-numeric: tabular-nums. Numbers in this product sit in columns and change in place; proportional digits make them jitter.",
+    "section": "typography"
+   },
+   {
+    "name": "The Look-Through Rule",
+    "body": "Every frosted surface must have something visibly moving behind it. If a panel's backdrop is flat, it is not glass — it is grey, and it should be a slab or nothing. Glass in Cowork is a structural claim about depth, not a finish.",
+    "section": "elevation"
+   },
+   {
+    "name": "The Field Needs Edges Rule",
+    "body": "The chrome field is built from hue blobs plus a specular layer of hard highlight and shadow bands (repeating-linear-gradient, overlay blend, lightly blurred). Blur stays at ~46px; past roughly 60px the six hues average into one achromatic haze, and frost over a haze has nothing to distort — which makes the deck read grey and fails The Look-Through Rule. The field is the one place in Cowork where contrast is the point.",
+    "section": "elevation"
+   },
+   {
+    "name": "The Full Pairing Rule",
+    "body": "A channel always shows its code AND its label — 'C1 · Task Execution', never 'C1' alone and never 'Task Execution' alone. This is a product constraint, not a style preference: the codes are existing organisational vocabulary and PRODUCT.md pins the pairing. Where a column is too narrow for one line, the label wraps to a second line; it is never dropped.",
+    "section": "components"
+   },
+   {
+    "name": "The Earned Step Rule",
+    "body": "The stepped silhouette is reserved for cards about a person or a score. A task list, a goal list, and a settings group are frosted rectangles. If everything steps, the step means nothing and the deck reads as novelty.",
+    "section": "shapes"
+   },
+   {
+    "name": "The Comparison Reads Flat Rule",
+    "body": "In any view whose job is comparing people, every card renders at full strength. The reference this system is drawn from dims a carousel's neighbours, which is right for browsing and wrong here: greying four of five scores would make a manager's actual task harder to serve the look. The rail's silhouette and edge bleed carry the character instead.",
+    "section": "components"
+   }
+  ],
+  "dos": [
+   "Do stack the three materials in order — chrome field, frosted deck, dark slab — and make sure something is visibly moving behind every frosted surface.",
+   "Do measure contrast against the rendered composite, never the flat token. The frosted panel is translucent, so its effective background is the blend of its own value with the field behind it; values derived from the swatch fell to 2.5–4.1:1 in the render.",
+   "Do run the lit top edge across both the tab and the body of a stepped slab, so the highlight is continuous and the step is not read as a seam.",
+   "Do reserve the stepped silhouette for cards about a person or a score, and put identity in the tab. The step must be paying for something.",
+   "Do keep saturated color to the four score channels, and give C3 the hanging-downward treatment so a deduction can never read as an achievement.",
+   "Do render the four components as independent channels with independent baselines.",
+   "Do set font-variant-numeric: tabular-nums on every figure.",
+   "Do use one tracked uppercase kicker per view, in the greeting row, and separate everything else with hairlines and space.",
+   "Do give the background field one slow orchestrated drift and let it be the only thing moving at rest."
+  ],
+  "donts": [
+   "Don't stack, total, or proportionally size C1–C4 against each other. Their weights are an undecided product fact.",
+   "Don't let a status, priority, or chart series borrow a C1–C4 hue, or a field hue. The single sanctioned exception is monogram avatars, which tint from lightened field values.",
+   "Don't drop a channel's label to make it fit, and don't apply an opacity fraction to Slab Muted Ink — both are failures dressed as space-saving.",
+   "Don't dim cards in a view whose job is comparing people.",
+   "Don't apply the stepped silhouette to a task list, a goal list, or a settings group, and don't nest a card inside a card.",
+   "Don't build the step with a fixed clip-path or a distorting objectBoundingBox SVG clip — the corner radii must stay true at every size.",
+   "Don't ship a zero-offset colored halo as a shadow, or a frosted panel over a flat backdrop.",
+   "Don't introduce a second type family, a serif, or monospace. Geist does every job; mono is not a costume for \"technical\" here.",
+   "Don't underline navigation or use a colored left border on rows, cards, or callouts.",
+   "Don't frame any part of this product as AI-driven — that is a binding product constraint, and it extends to labels, empty states, and microcopy."
+  ]
+ }
+}
