@@ -135,12 +135,26 @@ export interface ExtensionState {
  * manager has answered and the assignee has not. `accepted` is the terminal
  * agreement, and `rejected` the terminal refusal.
  */
-function budgetIsLive(record: TimeBudgetExtensionRecord): boolean {
+export function budgetIsLive(record: TimeBudgetExtensionRecord): boolean {
   return (
     record.status === "pending" ||
     record.status === "approved" ||
     record.status === "counter_proposed"
   );
+}
+
+/**
+ * Is there already an extension in flight on this task?
+ *
+ * Used to refuse a SECOND request while the first is unanswered — an assignee
+ * asking for three hours, then four, then five stacks records the manager must
+ * each dispose of, and only the last figure means anything. One live record at
+ * a time: wait for the answer, or respond to the counter, before asking again.
+ */
+export function hasLiveBudgetExtension(
+  records: TimeBudgetExtensionRecord[],
+): boolean {
+  return records.some(budgetIsLive);
 }
 
 /**

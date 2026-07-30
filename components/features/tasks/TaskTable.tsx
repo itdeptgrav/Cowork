@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { formatRankDisplay, rankFor } from "@/lib/rules/tasks/priorityDisplay";
+import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
 import { useMemo, useState } from "react";
@@ -133,6 +134,31 @@ export function TaskTable({
   const rankNum = (v: TaskView, subjectId: string): number => {
     const a = v.assignments.find((x) => x.employeeId === subjectId);
     return a?.queuePosition ?? a?.rank ?? 999;
+  };
+
+  /* Whether THIS person's queue actually contains the task — the same rule the
+     deadline chain uses (`isActiveWorkload`): the budget must be settled AND
+     they must have accepted it. A task that fails this still carries a stored
+     rank, but that rank drives nothing — it is not in the chain, so reordering
+     it would move a P-tag and no deadline. So it must not be draggable or
+     numbered as if it were. This is the fix for "the priority changes but the
+     time does not": you can no longer reorder something that has no queue slot. */
+  const inActiveQueue = (v: TaskView, subjectId: string): boolean =>
+    isActiveRow(v) &&
+    isBudgetSettled(v.budgetNegotiation?.state ?? null) &&
+    (v.assignments.find((a) => a.employeeId === subjectId)?.confirmedAt ?? null) !==
+      null;
+
+  /* Why a still-open task is out of the queue, for the reader. Null when it is
+     in the queue, or when it is closed (which already reads as "was P3"). */
+  const queueHoldReason = (v: TaskView, subjectId: string): string | null => {
+    if (!isActiveRow(v)) return null;
+    if (!isBudgetSettled(v.budgetNegotiation?.state ?? null))
+      return "Not in the queue yet — the time budget isn't settled. Priority takes effect once it's agreed.";
+    const a = v.assignments.find((x) => x.employeeId === subjectId);
+    if ((a?.confirmedAt ?? null) === null)
+      return "Not in the queue yet — not accepted yet. Priority takes effect once it's accepted.";
+    return null;
   };
 
   async function commitReorder(assigneeId: string, activeIds: string[]) {
@@ -529,19 +555,26 @@ export function TaskTable({
                   isAssigneeGroup && g.items.some(mayReorderOn);
                 const items = isAssigneeGroup
                   ? [...g.items].sort((a, b) => {
-                      const aa = isActiveRow(a);
-                      const ba = isActiveRow(b);
+                      /* In-queue work first, then everything held out of it
+                         (budget pending, not accepted, closed) — so the numbered
+                         queue is contiguous at the top. */
+                      const aa = inActiveQueue(a, groupAssigneeId!);
+                      const ba = inActiveQueue(b, groupAssigneeId!);
                       if (aa !== ba) return aa ? -1 : 1;
                       return (
                         rankNum(a, groupAssigneeId!) - rankNum(b, groupAssigneeId!)
                       );
                     })
                   : g.items;
-                /* The derived queue: active tasks in rank order, numbered by
-                   index — unique and gap-free by construction, the same thing the
-                   queue owner sees. */
+                /* The derived queue: tasks actually in the active queue, in rank
+                   order, numbered by index — unique and gap-free by construction,
+                   the same thing the queue owner sees. A task whose budget is not
+                   settled or which is unaccepted is NOT here, so it holds no
+                   position and cannot be dragged. */
                 const activeIds = isAssigneeGroup
-                  ? items.filter(isActiveRow).map((v) => v.task.id)
+                  ? items
+                      .filter((v) => inActiveQueue(v, groupAssigneeId!))
+                      .map((v) => v.task.id)
                   : [];
                 return (
                   <div key={g.key} className={g.label ? "mt-8 first:mt-0" : ""}>
@@ -584,14 +617,22 @@ export function TaskTable({
                     {!isCollapsed && (
                       <div className="divide-y divide-hairline">
                         {items.map((v) => {
-                          const rowDraggable = canDrag && isActiveRow(v);
+                          const rowInQueue =
+                            isAssigneeGroup &&
+                            inActiveQueue(v, groupAssigneeId!);
+                          const rowDraggable = canDrag && rowInQueue;
                           /* The gap-free position: 1-based index in the active
-                             queue. Null for a closed task (it keeps its "was P5")
-                             and outside assignee grouping (no single queue). */
-                          const derivedPos =
-                            isAssigneeGroup && isActiveRow(v)
-                              ? activeIds.indexOf(v.task.id) + 1
-                              : null;
+                             queue. Null for a closed task (it keeps its "was P5"),
+                             for a task held out of the queue (budget pending /
+                             unaccepted), and outside assignee grouping. */
+                          const derivedPos = rowInQueue
+                            ? activeIds.indexOf(v.task.id) + 1
+                            : null;
+                          /* Why an OPEN task shows no live position — so the
+                             reader is told, not left to guess. */
+                          const holdReason = isAssigneeGroup
+                            ? queueHoldReason(v, groupAssigneeId!)
+                            : null;
                           return (
                             <Row
                               key={v.task.id}
@@ -633,8 +674,11 @@ export function TaskTable({
                               conflicted={
                                 v.myRank !== null && conflictRanks.has(v.myRank)
                               }
+                              notInQueueReason={holdReason}
                               onPriority={
-                                mayReorderOn(v) ? () => setPriorityFor(v) : null
+                                mayReorderOn(v) && !holdReason
+                                  ? () => setPriorityFor(v)
+                                  : null
                               }
                               hideProject={Boolean(projectId)}
                               onUnlink={
@@ -714,6 +758,7 @@ function Row({
   onUnlink,
   rankSubjectId,
   displayRank = null,
+  notInQueueReason = null,
   draggable = false,
   isDragging = false,
   isDropTarget = false,
@@ -736,6 +781,11 @@ function Row({
   /** The gap-free derived position to show instead of the stored rank. Set in an
       assignee group so a completed task's hole never reads as a missing P3. */
   displayRank?: number | null;
+  /** When set, this OPEN task is held out of the person's active queue (budget
+      not settled, or unaccepted). The priority cell shows "—" with this text as
+      its reason, and the row is neither numbered nor draggable — reordering it
+      would move a rank that drives no deadline. */
+  notInQueueReason?: string | null;
   draggable?: boolean;
   isDragging?: boolean;
   isDropTarget?: boolean;
@@ -817,7 +867,16 @@ function Row({
           still needs and announced it as disabled to a screen reader. Not
           interactive is a span, not a disabled button — the same treatment the
           task detail already gives it. */}
-      {onPriority ? (
+      {notInQueueReason ? (
+        /* Held out of the queue: no live position, no reorder. The em-dash says
+           "no rank here"; the tooltip says why. */
+        <span
+          title={notInQueueReason}
+          className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
+        >
+          <span data-figure>—</span>
+        </span>
+      ) : onPriority ? (
         <button
           type="button"
           onClick={onPriority}

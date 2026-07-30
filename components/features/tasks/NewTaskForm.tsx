@@ -32,8 +32,9 @@ import type { TaskType } from "@/lib/domain";
  *
  * Grouped and progressively disclosed rather than one flat form: the type
  * chosen first determines which groups are relevant, so a standard task never
- * shows recurrence fields and a self-assigned one asks for an approver instead
- * of an assignor. The brief is explicit that every field in one unstructured
+ * shows recurrence fields. A self task is a standard task in every respect —
+ * same fields, same review route — with one difference: you are already in the
+ * assignee list. The brief is explicit that every field in one unstructured
  * form is the wrong shape.
  */
 
@@ -52,7 +53,7 @@ const TYPES: {
   {
     id: "self_assigned",
     label: "Self-assigned",
-    body: "You take it on; an approver signs off.",
+    body: "A standard task, with you already assigned.",
     icon: "user",
   },
   {
@@ -107,7 +108,6 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
   const [requirements, setRequirements] = useState<string[]>([]);
   const [reqDraft, setReqDraft] = useState("");
   const [assignees, setAssignees] = useState<string[]>([]);
-  const [approverId, setApproverId] = useState("");
   const [projectId, setProjectId] = useState(presetProjectId ?? "");
   const [parentTaskId, setParentTaskId] = useState("");
   const [goalId, setGoalId] = useState("");
@@ -127,25 +127,33 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
   const [budgetSecs, setBudgetSecs] = useState(4 * 3600);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  /* Everyone, for the approver picker — approving is a different capability
-     from creating, so the assignee scope is the wrong list to offer there. */
+  /* Everyone — used to resolve display names, and to add the viewer back to the
+     assignable list for a self task (the scoped list below excludes them). */
   const people = useQuery((r) => r.listEmployees(), []);
   /* The people this viewer may actually create work for. Scoped by the
      repository against the same rule `createTask` refuses on, so what is
      offered and what is accepted cannot disagree. */
   const assignable = useQuery((r) => r.listAssignableEmployees(), []);
-  const assignablePeople = assignable.data ?? [];
+  /* A self task is a standard task you assign to yourself. The scoped list
+     deliberately excludes the viewer (you assign work to OTHERS on a standard
+     task), so for the self case put the viewer back — they are the one valid,
+     pre-selected assignee, and without this they would read as "forbidden". */
+  const viewerEmployee = (people.data ?? []).find((p) => p.id === me) ?? null;
+  const assignablePeople =
+    type === "self_assigned" && viewerEmployee
+      ? [viewerEmployee, ...(assignable.data ?? []).filter((p) => p.id !== me)]
+      : (assignable.data ?? []);
   const assignableIds = new Set(assignablePeople.map((p) => p.id));
 
   /* A selection that is no longer permitted — the profile switcher changed
      identity, or an administrator narrowed a role, while this form was open.
      Submission is blocked before the request rather than after it, because
      being refused by the server is how the reader found out last time. */
-  /* A self-assigned task is assigned to whoever is raising it, and the picker
-     deliberately does not list the viewer — so it needs no selection. Every
-     other type needs at least one person, which is legacy's rule
-     (`CreateTaskModal.jsx:681`) stated before submitting rather than after. */
-  const needsAssignee = type !== "self_assigned" && assignees.length === 0;
+  /* Every task needs at least one person — a self task included, where the
+     viewer is pre-selected, so the rule is satisfied without them doing
+     anything. Legacy's rule (`CreateTaskModal.jsx:681`), stated before
+     submitting rather than after. */
+  const needsAssignee = assignees.length === 0;
 
   const forbiddenAssignees = assignees.filter((id) => !assignableIds.has(id));
   const hasForbidden =
@@ -210,7 +218,13 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
     [],
   );
 
-  const multiAllowed = allowsMultipleAssignees(type);
+  /* A self task IS a standard task — the only difference is that you are already
+     in the assignee list. So everything that branches on the type treats
+     "self_assigned" as "standard", and the record is created as one. The button
+     stays as a convenience: pick it and you are pre-selected, nothing more. */
+  const submitType: TaskType = type === "self_assigned" ? "standard" : type;
+
+  const multiAllowed = allowsMultipleAssignees(submitType);
   /* Changing the type to one that holds a single person must not leave a stale
      multi-selection behind — the submit would be refused with a selection the
      reader can still see on screen. Derived rather than stored, so there is no
@@ -222,7 +236,7 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
       title,
       description: description || null,
       requirements,
-      type,
+      type: submitType,
       assigneeIds: effectiveAssignees,
       /* Not sent. The owning department is the creator's, and `createTask`
          reads that off the acting employee — passing a value from here would
@@ -231,7 +245,9 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
       projectId: projectId || null,
       parentTaskId: parentTaskId || null,
       goalId: goalId || null,
-      approverId: type === "self_assigned" ? approverId || null : null,
+      /* No self-approver. A self task follows the standard review route — the
+         assignee's manager on file — like every other standard task. */
+      approverId: null,
       deadlineMode: mode,
       fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
       senderWindowSecs: mode === "timer" ? budgetSecs : null,
@@ -270,7 +286,16 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
                   <button
                     key={t.id}
                     type="button"
-                    onClick={() => setType(t.id)}
+                    onClick={() => {
+                      setType(t.id);
+                      /* A self task pre-selects you; leaving it drops you again,
+                         because the standard picker excludes the viewer and a
+                         stale self-selection would read as "forbidden". */
+                      setAssignees((cur) => {
+                        if (t.id === "self_assigned") return me ? [me] : cur;
+                        return me ? cur.filter((id) => id !== me) : cur;
+                      });
+                    }}
                     aria-pressed={on}
                     className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
                       on
@@ -380,19 +405,17 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
           <Panel>
             <h2 className="text-sm font-medium text-ink">People</h2>
             <Field
-              label={
-                type === "self_assigned"
-                  ? "You are the assignee"
-                  : "Assignees"
-              }
-              required={type !== "self_assigned"}
+              label="Assignees"
+              required
               className="mt-3"
               hint={
-                multiAllowed
-                  ? isMulti
-                    ? undefined
-                    : "Choose one or more."
-                  : "One person is responsible for this task."
+                type === "self_assigned"
+                  ? "You are pre-selected. Pick someone else to hand it over instead."
+                  : multiAllowed
+                    ? isMulti
+                      ? undefined
+                      : "Choose one or more."
+                    : "One person is responsible for this task."
               }
               error={state.errorField === "assigneeIds" ? state.error : null}
             >
@@ -535,30 +558,6 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
               </p>
             )}
 
-            {type === "self_assigned" && (
-              <Field
-                label="Approver"
-                required
-                className="mt-3"
-                hint="They sign off before work starts."
-              >
-                <Select
-                  value={approverId}
-                  onChange={(e) => setApproverId(e.target.value)}
-                >
-                  <option value="">
-                    {optionLabel(people, "Choose an approver")}
-                  </option>
-                  {(people.data ?? [])
-                    .filter((p) => p.id !== me)
-                    .map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {p.displayName}
-                      </option>
-                    ))}
-                </Select>
-              </Field>
-            )}
           </Panel>
 
           {/* 4 — deadline.
@@ -797,7 +796,7 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
             <ul className="mt-3 space-y-2.5 text-sm text-ink-muted">
               <Consequence>
                 {type === "self_assigned"
-                  ? "The task waits for your approver before you can start."
+                  ? "It lands at the bottom of your own priority list, like any other task."
                   : "Each assignee receives it at the bottom of their priority list."}
               </Consequence>
               {relationshipKnown && (

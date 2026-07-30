@@ -176,6 +176,7 @@ import {
 } from "../../rules/settings/access.ts";
 import {
   agreedOrRequestedSecs,
+  hasLiveBudgetExtension,
   transitionRefusal,
 } from "../../rules/tasks/extensionAuthority.ts";
 import { acceptanceRefusal } from "../../rules/tasks/assignmentAcceptance.ts";
@@ -2200,6 +2201,24 @@ export class LegacyRepository {
       } as ActionResult<TimeBudgetExtensionRecord>;
     }
     const legacy = readTask({ ...snap.data(), id: taskId });
+
+    /* **One extension in flight at a time.** Without this an assignee could ask
+       for three hours, then four, then five before the manager answered any of
+       them — each a record the manager must separately dispose of, only the last
+       figure meaning anything. Refused HERE and not only on screen, because the
+       request is a browser write: the rule cannot live on the form alone. The
+       loop reopens the moment the manager answers (the record leaves `pending` /
+       `counter_proposed` / `approved`), which is where the next ask belongs. */
+    const existing = await this.listTimeBudgetExtensions(taskId);
+    if (hasLiveBudgetExtension(existing)) {
+      return {
+        ok: false,
+        code: "invalid_state",
+        message:
+          "You already have an extension request in progress. Wait for your manager to answer it — or respond to their offer — before asking for a different amount.",
+      } as ActionResult<TimeBudgetExtensionRecord>;
+    }
+
     /* The window being extended, from the one budget resolver. */
     const previousBudgetSecs = legacy ? resolveTimeBudget(legacy) : 0;
 

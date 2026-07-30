@@ -17,6 +17,7 @@ import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { BudgetNegotiationCard } from "./BudgetNegotiationCard";
 import { BudgetConfirmationCard } from "./BudgetConfirmationCard";
 import { extensionFromAddition, extensionOf } from "@/lib/rules/tasks/deadlineExtension";
+import { hasLiveBudgetExtension } from "@/lib/rules/tasks/extensionAuthority";
 import {
   deriveDueAt,
   describeWindow,
@@ -696,6 +697,18 @@ function ExtensionForm({
   const [addedSecs, setAddedSecs] = useState(2 * 3600);
   const [reason, setReason] = useState("");
 
+  /* One extension in flight at a time. While a request is unanswered — waiting
+     on the manager, or offered back for the assignee to accept — the form is
+     replaced by a note rather than letting a second, third, fourth figure stack
+     up. The repository refuses it too; this is so the reader is told why. */
+  const inflight = useQuery(
+    (r) => r.listTimeBudgetExtensions(view.task.id),
+    [view.task.id],
+  );
+  const extensionInFlight = inflight.data
+    ? hasLiveBudgetExtension(inflight.data)
+    : false;
+
   /* The window being extended, from the one budget resolver. The request
      carries it so the record can store previous + added = total at the moment
      it is made — approving overwrites the window, and an amount derived
@@ -732,6 +745,19 @@ function ExtensionForm({
     }),
   );
   const floor = Number(PROVISIONAL_RULES.extensionRequestFloorPercent.value);
+
+  if (extensionInFlight) {
+    return (
+      <Panel>
+        <h2 className="text-sm font-medium text-ink">Extension in progress</h2>
+        <p className="mt-1 text-xs text-ink-faint">
+          You&rsquo;ve already asked for more time and it&rsquo;s with your
+          manager. Wait for them to answer — or respond to their offer — before
+          requesting a different amount.
+        </p>
+      </Panel>
+    );
+  }
 
   return (
     <Panel>
