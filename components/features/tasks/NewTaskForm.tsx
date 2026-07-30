@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import { FileUploader } from "@/components/features/attachments/Attachments";
+import { DurationField } from "./DurationField";
 import { Breadcrumb } from "@/components/ui/Workspace";
 import {
   Button,
@@ -121,7 +122,9 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
   const perms = usePermissions();
 
   const [fixedDueAt, setFixedDueAt] = useState("2026-08-01T17:00");
-  const [hours, setHours] = useState(4);
+  /* The budget as seconds, so it can be any hours:minutes window rather than a
+     whole-hour preset. Defaults to four hours. */
+  const [budgetSecs, setBudgetSecs] = useState(4 * 3600);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   /* Everyone, for the approver picker — approving is a different capability
@@ -231,12 +234,12 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
       approverId: type === "self_assigned" ? approverId || null : null,
       deadlineMode: mode,
       fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
-      senderWindowSecs: mode === "timer" ? hours * 3600 : null,
+      senderWindowSecs: mode === "timer" ? budgetSecs : null,
       /* Only when a budget was actually entered. This previously sent four
          hours of "estimated effort" on every deadline-based task, taken from a
          control the reader never saw — a number nobody chose, recorded as
          though they had. */
-      estimatedEffortSecs: mode === "timer" ? hours * 3600 : null,
+      estimatedEffortSecs: mode === "timer" ? budgetSecs : null,
     }),
   );
 
@@ -613,18 +616,14 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
                     <Field
                       label="Budget"
                       className="mt-3"
-                      hint="The window the assignee plans inside."
+                      hint="Hours and minutes the assignee plans inside."
                     >
-                      <Select
-                        value={String(hours)}
-                        onChange={(e) => setHours(Number(e.target.value))}
-                      >
-                        {[1, 2, 3, 4, 6, 8, 12, 16, 24, 40].map((h) => (
-                          <option key={h} value={h}>
-                            {h} hours
-                          </option>
-                        ))}
-                      </Select>
+                      <DurationField
+                        secs={budgetSecs}
+                        onChange={setBudgetSecs}
+                        minSecs={60}
+                        aria-label="Budget"
+                      />
                     </Field>
                   ) : (
                     <Field label="Due" className="mt-3">
