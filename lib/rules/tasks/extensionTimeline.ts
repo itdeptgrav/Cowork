@@ -262,10 +262,21 @@ export function visibleTo(
 /** May this person decide the hours on this record? */
 export function mayDecideBudgetEvent(input: {
   viewerId: string | null;
-  record: Pick<TimeBudgetExtensionRecord, "approverId" | "status">;
+  record: {
+    approverId: string | null;
+    status: string;
+    /** The requester — you never decide your OWN. Optional so the "no record
+        yet" placeholder can omit it. */
+    requestedBy?: string | null;
+  };
 }): boolean {
   if (!input.viewerId) return false;
   if (input.record.status !== "pending") return false;
+  /* You never decide your OWN request for more time — granting yourself time is
+     the absence of an approval, not one. So even if the approver resolved to the
+     requester (a flat team, stale data, or a misconfigured routing rule), the
+     "accept" is not offered to them; it belongs to their manager. */
+  if (input.record.requestedBy === input.viewerId) return false;
   return input.record.approverId === input.viewerId;
 }
 

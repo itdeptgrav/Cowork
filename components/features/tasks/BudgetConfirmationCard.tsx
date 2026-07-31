@@ -115,6 +115,13 @@ export function BudgetConfirmationCard({
     view.budgetOwner?.displayName ??
     null;
 
+  /* The ADDITION is what the assignee actually asked for — "+10 minutes", not
+     the new total of 40. Showing only totals made a request to add ten minutes
+     read as a grant of forty, which is the confusion this card is fixing. */
+  const previousSecs = record.previousBudgetSecs;
+  const grantedAddedSecs = Math.max(0, agreedSecs - previousSecs);
+  const askedAddedSecs = Math.max(0, requestedSecs - previousSecs);
+
   /* Not this viewer's turn. Everybody else is told whose it is and nothing more —
      a control offered here is a write the repository would refuse. */
   if (!actions.canAccept) {
@@ -150,12 +157,15 @@ export function BudgetConfirmationCard({
 
       <p className="mt-1.5 text-sm text-ink">
         {approverName ? `${approverName} granted ` : "You have been granted "}
-        <span data-figure>{formatDurationTimer(agreedSecs)}</span>
+        <span data-figure>+{formatDurationTimer(grantedAddedSecs)}</span> more
+        {" — "}
+        <span className="text-ink-muted">
+          <span data-figure>{formatDurationTimer(agreedSecs)}</span> in total
+        </span>
         {wasReduced && (
           <>
-            {" "}
-            — not the{" "}
-            <span data-figure>{formatDurationTimer(requestedSecs)}</span> you
+            {", not the "}
+            <span data-figure>+{formatDurationTimer(askedAddedSecs)}</span> you
             asked for
           </>
         )}
@@ -168,17 +178,17 @@ export function BudgetConfirmationCard({
         <div>
           <dt className="text-[11px] text-ink-faint">Current budget</dt>
           <dd data-figure className="text-[13px] text-ink-muted">
-            {formatDurationTimer(record.previousBudgetSecs)}
+            {formatDurationTimer(previousSecs)}
           </dd>
         </div>
         <div>
-          <dt className="text-[11px] text-ink-faint">You asked for</dt>
+          <dt className="text-[11px] text-ink-faint">You asked to add</dt>
           <dd data-figure className="text-[13px] text-ink-muted">
-            {formatDurationTimer(requestedSecs)}
+            +{formatDurationTimer(askedAddedSecs)}
           </dd>
         </div>
         <div>
-          <dt className="text-[11px] text-ink-faint">Proposed budget</dt>
+          <dt className="text-[11px] text-ink-faint">New budget</dt>
           <dd data-figure className="text-[13px] text-ink">
             {formatDurationTimer(agreedSecs)}
           </dd>

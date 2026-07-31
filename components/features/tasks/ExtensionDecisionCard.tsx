@@ -69,7 +69,7 @@ export function ExtensionDecisionCard({
      refuse. */
   const mayDecide = mayDecideBudgetEvent({
     viewerId,
-    record: record ?? { approverId: null, status: "pending" },
+    record: record ?? { approverId: null, status: "pending", requestedBy: null },
   });
 
   const previousSecs = record?.previousBudgetSecs ?? 0;

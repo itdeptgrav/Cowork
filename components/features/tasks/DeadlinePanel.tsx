@@ -694,7 +694,10 @@ function ExtensionForm({
   view: TaskView;
   onChange: () => void;
 }) {
-  const [addedSecs, setAddedSecs] = useState(2 * 3600);
+  /* A small default addition — this is EXTRA time on top of the current window,
+     not a new total, so a two-hour default made a ten-minute ask look like a
+     huge one the moment the form opened. */
+  const [addedSecs, setAddedSecs] = useState(30 * 60);
   const [reason, setReason] = useState("");
 
   /* One extension in flight at a time. While a request is unanswered — waiting

@@ -1376,7 +1376,15 @@ export class LegacyRepository {
      */
     const employeesById = await this.#employeesById();
     let budgetOwner: Employee | null = null;
-    if (legacy.status === "pending_tl_hours") {
+    if (legacy.isSelfAssigned) {
+      /* On a self task the budget's approver is the assignee's MANAGER — the
+         assigner of record, which the derived negotiation already names as the
+         one being waited on. Surfaced here so the negotiation card can say
+         "waiting for {manager}" rather than leaving the turn unnamed (the creator
+         and the assignee are the same person, so neither of those names them). */
+      const mgrId = legacy.budgetNegotiation?.waitingForId ?? null;
+      budgetOwner = mgrId ? (employeesById.get(String(mgrId)) ?? null) : null;
+    } else if (legacy.status === "pending_tl_hours") {
       const target = legacy.pendingAssigneeId ?? legacy.assigneeIds[0] ?? null;
       if (target) {
         try {

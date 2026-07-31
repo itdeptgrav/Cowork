@@ -478,28 +478,45 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
       /* Derived where absent, for the reason on the type above. */
       if (!raw || typeof raw !== "object") {
         if (opening <= 0) return null;
+        /* **`pendingAssigneeId` FIRST**, matching the engine's own resolution
+           in `department-tl-set-hours`:
+           `task.pendingAssigneeId || task.assigneeIds?.[0]`.
+
+           Reading `assigneeIds` alone disagreed with the engine on exactly the
+           cross-department path, where the assignee is NOT added to `assigneeIds`
+           until the hours are set — so the one person who could answer was not
+           named, and the card rendered a wait with no button for anybody. */
+        const assigneeId = (() => {
+          const pending = doc.pendingAssigneeId;
+          if (typeof pending === "string" && pending) return pending;
+          const ids = Array.isArray(doc.assigneeIds) ? doc.assigneeIds : [];
+          return ids[0] != null ? String(ids[0]) : null;
+        })();
+        const assignorId = String(doc.assignedBy ?? "");
+        /* A SELF task reverses the opening. The CREATOR (the assignee) proposed
+           the budget when they made the task; it is their MANAGER — the assigner
+           of record in `assignedBy` — who approves or negotiates it. Without this
+           flip a self task read as "your manager proposed and you accept", when
+           the manager has not seen it yet. */
+        const isSelf = doc.isSelfAssigned === true;
+        if (isSelf) {
+          return {
+            state: "WAITING_FOR_ASSIGNOR",
+            currentSecs: opening,
+            proposedById: assigneeId ?? "",
+            proposedByName: "",
+            waitingForId: assignorId || null,
+            round: 1,
+            history: [],
+          };
+        }
         return {
           state: "WAITING_FOR_ASSIGNEE",
           currentSecs: opening,
-          proposedById: String(doc.assignedBy ?? ""),
+          proposedById: assignorId,
           proposedByName:
             typeof doc.assignedByName === "string" ? doc.assignedByName : "",
-          /* **`pendingAssigneeId` FIRST**, matching the engine's own resolution
-             in `department-tl-set-hours`:
-             `task.pendingAssigneeId || task.assigneeIds?.[0]`.
-
-             Reading `assigneeIds` alone disagreed with the engine on exactly the
-             cross-department path, where the assignee is NOT added to
-             `assigneeIds` until the hours are set — so the one person who could
-             answer was not named, and the card rendered a wait with no button
-             for anybody. Same read as `holdersOf`, and the same bug class as the
-             four fixed in §9.3. */
-          waitingForId: (() => {
-            const pending = doc.pendingAssigneeId;
-            if (typeof pending === "string" && pending) return pending;
-            const ids = Array.isArray(doc.assigneeIds) ? doc.assigneeIds : [];
-            return ids[0] != null ? String(ids[0]) : null;
-          })(),
+          waitingForId: assigneeId,
           round: 1,
           history: [],
         };

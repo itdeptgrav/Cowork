@@ -636,7 +636,10 @@ test("defaults change nothing, which is what makes them safe to ship", () => {
   assert.equal(DEFAULT_TASK_RULES.timerBeforeSubmit, "allow");
   assert.equal(DEFAULT_TASK_RULES.submissionNote, "optional");
   assert.equal(DEFAULT_TASK_RULES.afterRejection, "allow_resubmit");
-  assert.equal(DEFAULT_WORKFLOW_ROUTING.budgetApproverWhenNoManager, "self");
+  /* Deliberately NOT "self": a person cannot approve their own extension, so
+     when no manager is on file the request is refused, not routed back to the
+     requester (who would otherwise see the "accept" over their own ask). */
+  assert.equal(DEFAULT_WORKFLOW_ROUTING.budgetApproverWhenNoManager, "block");
   assert.equal(DEFAULT_WORKFLOW_ROUTING.deadlineApproverWhenNoAssignor, "block");
   assert.equal(DEFAULT_WORKFLOW_ROUTING.infeasibleBudget, "escalate");
   assert.equal(DEFAULT_WORKFLOW_ROUTING.stuckAfterHours, 0);

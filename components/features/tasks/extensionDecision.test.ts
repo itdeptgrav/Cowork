@@ -35,7 +35,10 @@ test("hours are the primary manager's, never the assignor's", () => {
   /* The RECORD names its approver — resolved from HR when the request was made
      — so the control cannot be offered to somebody the write would refuse. */
   assert.match(src, /mayDecideBudgetEvent\(\{/);
-  assert.match(src, /record: record \?\? \{ approverId: null, status: "pending" \}/);
+  assert.match(
+    src,
+    /record: record \?\? \{ approverId: null, status: "pending", requestedBy: null \}/,
+  );
   /* And a non-decider is told who decides rather than shown dead buttons. */
   assert.match(src, /decides the hours for this work/);
 });

@@ -43,10 +43,13 @@ export interface WorkflowRouting {
   /**
    * Who decides hours when HR names no primary manager.
    *
-   * `self` is today's behaviour. `named_fallback` sends it to
-   * `fallbackApproverId`, and `block` refuses the request with a reason rather
-   * than routing it somewhere arbitrary — the honest answer when a reporting
-   * line is simply missing.
+   * `block` is the default: an extension is a request for MORE time, and a
+   * person cannot grant themselves more time — that is not an approval, it is
+   * the absence of one. So when no manager is on file the request is refused
+   * with a reason (a missing reporting line to fix) rather than routed back to
+   * the requester, who would then see the "accept" control over their OWN ask.
+   * `named_fallback` sends it to `fallbackApproverId`; `self` (the old default)
+   * lets the requester approve their own, kept only for a truly flat team.
    */
   budgetApproverWhenNoManager: "self" | "named_fallback" | "block";
   /**
@@ -84,7 +87,7 @@ export interface WorkflowRouting {
 }
 
 export const DEFAULT_WORKFLOW_ROUTING: WorkflowRouting = {
-  budgetApproverWhenNoManager: "self",
+  budgetApproverWhenNoManager: "block",
   deadlineApproverWhenNoAssignor: "block",
   fallbackApproverId: null,
   infeasibleBudget: "escalate",

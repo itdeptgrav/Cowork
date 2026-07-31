@@ -68,7 +68,10 @@ export function BudgetNegotiationCard({
 
   const nameOf = (id: string) =>
     view.assignees.find((a) => a.id === id)?.displayName ??
-    (view.owner?.id === id ? view.owner.displayName : null);
+    (view.owner?.id === id ? view.owner.displayName : null) ??
+    /* The budget's approver — the manager on a self task, where they are neither
+       an assignee nor the creator and so would otherwise go unnamed. */
+    (view.budgetOwner?.id === id ? view.budgetOwner.displayName : null);
   const proposerName = negotiation
     ? (nameOf(negotiation.proposedById) ?? negotiation.proposedByName ?? null)
     : null;

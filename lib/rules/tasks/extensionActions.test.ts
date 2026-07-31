@@ -282,10 +282,11 @@ test("the confirmation card renders for the assignee, and only for them", () => 
   );
   /* It renders the fault case rather than nothing. */
   assert.match(src, /UNOWNED_TURN_NOTICE/);
-  /* And it shows what the manager granted BESIDE what was asked, so a reduced
-     figure reads as a change rather than as the assignee's own number. */
-  assert.match(src, /You asked for/);
-  assert.match(src, /Proposed budget/);
+  /* And it shows what the manager granted BESIDE what was asked, as ADDITIONS
+     ("+10", not the new total of 40) so a request to add ten minutes cannot read
+     as a grant of forty. */
+  assert.match(src, /You asked to add/);
+  assert.match(src, /New budget/);
 });
 
 test("the counter card renders for the person the rule names", () => {
