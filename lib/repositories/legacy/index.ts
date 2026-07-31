@@ -4764,7 +4764,19 @@ export class LegacyRepository {
     role: ReviewerRole,
     ids: { creatorId: string; assigneeId: string },
   ): Promise<string | null> {
-    if (role === "creator") return ids.creatorId || null;
+    if (role === "creator") {
+      /* **A self task's creator IS its assignee, and nobody reviews their own
+         submission.** So this stage belongs to the assignee's MANAGER — exactly
+         who the two-stage flow's `assignee_manager` resolves to. Without this a
+         self task took the `tl_final` shape (one stage, "creator") and routed the
+         review straight back to the person who submitted it: the chain was
+         `[submitter]`, `mayReview` excluded them, and their manager — the one
+         person who SHOULD see it — was told the work was "with someone else". */
+      if (ids.creatorId && ids.creatorId === ids.assigneeId) {
+        return this.#assigneeManagerId(ids.assigneeId);
+      }
+      return ids.creatorId || null;
+    }
 
     if (role === "chief_executive") {
       /* By ROLE, not by a hardcoded id — legacy's `ceo-review` is guarded by
@@ -4776,11 +4788,16 @@ export class LegacyRepository {
       return null;
     }
 
-    /* The assignee's manager, from the reporting tree — the product's source of
-       truth for who manages whom. */
-    if (!ids.assigneeId) return null;
+    /* The assignee's manager, from the reporting tree. */
+    return this.#assigneeManagerId(ids.assigneeId);
+  }
+
+  /** The assignee's manager id, from the reporting tree — the product's source
+      of truth for who manages whom. Null where the tree names nobody. */
+  async #assigneeManagerId(assigneeId: string): Promise<string | null> {
+    if (!assigneeId) return null;
     const tree = await this.#reportingTree();
-    const node = tree.byEmployee.get(toHierarchyId(ids.assigneeId));
+    const node = tree.byEmployee.get(toHierarchyId(assigneeId));
     return node?.managerId ?? null;
   }
 
