@@ -732,7 +732,13 @@ export function toTaskView(input: {
       reason: a.rejectionReason,
       decidedAt: a.respondedAt,
     })),
-    reworkCount: 0,
+    /* One entry per time the work was sent back — the figure the C1 score
+       deducts from. Was hardcoded to 0, so the rework deduction NEVER applied:
+       `projected = 1 − reworkCount × 0.2` sat at 1.0 forever and the "Rework × N"
+       line never rendered. */
+    reworkCount: Array.isArray(legacy.reworkHistory)
+      ? legacy.reworkHistory.length
+      : 0,
     isOverdue: dueAtMs !== null && !terminal && dueAtMs < input.nowMs,
     subtaskCount: 0,
     chatCount: 0,
