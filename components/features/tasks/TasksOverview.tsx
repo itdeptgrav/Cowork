@@ -292,12 +292,16 @@ export function TasksOverview({ scope }: { scope: TaskScope }) {
                 <span className="min-w-0 flex-1 truncate text-[11px] text-ink">
                   {topDecision.view.task.title}
                 </span>
-                {topDecision.view.task.deadline.dueAt && (
+                {(topDecision.view.task.deadline.dueAt ??
+                  topDecision.view.task.deadline.operationalDueAt) && (
                   <span
                     data-figure
                     className="shrink-0 text-[11px] text-ink-faint"
                   >
-                    {formatDate(topDecision.view.task.deadline.dueAt)}
+                    {formatDate(
+                      topDecision.view.task.deadline.dueAt ??
+                        topDecision.view.task.deadline.operationalDueAt,
+                    )}
                   </span>
                 )}
               </Link>
@@ -416,8 +420,12 @@ export function TasksOverview({ scope }: { scope: TaskScope }) {
                     </span>
                     <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
                       {view.project?.name ?? "No project"}
-                      {view.task.deadline.dueAt &&
-                        ` · due ${formatDate(view.task.deadline.dueAt)}`}
+                      {(view.task.deadline.dueAt ??
+                        view.task.deadline.operationalDueAt) &&
+                        ` · due ${formatDate(
+                          view.task.deadline.dueAt ??
+                            view.task.deadline.operationalDueAt,
+                        )}`}
                       {view.loggedSecs > 0 &&
                         ` · ${formatTimer(view.loggedSecs)} logged`}
                     </span>

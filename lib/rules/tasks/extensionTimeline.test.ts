@@ -243,16 +243,38 @@ test("the assignor sees the dates and not the hours", () => {
   );
 });
 
-test("only the named approver may decide, and only while pending", () => {
+test("only the named approver may decide, on both live manager-turn states", () => {
   const rec = { approverId: RAKESH, status: "pending" as const };
   assert.equal(mayDecideBudgetEvent({ viewerId: RAKESH, record: rec }), true);
   assert.equal(mayDecideBudgetEvent({ viewerId: UMUNG, record: rec }), false);
   assert.equal(mayDecideBudgetEvent({ viewerId: PRAMOD, record: rec }), false);
   assert.equal(mayDecideBudgetEvent({ viewerId: null, record: rec }), false);
+
+  /* The second round. The assignee has countered the manager's figure, which the
+     engine routes straight back to the same approver — so the manager can decide
+     again. Gating on `pending` alone was the reported bug: a negotiation past one
+     exchange reached the manager but showed no Approve/Decline. */
+  const countered = {
+    approverId: RAKESH,
+    status: "counter_proposed" as const,
+    requestedBy: UMUNG,
+  };
+  assert.equal(mayDecideBudgetEvent({ viewerId: RAKESH, record: countered }), true);
+  assert.equal(mayDecideBudgetEvent({ viewerId: UMUNG, record: countered }), false);
+
+  /* `approved` is the assignee's turn (they confirm the granted hours), not the
+     manager's, and terminal states are nobody's. */
   assert.equal(
     mayDecideBudgetEvent({
       viewerId: RAKESH,
       record: { approverId: RAKESH, status: "approved" },
+    }),
+    false,
+  );
+  assert.equal(
+    mayDecideBudgetEvent({
+      viewerId: RAKESH,
+      record: { approverId: RAKESH, status: "accepted" },
     }),
     false,
   );

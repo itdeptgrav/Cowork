@@ -1010,7 +1010,14 @@ function Row({
       <span
         className={`text-xs ${view.isOverdue ? "text-[var(--state-overdue-ink)]" : "text-ink-muted"}`}
       >
-        {formatDate(view.task.deadline.dueAt)}
+        {/* Committed deadline where one exists, else the DERIVED completion date.
+            A budget extension leaves the committed deadline frozen (by design) but
+            pushes the derived date — so a task with no commitment showed nothing
+            here and never reflected the extra time. `operationalDueAt` is the same
+            figure the detail page labels "Expected completion". */}
+        {formatDate(
+          view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
+        )}
       </span>
 
       <span className="text-right">
@@ -1104,8 +1111,15 @@ function NarrowRow({ view }: { view: TaskView }) {
           </span>
           <span className="mt-1 flex flex-wrap items-center gap-x-2 text-[11px] text-ink-faint">
             <span>{view.project?.name ?? "No project"}</span>
-            {view.task.deadline.dueAt && (
-              <span>· {formatDate(view.task.deadline.dueAt)}</span>
+            {(view.task.deadline.dueAt ??
+              view.task.deadline.operationalDueAt) && (
+              <span>
+                ·{" "}
+                {formatDate(
+                  view.task.deadline.dueAt ??
+                    view.task.deadline.operationalDueAt,
+                )}
+              </span>
             )}
             {action.actor === "you" && (
               <span className="text-ink">· → {action.label}</span>

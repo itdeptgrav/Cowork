@@ -271,7 +271,20 @@ export function mayDecideBudgetEvent(input: {
   };
 }): boolean {
   if (!input.viewerId) return false;
-  if (input.record.status !== "pending") return false;
+  /* **Both live manager-turn states, not only the opening one.** A record is the
+     manager's to decide when it is `pending` (the first ask) AND when it is
+     `counter_proposed` — the assignee has answered the manager's figure with one
+     of their own, which the engine routes straight back to the same `approverId`.
+     Gating on `pending` alone was the reported bug: the second round reached the
+     manager (correct `approverId`, correct turn) but their card rendered no
+     Approve/Decline, so a negotiation that went past one exchange could never be
+     closed. `approved` (awaiting the assignee) and the terminal states are NOT
+     the manager's move and stay excluded. */
+  if (
+    input.record.status !== "pending" &&
+    input.record.status !== "counter_proposed"
+  )
+    return false;
   /* You never decide your OWN request for more time — granting yourself time is
      the absence of an approval, not one. So even if the approver resolved to the
      requester (a flat team, stale data, or a misconfigured routing rule), the

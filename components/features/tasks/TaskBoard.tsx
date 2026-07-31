@@ -146,7 +146,11 @@ function BoardCard({ view }: { view: TaskView }) {
           }`}
         >
           <Icon.calendar className="h-3 w-3" />
-          {formatDate(view.task.deadline.dueAt)}
+          {/* Committed deadline where set, else the derived completion date, so a
+              budget-only task reflects the extra time instead of showing blank. */}
+          {formatDate(
+            view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
+          )}
         </span>
         {action.actor === "you" && (
           <span className="truncate text-[11px] text-ink">
