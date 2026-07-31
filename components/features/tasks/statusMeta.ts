@@ -143,6 +143,7 @@ export interface NextAction {
  */
 export { windowOnOffer } from "../../../lib/rules/tasks/actionable.ts";
 import { windowOnOffer } from "../../../lib/rules/tasks/actionable.ts";
+import { budgetTurn } from "../../../lib/rules/tasks/budgetNegotiation.ts";
 import { presenceRefusal } from "../../../lib/rules/presence/taskGate.ts";
 import { mayReview } from "../../../lib/rules/tasks/reviewChain.ts";
 import type { DutyMode } from "../../../lib/rules/presence/duty.ts";
@@ -257,6 +258,38 @@ export function nextAction(
           href: `/tasks/${id}/review`,
         }
       : { label: "Awaiting review", actor: "them" };
+  }
+
+  /*
+   * A self task's time budget is proposed by the ASSIGNEE and decided by their
+   * MANAGER.
+   *
+   * `budgetTurn` is the one authority on whose move a budget is, so this defers
+   * to it. Without it a self task falls through to the branches below — written
+   * for work somebody else assigned — and offers the assignee "Propose a
+   * deadline" or "Confirm receipt" over a figure they have already proposed and
+   * are waiting on their manager to approve. Scoped to self tasks so nothing an
+   * assignor set on ordinary work is touched; `windowOnOffer` (which excludes
+   * self tasks) still owns the standard opening.
+   */
+  if (task.type === "self_assigned") {
+    const bt = budgetTurn(view, viewerId);
+    if (
+      bt.state === "waiting_for_assignor" ||
+      bt.state === "waiting_for_assignee"
+    ) {
+      if (bt.canAccept) {
+        return {
+          label:
+            bt.state === "waiting_for_assignor"
+              ? "Decide the time budget"
+              : "Accept the time budget",
+          actor: "you",
+          href: `/tasks/${id}`,
+        };
+      }
+      return { label: "Awaiting the time budget", actor: "them" };
+    }
   }
 
   if (

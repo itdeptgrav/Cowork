@@ -49,9 +49,13 @@ function view(over: {
   assignees?: string[];
   pending?: string[];
   rejection?: unknown;
+  budgetState?: string;
 } = {}): TaskView {
   const assignees = over.assignees ?? [UMUNG];
   return {
+    budgetNegotiation: over.budgetState
+      ? { state: over.budgetState, waitingForId: null, currentSecs: 6 * 3600 }
+      : null,
     task: {
       id: "T651",
       reference: "T651",
@@ -114,6 +118,31 @@ test("1c · a pending cross-department assignee can accept too", () => {
      omission that has produced this class of bug four times. */
   const t = view({ assignees: [], pending: [UMUNG] });
   assert.deepEqual(pendingAccepters(t), [UMUNG]);
+  assert.equal(getAssignmentActions(UMUNG, t).canAccept, true);
+});
+
+/* ── 1d · A budget still waiting on the OTHER side blocks acceptance ───────── */
+
+test("1d · self task: assignee canNOT accept while the budget waits on the manager", () => {
+  /* The self-task bug. Umung proposes the budget; it waits on his manager
+     (`WAITING_FOR_ASSIGNOR`). Offering him "Accept task" let him take the work
+     on at a figure his manager never approved — the exact bypass the flow
+     exists to prevent. */
+  const t = view({ budgetState: "WAITING_FOR_ASSIGNOR" });
+  const actions = getAssignmentActions(UMUNG, t);
+  assert.equal(actions.actionType, "none");
+  assert.equal(actions.canAccept, false);
+});
+
+test("1e · once the manager settles it, the assignee can accept", () => {
+  const t = view({ budgetState: "ACCEPTED" });
+  assert.equal(getAssignmentActions(UMUNG, t).canAccept, true);
+});
+
+test("1f · a standard opening (assignee's turn) is NOT gated — the normal accept", () => {
+  /* `WAITING_FOR_ASSIGNEE` is the assignor's opening figure on the assignee's
+     turn: accepting the assignment settles it, so it must stay offered. */
+  const t = view({ budgetState: "WAITING_FOR_ASSIGNEE" });
   assert.equal(getAssignmentActions(UMUNG, t).canAccept, true);
 });
 

@@ -86,6 +86,51 @@ test("it says why it is waiting, in terms of the reason for the gate", () => {
   assert.match(why, /Rishee Ray/);
 });
 
+/* ── Self task: the budget is the manager's stage, not the assignee's ─────── */
+
+const SELF = {
+  task: task({ status: "assigned", createdById: "GR0002" }),
+  assigneeIds: ["GR0002"], // Umung is both creator and assignee
+  approvals: [],
+  budgetOwnerName: "Rishee Ray",
+  budgetOnOwner: true,
+  budgetWaitingOn: "Waiting for Rishee Ray to decide",
+  nameOf: (id: string) =>
+    id === "GR0002" ? "Umung Arora" : (NAMES[id] ?? null),
+};
+
+test("self task: whose turn is the MANAGER, never the assignee who proposed it", () => {
+  assert.equal(taskFlow(SELF).whoseTurn, "Rishee Ray");
+});
+
+test("self task: a budget stage the manager owns is inserted as current", () => {
+  const budget = taskFlow(SELF).stages.find((s) => s.key === "budget");
+  assert.ok(budget, "the budget stage exists");
+  assert.equal(budget.state, "current");
+  assert.equal(budget.person, "Rishee Ray");
+  assert.equal(budget.label, "Approve the time budget");
+});
+
+test("self task: the assignment is held upcoming until the budget settles", () => {
+  const assignment = taskFlow(SELF).stages.find((s) => s.key === "assignment");
+  assert.ok(assignment);
+  assert.equal(
+    assignment.state,
+    "upcoming",
+    "not 'current' — that named the assignee as owing their own proposal",
+  );
+});
+
+test("self task: exactly one current stage, and it is the budget", () => {
+  const current = taskFlow(SELF).stages.filter((s) => s.state === "current");
+  assert.equal(current.length, 1);
+  assert.equal(current[0].key, "budget");
+});
+
+test("self task: why it waits names the manager, not 'the task's creator'", () => {
+  assert.equal(taskFlow(SELF).whyWaiting, "Waiting for Rishee Ray to decide");
+});
+
 /* ── The sequence ─────────────────────────────────────────────────────────── */
 
 test("the flow reads created → approve → approve → assignment", () => {

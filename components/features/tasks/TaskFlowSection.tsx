@@ -188,7 +188,10 @@ export function TaskFlowSection({
      fetches; it is handed a resolver and falls back to a role where a name is
      genuinely unknown. */
   const directory = new Map<string, string>();
-  for (const e of [...assignees, ...pendingAssignees, creator]) {
+  /* `budgetOwner` included so the budget wait can be named. On a self task the
+     manager is neither an assignee nor the creator, so leaving them out is why
+     "Waiting for {manager}" fell back to "the task's creator to decide". */
+  for (const e of [...assignees, ...pendingAssignees, creator, budgetOwner]) {
     if (e) directory.set(e.id, e.displayName);
   }
   const nameOf = (id: string) => {
@@ -213,6 +216,10 @@ export function TaskFlowSection({
     budgetWaitingOn: budgetTurn
       ? waitingOnLabel(budgetTurn, (id) => directory.get(id) ?? null)
       : null,
+    /* The budget is the manager's to decide (a self task's proposal, or an
+       ordinary task the assignee has countered). Inserts a budget stage the
+       manager owns and holds the assignment as upcoming. */
+    budgetOnOwner: budgetTurn?.state === "waiting_for_assignor",
     assigneeIds: assignees.map((a) => a.id),
     review,
     nameOf,
@@ -243,15 +250,21 @@ export function TaskFlowSection({
             which reads as a report on them rather than as a prompt — and it was
             the sentence sitting above a card that offered nothing. The `— you`
             suffix that `nameOf` adds is what made it unmistakable. */
-        acceptanceIsViewers
-          ? "Your move — accept this task"
-          : flow.whoseTurn
-            ? `Waiting for ${flow.whoseTurn}`
-            : flow.whatNext.startsWith("Nothing")
-              ? flow.whatNext
-              : current
-                ? `Waiting for ${current.label.toLowerCase()}`
-                : "No action is owed right now"}
+        /* The budget decision is the viewer's — a self task's manager, or the
+           assignor of a countered ordinary task. Said as "Your move" so the one
+           person who owes it is not told to wait for themselves; everybody else
+           on this state falls through to the named wait below. */
+        budgetTurn?.state === "waiting_for_assignor" && budgetTurn?.canAccept
+          ? "Your move — decide the time budget"
+          : acceptanceIsViewers
+            ? "Your move — accept this task"
+            : flow.whoseTurn
+              ? `Waiting for ${flow.whoseTurn}`
+              : flow.whatNext.startsWith("Nothing")
+                ? flow.whatNext
+                : current
+                  ? `Waiting for ${current.label.toLowerCase()}`
+                  : "No action is owed right now"}
       </p>
       {flow.whyWaiting && (
         <p className="mt-1 text-[13px] leading-relaxed text-ink-muted">

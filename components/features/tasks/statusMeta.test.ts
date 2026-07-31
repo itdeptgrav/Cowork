@@ -250,6 +250,62 @@ test("an accepted window stops being an offer", () => {
   );
 });
 
+/* ── Self task: the budget is the manager's move, not the assignee's ──────── */
+
+function selfBudgetView(over: { state?: string; manager?: string } = {}) {
+  return {
+    task: {
+      id: "t-1",
+      type: "self_assigned",
+      status: "assigned",
+      createdById: "e-02", // the assignee IS the creator
+      deadline: {
+        mode: "timer",
+        dueAt: null,
+        currentWindowSecs: 4 * 3600,
+        assignorWindowRejection: null,
+        state: "unset",
+      },
+    },
+    assignments: [{ employeeId: "e-02" }], // Umung
+    approvals: [],
+    pendingApprovals: [],
+    budgetNegotiation: {
+      state: over.state ?? "WAITING_FOR_ASSIGNOR",
+      proposedById: "e-02",
+      waitingForId: over.manager ?? "e-01", // the manager
+      currentSecs: 4 * 3600,
+      round: 1,
+      history: [],
+    },
+  } as unknown as Parameters<typeof nextAction>[0];
+}
+
+test("self task: the assignee is NOT told to act while the manager decides the budget", () => {
+  /* Umung proposed the budget; it waits on his manager. He must not be offered
+     "Propose a deadline"/"Confirm receipt" — the exact fall-through the new
+     branch closes. */
+  const action = nextAction(selfBudgetView(), "e-02");
+  assert.equal(action.actor, "them");
+  assert.equal(action.label, "Awaiting the time budget");
+});
+
+test("self task: the manager is the one told to decide the budget", () => {
+  const action = nextAction(selfBudgetView(), "e-01");
+  assert.equal(action.actor, "you");
+  assert.equal(action.label, "Decide the time budget");
+  assert.match(action.href ?? "", /^\/tasks\/t-1$/);
+});
+
+test("self task: once the manager counters, it is the assignee's move again", () => {
+  const action = nextAction(
+    selfBudgetView({ state: "WAITING_FOR_ASSIGNEE", manager: "e-02" }),
+    "e-02",
+  );
+  assert.equal(action.actor, "you");
+  assert.equal(action.label, "Accept the time budget");
+});
+
 /* ── Approver visibility ──────────────────────────────────────────────────── */
 
 /**

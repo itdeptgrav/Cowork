@@ -162,6 +162,16 @@ export function taskFlow(input: {
    */
   budgetWaitingOn?: string | null;
   /**
+   * Whether the time budget is currently the assignee's MANAGER's to decide.
+   *
+   * True on a self task whose proposed budget is waiting on the manager
+   * (`waiting_for_assignor`), and on an ordinary task the assignee has countered.
+   * It inserts a budget stage the manager owns and holds the assignment as
+   * upcoming — without it a self task jumps to "Assigned · waiting to be
+   * accepted" and names the assignee as the one holding up their own proposal.
+   */
+  budgetOnOwner?: boolean;
+  /**
    * Whether the READER is the person who owes the acceptance.
    *
    * Passed in for the same reason as `budgetWaitingOn`: this module renders a
@@ -232,7 +242,16 @@ export function taskFlow(input: {
    * describes a handover that has not happened and cannot explain the wait.
    */
   const awaitingBudget = task.approvalReason === "effort_estimate";
-  if (awaitingBudget) {
+  /* A self task's budget is the assignee's MANAGER's to decide before the
+     assignment goes live: the assignee proposed a figure and the turn rule
+     reports it as `waiting_for_assignor`. It is the same shape of step as the
+     cross-department effort estimate — a number the manager owes before the work
+     is handed over — so it is modelled as the same stage. Without it the diagram
+     skips straight to "Assigned · waiting to be accepted" and names the assignee
+     as the one holding up a proposal that is actually sitting with their
+     manager. */
+  const budgetOnOwner = input.budgetOnOwner === true;
+  if (awaitingBudget || budgetOnOwner) {
     /* Named only where the viewer is the person who can act — that entry is
        synthesised for them alone. Everybody else sees the stage without a name,
        which is honest: the engine authorises a role in a department rather than
@@ -240,7 +259,9 @@ export function taskFlow(input: {
     const owner = approvals.find((a) => a.kind === "effort_estimate") ?? null;
     stages.push({
       key: "budget",
-      label: "Set the time budget",
+      /* "Set" where no figure exists yet (the effort estimate); "Approve" where
+         the assignee has already proposed one and the manager decides on it. */
+      label: awaitingBudget ? "Set the time budget" : "Approve the time budget",
       person: owner
         ? personLabel(owner.approverId, nameOf, owner.approverName)
         : (input.budgetOwnerName ?? null),
@@ -250,7 +271,9 @@ export function taskFlow(input: {
       role: "The assignee's manager",
       state: "current",
       at: null,
-      note: "The work needs an agreed number of hours before it is handed over",
+      note: awaitingBudget
+        ? "The work needs an agreed number of hours before it is handed over"
+        : "The assignee proposed a time budget; their manager approves or adjusts it before work starts",
     });
   }
 
@@ -286,10 +309,20 @@ export function taskFlow(input: {
       label: "Assigned",
       person: assigneeNames.join(", "),
       role: null,
-      state: started || task.status === "confirmed" ? "done" : "current",
+      state:
+        started || task.status === "confirmed"
+          ? "done"
+          : /* Held behind the budget. The assignment is real, but it is not the
+               CURRENT step until the manager settles the hours — otherwise the
+               diagram shows two current stages, or names the assignee as owing a
+               move that is actually their manager's. */
+            budgetOnOwner
+            ? "upcoming"
+            : "current",
       at: null,
-      note:
-        task.status === "assigned"
+      note: budgetOnOwner
+        ? "Starts once the manager settles the time budget"
+        : task.status === "assigned"
           ? "Waiting to be accepted"
           : task.status === "deadline_negotiation"
             ? "Deadline is being agreed"

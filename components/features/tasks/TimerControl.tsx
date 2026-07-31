@@ -17,6 +17,7 @@ import {
 } from "@/lib/rules/tasks/timer";
 import type { TimerSession } from "@/lib/domain";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
+import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -136,6 +137,7 @@ export function TimerControl({
     (r) => r.getActiveTimer(),
     [taskId, view.task.updatedAt],
   );
+  const repo = useRepo();
   const [start, startState] = useAction((r) => r.startTimer(taskId));
   const [pause, pauseState] = useAction((r) =>
     r.pauseTimer(taskId, null, "manual"),
@@ -283,6 +285,35 @@ export function TimerControl({
     }
     if (!away) autoPaused.current = false;
   }, [away, state, myPresence, taskId, pause, timer, active]);
+
+  /* **The liveness beat that stops a gap being paid for.**
+   *
+   * While the run is genuinely live this moves the session's `heartbeatAt`
+   * forward every interval. The point is what happens when it STOPS: a closed
+   * tab or a sleeping laptop sends no beat, and `pauseTimer` refuses to bank time
+   * past the last one plus the staleness grace — which is what keeps a session
+   * left running across a two-hour gap from crediting the whole gap as worked.
+   * The same interval and window presence itself uses.
+   *
+   * A beat that finds the previous one already stale reconcile-pauses the
+   * session (in the repository), so the refetch here picks the clock up as
+   * stopped at the right figure rather than running on the gap. */
+  useEffect(() => {
+    if (!running) return;
+    let cancelled = false;
+    const beat = async () => {
+      await repo.heartbeatTimer(taskId).catch(() => {});
+      if (cancelled) return;
+      timer.refetch();
+      active.refetch();
+    };
+    void beat();
+    const id = setInterval(() => void beat(), HEARTBEAT_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [running, taskId, repo, timer, active]);
 
   async function toggle() {
     if (running) {

@@ -1109,6 +1109,15 @@ export interface CoworkRepository {
     message: string | null,
     reason: WorkCommit["pauseReason"],
   ): Promise<ActionResult<WorkCommit>>;
+  /**
+   * Keep a running session alive so an abandoned clock cannot bank the gap.
+   *
+   * Called on an interval by the timer control while the clock genuinely runs.
+   * A missed beat (closed tab, sleeping laptop) is what caps how much a later
+   * pause may credit. Idempotent and cheap; a no-op on a paused or absent
+   * session.
+   */
+  heartbeatTimer(taskId: TaskId): Promise<ActionResult<void>>;
   listWorkCommits(taskId: TaskId): Promise<WorkCommit[]>;
   listDayCommits(
     date: string,

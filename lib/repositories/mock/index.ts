@@ -4390,6 +4390,17 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(commit));
   }
 
+  /* The interface's liveness beat. The prototype keeps a simpler timer model — a
+     single run measured on pause — and carries none of the per-beat record the
+     legacy adapter uses to cap an abandoned session, so there is nothing to move
+     forward here. Accepted as a no-op so the timer control can beat against
+     either backend without knowing which it is on. */
+  async heartbeatTimer(_taskId: TaskId): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    return delay(ok(undefined));
+  }
+
   async listWorkCommits(taskId: TaskId) {
     return delay(getStore().workCommits.filter((w) => w.taskId === taskId));
   }

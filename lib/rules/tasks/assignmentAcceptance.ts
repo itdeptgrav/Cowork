@@ -148,6 +148,23 @@ export function getAssignmentActions(
 ): AssignmentActions {
   if (!awaitingAcceptance(view)) return NOTHING;
 
+  /* **The working time is still being decided by the OTHER side.**
+   *
+   * A self task is the case that exposed this. The assignee PROPOSES the budget
+   * when they make the task, and it waits on their manager
+   * (`WAITING_FOR_ASSIGNOR`). Until the manager settles it there is nothing for
+   * the assignee to accept — and offering them "Accept task" let them take the
+   * work on at a figure their manager never approved, bypassing the approval
+   * the self-task flow exists to impose. The card and the write both ask this
+   * function, so returning nothing here closes the control AND the endpoint.
+   *
+   * The same is true mid-negotiation on an ordinary task once the assignee has
+   * countered: the assignor holds the turn, the figure is not agreed, and
+   * acceptance waits for it. `WAITING_FOR_ASSIGNEE` — the assignor's opening,
+   * the assignee's turn — is deliberately NOT gated: that is the standard
+   * "accept the terms" moment and accepting the assignment settles it. */
+  if (view.budgetNegotiation?.state === "WAITING_FOR_ASSIGNOR") return NOTHING;
+
   const pending = pendingAccepters(view);
   if (pending.length === 0) return NOTHING;
 

@@ -12,6 +12,7 @@ import {
   type DutyDocument,
   type DutyMode,
 } from "../../rules/presence/duty.ts";
+import { bankableRunSecs } from "../../rules/tasks/timer.ts";
 import { presenceWriteRefusal } from "../../rules/presence/taskGate.ts";
 import {
   currentStageOf,
@@ -3121,6 +3122,7 @@ export class LegacyRepository {
       ? Number((existing.data() as { totalSeconds?: number }).totalSeconds) || 0
       : 0;
 
+    const startNow = Date.now();
     await setDoc(
       ref,
       {
@@ -3129,8 +3131,13 @@ export class LegacyRepository {
         taskTitle,
         totalSeconds: accumulated,
         isActive: true,
-        lastStartTime: Date.now(),
-        updatedAt: Date.now(),
+        lastStartTime: startNow,
+        /* The liveness beat, seeded at the start so a session paused before its
+           first heartbeat still measures against a real timestamp. Moved forward
+           by `heartbeatTimer` while the clock runs; the gap between the last beat
+           and a pause is what `pauseTimer` refuses to bank. */
+        heartbeatAt: startNow,
+        updatedAt: startNow,
       },
       { merge: true },
     );
@@ -3183,10 +3190,25 @@ export class LegacyRepository {
       totalSeconds?: number;
       lastStartTime?: number;
       taskTitle?: string;
+      heartbeatAt?: number;
     };
     const base = Number(data.totalSeconds) || 0;
     const startedAt = Number(data.lastStartTime) || Date.now();
-    const elapsed = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+    /* **Bank only the time the session was demonstrably alive.**
+     *
+     * A running clock writes `heartbeatAt` every ~45s (`heartbeatTimer`). When
+     * the tab is closed or the laptop sleeps the beats stop — so time past the
+     * last beat, plus the same staleness grace presence uses, was NOT worked and
+     * must not be credited. Without this cap a session left "running" across a
+     * two-hour gap banked the whole two hours the instant it was paused, which is
+     * the "1:59:39 for a five-minute run" figure. A live pause is unaffected: its
+     * last beat is at most one interval old, well inside the grace. */
+    const elapsed = bankableRunSecs({
+      startedAtRealMs: startedAt,
+      heartbeatAtRealMs: Number(data.heartbeatAt) || null,
+      nowRealMs: Date.now(),
+      graceMs: STALE_AFTER_MS,
+    });
     const total = base + elapsed;
     const pauseReason =
       message || (typeof reason === "string" ? reason : null) || null;
@@ -3215,6 +3237,48 @@ export class LegacyRepository {
     );
     notifyRepositoryChanged();
     return { ok: true, data: { taskId: id, loggedSecs: total } };
+  }
+
+  /**
+   * Keep a running session alive — the record that stops a gap being paid for.
+   *
+   * Called on an interval by the timer control while the clock is genuinely
+   * running (the assignee, online, not mid-reconnect). Its only job is to move
+   * `heartbeatAt` forward. `pauseTimer` banks time only up to the last beat plus
+   * the staleness grace, so a beat that never comes — a closed tab, a sleeping
+   * laptop — is precisely what keeps the untracked hours out of the total.
+   *
+   * If the previous beat is ALREADY older than the staleness window, the session
+   * was abandoned rather than merely between beats. It is paused here instead of
+   * refreshed, which banks only the worked time up to that last beat: a person
+   * returning hours later finds the clock stopped at the right figure rather
+   * than still running on the gap.
+   */
+  async heartbeatTimer(taskId: TaskId): Promise<ActionResult<void>> {
+    const employeeId = String(this.#ctx.employeeId);
+    const id = String(taskId);
+    const { getDoc, setDoc } = await import("firebase/firestore");
+    const ref = await this.#timerSession(employeeId, id);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) return { ok: true, data: undefined };
+    const data = snap.data() as {
+      isActive?: boolean;
+      heartbeatAt?: number;
+      lastStartTime?: number;
+    };
+    if (data.isActive !== true) return { ok: true, data: undefined };
+
+    const now = Date.now();
+    const lastBeat =
+      Number(data.heartbeatAt) || Number(data.lastStartTime) || now;
+    if (now - lastBeat > STALE_AFTER_MS) {
+      /* Abandoned since the last beat — pause, which caps the banked time at
+         that beat so the gap is not credited. */
+      await this.pauseTimer(id as TaskId, null, "went_away" as never);
+      return { ok: true, data: undefined };
+    }
+    await setDoc(ref, { heartbeatAt: now, updatedAt: now }, { merge: true });
+    return { ok: true, data: undefined };
   }
 
   /* ── Office policy ──────────────────────────────────────────────────────

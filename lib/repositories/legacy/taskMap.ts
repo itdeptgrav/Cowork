@@ -715,8 +715,17 @@ export function toTaskView(input: {
     budgetNegotiation: legacy.budgetNegotiation,
     reworkRequested: legacy.completionRequirementsFailed,
     reworkHistory: legacy.reworkHistory,
+    /* Kept for a self task as well as the `pending_tl_hours` stage. On a self
+       task the assignee proposes the budget and it waits on their MANAGER, whom
+       `#readTaskView` resolves into `budgetOwner` — and dropping it here (the
+       old condition named only `pending_tl_hours`) is why the negotiation card
+       said "waiting for the task's creator to decide": the manager is neither
+       an assignee nor the creator, so with `budgetOwner` gone there was no name
+       left to resolve the turn to. */
     budgetOwner:
-      legacy.status === "pending_tl_hours" ? (input.budgetOwner ?? null) : null,
+      legacy.isSelfAssigned || legacy.status === "pending_tl_hours"
+        ? (input.budgetOwner ?? null)
+        : null,
     approvals: legacy.departmentApprovals.map((a, i) => ({
       id: compositeId(legacy.id, `approval-${i}`),
       taskId: legacy.id,

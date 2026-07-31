@@ -58,6 +58,34 @@ export function runDurationSecs(input: {
 }
 
 /**
+ * How many seconds of a run may be BANKED — capped at the last liveness beat.
+ *
+ * A running clock writes a heartbeat every ~45s. Time past the last beat, plus
+ * the same staleness grace presence uses, was NOT worked: the tab was closed or
+ * the laptop asleep, so no beat came. Banking only up to that point is what stops
+ * a session left running across a long gap from crediting the whole gap — the
+ * "1:59:39 for a five-minute run" figure.
+ *
+ * A live pause is unaffected. Its last beat is at most one interval old, so
+ * `lastBeat + grace` is comfortably in the future and the cap never bites; the
+ * result is the full `now - start`. `heartbeatAtRealMs` absent (a session from
+ * before beats existed) falls back to the start, so an un-beaten run banks at
+ * most the grace — safe, and self-corrects the moment beats resume.
+ */
+export function bankableRunSecs(input: {
+  startedAtRealMs: number | null;
+  heartbeatAtRealMs: number | null;
+  nowRealMs: number;
+  graceMs: number;
+}): number {
+  const { startedAtRealMs, heartbeatAtRealMs, nowRealMs, graceMs } = input;
+  if (startedAtRealMs === null) return 0;
+  const lastBeat = heartbeatAtRealMs ?? startedAtRealMs;
+  const bankedUntil = Math.min(nowRealMs, lastBeat + graceMs);
+  return Math.max(0, Math.round((bankedUntil - startedAtRealMs) / 1000));
+}
+
+/**
  * A session left running past any plausible working stretch.
  *
  * Real and already in production: `GR0067/T623` is `isActive: true` with a
