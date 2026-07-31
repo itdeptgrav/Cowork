@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { currentSession } from "@/lib/server/session";
+import { mailPrincipal } from "@/lib/server/mailPrincipal";
 import { mailDebug } from "@/lib/integrations/mail/debug";
 import { identityStore } from "@/lib/server/store";
 import { seal } from "@/lib/server/secretBox";
@@ -42,8 +42,8 @@ function back(request: Request, reason: string, ok = false) {
 }
 
 export async function GET(request: Request) {
-  const session = await currentSession();
-  if (!session) return back(request, "Not authenticated.");
+  const principal = await mailPrincipal(request);
+  if (!principal) return back(request, "Not authenticated.");
 
   const config = gmailConfig();
   if (!config) return back(request, "Gmail is not configured on this server.");
@@ -54,7 +54,7 @@ export async function GET(request: Request) {
   const denied = url.searchParams.get("error");
   if (denied) return back(request, "Consent was declined.");
   if (!code || !state) return back(request, "Google returned an incomplete response.");
-  if (!verifyState(state, session.accountId, Date.now()))
+  if (!verifyState(state, principal.stateKey, Date.now()))
     return back(request, "That connection link is no longer valid. Try again.");
 
   try {
@@ -62,11 +62,11 @@ export async function GET(request: Request) {
     const email = await fetchConnectedEmail(tokens.accessToken);
     const now = new Date().toISOString();
     const existing = await identityStore.findGmailConnection(
-      session.employeeId,
+      principal.employeeId,
     );
     await identityStore.upsertGmailConnection({
-      id: existing?.id ?? `gc-${session.employeeId}`,
-      employeeId: session.employeeId,
+      id: existing?.id ?? `gc-${principal.employeeId}`,
+      employeeId: principal.employeeId,
       email,
       accessTokenEnc: seal(tokens.accessToken),
       refreshTokenEnc: seal(tokens.refreshToken!),
@@ -77,8 +77,8 @@ export async function GET(request: Request) {
       updatedAt: now,
     });
     mailDebug("callback", {
-      sessionEmployeeId: session.employeeId,
-      storedConnectionEmployeeId: session.employeeId,
+      sessionEmployeeId: principal.employeeId,
+      storedConnectionEmployeeId: principal.employeeId,
       connectedEmail: email,
       connectionStatus: "active",
       scopes: tokens.scopes.length,

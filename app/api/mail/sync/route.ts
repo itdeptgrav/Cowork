@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { currentSession } from "@/lib/server/session";
+import { mailPrincipal } from "@/lib/server/mailPrincipal";
 import { getGmailConnection, isGmailUsable } from "@/lib/integrations/mail/gmail/gmailClient";
 import { syncInbox, syncSent } from "@/lib/integrations/mail/gmail/gmailSyncService";
 import { mailDebug } from "@/lib/integrations/mail/debug";
@@ -23,12 +23,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const session = await currentSession();
-  if (!session)
+  const principal = await mailPrincipal(request);
+  if (!principal)
     return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
 
-  const connection = await getGmailConnection(session.employeeId);
-  if (!(await isGmailUsable(session.employeeId))) {
+  const connection = await getGmailConnection(principal.employeeId);
+  if (!(await isGmailUsable(principal.employeeId))) {
     const c = connection;
     return NextResponse.json(
       {
@@ -50,11 +50,11 @@ export async function POST(request: Request) {
        would put your own replies in a different place from the thread they
        belong to. */
     const [inbox, sent] = await Promise.all([
-      syncInbox(session.employeeId, body?.since),
-      syncSent(session.employeeId, body?.since),
+      syncInbox(principal.employeeId, body?.since),
+      syncSent(principal.employeeId, body?.since),
     ]);
     mailDebug("sync", {
-      sessionEmployeeId: session.employeeId,
+      sessionEmployeeId: principal.employeeId,
       mailboxAddress: connection?.email ?? null,
       inboxCount: inbox.length,
       sentCount: sent.length,

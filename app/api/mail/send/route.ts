@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { currentSession } from "@/lib/server/session";
+import { mailPrincipal } from "@/lib/server/mailPrincipal";
 import { getGmailConnection, isGmailUsable } from "@/lib/integrations/mail/gmail/gmailClient";
 import { sendEmail } from "@/lib/integrations/mail/gmail/gmailSendService";
 import { transportFor } from "@/lib/integrations/mail/transport";
@@ -24,8 +24,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const session = await currentSession();
-  if (!session)
+  const principal = await mailPrincipal(request);
+  if (!principal)
     return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
 
   const body = (await request.json().catch(() => null)) as {
@@ -51,11 +51,11 @@ export async function POST(request: Request) {
       { status: 400 },
     );
 
-  const connection = await getGmailConnection(session.employeeId);
-  const usable = await isGmailUsable(session.employeeId);
+  const connection = await getGmailConnection(principal.employeeId);
+  const usable = await isGmailUsable(principal.employeeId);
 
   mailDebug("send", {
-    sessionEmployeeId: session.employeeId,
+    sessionEmployeeId: principal.employeeId,
     storedConnectionEmployeeId: connection?.employeeId ?? null,
     connectedEmail: connection?.email ?? null,
     connectionStatus: connection?.status ?? null,
@@ -75,12 +75,12 @@ export async function POST(request: Request) {
     );
 
   try {
-    const result = await sendEmail(session.employeeId, {
+    const result = await sendEmail(principal.employeeId, {
       from: {
         kind: "employee",
-        employeeId: session.employeeId,
+        employeeId: principal.employeeId,
         address: connection!.email,
-        displayName: session.displayName ?? connection!.email,
+        displayName: principal.displayName ?? connection!.email,
       },
       to,
       cc,

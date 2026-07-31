@@ -1,6 +1,56 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { elapsedSecs, runDurationSecs } from "./timer.ts";
+import { bankableRunSecs, elapsedSecs, runDurationSecs } from "./timer.ts";
+
+const GRACE = 120_000; // STALE_AFTER_MS
+
+test("bankable: a live run (beat seconds ago) banks the whole thing", () => {
+  const start = 1_000_000;
+  const now = start + 5 * 60_000; // 5 minutes of work
+  const beat = now - 30_000; // last beat 30s ago — a live clock
+  assert.equal(
+    bankableRunSecs({
+      startedAtRealMs: start,
+      heartbeatAtRealMs: beat,
+      nowRealMs: now,
+      graceMs: GRACE,
+    }),
+    5 * 60,
+    "a live pause is uncapped",
+  );
+});
+
+test("bankable: an abandoned run banks only up to the last beat + grace", () => {
+  const start = 1_000_000;
+  const beat = start + 5 * 60_000; // beat until 5 min in, then the tab closed
+  const now = beat + 2 * 3600_000; // reopened two hours later
+  const secs = bankableRunSecs({
+    startedAtRealMs: start,
+    heartbeatAtRealMs: beat,
+    nowRealMs: now,
+    graceMs: GRACE,
+  });
+  assert.equal(secs, 5 * 60 + 120, "worked time plus the grace, NOT the 2h gap");
+  assert.ok(
+    secs < 10 * 60,
+    "nowhere near the 2h+5min a naive now-minus-start would credit",
+  );
+});
+
+test("bankable: no heartbeat falls back to the start, capped at the grace", () => {
+  const start = 1_000_000;
+  const now = start + 3600_000; // an hour with no beats at all
+  assert.equal(
+    bankableRunSecs({
+      startedAtRealMs: start,
+      heartbeatAtRealMs: null,
+      nowRealMs: now,
+      graceMs: GRACE,
+    }),
+    120,
+    "an un-beaten run banks at most the grace, not the hour",
+  );
+});
 
 /**
  * The reported bug, pinned.

@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { currentSession } from "@/lib/server/session";
+import { mailPrincipal } from "@/lib/server/mailPrincipal";
 import { consentUrl, gmailConfig, signState } from "@/lib/integrations/mail/gmail/gmailAuth";
 
 /** Start the consent flow. Redirects to Google; issues nothing itself. */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-export async function GET() {
-  const session = await currentSession();
-  if (!session)
+export async function GET(request: Request) {
+  const principal = await mailPrincipal(request);
+  if (!principal)
     return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
 
   const config = gmailConfig();
@@ -21,8 +21,8 @@ export async function GET() {
       { status: 503 },
     );
 
-  /* Bound to THIS account and expiring, so the callback cannot be replayed
-     against somebody else's session. */
-  const state = signState(session.accountId, Date.now());
+  /* Bound to THIS caller and expiring, so the callback cannot be replayed
+     against somebody else's account. */
+  const state = signState(principal.stateKey, Date.now());
   return NextResponse.redirect(consentUrl(config, state));
 }

@@ -93,10 +93,23 @@ test("the timer writes the collections the old app reads", () => {
 });
 
 test("pause banks elapsed time rather than trusting a tick", () => {
-  /* `totalSeconds + floor((now - lastStartTime) / 1000)` — the hook's own
-     arithmetic. Computed from the stored start stamp, so a session paused after
-     the tab was throttled or asleep is still correct. */
-  assert.match(source, /Math\.floor\(\(Date\.now\(\) - startedAt\) \/ 1000\)/);
+  /* `totalSeconds + bankableRunSecs(...)` — real elapsed measured from the
+     stored start stamp (so a session paused after the tab was throttled is still
+     correct), but CAPPED at the last liveness beat plus the staleness grace so a
+     gap where nothing beat — a closed tab, a sleeping laptop — is not credited.
+     That cap is what stops "1:59:39 for a five-minute run". */
+  assert.match(source, /bankableRunSecs\(\{/);
+  assert.match(source, /heartbeatAtRealMs:\s*Number\(data\.heartbeatAt\)/);
+  assert.match(source, /graceMs:\s*STALE_AFTER_MS/);
+});
+
+test("a running session is kept alive by a heartbeat that caps abandonment", () => {
+  /* The beat moves `heartbeatAt` forward while the clock runs; a beat that finds
+     the previous one already stale pauses the session instead, so an abandoned
+     run banks only up to its last beat rather than the whole gap. */
+  assert.match(source, /async heartbeatTimer\(/);
+  assert.match(source, /heartbeatAt: now/);
+  assert.match(source, /"went_away"/);
 });
 
 test("starting one task pauses any other running timer", () => {
