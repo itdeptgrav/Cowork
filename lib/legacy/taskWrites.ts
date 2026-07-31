@@ -343,6 +343,9 @@ export async function approveDeadline(input: {
   taskId: string;
   approved: boolean;
   rejectionReason?: string;
+  /** The agreed date, for the record-based flow. Applied directly by the engine,
+      which then skips the on-task `pending_deadline_approval` requirement. */
+  explicitDueDate?: string;
 }): Promise<LegacyResult<unknown>> {
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/approve-deadline`,
@@ -350,6 +353,9 @@ export async function approveDeadline(input: {
     body: {
       approved: input.approved,
       rejectionReason: input.rejectionReason ?? "",
+      ...(input.explicitDueDate
+        ? { explicitDueDate: input.explicitDueDate }
+        : {}),
     },
     token: input.token,
   });

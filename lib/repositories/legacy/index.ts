@@ -1966,11 +1966,21 @@ export class LegacyRepository {
     id: TaskId,
     approved: boolean,
     rejectionReason?: string,
+    /** The agreed date, for the record-based deadline-extension flow. When set,
+        the engine applies it directly instead of reading `task.proposedDeadline`
+        and requiring `pending_deadline_approval` — a status that flow never sets. */
+    explicitDueDate?: string,
   ): Promise<ActionResult<Task>> {
     const taskId = String(id);
     return this.#write(
       (token) =>
-        approveDeadlineRequest({ token, taskId, approved, rejectionReason }),
+        approveDeadlineRequest({
+          token,
+          taskId,
+          approved,
+          rejectionReason,
+          explicitDueDate,
+        }),
       () => taskId,
     );
   }
@@ -2851,10 +2861,14 @@ export class LegacyRepository {
 
     if (decision === "approved") {
       /* The date ON THE TABLE. Once a counter has been made that is the figure
-         being accepted; `proposedDeadline` is the one it answered. */
+         being accepted; `proposedDeadline` is the one it answered. Passed as the
+         EXPLICIT due date — not the rejection reason, which is where it used to
+         land, so the agreed date never reached the task and the engine 400'd
+         "No pending deadline proposal." on the missing on-task status. */
       const r = await this.decideDeadline(
         record.taskId as TaskId,
         true,
+        undefined,
         liveDeadline(record),
       );
       if (!r.ok) return r as ActionResult<DeadlineExtensionRecord | null>;
