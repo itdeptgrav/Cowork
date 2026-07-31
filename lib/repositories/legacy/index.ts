@@ -115,6 +115,25 @@ import {
 import { resolveTimeBudget } from "../../rules/tasks/resolveTimeBudget.ts";
 import { extensionFromAddition } from "../../rules/tasks/deadlineExtension.ts";
 import type { RoleArchetype } from "../../domain/identity.ts";
+import type {
+  MailAttachment,
+  MailFolder,
+  MailMessage,
+  MailParty,
+  MailThread,
+  MailTransport,
+} from "../../domain/mail.ts";
+import {
+  MAIL_COLLECTION,
+  deriveThread,
+  inFolder,
+  mailMessageBody,
+  mailVisible,
+  readMailMessage,
+  resolveParty,
+  threadMatchesSearch,
+  transportForParties,
+} from "./mail.ts";
 import { applySettingsChange } from "../../rules/settings/service.ts";
 import {
   AUDIT_REQUIRED,
@@ -6554,6 +6573,360 @@ export class LegacyRepository {
   setActingId(): void {
     /* Same reason. Deliberately inert rather than absent, so the dev profile
        switcher cannot silently act as somebody the token does not authorise. */
+  }
+
+  /* ── Mail ────────────────────────────────────────────────────────────────
+   *
+   * One document per message in `cowork_mails` (the collection legacy already
+   * used, so its Firestore rules apply); threads are DERIVED on read (see
+   * `./mail.ts`). There is no Express mail engine — internal mail is a
+   * browser↔Firestore write like the budget-extension records, and external
+   * (Gmail) send and sync go through the Next.js `/api/mail` routes, which hold
+   * the sealed OAuth tokens the browser must never see.
+   */
+
+  async #mailContext() {
+    const employees = await this.#employeesById();
+    const me = String(this.#ctx.employeeId);
+    const meEmp = employees.get(me) ?? null;
+    const byEmail = new Map<string, Employee>();
+    for (const e of employees.values())
+      if (e.email) byEmail.set(e.email.toLowerCase(), e);
+    return { me, orgId: LEGACY_ORGANISATION_ID, byEmail, meEmp };
+  }
+
+  /** Every message this person is a party to, in one `array-contains` read. */
+  async #myMailMessages(): Promise<MailMessage[]> {
+    const { collection, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const me = String(this.#ctx.employeeId);
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), MAIL_COLLECTION),
+        where("participantIds", "array-contains", me),
+      ),
+    );
+    return snap.docs.map((d) =>
+      readMailMessage(d.id, d.data() as Record<string, unknown>),
+    );
+  }
+
+  async listMailThreads(q: {
+    folder: MailFolder;
+    transport?: MailTransport;
+    search?: string;
+  }): Promise<MailThread[]> {
+    const me = String(this.#ctx.employeeId);
+    const all = (await this.#myMailMessages()).filter((m) => mailVisible(m, me));
+    /* Show a thread when it has a message in the chosen folder; SUMMARISE it
+       from every visible message in the thread, so a Sent row still previews
+       the latest reply rather than only what I sent. */
+    const byThread = new Map<string, MailMessage[]>();
+    for (const m of all) {
+      const list = byThread.get(m.threadId) ?? [];
+      list.push(m);
+      byThread.set(m.threadId, list);
+    }
+    const inFolderThreads = new Set(
+      all.filter((m) => inFolder(m, me, q.folder)).map((m) => m.threadId),
+    );
+    let threads = [...inFolderThreads].map((tid) =>
+      deriveThread(tid, byThread.get(tid) ?? [], LEGACY_ORGANISATION_ID),
+    );
+    if (q.transport) threads = threads.filter((t) => t.transport === q.transport);
+    if (q.search?.trim()) {
+      const needle = q.search.trim();
+      threads = threads.filter((t) =>
+        threadMatchesSearch(t, byThread.get(t.id) ?? [], needle),
+      );
+    }
+    return threads.sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt));
+  }
+
+  async listMailMessages(threadId: string): Promise<MailMessage[]> {
+    const { collection, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const me = String(this.#ctx.employeeId);
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), MAIL_COLLECTION),
+        where("threadId", "==", threadId),
+      ),
+    );
+    return snap.docs
+      .map((d) => readMailMessage(d.id, d.data() as Record<string, unknown>))
+      .filter((m) => mailVisible(m, me))
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  }
+
+  async listMailAttachments(ids: string[]): Promise<MailAttachment[]> {
+    if (ids.length === 0) return [];
+    const { doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    /* The ids ARE the doc ids; read each rather than an `in` query (which caps
+       at ten). A missing attachment is skipped, not fatal. */
+    const snaps = await Promise.all(
+      ids.map((id) =>
+        getDoc(doc(legacyDb(), "cowork_mail_attachments", id)).catch(() => null),
+      ),
+    );
+    const out: MailAttachment[] = [];
+    for (const s of snaps) {
+      if (!s || !s.exists()) continue;
+      const d = s.data() as Record<string, unknown>;
+      out.push({
+        id: s.id,
+        messageId: typeof d.messageId === "string" ? d.messageId : "",
+        filename: typeof d.filename === "string" ? d.filename : "file",
+        mimeType:
+          typeof d.mimeType === "string"
+            ? d.mimeType
+            : "application/octet-stream",
+        sizeBytes: typeof d.sizeBytes === "number" ? d.sizeBytes : 0,
+        storageKey: typeof d.storageKey === "string" ? d.storageKey : "",
+        uploadedAt:
+          typeof d.uploadedAt === "string"
+            ? d.uploadedAt
+            : new Date(0).toISOString(),
+      });
+    }
+    return out;
+  }
+
+  async getMailUnreadCount(): Promise<number> {
+    const me = String(this.#ctx.employeeId);
+    const all = await this.#myMailMessages();
+    return all.filter(
+      (m) =>
+        mailVisible(m, me) && inFolder(m, me, "inbox") && !m.readBy.includes(me),
+    ).length;
+  }
+
+  async setMailRead(
+    messageId: string,
+    read: boolean,
+  ): Promise<ActionResult<void>> {
+    return this.#setMailArrayFlag(messageId, "readBy", read);
+  }
+
+  async setMailFlag(
+    messageId: string,
+    flag: "starred" | "trashed",
+    on: boolean,
+  ): Promise<ActionResult<void>> {
+    return this.#setMailArrayFlag(
+      messageId,
+      flag === "starred" ? "starredBy" : "trashedBy",
+      on,
+    );
+  }
+
+  /** Toggle one per-person array flag on a message, after checking the reader is
+   *  a party to it — the same permission the mock enforces. */
+  async #setMailArrayFlag(
+    messageId: string,
+    field: "readBy" | "starredBy" | "trashedBy",
+    on: boolean,
+  ): Promise<ActionResult<void>> {
+    const { arrayRemove, arrayUnion, doc, getDoc, updateDoc } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const me = String(this.#ctx.employeeId);
+    const ref = doc(legacyDb(), MAIL_COLLECTION, messageId);
+    const snap = await getDoc(ref);
+    if (!snap.exists())
+      return { ok: false, code: "not_found", message: "Message not found." };
+    const m = readMailMessage(snap.id, snap.data() as Record<string, unknown>);
+    if (!mailVisible(m, me))
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "That message is not yours.",
+      };
+    try {
+      await updateDoc(ref, {
+        [field]: on ? arrayUnion(me) : arrayRemove(me),
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[setMailArrayFlag]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "Could not update the message.",
+      };
+    }
+  }
+
+  async sendMail(input: {
+    to: MailParty[];
+    cc?: MailParty[];
+    subject: string;
+    body: string;
+    attachmentIds?: string[];
+    threadId?: string | null;
+    gmail?: { messageId: string; threadId: string } | null;
+    deliveryError?: string | null;
+  }): Promise<ActionResult<MailMessage>> {
+    const { addDoc, collection } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const ctx = await this.#mailContext();
+    if (!ctx.meEmp)
+      return { ok: false, code: "not_found", message: "Employee not found." };
+
+    const cc = input.cc ?? [];
+    const transport = transportForParties([...input.to, ...cc]);
+
+    /* External send goes through the Gmail route, which holds the token. If it
+       fails the message is KEPT as a draft with the reason on it, never lost —
+       the contract the compose card reads. */
+    let gmail = input.gmail ?? null;
+    let deliveryError = input.deliveryError ?? null;
+    if (transport === "gmail" && !gmail && !deliveryError) {
+      try {
+        const res = await fetch("/api/mail/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            to: input.to,
+            cc,
+            subject: input.subject,
+            body: input.body,
+            gmailThreadId: null,
+          }),
+        });
+        const payload = (await res.json().catch(() => null)) as {
+          gmail?: { gmailMessageId: string; gmailThreadId: string };
+          error?: string;
+        } | null;
+        if (res.ok && payload?.gmail) {
+          gmail = {
+            messageId: payload.gmail.gmailMessageId,
+            threadId: payload.gmail.gmailThreadId,
+          };
+        } else {
+          deliveryError =
+            payload?.error ??
+            "Gmail could not be reached, so this was kept as a draft.";
+        }
+      } catch {
+        deliveryError =
+          "Gmail could not be reached, so this was kept as a draft.";
+      }
+    }
+
+    const now = new Date().toISOString();
+    const from: MailParty = {
+      kind: "employee",
+      employeeId: ctx.meEmp.id,
+      address: ctx.meEmp.email ?? `${ctx.meEmp.id}@cowork.local`,
+      displayName: ctx.meEmp.displayName,
+    };
+    const message: Omit<MailMessage, "id"> = {
+      threadId:
+        input.threadId ??
+        `mth-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`,
+      transport,
+      from,
+      to: input.to,
+      cc,
+      subject: input.subject.trim(),
+      body: input.body,
+      attachmentIds: input.attachmentIds ?? [],
+      /* The sender has read their own message. */
+      readBy: [ctx.meEmp.id],
+      starredBy: [],
+      trashedBy: [],
+      archivedBy: [],
+      labels: [],
+      /* A failed external send stays a draft (null `sentAt`) carrying its error. */
+      sentAt: deliveryError ? null : now,
+      createdAt: now,
+      gmailMessageId: gmail?.messageId ?? null,
+      deliveryError,
+    };
+    try {
+      const ref = await addDoc(
+        collection(legacyDb(), MAIL_COLLECTION),
+        mailMessageBody(message, ctx.orgId),
+      );
+      notifyRepositoryChanged();
+      return { ok: true, data: { ...message, id: ref.id } };
+    } catch (e) {
+      console.error("[sendMail]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The message could not be sent.",
+      };
+    }
+  }
+
+  async importGmailMessages(
+    messages: MailMessage[],
+    mailboxAddress: string,
+  ): Promise<ActionResult<{ added: number }>> {
+    const { addDoc, collection, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const ctx = await this.#mailContext();
+    const mailbox = mailboxAddress.toLowerCase();
+
+    /* The gmail ids already stored, in one read — idempotency costs no per-message
+       query, and a re-sync of the same message adds nothing. */
+    const seen = new Set<string>();
+    const existing = await getDocs(
+      query(
+        collection(legacyDb(), MAIL_COLLECTION),
+        where("participantIds", "array-contains", ctx.me),
+      ),
+    );
+    for (const d of existing.docs) {
+      const g = (d.data() as Record<string, unknown>).gmailMessageId;
+      if (typeof g === "string") seen.add(g);
+    }
+
+    let added = 0;
+    for (const raw of messages) {
+      if (raw.gmailMessageId && seen.has(raw.gmailMessageId)) continue;
+      const from = resolveParty(raw.from, ctx.byEmail, mailbox, ctx.meEmp);
+      const to = raw.to.map((p) =>
+        resolveParty(p, ctx.byEmail, mailbox, ctx.meEmp),
+      );
+      const cc = raw.cc.map((p) =>
+        resolveParty(p, ctx.byEmail, mailbox, ctx.meEmp),
+      );
+      const { id: _ignore, ...base } = raw;
+      void _ignore;
+      const message: Omit<MailMessage, "id"> = {
+        ...base,
+        from,
+        to,
+        cc,
+        transport: "gmail",
+        /* Read if I sent it; unread if it arrived. */
+        readBy: from.employeeId === ctx.me ? [ctx.me] : [],
+      };
+      try {
+        await addDoc(
+          collection(legacyDb(), MAIL_COLLECTION),
+          mailMessageBody(message, ctx.orgId),
+        );
+        if (raw.gmailMessageId) seen.add(raw.gmailMessageId);
+        added += 1;
+      } catch (e) {
+        console.error("[importGmailMessages]", e);
+      }
+    }
+    if (added > 0) notifyRepositoryChanged();
+    return { ok: true, data: { added } };
   }
 }
 
