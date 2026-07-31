@@ -53,7 +53,7 @@ const TYPES: {
   {
     id: "self_assigned",
     label: "Self-assigned",
-    body: "A standard task, with you already assigned.",
+    body: "Work you take on. Your manager approves and reviews it.",
     icon: "user",
   },
   {
@@ -134,14 +134,17 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
      repository against the same rule `createTask` refuses on, so what is
      offered and what is accepted cannot disagree. */
   const assignable = useQuery((r) => r.listAssignableEmployees(), []);
-  /* A self task is a standard task you assign to yourself. The scoped list
-     deliberately excludes the viewer (you assign work to OTHERS on a standard
-     task), so for the self case put the viewer back — they are the one valid,
-     pre-selected assignee, and without this they would read as "forbidden". */
+  /* A self task is assigned to YOU and nobody else — the assignee field shows
+     only your own name, with no one else visible or selectable. The scoped list
+     deliberately excludes the viewer (a standard task assigns work to OTHERS), so
+     for the self case the list is exactly `[you]` — not you plus everyone, which
+     would let a "self" task be pointed at someone else. */
   const viewerEmployee = (people.data ?? []).find((p) => p.id === me) ?? null;
   const assignablePeople =
-    type === "self_assigned" && viewerEmployee
-      ? [viewerEmployee, ...(assignable.data ?? []).filter((p) => p.id !== me)]
+    type === "self_assigned"
+      ? viewerEmployee
+        ? [viewerEmployee]
+        : []
       : (assignable.data ?? []);
   const assignableIds = new Set(assignablePeople.map((p) => p.id));
 
@@ -218,13 +221,14 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
     [],
   );
 
-  /* A self task IS a standard task — the only difference is that you are already
-     in the assignee list. So everything that branches on the type treats
-     "self_assigned" as "standard", and the record is created as one. The button
-     stays as a convenience: pick it and you are pre-selected, nothing more. */
-  const submitType: TaskType = type === "self_assigned" ? "standard" : type;
-
-  const multiAllowed = allowsMultipleAssignees(submitType);
+  /* A self task keeps its own type. It is standard-SHAPED — same fields — but
+     it is NOT a plain standard task assigned to yourself, because you cannot
+     negotiate a budget with, set the priority of, or review your own work. The
+     engine records it as `self_assigned`, and the backend makes the assignee's
+     PRIMARY MANAGER the counterparty (assignor of record): you propose the
+     budget, they approve or negotiate, they set priority and review. No approver
+     field is shown — the manager is resolved from HR. */
+  const multiAllowed = allowsMultipleAssignees(type);
   /* Changing the type to one that holds a single person must not leave a stale
      multi-selection behind — the submit would be refused with a selection the
      reader can still see on screen. Derived rather than stored, so there is no
@@ -236,7 +240,7 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
       title,
       description: description || null,
       requirements,
-      type: submitType,
+      type,
       assigneeIds: effectiveAssignees,
       /* Not sent. The owning department is the creator's, and `createTask`
          reads that off the acting employee — passing a value from here would
@@ -245,8 +249,9 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
       projectId: projectId || null,
       parentTaskId: parentTaskId || null,
       goalId: goalId || null,
-      /* No self-approver. A self task follows the standard review route — the
-         assignee's manager on file — like every other standard task. */
+      /* No approver is chosen in the form. For a self task the backend resolves
+         the assignee's primary manager from HR and makes them the counterparty
+         (budget, priority, review); for every other type this stays null. */
       approverId: null,
       deadlineMode: mode,
       fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
@@ -405,12 +410,12 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
           <Panel>
             <h2 className="text-sm font-medium text-ink">People</h2>
             <Field
-              label="Assignees"
+              label={type === "self_assigned" ? "Assignee" : "Assignees"}
               required
               className="mt-3"
               hint={
                 type === "self_assigned"
-                  ? "You are pre-selected. Pick someone else to hand it over instead."
+                  ? "A self task is yours alone. Your manager sets the budget, priority and reviews it."
                   : multiAllowed
                     ? isMulti
                       ? undefined
@@ -796,7 +801,7 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
             <ul className="mt-3 space-y-2.5 text-sm text-ink-muted">
               <Consequence>
                 {type === "self_assigned"
-                  ? "It lands at the bottom of your own priority list, like any other task."
+                  ? "Your manager approves the time budget, sets its priority, and reviews it — you propose, they decide."
                   : "Each assignee receives it at the bottom of their priority list."}
               </Consequence>
               {relationshipKnown && (

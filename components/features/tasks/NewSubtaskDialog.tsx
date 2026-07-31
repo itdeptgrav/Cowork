@@ -12,6 +12,7 @@ import {
   Textarea,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import { useViewerId } from "@/lib/hooks/usePermissions";
 import { subtaskRefusal } from "@/lib/rules/tasks/completion";
 import type { TaskView } from "@/lib/repositories";
 
@@ -44,6 +45,16 @@ export function NewSubtaskDialog({
   const [chosen, setChosen] = useState<string[]>([]);
 
   const people = useQuery((r) => r.listAssignableEmployees(), []);
+  /* A subtask can be kept for YOURSELF — a self subtask, mediated by your manager
+     exactly like a self task (the backend routes budget, priority and review to
+     your manager once the assignee is you). `listAssignableEmployees` excludes
+     the viewer, so add yourself back at the top of the list. */
+  const me = useViewerId();
+  const everyone = useQuery((r) => r.listEmployees(), []);
+  const viewerEmployee = (everyone.data ?? []).find((p) => p.id === me) ?? null;
+  const options = viewerEmployee
+    ? [viewerEmployee, ...(people.data ?? []).filter((p) => p.id !== me)]
+    : (people.data ?? []);
   const [create, state] = useAction((r) =>
     r.createSubtask({
       parentTaskId: parent.task.id,
@@ -148,8 +159,9 @@ export function NewSubtaskDialog({
               Only people you may already create work for.
             </p>
             <ul className="mt-2 -mx-2">
-              {(people.data ?? []).map((p) => {
+              {options.map((p) => {
                 const on = assigneeId === p.id;
+                const isSelf = p.id === me;
                 return (
                   <li key={p.id}>
                     <button
@@ -171,10 +183,14 @@ export function NewSubtaskDialog({
                       <span className="min-w-0 flex-1">
                         <span className="block truncate text-sm text-ink">
                           {p.displayName}
+                          {isSelf && (
+                            <span className="text-ink-faint"> · yourself</span>
+                          )}
                         </span>
                         <span className="block truncate text-[11px] text-ink-faint">
-                          {p.designation}
-                          {p.departmentName ? ` · ${p.departmentName}` : ""}
+                          {isSelf
+                            ? "A self subtask — your manager approves and reviews it."
+                            : `${p.designation}${p.departmentName ? ` · ${p.departmentName}` : ""}`}
                         </span>
                       </span>
                       {on && (
