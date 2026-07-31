@@ -36,51 +36,44 @@ const SOUMYA = "GR0108";
 
 /* ── Case 1 · the detail-versus-list mismatch ─────────────────────────────── */
 
-test("1 · the same viewer reads one number on both screens", () => {
-  /* THE REPORTED BUG, as the two reads actually differed.
+test("1 · a manager reads the report's derived position, same as the report", () => {
+  /* THE REPORTED BUG — now fixed at the data layer.
    *
-   *   list   → queue.ownerId = the VIEWER   → manager holds nothing → stored rank
-   *   detail → queue.ownerId = the SUBJECT  → assignee's position   → derived
+   * Before: the LIST attached `queue.ownerId = the VIEWER`, so a manager's
+   * holder set carried NO queuePosition for the report and the badge fell to the
+   * report's STORED rank (with its gaps/dups), while the DETAIL fetched the
+   * SUBJECT's queue and showed the DERIVED position — the same task read P4 in
+   * the list and P3 when opened, and Rakesh's list of Pramod disagreed with
+   * Pramod's own.
    *
-   * A manager therefore saw the stored priority in the list and the assignee's
-   * queue position on the detail page, both as `P{n}`. Now the stored rank is
-   * always the stored rank, and a position is a separate, explicitly-owned fact.
-   */
-  const storedOnly = [{ employeeId: PRAMOD, rank: 3, queuePosition: null }];
-  /* What the DETAIL read produces: the subject's queue was fetched. */
-  const withSubjectQueue = [
-    { employeeId: PRAMOD, rank: 3, queuePosition: 1 },
-  ];
+   * The list now fetches each SUBJECT's queue too (`#activeQueueOf` per holder in
+   * `listTasks`), so the report's holder carries its queuePosition on BOTH
+   * screens. `displayPriority` branch 2 returns ANY holder's position regardless
+   * of who is reading — so every viewer lands on the report's own gap-free
+   * number, and list == detail == the report's own list. */
+  const holders = [{ employeeId: PRAMOD, rank: 3, queuePosition: 1 }];
 
-  const listView = displayPriority({
+  /* Every non-holding viewer — the manager, a stranger, nobody — reads the
+     report's DERIVED position, explicitly named as the report's, never their
+     own. This viewer-independence is what makes the two screens agree. */
+  for (const viewerId of [RAKESH, "STRANGER", null]) {
+    const view = displayPriority({ status: "in_progress", viewerId, holders });
+    assert.equal(view.scale, "queue_position");
+    assert.equal(view.rank, 1);
+    assert.equal(view.subjectId, PRAMOD);
+    assert.equal(view.isMine, false);
+    assert.match(describePriority(view, () => "Pramod"), /live queue/);
+  }
+
+  /* With no subject queue (a failed per-person read) it falls back honestly to
+     the stored rank rather than inventing a position. */
+  const fallback = displayPriority({
     status: "in_progress",
     viewerId: RAKESH,
-    holders: storedOnly,
+    holders: [{ employeeId: PRAMOD, rank: 3, queuePosition: null }],
   });
-  const detailView = displayPriority({
-    status: "in_progress",
-    viewerId: RAKESH,
-    holders: withSubjectQueue,
-  });
-
-  /* The numbers may still differ — a position and a stored rank are different
-     facts — but the READER is now told which is which and whose it is, and
-     neither is silently labelled as the other. */
-  assert.equal(listView.scale, "stored_rank");
-  assert.equal(listView.rank, 3);
-  assert.equal(detailView.scale, "queue_position");
-  assert.equal(detailView.rank, 1);
-
-  /* And both name the same subject, so a tooltip cannot claim the manager's own
-     queue is being reported. */
-  assert.equal(listView.subjectId, PRAMOD);
-  assert.equal(detailView.subjectId, PRAMOD);
-  assert.equal(listView.isMine, false);
-  assert.equal(detailView.isMine, false);
-
-  /* The distinction a reader can act on: one renumbers itself, one does not. */
-  assert.match(describePriority(detailView, () => "Pramod"), /live queue/);
-  assert.match(describePriority(listView, () => "Pramod"), /stored priority/);
+  assert.equal(fallback.scale, "stored_rank");
+  assert.equal(fallback.rank, 3);
 });
 
 test("1b · the stored rank can never hold a derived position again", () => {

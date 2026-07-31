@@ -992,20 +992,77 @@ export class LegacyRepository {
       });
     }
 
-    let views = legacyTasks.map((legacy) =>
-      toTaskView({
+    /* **Priority is a property of the PERSON, not the viewer.**
+     *
+     * This attached only the VIEWER's derived queue to every row
+     * (`ownerId: viewerId`). So when a manager listed a report's task, the
+     * per-assignee gate in `toTaskView` left the report's `queuePosition` null
+     * and the badge fell through to the report's RAW stored rank — the gaps and
+     * duplicates a completed task leaves behind (stored 1, 2, 4) — while the
+     * report, viewing their OWN list, saw the derived gap-free 1, 2, 3. Same
+     * task, two different P-numbers and two different orders.
+     *
+     * So compute each SUBJECT's active queue — exactly as the detail page does
+     * via `#activeQueueOf` — and give every row its own subject's positions. The
+     * viewer's own queue is already computed as `myQueue`/`myDueDates`, so it is
+     * reused rather than re-fetched; only OTHER people's queues cost a read, one
+     * per distinct report in the list, run in parallel. */
+    const subjectOf = (t: (typeof legacyTasks)[number]): string | null => {
+      const holders = holdersOf({
+        assigneeIds: t.assigneeIds,
+        pendingAssigneeIds: t.pendingAssigneeId ? [t.pendingAssigneeId] : [],
+      });
+      return holders.includes(viewerId) ? viewerId : (holders[0] ?? null);
+    };
+    const queuesBySubject = new Map<
+      string,
+      {
+        ownerId: string;
+        positions: Map<string, number>;
+        dueDates: Map<string, string>;
+      }
+    >([
+      [viewerId, { ownerId: viewerId, positions: myQueue, dueDates: myDueDates }],
+    ]);
+    const otherSubjects = [
+      ...new Set(
+        legacyTasks
+          .map(subjectOf)
+          .filter((id): id is string => id !== null && id !== viewerId),
+      ),
+    ];
+    await Promise.all(
+      otherSubjects.map(async (subjectId) => {
+        try {
+          const q = await this.#activeQueueOf(subjectId);
+          queuesBySubject.set(subjectId, {
+            ownerId: subjectId,
+            positions: new Map(q.order.map((id, i) => [id, i + 1])),
+            dueDates: q.dueDates,
+          });
+        } catch {
+          /* One report's failed queue read means their rows fall back to the
+             stored rank — better than failing the whole list. Same tolerance the
+             detail path uses. */
+        }
+      }),
+    );
+
+    let views = legacyTasks.map((legacy) => {
+      const subjectId = subjectOf(legacy);
+      return toTaskView({
         legacy,
         employeesById,
         viewerId,
         nowMs,
-        /* The SAME dates the task page shows, from the same chain. Without
-           this the list fell back to legacy's stored deadline — assignment
-           time plus the budget, as if the person were free — so a task read
-           one date in the list and another when opened. */
-        queue: { ownerId: viewerId, positions: myQueue, dueDates: myDueDates },
+        /* The ROW's subject queue — the person who actually holds this task — so
+           the derived, gap-free 1..N a manager sees is identical to what the
+           report sees on their own list, and the operational date agrees too.
+           Falls back to undefined (→ stored rank) only when unresolved. */
+        queue: (subjectId && queuesBySubject.get(subjectId)) || undefined,
         viewerLegacyRole: this.#ctx.legacyRole,
-      }),
-    );
+      });
+    });
 
     if (q.status?.length) {
       const wanted = new Set(q.status);

@@ -237,7 +237,18 @@ test("the list and the task page get their dates from one chain", () => {
     2,
     "the list and the task page must share the chain",
   );
-  assert.match(src, /queue: \{ ownerId: viewerId, positions: myQueue, dueDates: myDueDates \}/);
+  /* The list attaches each ROW's SUBJECT queue now — so a manager sees the
+     report's OWN derived positions and dates, not the viewer's — seeded with the
+     viewer's own chained `myQueue`/`myDueDates` and filled per report via the
+     same `#activeQueueOf` the detail page uses. Dates still come from one chain;
+     they are just computed per person rather than only for the viewer. */
+  assert.match(src, /queuesBySubject/);
+  assert.match(
+    src,
+    /ownerId: viewerId, positions: myQueue, dueDates: myDueDates/,
+  );
+  assert.match(src, /this\.#activeQueueOf\(subjectId\)/);
+  assert.match(src, /queue: \(subjectId && queuesBySubject\.get\(subjectId\)\)/);
   /* And the chain is seeded from now plus settled budgets — never a stored
      deadline, a creation time or an approval time. */
   const fn = src.slice(src.indexOf("async #chainQueue("), src.indexOf("async #chainQueue(") + 2600);

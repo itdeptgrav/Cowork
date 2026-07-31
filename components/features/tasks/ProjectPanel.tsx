@@ -65,10 +65,6 @@ export function ProjectPanel({
       draft.split("\n").map((x) => x.trim()).filter(Boolean),
     ),
   );
-  const [setSatisfied, satState] = useAction(
-    (r, requirementId: string, satisfied: boolean) =>
-      r.setRequirementSatisfied(view.task.id, requirementId, satisfied),
-  );
 
   /* Nothing to show, and nothing offered: a task with no requirements that
      nobody may break down is an ordinary task and should look like one. */
@@ -113,12 +109,6 @@ export function ProjectPanel({
               label={`${c.satisfiedCount} of ${c.total} requirements satisfied`}
               tone={c.canComplete ? undefined : "risk"}
             />
-          </div>
-        )}
-
-        {satState.error && (
-          <div className="px-5 pt-3">
-            <InlineError compact message={satState.error} />
           </div>
         )}
 
@@ -214,32 +204,26 @@ export function ProjectPanel({
                       )}
                     </span>
                   ) : (
-                    <button
-                      type="button"
-                      aria-pressed={r.isSatisfied}
-                      disabled={!mayDelegate || satState.isPending}
+                    /* READ-ONLY. Acceptance criteria are the reviewer's
+                       reference for rework, not a checklist the submitter ticks
+                       to unlock submission — so there is no tick here, and a
+                       criterion never blocks a submission. The reviewer decides
+                       which are met, in `ReviewPanel`. */
+                    <span
+                      aria-hidden="true"
                       title={
-                        !mayDelegate
-                          ? "Only the owner or the person carrying this task can tick it off."
-                          : r.isSatisfied
-                            ? "Mark as not done"
-                            : "Mark as done"
-                      }
-                      onClick={async () => {
-                        const res = await setSatisfied(
-                          r.requirement.id,
-                          !r.satisfiedDirectly,
-                        );
-                        if (res.ok) onChange();
-                      }}
-                      className={`mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-45 ${
                         r.isSatisfied
-                          ? "bg-ink text-[var(--body-bg)]"
-                          : "text-transparent shadow-[inset_0_0_0_1.5px_var(--color-hairline)] hover:shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
+                          ? "Met"
+                          : "Acceptance criterion — the reviewer decides if it is met."
+                      }
+                      className={`mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full ${
+                        r.isSatisfied
+                          ? "bg-[color-mix(in_srgb,var(--state-positive)_28%,transparent)] text-[var(--state-positive-ink)]"
+                          : "bg-[var(--surface-sunken)] text-ink-faint"
                       }`}
                     >
-                      <Icon.check className="h-3 w-3" />
-                    </button>
+                      {r.isSatisfied && <Icon.check className="h-3 w-3" />}
+                    </span>
                   )}
 
                   <div className="min-w-0 flex-1">
@@ -288,7 +272,7 @@ export function ProjectPanel({
                       </p>
                     ) : (
                       <p className="mt-1 text-[11px] text-ink-faint">
-                        Yours to complete, or break out a subtask for it.
+                        Checked by the reviewer — or break out a subtask for it.
                       </p>
                     )}
                   </div>

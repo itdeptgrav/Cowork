@@ -33,18 +33,18 @@
 
 export interface TaskRules {
   /**
-   * Whether every acceptance criterion must be satisfied before a task may be
-   * submitted.
+   * Whether acceptance criteria affect submission at all.
    *
-   * `block` is today's behaviour: `completionState.canComplete` is false while
-   * anything is outstanding. `warn` lets the submission through and names what
-   * is unfinished — appropriate where criteria are a checklist rather than a
-   * contract.
+   * `off` is the default: criteria are **reference for the reviewer**, not a
+   * checklist the submitter ticks. They never block or nag a submission — the
+   * reviewer reads them when deciding to accept or send back for rework (that
+   * is the ONE place they are interactive, in `ReviewPanel`). `warn` lets the
+   * submission through but names what is unfinished; `block` refuses it while
+   * anything is outstanding (the old behaviour).
    *
-   * A task with **no** criteria is unaffected either way. Gating those would
-   * turn an optional field into a mandatory one across the whole product.
+   * A task with **no** criteria is unaffected either way.
    */
-  requirementsBeforeSubmit: "block" | "warn";
+  requirementsBeforeSubmit: "off" | "block" | "warn";
   /**
    * Whether the timer must have run before work can be submitted.
    *
@@ -72,7 +72,7 @@ export interface TaskRules {
 }
 
 export const DEFAULT_TASK_RULES: TaskRules = {
-  requirementsBeforeSubmit: "block",
+  requirementsBeforeSubmit: "off",
   timerBeforeSubmit: "allow",
   submissionNote: "optional",
   afterRejection: "allow_resubmit",
@@ -107,7 +107,7 @@ export function readTaskRules(
   return {
     requirementsBeforeSubmit: oneOf(
       doc?.requirementsBeforeSubmit,
-      ["block", "warn"] as const,
+      ["off", "block", "warn"] as const,
       DEFAULT_TASK_RULES.requirementsBeforeSubmit,
     ),
     timerBeforeSubmit: oneOf(

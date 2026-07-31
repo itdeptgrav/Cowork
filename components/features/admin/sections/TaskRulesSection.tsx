@@ -91,14 +91,19 @@ export function TaskRulesSection() {
               onChange={(v) => patch({ requirementsBeforeSubmit: v })}
               options={[
                 {
-                  id: "block",
-                  label: "Block submission",
-                  hint: "Today's behaviour. Nothing can be submitted while a criterion is unticked.",
+                  id: "off",
+                  label: "Reference only",
+                  hint: "Default. Criteria are the reviewer's reference for rework — never ticked at submission and never blocking it.",
                 },
                 {
                   id: "warn",
                   label: "Warn and allow",
                   hint: "Names what is unfinished and lets it through. For criteria that are a checklist rather than a contract.",
+                },
+                {
+                  id: "block",
+                  label: "Block submission",
+                  hint: "The strictest option. Nothing can be submitted while a criterion is outstanding.",
                 },
               ]}
             />

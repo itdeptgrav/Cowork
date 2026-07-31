@@ -4570,20 +4570,18 @@ export class MockRepository implements CoworkRepository {
       );
     }
 
-    /* The project gate. A task with completion requirements cannot be submitted
-       until every one is satisfied — directly, or by the subtasks that claimed
-       it. Refused HERE rather than at review, because the reviewer is the wrong
-       person to discover it: by then the submitter has said the work is done
-       and somebody else has to tell them it is not.
-
-       Tasks without requirements are untouched, which is nearly all of them.
-       The message names what is outstanding, because "not yet" without a list
-       sends somebody hunting through their own subtasks. */
+    /* The project gate — ONLY when the rules say `block`. By default
+       (`requirementsBeforeSubmit: "off"`) acceptance criteria are the reviewer's
+       reference for rework, not a checklist that gates submission, so this does
+       not fire. When an org opts into `block`, a task cannot be submitted until
+       every requirement is satisfied (directly, or by the subtasks that claimed
+       it), and the message names what is outstanding. */
+    const rules = await this.getTaskRules();
     const children = s.tasks.filter(
       (x) => x.parentTaskId === t.id && !x.deletedAt,
     );
     const state = completionState(t, children);
-    if (!state.canComplete) {
+    if (rules.requirementsBeforeSubmit === "block" && !state.canComplete) {
       const named = state.outstanding.slice(0, 3).join(", ");
       const more = state.outstanding.length - 3;
       return fail(

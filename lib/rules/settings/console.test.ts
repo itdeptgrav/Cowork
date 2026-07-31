@@ -626,8 +626,13 @@ test("the task rules reach the submission they gate", () => {
 test("defaults change nothing, which is what makes them safe to ship", () => {
   /* Every default reproduces today's behaviour. A default that differed by one
      field would turn the existing rule tests into assertions about a document
-     nobody wrote. */
-  assert.equal(DEFAULT_TASK_RULES.requirementsBeforeSubmit, "block");
+     nobody wrote.
+
+     Exception, deliberately: acceptance criteria default to `off` — reference
+     for the reviewer, never a checklist that gates submission. They are ticked
+     nowhere in the submit flow and only read (for rework) in `ReviewPanel`. An
+     org may still opt into `block`/`warn`. */
+  assert.equal(DEFAULT_TASK_RULES.requirementsBeforeSubmit, "off");
   assert.equal(DEFAULT_TASK_RULES.timerBeforeSubmit, "allow");
   assert.equal(DEFAULT_TASK_RULES.submissionNote, "optional");
   assert.equal(DEFAULT_TASK_RULES.afterRejection, "allow_resubmit");

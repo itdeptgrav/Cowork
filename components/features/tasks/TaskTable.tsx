@@ -621,12 +621,20 @@ export function TaskTable({
                             isAssigneeGroup &&
                             inActiveQueue(v, groupAssigneeId!);
                           const rowDraggable = canDrag && rowInQueue;
-                          /* The gap-free position: 1-based index in the active
-                             queue. Null for a closed task (it keeps its "was P5"),
-                             for a task held out of the queue (budget pending /
-                             unaccepted), and outside assignee grouping. */
+                          /* The gap-free position. Prefer the SERVER's derived
+                             position for this subject (`queuePosition`, now
+                             computed per-person over their WHOLE queue), so this
+                             group shows the exact number the report sees on their
+                             own list — one source of truth, no fourth numbering
+                             path. Falls back to the local index only if the
+                             subject's queue could not be read. Null for a closed
+                             task ("was P5"), a held-out task, or outside grouping. */
+                          const serverPos =
+                            v.assignments.find(
+                              (a) => a.employeeId === groupAssigneeId,
+                            )?.queuePosition ?? null;
                           const derivedPos = rowInQueue
-                            ? activeIds.indexOf(v.task.id) + 1
+                            ? (serverPos ?? activeIds.indexOf(v.task.id) + 1)
                             : null;
                           /* Why an OPEN task shows no live position — so the
                              reader is told, not left to guess. */
