@@ -197,6 +197,14 @@ export function DeadlinePanel({
           taskId={taskId}
           blockedCount={blocked.data?.length ?? 0}
           onChange={onChange}
+          /* **The window already on the task, so the input is an ADDITION.** A
+             task being given a deadline already carries a working window (its
+             budget), so asking for a total here made someone extending a 4h task
+             type "4h" and add nothing. Passing it makes the control "Extra time
+             needed" — current + added = new total — exactly like the settled-state
+             extension form. Zero (a task with no window at all) still asks for the
+             window itself. */
+          counterTo={d.currentWindowSecs || view.task.estimatedEffortSecs || undefined}
         />
       )}
       {!open && isAssignee && d.state === "agreed" && (
@@ -340,7 +348,10 @@ function ProposeForm({
   taskId,
   blockedCount,
   onChange,
-  /** The window the assignor offered, when countering rather than proposing. */
+  /** The window being extended: the task's CURRENT working window when proposing
+      more time, or the figure offered when countering. Absent/zero means there is
+      no window yet, so the control asks for the window itself rather than an
+      addition. */
   counterTo,
   onCancel,
 }: {

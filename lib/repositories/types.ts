@@ -762,11 +762,13 @@ export interface CoworkRepository {
   listDeadlineExtensionRecords(
     taskId: TaskId,
   ): Promise<DeadlineExtensionRecord[]>;
-  /** A manager escalating to the assignor. Dates only — no duration is taken. */
+  /** The deadline change, owned by the assignee's primary manager. Dates only —
+      no duration is taken. `approverId` names the manager who decides it. */
   requestDeadlineExtensionRecord(input: {
     taskId: TaskId;
     proposedDeadline: string;
     reason?: string;
+    approverId?: string;
   }): Promise<ActionResult<DeadlineExtensionRecord>>;
   /**
    * The assignor's answer.

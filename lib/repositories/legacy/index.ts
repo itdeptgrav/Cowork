@@ -2763,6 +2763,12 @@ export class LegacyRepository {
     taskId: TaskId;
     proposedDeadline: string;
     reason?: string;
+    /** Who decides the date. On a cross-department task this is the assignee's
+        PRIMARY MANAGER — the same person who owns the hours — not the assignor:
+        the assignor set the original date, but any change to the assignee's week
+        is the manager's. Passed in by the decision card, which already resolved
+        the manager for the hours. Falls back to the assignor only when absent. */
+    approverId?: string;
   }): Promise<ActionResult<DeadlineExtensionRecord>> {
     const taskId = String(input.taskId);
     const { addDoc, collection, doc, getDoc } = await import(
@@ -2791,13 +2797,20 @@ export class LegacyRepository {
 
     const record = deadlineExtension({
       taskId,
-      /* The MANAGER escalates; the assignor decides. */
       requestedBy: this.#ctx.employeeId ?? "",
-      approverId: routedDeadlineApproverId({
-        routing: deadlineRouting,
-        createdById:
-          (data.assignedBy as string) ?? (data.createdBy as string) ?? null,
-      }),
+      /* **The assignee's PRIMARY MANAGER owns the date, not the assignor.** The
+         decision card passes the manager it already resolved for the hours; the
+         same person moves the commitment, so a cross-department extension never
+         leaves the assignee's management chain. Only where no manager is known
+         does it fall back to the assignor (`routedDeadlineApproverId`), which is
+         better than a commitment nobody can move. */
+      approverId:
+        input.approverId ||
+        routedDeadlineApproverId({
+          routing: deadlineRouting,
+          createdById:
+            (data.assignedBy as string) ?? (data.createdBy as string) ?? null,
+        }),
       previousDeadline: dueMs === null ? null : new Date(dueMs).toISOString(),
       proposedDeadline: input.proposedDeadline,
       reason: input.reason ?? null,

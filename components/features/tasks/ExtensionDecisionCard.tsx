@@ -163,6 +163,10 @@ export function ExtensionDecisionCard({
       taskId: view.task.id,
       proposedDeadline: rec.proposedDeadline,
       reason: rec.reason ?? undefined,
+      /* The date is the assignee's MANAGER's to move — the same person who owns
+         the hours here — never the assignor. `record.approverId` is that manager,
+         resolved from HR when the hours request was made. */
+      approverId: record?.approverId ?? undefined,
     });
   });
 

@@ -250,6 +250,47 @@ test("an accepted window stops being an offer", () => {
   );
 });
 
+test("an in-progress budget task says submit, NOT propose a deadline", () => {
+  /* The reported bug. A budget task never carries a committed deadline — the
+     date is derived — so `deadline.state` stays `unset` even while it is worked.
+     Firing "Propose a deadline" on `unset` alone told an assignee who was already
+     in progress to propose a date. */
+  const task = budgetTask({ status: "in_progress" });
+  assert.equal(task.deadline.state, "unset");
+  assert.equal(
+    nextAction(assignedView(task, "e-02"), "e-02").label,
+    "Submit when ready",
+  );
+});
+
+test("a confirmed budget task says start work, NOT propose a deadline", () => {
+  const task = budgetTask({ status: "confirmed" });
+  assert.equal(
+    nextAction(assignedView(task, "e-02"), "e-02").label,
+    "Start work",
+  );
+});
+
+test("propose-your-own after a refusal STILL shows at assigned", () => {
+  /* The one case the branch is for must survive the gate: the window was refused
+     (`assignorWindowRejection`), so the assignee proposes their own — and that
+     happens at `assigned`, before any work. */
+  const task = budgetTask({
+    deadline: {
+      mode: "timer",
+      dueAt: null,
+      currentWindowSecs: 4 * 3600,
+      state: "unset",
+      assignorWindowRejection: { byId: "e-02", byName: "T", reason: "x", at: "2026-07-27T00:00:00.000Z" },
+    },
+  });
+  assert.equal(windowOnOffer(task as never), false);
+  assert.equal(
+    nextAction(assignedView(task, "e-02"), "e-02").label,
+    "Propose a deadline",
+  );
+});
+
 /* ── Self task: the budget is the manager's move, not the assignee's ──────── */
 
 function selfBudgetView(over: { state?: string; manager?: string } = {}) {

@@ -140,14 +140,22 @@ export function pendingAction(input: {
  * a request they themselves raised, which is the loop that left the task
  * "waiting" for somebody with nothing to do.
  */
-export function needsDeadlineEscalation(input: {
+export function needsDeadlineEscalation(_input: {
   kind: HierarchyKind;
   /** Whether the workload engine said the hours fit the commitment. */
   feasible: boolean;
 }): boolean {
-  if (input.feasible) return false;
-  /* Internal: the same person decides both, in one card, in one step. */
-  return input.kind === "cross_department";
+  /* **Never — the assignee's PRIMARY MANAGER owns the date too.**
+   *
+   * A cross-department extension used to escalate the date to the ASSIGNOR: the
+   * manager granted the hours, then handed the commitment to whoever set it. But
+   * a change to the assignee's week is the manager's call — the assignor set the
+   * original date, they do not own changes to it. So the manager who grants the
+   * hours also moves the deadline, in one card, whether or not they are the
+   * assignor. Nothing leaves the assignee's management chain, and the decision
+   * card shows "Approve and move the deadline" for cross-department work exactly
+   * as it always did for internal work. */
+  return false;
 }
 
 /**

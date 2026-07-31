@@ -328,7 +328,19 @@ export function nextAction(
         }
       : { label: "Awaiting the assignee", actor: "them" };
 
-  if (task.deadline.state === "unset")
+  /* **Only BEFORE work starts, and only as the "propose your own" fallback.**
+   *
+   * A budget task never carries a committed deadline — the date is derived from
+   * the window and the queue — so `deadline.state` stays `unset` for its whole
+   * life, including while it is in progress. Firing this branch on `unset` alone
+   * therefore told an assignee who was already working to "Propose a deadline",
+   * over a task whose flow (correctly) said "Submit when done". The assignee never
+   * proposes a date anyway: they ask their MANAGER for more HOURS, and only if
+   * those do not fit does a date get discussed — by the manager. So this is
+   * scoped to `assigned`, where `windowOnOffer` has already handled the live
+   * offer and the only thing left on `unset` is the refuse-then-propose-your-own
+   * case. Confirmed and in-progress fall through to their own steps below. */
+  if (task.deadline.state === "unset" && task.status === "assigned")
     return mine
       ? {
           label: "Propose a deadline",

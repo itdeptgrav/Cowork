@@ -81,18 +81,14 @@ test("one person owning both decisions is an internal task", () => {
 
 /* ── 1–4 · Internal: request, approve, done ───────────────────────────────── */
 
-test("an internal task never escalates to the person who would receive it", () => {
-  /* This is the loop. Rakesh cannot send Rakesh a request. */
-  assert.equal(
-    needsDeadlineEscalation({ kind: "internal", feasible: false }),
-    false,
-  );
-  assert.equal(
-    needsDeadlineEscalation({ kind: "cross_department", feasible: false }),
-    true,
-  );
-  /* And nothing escalates when the hours fit, either way. */
+test("nothing escalates the date — the assignee's manager owns it, both kinds", () => {
+  /* The assignee's PRIMARY MANAGER owns the deadline as well as the hours, so a
+     cross-department extension no longer hands the date to the assignor: the
+     manager who grants the time also moves the commitment, in one card. Internal
+     never escalated (the manager IS the assignor — Rakesh cannot send Rakesh a
+     request); cross-department now behaves the same way. */
   for (const kind of ["internal", "cross_department"] as const) {
+    assert.equal(needsDeadlineEscalation({ kind, feasible: false }), false);
     assert.equal(needsDeadlineEscalation({ kind, feasible: true }), false);
   }
 });
@@ -308,14 +304,20 @@ test("the internal path grants both in one step", () => {
   assert.match(src, /and move the\s*\n?\s*deadline/);
 });
 
-test("the cross-department path is unchanged", () => {
-  /* It still escalates, and it still carries no hours. */
+test("the date request routes to the manager, and still carries no hours", () => {
+  /* The deadline record is now owned by the assignee's MANAGER (`approverId`
+     passed from the hours decision), not escalated to the assignor — but it is
+     still DATES ONLY: no duration rides along, which is the sum that is always
+     wrong. */
   const src = code("components/features/tasks/ExtensionDecisionCard.tsx");
   assert.match(src, /r\.requestDeadlineExtensionRecord\(\{/);
+  const escalateBody = src.slice(
+    src.indexOf("const [escalate,"),
+    src.indexOf("const [escalate,") + 1200,
+  );
+  assert.match(escalateBody, /approverId: record\?\.approverId/);
   assert.equal(
-    /additionalSecs|previousWindowSecs/.test(
-      src.slice(src.indexOf("const [escalate,"), src.indexOf("const [escalate,") + 1200),
-    ),
+    /additionalSecs|previousWindowSecs/.test(escalateBody),
     false,
     "the escalation carries hours again",
   );
