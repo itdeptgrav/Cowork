@@ -21,6 +21,7 @@ import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import { EditorToolbar } from "./EditorToolbar";
 import { useCollabSession } from "./useCollabSession";
+import { caretRender, caretSelection } from "./collabCaret";
 import { ShareMenu } from "./ShareMenu";
 import { canManage, editRefusal, roleOf } from "@/lib/rules/documents/access";
 
@@ -99,11 +100,24 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
               CollaborationCaret.configure({
                 provider: collab.session.provider,
                 user: collab.identity,
+                /* A thin caret and a small persistent name flag, rather than
+                   the default's solid full-width label bar. */
+                render: caretRender,
+                selectionRender: caretSelection,
               }),
             ]
           : []),
       ],
-      content: body.data?.html ?? "",
+      /**
+       * **Nothing when Yjs is driving.**
+       *
+       * Tiptap forbids initial content alongside `Collaboration`: the value is
+       * inserted into the shared Y.Doc by EVERY client that opens the document,
+       * so two people joining produce two copies of the text and neither sees a
+       * coherent version of the other's edits. The content comes from the CRDT,
+       * which the server seeds from `ydocState`.
+       */
+      content: collab.session ? undefined : (body.data?.html ?? ""),
       /* Tiptap renders server-side by default in v3. This content comes from a
          client-side read, so there is nothing correct to render there. */
       immediatelyRender: false,
@@ -141,6 +155,37 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
       latestHtml.current = html;
     }
   }, [editor, body.data?.html, body.isLoading, collab.session]);
+
+  /**
+   * Carry a phase-1 document into the CRDT.
+   *
+   * Documents written before collaboration have `html` and no `ydocState`, so
+   * the server seeds their room with nothing and they open blank. This inserts
+   * the stored prose once — but ONLY after the provider reports `synced`, so it
+   * is acting on the server's real state rather than on an empty document it
+   * has not finished loading, and ONLY when the shared document is genuinely
+   * empty, so the second person to open it does not append a second copy.
+   */
+  const seeded = useRef(false);
+  useEffect(() => {
+    const session = collab.session;
+    if (!editor || !session || seeded.current) return;
+    const html = body.data?.html;
+    if (!html) return;
+
+    const trySeed = () => {
+      if (seeded.current) return;
+      seeded.current = true;
+      if (editor.isDestroyed) return;
+      /* `isEmpty` is ProseMirror's own view of the shared document after the
+         server's state has been applied. Anything already there wins. */
+      if (!editor.isEmpty) return;
+      editor.commands.setContent(html, { emitUpdate: true });
+    };
+
+    if (session.provider.synced) trySeed();
+    else session.provider.once("sync", trySeed);
+  }, [editor, collab.session, body.data?.html]);
 
   const flush = useCallback(async () => {
     if (!dirty.current) return;

@@ -384,6 +384,42 @@ export function heartbeatPatch(nowMs: number, connectionId: string | null) {
   return { heartbeatAt: nowMs, presenceConnectionId: connectionId };
 }
 
+/**
+ * The clock the queue projection should measure "when will this finish" FROM.
+ *
+ * The expected-completion date chains a person's remaining work forward from an
+ * anchor. Anchoring at the live `now` makes it CREEP: while a person is online
+ * but between timer sessions, `now` advances and the remaining work does not, so
+ * the projected finish marches away for no reason anyone chose — the same drift
+ * the committed deadline was fixed for, and the same rule answers it.
+ *
+ * Being online is the budget being spent as intended, so it must not push the
+ * projection. While online the anchor is FROZEN at the moment the session began
+ * — `updatedAt`, which only a mode change writes; a heartbeat restates the claim
+ * without touching it, and the timer's own heartbeat writes a different document
+ * entirely. It advances only when the person has actually been away, because
+ * returning to online stamps a later session start, and that later start is
+ * exactly the lost time. An offline or unknown caller gets `now`: there is no
+ * live session to freeze against, and their work genuinely slips with the clock.
+ *
+ * A stale online claim (a tab that went home without saying so) resolves through
+ * `readDutyMode` to offline, so it gets `now` too rather than a frozen anchor
+ * from whenever they were last really here.
+ */
+export function queueAnchorMs(doc: DutyDocument | null, nowMs: number): number {
+  if (!doc || readDutyMode(doc, nowMs) !== "online") return nowMs;
+  const since = (doc as { updatedAt?: unknown }).updatedAt;
+  /* A number in ms, at or before now. Anything else — a Firestore Timestamp on a
+     pre-migration doc, a clock-skewed future value, a missing field — is not a
+     trustworthy session start, and `now` is the safe fallback. */
+  return typeof since === "number" &&
+    Number.isFinite(since) &&
+    since > 0 &&
+    since <= nowMs
+    ? since
+    : nowMs;
+}
+
 function numberOr(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }

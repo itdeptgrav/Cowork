@@ -897,3 +897,56 @@
   pointer-events: none;
   color: color-mix(in srgb, var(--doc-page-ink) 40%, transparent);
 }
+
+/* ── Live collaboration presence ─────────────────────────────────────────────
+ *
+ * One thin caret per remote editor and a name flag that surfaces as they move
+ * and fades when they pause — so several people in a document read as a few
+ * quiet cursors rather than a wall of standing coloured bars. The colours ride
+ * in on custom properties from `collabCaret.ts`; nothing here is per-person.
+ */
+.collab-caret {
+  position: relative;
+  margin-left: -1px;
+  border-left: 2px solid var(--collab-color, #8b9fbc);
+  border-right: none;
+  pointer-events: none;
+  word-break: normal;
+  box-sizing: border-box;
+}
+
+.collab-caret__label {
+  position: absolute;
+  top: -1.4em;
+  left: -2px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  height: 1.4em;
+  padding: 0 6px;
+  /* A flag: rounded but for the corner that meets the caret, so it reads as
+     belonging to the line below it rather than floating free. */
+  border-radius: 5px 5px 5px 1px;
+  background: var(--collab-color, #8b9fbc);
+  color: var(--collab-ink, #fff);
+  font-size: 10.5px;
+  font-weight: 500;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  user-select: none;
+  /* Never a click target: it hovers over the line above the caret, and an
+     invisible-but-present flag there would eat selections on that line. */
+  pointer-events: none;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.2);
+  /* Persistent: a remote editor's name stays on their caret for as long as they
+     are in the document, so who-is-where is always legible without waiting for
+     anyone to move. */
+}
+
+/* The selection wash. A quarter-opacity tint (set inline, per person) rather
+   than the default's near-solid block, so the selected text stays readable. */
+.collab-selection {
+  border-radius: 2px;
+  padding-bottom: 1px;
+}
