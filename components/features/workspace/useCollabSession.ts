@@ -50,11 +50,10 @@ export function useCollabSession(
   useEffect(() => {
     /* Waits for the person. Connecting first and naming the caret afterwards
        shows every other editor an "Someone" cursor that later renames itself. */
-    if (!documentId) return;
-    if (!me) {
-      setReason("Waiting for your profile…");
-      return;
-    }
+    /* No setState here — the "waiting" message is DERIVED below. Setting it in
+       the effect is a synchronous cascade, and it would also race the real
+       reason a failed connection reports a moment later. */
+    if (!documentId || !me) return;
     let cancelled = false;
     let opened: CollabSession | null = null;
 
@@ -117,5 +116,8 @@ export function useCollabSession(
     };
   }, [documentId, me, identity.name, identity.color]);
 
-  return { session, connected, peers, identity, reason };
+  /* Derived, not stored: while the employee record is still loading there is
+     nothing to report except that. */
+  const shown = reason ?? (me ? null : "Waiting for your profile…");
+  return { session, connected, peers, identity, reason: shown };
 }

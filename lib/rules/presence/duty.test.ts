@@ -194,22 +194,37 @@ test("re-declaring an emergency keeps the original start", () => {
   assert.equal(t.patch.emergencyStartedAtMs, original);
 });
 
-test("leaving a break for online credits it; otherwise it is banked", () => {
-  /* `:154-167`. The cap is applied where the credit is applied, not here —
-     the allowance is a property of the day it lands on. */
-  const direct = dutyTransition({
-    previous: { mode: "break", breakStartedAtMs: T0 - 120_000 },
-    next: "online", nowMs: T0, connectionId: "tab-a",
-  });
-  assert.equal(direct.breakToCreditMs, 120_000);
-  assert.equal(direct.patch.breakStartedAtMs, null);
+test("a break is credited when it ENDS, whatever the person does next", () => {
+  /* **This assertion changed deliberately.** It previously required
+     `next === "online"` to credit a break and expected the span to be banked
+     otherwise — which encoded a real defect: `derive()` states that online is a
+     live screen share and nothing else, so ending a break without sharing
+     landed on `offline`, the span was banked into `pendingBreakGapMs`, and it
+     waited for an old app that never runs. Break time therefore never reached
+     a deadline at all.
 
-  const banked = dutyTransition({
+     A break has a definite end the moment it is left, unlike an offline span,
+     which has none until somebody returns. So it is credited on the event that
+     ends it. The cap is applied where the credit is applied, not here — the
+     allowance is a property of the day it lands on. */
+  for (const next of ["online", "offline"] as const) {
+    const t = dutyTransition({
+      previous: { mode: "break", breakStartedAtMs: T0 - 120_000 },
+      next, nowMs: T0, connectionId: next === "online" ? "tab-a" : null,
+    });
+    assert.equal(t.breakToCreditMs, 120_000, `not credited leaving for ${next}`);
+    assert.equal(t.patch.breakStartedAtMs, null);
+  }
+});
+
+test("a credited break is not ALSO banked, or the same minutes move a deadline twice", () => {
+  const t = dutyTransition({
     previous: { mode: "break", breakStartedAtMs: T0 - 120_000 },
     next: "offline", nowMs: T0, connectionId: null,
+    bankEvenWhenRaising: false,
   });
-  assert.equal(banked.breakToCreditMs, 0);
-  assert.equal(banked.patch.pendingBreakGapMs, 120_000);
+  assert.equal(t.breakToCreditMs, 120_000);
+  assert.notEqual(t.patch.pendingBreakGapMs, 120_000);
 });
 
 test("entering a break stamps its start, which is what makes it measurable", () => {

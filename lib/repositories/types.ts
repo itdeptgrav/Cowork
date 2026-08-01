@@ -65,6 +65,7 @@ import type {
   InterventionItem,
   CoworkDocument,
   CoworkDocumentBody,
+  DocumentKind,
   DocumentRole,
   DocumentSummary,
   MailAttachment,
@@ -1499,11 +1500,12 @@ export interface CoworkRepository {
    * `saveDocumentBody` is deliberately last-write-wins and says so: with one
    * editor that is correct, and phase 2 replaces the mechanism entirely with a
    * CRDT rather than layering locking on top of it. */
-  listDocuments(): Promise<DocumentSummary[]>;
+  listDocuments(kind?: DocumentKind): Promise<DocumentSummary[]>;
   getDocument(id: string): Promise<CoworkDocument | null>;
   getDocumentBody(id: string): Promise<CoworkDocumentBody | null>;
   createDocument(input: {
     title: string;
+    kind?: DocumentKind;
     memberIds?: EmployeeId[];
   }): Promise<ActionResult<CoworkDocument>>;
   renameDocument(id: string, title: string): Promise<ActionResult<CoworkDocument>>;
@@ -1511,7 +1513,7 @@ export interface CoworkRepository {
   deleteDocument(id: string): Promise<ActionResult<void>>;
   saveDocumentBody(
     id: string,
-    body: { html: string; ydocState?: string | null },
+    body: { html?: string; cells?: string | null; ydocState?: string | null },
   ): Promise<ActionResult<CoworkDocumentBody>>;
   /**
    * Add somebody, or change what they may do. Owners only.

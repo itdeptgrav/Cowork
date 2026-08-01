@@ -210,7 +210,17 @@ test("non-admin navigation does not offer the console", () => {
     "the admin entry is in the list everybody sees",
   );
   assert.match(nav, /isAdmin = false/);
-  assert.match(nav, /return isAdmin \? \[\.\.\.items, ADMIN_NAV_ITEM\] : items/);
+  /* The admin entry is appended only when `isAdmin`, and never otherwise. The
+     list it is appended TO is now `scoped` rather than `items`, because the
+     Team entry is filtered out for somebody who manages nobody — that filter
+     must not become a way for the console to leak in, so this asserts the
+     conditional shape rather than the exact identifier it wraps. */
+  assert.match(nav, /return isAdmin \? \[\.\.\.\w+, ADMIN_NAV_ITEM\] : \w+;/);
+  assert.doesNotMatch(
+    nav,
+    /ADMIN_NAV_ITEM\s*\]\s*:\s*\[[^\]]*ADMIN_NAV_ITEM/,
+    "the admin entry appears on the non-admin branch",
+  );
 
   /* And the bar asks the same predicate the route guard asks. */
   const bar = code("components/layout/shell/TopBar.tsx");

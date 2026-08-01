@@ -68,7 +68,7 @@ import {
 import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CoworkDocument, CoworkDocumentBody, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -168,6 +168,11 @@ import {
   readDocument,
 } from "./documents.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
+import {
+  grantBreakCredit,
+  readBreakLedger,
+  writeBreakLedger,
+} from "../../rules/presence/breakAllowance.ts";
 import {
   canManage as canManageDocument,
   editRefusal,
@@ -3952,8 +3957,78 @@ export class LegacyRepository {
      * play, a heartbeat, a refresh or a running timer. The lost time is added to
      * every active task's stored deadline, once, and then it is frozen again
      * because nothing else writes it while the person is online. */
-    if (input.mode === "online") {
-      const lostMs = offlineToCreditMs + breakToCreditMs + emergencyToRaiseMs;
+    /**
+     * **A finished break is owed whatever the person does next.**
+     *
+     * This used to run only on `mode === "online"`, and `derive()` says online
+     * is a live screen share and nothing else — so ending a break without
+     * sharing lands on `offline`, the branch never ran, and the break time was
+     * silently never added to any deadline. That is the whole bug.
+     *
+     * The two spans are owed on different events, which is why they are now
+     * separated rather than summed behind one condition:
+     *
+     *  · **break / emergency** — owed the moment the span ENDS. The person was
+     *    unavailable for a measured stretch; what they do next cannot change
+     *    that it happened.
+     *  · **offline** — owed only on RETURNING, because an offline span has no
+     *    end until somebody comes back, and crediting it on the way out would
+     *    be crediting time that is still running.
+     */
+    {
+      /**
+       * The day's break allowance — Admin → Office policy → break time.
+       *
+       * Bounds the CREDIT, not the break. Somebody may take as long a break as
+       * they need; the policy limits how much of it moves deadlines. A running
+       * total is kept on the duty document, stamped with its day, because a cap
+       * with no ledger is not a cap — three twenty-minute breaks would each be
+       * under a sixty-minute allowance and together exceed it.
+       *
+       * Only BREAK time is capped. Emergency time is reviewed and approved on
+       * its own terms, and an offline span is not an allowance somebody spends.
+       */
+      let creditedBreakMs = breakToCreditMs;
+      if (breakToCreditMs > 0) {
+        const policy = await this.getOfficePolicy().catch(() => null);
+        const grant = grantBreakCredit({
+          spanMs: breakToCreditMs,
+          maxMinutesPerDay: policy?.maxBreakMinutesPerDay,
+          ledger: readBreakLedger((previous ?? {}) as Record<string, unknown>),
+          nowMs: now,
+        });
+        creditedBreakMs = grant.grantedMs;
+        await setDoc(
+          await this.#dutyDoc(employeeId),
+          writeBreakLedger(grant.ledger),
+          { merge: true },
+        );
+        if (grant.deniedMs > 0) {
+          console.info("[presence] BREAK ALLOWANCE reached:", {
+            employeeId,
+            askedMinutes: Math.round(breakToCreditMs / 60000),
+            grantedMinutes: Math.round(grant.grantedMs / 60000),
+            deniedMinutes: Math.round(grant.deniedMs / 60000),
+          });
+        }
+      }
+
+      /**
+       * **Emergency time is NOT credited here — it is only raised.**
+       *
+       * `dutyTransition` names the two spans with different verbs on purpose:
+       * `breakToCreditMs` is "credit NOW", `emergencyToRaiseMs` is "raise for
+       * approval NOW". Summing them treated an unreviewed emergency as an
+       * approved one, so leaving Emergency Mode moved every deadline before a
+       * manager had seen the reason or the document — which is the whole thing
+       * the approval exists to prevent.
+       *
+       * The span still travels: `createEmergencyRequest` records it, and
+       * `decideEmergencyRequest` applies it if and only if somebody approves.
+       */
+      const endedSpanMs = creditedBreakMs;
+      const returningMs = input.mode === "online" ? offlineToCreditMs : 0;
+      const lostMs = endedSpanMs + returningMs;
       if (lostMs > 0) {
         const shifted = await this.#compensateActiveDeadlines(employeeId, lostMs);
         console.info("[presence] DEADLINE COMPENSATION applied:", {
@@ -4599,6 +4674,36 @@ export class LegacyRepository {
    * `pendingEmergencyGapMs`, so doing it here as well would move the same
    * deadlines twice.
    */
+  /**
+   * One stored emergency request, read back for its measured span.
+   *
+   * Read from the STORE rather than trusting a figure the deciding client
+   * sends: the span is what the person was actually away for, and a browser is
+   * not the right authority on how much time to give back.
+   */
+  async #emergencyRequestById(
+    requestId: string,
+  ): Promise<{ employeeId: string; durationSecs: number } | null> {
+    const { doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDoc(
+      doc(legacyDb(), "cowork_emergency_approvals", requestId),
+    );
+    if (!snap.exists()) return null;
+    const raw = snap.data() as Record<string, unknown>;
+    const employeeId =
+      typeof raw.employeeId === "string"
+        ? raw.employeeId
+        : typeof raw.requestedBy === "string"
+          ? raw.requestedBy
+          : null;
+    const durationSecs =
+      typeof raw.durationSecs === "number" && Number.isFinite(raw.durationSecs)
+        ? Math.max(0, raw.durationSecs)
+        : 0;
+    return employeeId ? { employeeId, durationSecs } : null;
+  }
+
   async decideEmergencyRequest(
     requestId: string,
     approve: boolean,
@@ -4628,6 +4733,30 @@ export class LegacyRepository {
             ? `The decision could not be saved: ${error.message}`
             : "The decision could not be saved.",
       };
+    }
+
+    /**
+     * **The one place an emergency moves a deadline.**
+     *
+     * Applied on APPROVAL and nowhere else. A rejected request shifts nothing,
+     * which is what makes the decision mean something — before this, the time
+     * was already in the deadlines by the time the manager saw the request, so
+     * approving and rejecting had the same effect on the work.
+     */
+    if (approve) {
+      const request = await this.#emergencyRequestById(requestId);
+      const lostMs = Math.max(0, (request?.durationSecs ?? 0) * 1000);
+      if (lostMs > 0 && request?.employeeId) {
+        const shifted = await this.#compensateActiveDeadlines(
+          String(request.employeeId),
+          lostMs,
+        );
+        console.info("[presence] EMERGENCY APPROVED, deadlines shifted:", {
+          employeeId: request.employeeId,
+          minutes: Math.round(lostMs / 60000),
+          tasksShifted: shifted,
+        });
+      }
     }
 
     notifyRepositoryChanged();
@@ -5252,7 +5381,7 @@ export class LegacyRepository {
    * on the record: a list read would otherwise pull every body to render a
    * sidebar, and Firestore bills per document read.
    */
-  async listDocuments(): Promise<DocumentSummary[]> {
+  async listDocuments(kind: DocumentKind = "doc"): Promise<DocumentSummary[]> {
     const me = String(this.#ctx.employeeId);
     const { collection, getDocs, query, where } = await import(
       "firebase/firestore"
@@ -5266,7 +5395,7 @@ export class LegacyRepository {
     );
     const docs = snap.docs
       .map((d) => readDocument(d.id, d.data() as Record<string, unknown>))
-      .filter((d): d is CoworkDocument => d !== null && !d.deletedAt)
+      .filter((d): d is CoworkDocument => d !== null && !d.deletedAt && d.kind === kind)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 
     /* Previews come from the bodies of the documents already listed, read in
@@ -5314,11 +5443,12 @@ export class LegacyRepository {
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id));
     if (!snap.exists())
-      return { documentId: id, html: "", ydocState: null, updatedAt: record.updatedAt };
+      return { documentId: id, html: "", cells: null, ydocState: null, updatedAt: record.updatedAt };
     const raw = snap.data() as Record<string, unknown>;
     return {
       documentId: id,
       html: typeof raw.html === "string" ? raw.html : "",
+      cells: typeof raw.cells === "string" ? raw.cells : null,
       ydocState: typeof raw.ydocState === "string" ? raw.ydocState : null,
       updatedAt:
         typeof raw.updatedAt === "string" ? raw.updatedAt : record.updatedAt,
@@ -5327,6 +5457,7 @@ export class LegacyRepository {
 
   async createDocument(input: {
     title: string;
+    kind?: DocumentKind;
     memberIds?: EmployeeId[];
   }): Promise<ActionResult<CoworkDocument>> {
     const me = String(this.#ctx.employeeId);
@@ -5348,6 +5479,7 @@ export class LegacyRepository {
     const record: CoworkDocument = {
       organisationId: LEGACY_ORGANISATION_ID,
       id: ref.id,
+      kind: input.kind ?? "doc",
       title: input.title.trim() || "Untitled document",
       createdById: me,
       lastEditedById: null,
@@ -5363,6 +5495,7 @@ export class LegacyRepository {
       await setDoc(ref, documentRecordFields(record));
       await setDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, ref.id), {
         html: "",
+        cells: null,
         ydocState: null,
         updatedAt: now,
       });
@@ -5427,7 +5560,7 @@ export class LegacyRepository {
 
   async saveDocumentBody(
     id: string,
-    body: { html: string; ydocState?: string | null },
+    body: { html?: string; cells?: string | null; ydocState?: string | null },
   ): Promise<ActionResult<CoworkDocumentBody>> {
     const me = String(this.#ctx.employeeId);
     const record = await this.getDocument(id);
@@ -5442,7 +5575,11 @@ export class LegacyRepository {
 
     /* `merge` so a phase-1 save carrying no CRDT state cannot erase the state a
        collaborative session wrote. */
-    const patch: Record<string, unknown> = { html: body.html, updatedAt: now };
+    /* Each field only when given, so a sheet save cannot blank a document's
+       prose and a phase-1 save cannot erase CRDT state. */
+    const patch: Record<string, unknown> = { updatedAt: now };
+    if (body.html !== undefined) patch.html = body.html;
+    if (body.cells !== undefined) patch.cells = body.cells;
     if (body.ydocState !== undefined) patch.ydocState = body.ydocState;
     await setDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id), patch, {
       merge: true,
@@ -5455,7 +5592,8 @@ export class LegacyRepository {
       ok: true,
       data: {
         documentId: id,
-        html: body.html,
+        html: body.html ?? "",
+        cells: body.cells ?? null,
         ydocState: body.ydocState ?? null,
         updatedAt: now,
       },

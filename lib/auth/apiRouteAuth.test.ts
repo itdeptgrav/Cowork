@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 
 /**
  * API routes accept the sign-in that real staff actually have.
@@ -28,7 +28,11 @@ import { readFileSync } from "node:fs";
 const apiAuth = readFileSync("lib/server/apiAuth.ts", "utf8");
 const livekit = readFileSync("app/api/livekit/token/route.ts", "utf8");
 const meetings = readFileSync("app/api/meetings/token/route.ts", "utf8");
-const middleware = readFileSync("middleware.ts", "utf8");
+/* Renamed from `middleware.ts` to `proxy.ts` (exporting `proxy`). The test
+   reads whichever is present, so the rename does not silently stop this from
+   guarding anything — a missing file here would pass as "no violations". */
+const MIDDLEWARE_PATH = existsSync("proxy.ts") ? "proxy.ts" : "middleware.ts";
+const middleware = readFileSync(MIDDLEWARE_PATH, "utf8");
 
 test("both sign-in systems are accepted", () => {
   assert.match(apiAuth, /currentSession/, "the session record path is missing");

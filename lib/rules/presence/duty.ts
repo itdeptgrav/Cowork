@@ -296,14 +296,26 @@ export function dutyTransition(input: {
   }
 
   if (prevMode === "break") {
+    /**
+     * **A break is credited when it ENDS, not when somebody resumes sharing.**
+     *
+     * This used to require `next === "online"`, and `derive()` states that
+     * online is a live screen share and nothing else — so ending a break
+     * without sharing banked the span into `pendingBreakGapMs` and waited for
+     * an old app that never runs to apply it. The minutes were measured
+     * correctly and then went nowhere, which is why break time never reached
+     * any deadline.
+     *
+     * Unlike an offline span, a break has a definite end the moment it is
+     * left. There is nothing to wait for.
+     */
     const started = numberOr(previous?.breakStartedAtMs, nowMs);
     const span = Math.max(0, nowMs - started);
-    if (next === "online") {
-      breakToCreditMs = span;
-      if (bank && span > 0) patch.pendingBreakGapMs = span;
-    } else {
-      patch.pendingBreakGapMs = span > 0 ? span : null;
-    }
+    breakToCreditMs = span;
+    /* Banked as well ONLY when the caller says it cannot act on the returned
+       span — banking one it also applies is how the same minutes move a
+       deadline twice. */
+    if (bank && span > 0) patch.pendingBreakGapMs = span;
     patch.breakStartedAtMs = null;
   }
 

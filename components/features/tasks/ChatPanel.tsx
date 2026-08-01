@@ -17,6 +17,7 @@ import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { formatDateTime } from "@/lib/utils/format";
 import {
   MessageAttachments,
+  filesFromClipboard,
   formatBytes,
   mediaUrl,
 } from "@/components/features/messages/MessageAttachments";
@@ -331,6 +332,16 @@ export function ChatPanel({
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
                   void submit();
+                }
+              }}
+              onPaste={(e) => {
+                /* A pasted screenshot or copied file uploads like a picked one;
+                   a plain-text paste falls through and still types. */
+                if (!canUpload) return;
+                const pasted = filesFromClipboard(e.clipboardData);
+                if (pasted.length) {
+                  e.preventDefault();
+                  void handleFiles(pasted);
                 }
               }}
               placeholder="Write a message"

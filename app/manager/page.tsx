@@ -1,4 +1,5 @@
 import { MonitoringArea } from "@/components/features/monitoring/MonitoringArea";
+import { TeamGate } from "@/components/features/team/TeamGate";
 
 export const metadata = { title: "Monitoring — Cowork" };
 
@@ -11,5 +12,7 @@ export const metadata = { title: "Monitoring — Cowork" };
  * What replaced the test page is everything around it.
  */
 export default function ManagerPage() {
-  return <MonitoringArea />;
+  return <TeamGate>
+      <MonitoringArea />
+    </TeamGate>;
 }

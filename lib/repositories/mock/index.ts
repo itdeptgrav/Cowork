@@ -235,6 +235,7 @@ import {
 import type {
   CoworkDocument,
   CoworkDocumentBody,
+  DocumentKind,
   DocumentRole,
   DocumentSummary,
 } from "@/lib/domain";
@@ -6193,12 +6194,12 @@ export class MockRepository implements CoworkRepository {
    * together and being somebody's manager is not by itself a reason to be in
    * one — unlike a task, where the reporting line IS the visibility rule.
    */
-  async listDocuments(): Promise<DocumentSummary[]> {
+  async listDocuments(kind: DocumentKind = "doc"): Promise<DocumentSummary[]> {
     const me = actingId();
     const s = getStore();
     return delay(
       s.documents
-        .filter((d) => !d.deletedAt && canViewDocument(d, me))
+        .filter((d) => !d.deletedAt && (d.kind ?? "doc") === kind && canViewDocument(d, me))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .map((d) => ({
           ...d,
@@ -6222,6 +6223,7 @@ export class MockRepository implements CoworkRepository {
       getStore().documentBodies.find((b) => b.documentId === id) ?? {
         documentId: id,
         html: "",
+        cells: null,
         ydocState: null,
         updatedAt: doc.updatedAt,
       },
@@ -6230,6 +6232,7 @@ export class MockRepository implements CoworkRepository {
 
   async createDocument(input: {
     title: string;
+    kind?: DocumentKind;
     memberIds?: EmployeeId[];
   }): Promise<ActionResult<CoworkDocument>> {
     const g = guard();
@@ -6250,6 +6253,7 @@ export class MockRepository implements CoworkRepository {
     const doc: CoworkDocument = {
       organisationId: actingOrganisationId(),
       id: nextId("doc"),
+      kind: input.kind ?? "doc",
       title: input.title.trim() || "Untitled document",
       createdById: me,
       lastEditedById: null,
@@ -6266,6 +6270,7 @@ export class MockRepository implements CoworkRepository {
     s.documentBodies.push({
       documentId: doc.id,
       html: "",
+      cells: null,
       ydocState: null,
       updatedAt: now,
     });
@@ -6309,7 +6314,7 @@ export class MockRepository implements CoworkRepository {
 
   async saveDocumentBody(
     id: string,
-    body: { html: string; ydocState?: string | null },
+    body: { html?: string; cells?: string | null; ydocState?: string | null },
   ): Promise<ActionResult<CoworkDocumentBody>> {
     const g = guard();
     if (g) return g;
@@ -6323,10 +6328,13 @@ export class MockRepository implements CoworkRepository {
     const now = nowIso();
     let record = s.documentBodies.find((b) => b.documentId === id);
     if (!record) {
-      record = { documentId: id, html: "", ydocState: null, updatedAt: now };
+      record = { documentId: id, html: "", cells: null, ydocState: null, updatedAt: now };
       s.documentBodies.push(record);
     }
-    record.html = body.html;
+    /* Each field only when given. A sheet save carries no html and must not
+       blank a document's prose, and vice versa. */
+    if (body.html !== undefined) record.html = body.html;
+    if (body.cells !== undefined) record.cells = body.cells;
     /* Only overwritten when given. A phase-1 save carries no CRDT state and
        must not erase the state a collaborative session wrote. */
     if (body.ydocState !== undefined) record.ydocState = body.ydocState;

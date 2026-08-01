@@ -38,7 +38,7 @@ export function WorkspaceArea() {
   /* Two modes, one page — the mindmap for shape and documents for prose. Kept
      as a mode rather than two routes because they are the same activity: this
      is where thinking is written down before it becomes tasks. */
-  const [mode, setMode] = useState<"map" | "docs">("map");
+  const [mode, setMode] = useState<"map" | "docs" | "sheets">("map");
 
   const selected = map.nodes.find((n) => n.id === selectedId) ?? null;
   const root = rootOf(map);
@@ -69,6 +69,7 @@ export function WorkspaceArea() {
               options={[
                 { id: "map", label: "Mindmap" },
                 { id: "docs", label: "Documents" },
+                { id: "sheets", label: "Sheets" },
               ]}
             />
             {mode === "map" && root && (
@@ -107,8 +108,10 @@ export function WorkspaceArea() {
         </div>
       )}
 
-      {mode === "docs" ? (
-        <DocumentsArea />
+      {mode === "sheets" ? (
+        <DocumentsArea kind="sheet" />
+      ) : mode === "docs" ? (
+        <DocumentsArea kind="doc" />
       ) : !root ? (
         <Panel>
           <EmptyState

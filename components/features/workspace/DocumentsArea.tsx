@@ -13,6 +13,8 @@ import {
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatStamp } from "@/lib/utils/format";
 import { DocumentEditor } from "./DocumentEditor";
+import { SheetGrid } from "./SheetGrid";
+import type { DocumentKind } from "@/lib/domain";
 
 /**
  * Documents — the list, and the one that is open.
@@ -21,14 +23,18 @@ import { DocumentEditor } from "./DocumentEditor";
  * the thing you are working on to its right. Consistency between the two modes
  * is the point of putting them on one page rather than two.
  */
-export function DocumentsArea() {
-  const docs = useQuery((r) => r.listDocuments(), []);
+export function DocumentsArea({ kind = "doc" }: { kind?: DocumentKind }) {
+  /* One list for both, keyed on kind — sharing, roles, collaboration and
+     persistence are identical, and a sheet is a document with a different
+     body. Two components would be two copies of every one of those rules. */
+  const docs = useQuery((r) => r.listDocuments(kind), [kind]);
+  const noun = kind === "sheet" ? "sheet" : "document";
   const [openId, setOpenId] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
   const [create, createState] = useAction((r) =>
-    r.createDocument({ title: "Untitled document" }),
+    r.createDocument({ title: `Untitled ${noun}`, kind }),
   );
   const [rename] = useAction((r, id: string, title: string) =>
     r.renameDocument(id, title),
@@ -43,7 +49,7 @@ export function DocumentsArea() {
       <Panel padded={false} label="Documents">
         <div className="flex items-center gap-2 border-b border-hairline px-3 py-2.5">
           <span className="min-w-0 flex-1 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-            Documents
+            {kind === "sheet" ? "Sheets" : "Documents"}
           </span>
           <Button
             size="sm"
@@ -82,7 +88,7 @@ export function DocumentsArea() {
             <div className="p-3">
               <EmptyState
                 compact
-                title="No documents yet"
+                title={`No ${noun}s yet`}
                 body="Anything you create here is shared with the people you add to it."
               />
             </div>
@@ -173,6 +179,9 @@ export function DocumentsArea() {
 
       <Panel padded={false} label="Editor">
         {open ? (
+          kind === "sheet" ? (
+            <SheetGrid key={open.id} documentId={open.id} />
+          ) : (
           <DocumentEditor
             /* Keyed so switching documents rebuilds the editor rather than
                reusing one holding the previous document's history — an undo
@@ -180,10 +189,11 @@ export function DocumentsArea() {
             key={open.id}
             documentId={open.id}
           />
+          )
         ) : (
           <div className="p-4">
             <EmptyState
-              title="No document open"
+              title={`No ${noun} open`}
               body="Choose one on the left, or create a new one."
             />
           </div>

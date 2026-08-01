@@ -37,6 +37,16 @@ export interface DocumentMember {
   addedAt: string;
 }
 
+/**
+ * What kind of thing this is.
+ *
+ * A sheet is a document with a different body, deliberately: sharing, roles,
+ * the collaboration room and the permission gate are identical, and forking
+ * them into a parallel `cowork_sheets` collection would mean maintaining two
+ * copies of every one of those rules.
+ */
+export type DocumentKind = "doc" | "sheet";
+
 export interface CoworkDocument {
   /**
    * Owning tenant. Every read is scoped to it; every write stamps it.
@@ -46,6 +56,7 @@ export interface CoworkDocument {
    */
   organisationId: string;
   id: string;
+  kind: DocumentKind;
   title: string;
   createdById: EmployeeId;
   /** Who last committed a change. Null on a document nobody has edited yet. */
@@ -84,8 +95,20 @@ export interface CoworkDocument {
 /** The body, fetched only when a document is opened. */
 export interface CoworkDocumentBody {
   documentId: string;
-  /** ProseMirror's HTML. Empty string is a genuinely empty document. */
+  /** ProseMirror's HTML. Empty string is a genuinely empty document. Docs only. */
   html: string;
+  /**
+   * A sheet's cells, as JSON. Null on a document.
+   *
+   * `{ "A1": "=SUM(B1:B9)", "B1": "3" }` — sparse, storing what somebody typed
+   * rather than a rectangular array. A 1000×26 grid with four values in it is
+   * four entries here, not 26,000 nulls.
+   *
+   * The RAW input is stored, never the computed value: a formula's result is
+   * derived and re-derived on load, and persisting it would let a stale number
+   * outlive the inputs it came from.
+   */
+  cells: string | null;
   /**
    * The Yjs state vector, base64. Null until collaboration writes one.
    *

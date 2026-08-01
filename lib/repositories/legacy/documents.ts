@@ -43,6 +43,7 @@ export function readDocument(
   return {
     organisationId: str(raw.organisationId, LEGACY_ORGANISATION_ID),
     id,
+    kind: raw.kind === "sheet" ? "sheet" : "doc",
     title: str(raw.title).trim() || "Untitled document",
     createdById: str(raw.createdById),
     lastEditedById: typeof raw.lastEditedById === "string" ? raw.lastEditedById : null,
@@ -63,6 +64,7 @@ export function readDocument(
 export function documentBody(record: CoworkDocument): Record<string, unknown> {
   return {
     organisationId: record.organisationId,
+    kind: record.kind,
     title: record.title,
     createdById: record.createdById,
     lastEditedById: record.lastEditedById,

@@ -58,6 +58,16 @@ export const ADMIN_NAV_ITEM: NavItem = {
 export function visibleNavItems(
   musicEnabled: boolean,
   isAdmin = false,
+  /**
+   * Whether anybody reports to this person.
+   *
+   * The Team entry is withheld from somebody who manages nobody: every team
+   * surface answers a question about people beneath you, and for them the page
+   * is empty. Defaulted to false for the same reason `isAdmin` is — least
+   * privilege while the viewer is still resolving, so the entry appears once
+   * rather than flashing and being withdrawn.
+   */
+  managesAnyone = false,
 ): NavItem[] {
   const items = musicEnabled
     ? [
@@ -68,7 +78,10 @@ export function visibleNavItems(
   /* Defaulted to false so a caller that has not resolved the archetype yet shows
      no Admin entry rather than flashing one and withdrawing it. Least privilege
      while a session is still loading. */
-  return isAdmin ? [...items, ADMIN_NAV_ITEM] : items;
+  const scoped = managesAnyone
+    ? items
+    : items.filter((i) => i.href !== "/team");
+  return isAdmin ? [...scoped, ADMIN_NAV_ITEM] : scoped;
 }
 
 /** Sub-navigation for the Tasks area. Projects lives here. */

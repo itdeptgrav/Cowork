@@ -20,6 +20,7 @@ import { NewChatDialog } from "./NewChatDialog";
 import { GroupSettings } from "./GroupSettings";
 import {
   MessageAttachments,
+  filesFromClipboard,
   formatBytes,
   mediaUrl,
 } from "./MessageAttachments";
@@ -853,6 +854,18 @@ function Thread({
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 void submit();
+              }
+            }}
+            onPaste={(e) => {
+              /* A pasted screenshot or copied file uploads the same as one
+                 picked from the dialog — but only when the paste actually
+                 carries files. A plain-text paste falls through untouched, so
+                 pasting a URL or a snippet still types into the box. */
+              if (!canUpload) return;
+              const pasted = filesFromClipboard(e.clipboardData);
+              if (pasted.length) {
+                e.preventDefault();
+                void handleFiles(pasted);
               }
             }}
             placeholder={

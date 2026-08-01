@@ -12,6 +12,7 @@ import { useQuery } from "@/lib/hooks/useRepository";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { isActive, visibleNavItems } from "@/lib/utils/nav";
+import { managesAnyone } from "@/lib/rules/team/visibility";
 import { useSession } from "@/components/features/auth/SessionProvider";
 import { canAccessAdminConsole } from "@/lib/rules/admin/access";
 import { useMusic } from "@/components/features/music/MusicContext";
@@ -136,10 +137,32 @@ function ScorePill() {
  */
 function LensToggle() {
   const { lens, setLens } = useLens();
+  const viewer = useQuery((r) => r.getViewer(), []);
+  const manages = managesAnyone(viewer.data ?? null);
+
+  /**
+   * Nothing at all for somebody who manages nobody.
+   *
+   * A two-option switch where one option shows the same thing as the other is
+   * worse than no switch: it invites people to keep pressing Team wondering
+   * why nothing changes. They already only have a private view, so the control
+   * has nothing to choose between.
+   */
+  useEffect(() => {
+    if (!viewer.data || manages || lens === "private") return;
+    /* Somebody whose reports were removed can be left holding a stored Team
+       lens. Put them back rather than leaving a lens nothing can now change. */
+    setLens("private");
+  }, [viewer.data, manages, lens, setLens]);
+
   const options: { id: Lens; label: string; hint: string }[] = [
     { id: "private", label: "Private", hint: "Only your own score" },
     { id: "team", label: "Team", hint: "Scores of people reporting to you" },
   ];
+
+  /* Hidden while the viewer resolves too — least privilege, and it avoids the
+     control appearing and then vanishing. */
+  if (!viewer.data || !manages) return null;
 
   function onKeyDown(e: React.KeyboardEvent) {
     const forward = e.key === "ArrowRight" || e.key === "ArrowDown";
@@ -234,9 +257,14 @@ export function TopBar() {
      list. `canAccessAdminConsole` is the single definition of "administrator" in
      the codebase, and the navigation asks it the same question the server-side
      route guard asks — so the bar cannot offer a link the guard will refuse. */
+  /* Team is withheld from somebody who manages nobody — same question the
+     team pages themselves ask, so the bar cannot offer a link onto an empty
+     page. */
+  const viewerForNav = useQuery((r) => r.getViewer(), []);
   const items = visibleNavItems(
     useMusic().enabled,
     canAccessAdminConsole(useSession()),
+    managesAnyone(viewerForNav.data ?? null),
   );
 
   // Escape closes the sheet and returns focus to the control that opened it.
