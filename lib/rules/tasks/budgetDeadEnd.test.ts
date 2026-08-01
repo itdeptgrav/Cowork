@@ -193,22 +193,25 @@ test("REPRO: the assignee cannot counter a figure the manager changed", () => {
 
 /* ── The guard that should have caught this ───────────────────────────────── */
 
-test("REPRO: approving an extension calls a route that refuses active tasks", () => {
-  /* `decideTimeBudgetExtension` applies the budget with `setEffortEstimate`,
-     which posts to `department-tl-set-hours`. That handler opens with:
+test("approving an extension applies the budget via the active-task route, not the gate route", () => {
+  /* The ORIGINAL defect: `decideTimeBudgetExtension` applied the budget with
+     `setEffortEstimate`, which posts to `department-tl-set-hours`. That handler
+     opens with:
 
          if (task.status !== "pending_tl_hours") return res.status(400)
 
-     An extension is requested on work that is already running, so this refuses
-     every time — the manager presses Approve and is told the task "may already
-     be active". Asserted on the source because the endpoint cannot be called
-     from a unit test. */
+     An extension is requested on work that is already running, so this refused
+     every time — the manager pressed Approve and was told the task "may already
+     be active".
+
+     The fix keeps applying at approval — the manager owns the hours and is the
+     only party the backend lets set them — but through `#applyAgreedBudget`,
+     which uses the ACTIVE-task route (`/set-budget`) rather than the gate route.
+     Asserted on the source because the endpoint cannot be called from a unit
+     test. */
   const repo = readFileSync("lib/repositories/legacy/index.ts", "utf8");
   const at = repo.indexOf("async decideTimeBudgetExtension(");
   assert.ok(at > 0, "decideTimeBudgetExtension not found");
-  /* Bounded by the NEXT method, not by a character count — and specifically not
-     spanning `confirmTimeBudgetExtension`, which legitimately applies the budget
-     because that is where agreement happens. */
   const body = repo.slice(
     at,
     repo.indexOf("async confirmTimeBudgetExtension(", at),
@@ -219,21 +222,16 @@ test("REPRO: approving an extension calls a route that refuses active tasks", ()
     false,
     "decideTimeBudgetExtension still applies the budget through department-tl-set-hours, which 400s on any task that is not pending_tl_hours",
   );
-  /* Approval hands the turn on instead of applying anything. */
-  assert.match(body, /status: "approved"/);
+  /* Approval applies via the active-task route and settles the request in one
+     step — no separate assignee confirmation the backend would refuse. */
+  assert.match(body, /this\.#applyAgreedBudget\(/);
+  assert.match(body, /status: "accepted"/);
   assert.match(body, /approvedSecs: granted/);
-
-  /* And the apply lives in the confirmation, behind the assignee's agreement. */
-  const confirm = repo.slice(
-    repo.indexOf("async confirmTimeBudgetExtension("),
-    repo.indexOf("async #applyAgreedBudget("),
-  );
-  assert.match(confirm, /this\.#applyAgreedBudget\(record\.taskId, agreedSecs\)/);
   /* Applied BEFORE the record is marked settled: a record claiming agreement over
      a budget that never moved is the worse failure, because nothing afterwards
      would report the difference. */
   assert.ok(
-    confirm.indexOf("#applyAgreedBudget") < confirm.indexOf('status: "accepted"'),
+    body.indexOf("#applyAgreedBudget") < body.indexOf('status: "accepted"'),
     "the record is settled before the budget is applied",
   );
 });

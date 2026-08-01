@@ -147,12 +147,14 @@ test("5 · accepting is permitted for the assignee and nobody else", () => {
   }
 });
 
-test("6 · the budget moves on CONFIRMATION, not on approval", () => {
-  /* The rule this pins is about ordering rather than arithmetic, so it is
-     asserted on both implementations' source. Applying at approval is what
-     committed somebody to a figure before they had agreed to it — and it never
-     worked anyway, because the route it called refuses any task that is not
-     `pending_tl_hours`. */
+test("6 · the manager's approval moves the budget", () => {
+  /* The rule this pins is about who applies, so it is asserted on both
+     implementations' source. The hours are the manager's to set and the backend
+     authorises only them (`/set-budget` refuses anyone else), so their approval
+     is where the budget moves — deferring it to an assignee confirmation handed
+     the applying step to somebody the backend would always refuse. The
+     confirmation path still applies too, for a counter loop that ends in an
+     accept. */
   for (const [path, applyMarker] of [
     ["lib/repositories/legacy/index.ts", "#applyAgreedBudget"],
     ["lib/repositories/mock/index.ts", "t.estimatedEffortSecs = agreedSecs"],
@@ -162,10 +164,9 @@ test("6 · the budget moves on CONFIRMATION, not on approval", () => {
       src.indexOf("async decideTimeBudgetExtension("),
       src.indexOf("async confirmTimeBudgetExtension("),
     );
-    assert.equal(
+    assert.ok(
       decide.includes(applyMarker),
-      false,
-      `${path}: the manager's decision applies the budget`,
+      `${path}: the manager's decision does not apply the budget`,
     );
 
     const confirm = src.slice(

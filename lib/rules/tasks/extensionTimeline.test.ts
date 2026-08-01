@@ -117,28 +117,34 @@ test("rejecting produces an event and touches no figure", () => {
   for (const e of events) assert.equal(e.unit, "hours");
 });
 
-test("the mock refuses to change a task when the answer is no", () => {
+test("the mock applies the budget on approval and changes nothing on rejection", () => {
   const src = code("lib/repositories/mock/index.ts");
-  /* The branch inverted: `rejected` is the early return now, because `approved`
-     no longer writes a task at all — it hands the turn to the assignee, and the
-     budget moves only in `confirmTimeBudgetExtension`. */
   const at = src.indexOf("async decideTimeBudgetExtension(");
   const fn = src.slice(at, src.indexOf("async confirmTimeBudgetExtension(", at));
+
+  /* Approval applies the budget and settles the request: the hours are the
+     manager's to set and the backend authorises only them, so their decision is
+     where it moves. */
+  assert.match(fn, /t\.estimatedEffortSecs = agreedSecs/);
+  assert.match(fn, /rec\.status = "accepted"/);
+
+  /* Rejection is the early return and never reaches the budget write: a refused
+     request leaves the task exactly as it was. */
   assert.match(fn, /if \(decision === "rejected"\) \{/);
-  /* No task write anywhere in the manager's decision, either answer. */
-  assert.equal(
-    /t\.estimatedEffortSecs|currentWindowSecs/.test(fn),
-    false,
-    "the manager's decision still writes the task's budget",
+  assert.ok(
+    fn.indexOf('if (decision === "rejected")') <
+      fn.indexOf("t.estimatedEffortSecs = agreedSecs"),
+    "rejection returns before the budget write instead of falling through to it",
   );
 
-  /* The task write lives in the confirmation, and only on `accept`. */
+  /* The confirmation path still applies too, for a counter loop that ends in an
+     accept — and a counter returns before reaching it, so asking again moves no
+     budget. */
   const confirm = src.slice(
     src.indexOf("async confirmTimeBudgetExtension("),
     src.indexOf("async listTimeBudgetExtensions("),
   );
   assert.match(confirm, /t\.estimatedEffortSecs = agreedSecs/);
-  /* A counter returns before reaching it, so asking again moves no budget. */
   assert.ok(
     confirm.indexOf('if (answer === "counter")') <
       confirm.indexOf("t.estimatedEffortSecs"),

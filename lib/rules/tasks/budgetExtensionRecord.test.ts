@@ -131,27 +131,34 @@ test("budget extensions live in their own collection", () => {
   }
 });
 
-test("CONFIRMING hours moves the budget, and approving does not", () => {
+test("approving hours moves the budget — via the active-task route, not department-tl-set-hours", () => {
   const src = code("lib/repositories/legacy/index.ts");
-  /* **The apply moved, and that is the fix.** Approval used to raise the budget
-     directly — which meant a figure bound somebody's week before they had agreed
-     to it, and which never worked anyway because the route it called refuses any
-     task that is not `pending_tl_hours`. Approval now hands the turn on; the
-     budget moves when the assignee confirms.
+  /* **Applying belongs to the manager's approval.** The hours are the manager's
+     to set and the backend authorises only them (`/set-budget` refuses anyone
+     else), so approval is where the budget moves — the earlier design deferred
+     it to an assignee confirmation the backend would always refuse.
+
+     What must NOT come back is `setEffortEstimate`: it posts to
+     `department-tl-set-hours`, which 400s on any task not `pending_tl_hours`, and
+     an extension is asked on running work. `#applyAgreedBudget` uses the
+     active-task route instead.
 
      Bounded by the NEXT method rather than by a character count — a fixed window
      drifts into whatever gets inserted below it. */
   const at = src.indexOf("async decideTimeBudgetExtension(");
   const nextAt = src.indexOf("\n  async ", at + 10);
-  const fn = src.slice(at, nextAt > at ? nextAt : at + 2200);
+  const fn = src.slice(at, nextAt > at ? nextAt : at + 2600);
   assert.equal(
     /this\.setEffortEstimate\(/.test(fn),
     false,
-    "approving still applies the budget",
+    "approving applies the budget through department-tl-set-hours, which 400s on a running task",
   );
-  assert.match(fn, /status: "approved"/);
+  /* Approval applies via the active-task route and settles the request. */
+  assert.match(fn, /#applyAgreedBudget/);
+  assert.match(fn, /status: "accepted"/);
 
-  /* And the apply is in the confirmation, behind the assignee's agreement. */
+  /* The confirmation path still applies too, for a counter loop that ends in an
+     accept. */
   const confirmAt = src.indexOf("async confirmTimeBudgetExtension(");
   const confirm = src.slice(confirmAt, src.indexOf("async #applyAgreedBudget("));
   assert.match(confirm, /#applyAgreedBudget/);
