@@ -21,6 +21,22 @@ import type { EmployeeId } from "./identity";
  * They are not allowed to disagree silently — whoever writes `ydocState` writes
  * the matching `html` in the same operation.
  */
+/**
+ * What somebody may do in a document.
+ *
+ * Three, not four. Google's "commenter" sits between editor and viewer, and
+ * there is no comment layer here yet — shipping a role that behaves exactly
+ * like `viewer` would be a promise the product does not keep. It goes in with
+ * annotations.
+ */
+export type DocumentRole = "owner" | "editor" | "viewer";
+
+export interface DocumentMember {
+  employeeId: EmployeeId;
+  role: DocumentRole;
+  addedAt: string;
+}
+
 export interface CoworkDocument {
   /**
    * Owning tenant. Every read is scoped to it; every write stamps it.
@@ -35,10 +51,19 @@ export interface CoworkDocument {
   /** Who last committed a change. Null on a document nobody has edited yet. */
   lastEditedById: EmployeeId | null;
   /**
-   * Who may open it.
+   * Who may open it, and as what.
    *
-   * Includes the creator. A document with an empty list is unreachable by
-   * anybody, including its author — so the repository refuses to write one.
+   * Always includes the creator as `owner`. A document with no owner is
+   * unreachable and unmanageable, so nothing is allowed to write one.
+   */
+  members: DocumentMember[];
+  /**
+   * The employee ids in `members`, denormalised.
+   *
+   * **Derived, never authored.** Firestore cannot query inside an array of
+   * objects, so `array-contains` needs a flat list — this is that index, and it
+   * is what the document list query and the collaboration socket both read.
+   * `writeMembers` is the one place that keeps the two in step.
    */
   memberIds: EmployeeId[];
   createdAt: string;

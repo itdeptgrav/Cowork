@@ -21,6 +21,8 @@ import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import { EditorToolbar } from "./EditorToolbar";
 import { useCollabSession } from "./useCollabSession";
+import { ShareMenu } from "./ShareMenu";
+import { canManage, editRefusal, roleOf } from "@/lib/rules/documents/access";
 
 /**
  * The document editor.
@@ -55,6 +57,8 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
   const body = useQuery((r) => r.getDocumentBody(documentId), [documentId]);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
   const collab = useCollabSession(documentId, me.data ?? null);
+  const myRole = doc.data ? roleOf(doc.data, me.data?.id ?? null) : null;
+  const readOnly = doc.data ? editRefusal(doc.data, me.data?.id ?? null) !== null : false;
 
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +107,10 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
       /* Tiptap renders server-side by default in v3. This content comes from a
          client-side read, so there is nothing correct to render there. */
       immediatelyRender: false,
+      /* The UI half of the permission. The socket refuses a viewer's updates
+         regardless — this only stops them typing into a document that would
+         then silently discard it. */
+      editable: !readOnly,
       editorProps: {
         attributes: { class: "prose-cowork focus:outline-none" },
       },
@@ -114,7 +122,7 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
         timer.current = setTimeout(() => void flush(), SAVE_DEBOUNCE_MS);
       },
     },
-    [documentId, collab.session],
+    [documentId, collab.session, readOnly],
   );
 
   /* `useEditor` reads `content` only at creation, so a body that resolves later
@@ -219,6 +227,14 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
         <span className="min-w-0 flex-1 truncate text-sm text-ink">
           {doc.data.title}
         </span>
+        {myRole && myRole !== "owner" && (
+          <span className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
+            {myRole === "viewer" ? "View only" : "Editor"}
+          </span>
+        )}
+        {doc.data && canManage(doc.data, me.data?.id ?? null) && (
+          <ShareMenu document={doc.data} onChanged={doc.refetch} />
+        )}
         {collab.connected && (
           <span
             className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted"
@@ -251,7 +267,7 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
         </button>
       </header>
 
-      {editor && <EditorToolbar editor={editor} />}
+      {editor && !readOnly && <EditorToolbar editor={editor} />}
 
       {error && (
         <div className="px-4 pt-3">
@@ -283,7 +299,9 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
               single-writer is the one failure people must not be left guessing
               about — two of them would overwrite each other believing they were
               collaborating. */}
-          {collab.connected
+          {readOnly
+            ? "You have view access. Ask an owner if you need to edit this."
+            : collab.connected
             ? "Edits are shared live. Everyone in this document sees them as you type."
             : (collab.reason ??
               "Working offline — edits are saved to this document, but nobody else sees them live.")}

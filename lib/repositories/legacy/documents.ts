@@ -1,4 +1,5 @@
 import { LEGACY_ORGANISATION_ID } from "./map.ts";
+import { readMembers } from "../../rules/documents/access.ts";
 import type { CoworkDocument } from "../../domain/documents.ts";
 
 /**
@@ -33,8 +34,11 @@ export function readDocument(
   id: string,
   raw: Record<string, unknown>,
 ): CoworkDocument | null {
-  const memberIds = ids(raw.memberIds);
-  if (memberIds.length === 0) return null;
+  /* Tolerates the pre-roles shape: those people were editors, and the creator
+     becomes the owner. See `readMembers`. */
+  const members = readMembers(raw);
+  if (members.length === 0) return null;
+  const memberIds = [...new Set(members.map((m) => m.employeeId))];
   const createdAt = str(raw.createdAt);
   return {
     organisationId: str(raw.organisationId, LEGACY_ORGANISATION_ID),
@@ -42,6 +46,7 @@ export function readDocument(
     title: str(raw.title).trim() || "Untitled document",
     createdById: str(raw.createdById),
     lastEditedById: typeof raw.lastEditedById === "string" ? raw.lastEditedById : null,
+    members,
     memberIds,
     createdAt,
     /* Falls back to `createdAt` rather than to now: a record written before
@@ -61,6 +66,7 @@ export function documentBody(record: CoworkDocument): Record<string, unknown> {
     title: record.title,
     createdById: record.createdById,
     lastEditedById: record.lastEditedById,
+    members: record.members,
     memberIds: record.memberIds,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,

@@ -225,9 +225,17 @@ import {
 } from "@/lib/rules/tasks/deadlineCompensation";
 import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
 import { previewOfHtml } from "@/lib/rules/documents/preview";
+import {
+  canManage as canManageDocument,
+  canView as canViewDocument,
+  editRefusal,
+  memberChangeRefusal,
+  writeMembers,
+} from "@/lib/rules/documents/access";
 import type {
   CoworkDocument,
   CoworkDocumentBody,
+  DocumentRole,
   DocumentSummary,
 } from "@/lib/domain";
 import {
@@ -6172,7 +6180,7 @@ export class MockRepository implements CoworkRepository {
     const s = getStore();
     return delay(
       s.documents
-        .filter((d) => !d.deletedAt && d.memberIds.includes(me))
+        .filter((d) => !d.deletedAt && canViewDocument(d, me))
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
         .map((d) => ({
           ...d,
@@ -6186,7 +6194,7 @@ export class MockRepository implements CoworkRepository {
   async getDocument(id: string): Promise<CoworkDocument | null> {
     const me = actingId();
     const d = getStore().documents.find((x) => x.id === id && !x.deletedAt);
-    return delay(d && d.memberIds.includes(me) ? d : null);
+    return delay(d && canViewDocument(d, me) ? d : null);
   }
 
   async getDocumentBody(id: string): Promise<CoworkDocumentBody | null> {
@@ -6215,12 +6223,19 @@ export class MockRepository implements CoworkRepository {
        document, and the commonest way to write one is to pass a member list
        that forgot the author. */
     const memberIds = [...new Set([me, ...(input.memberIds ?? [])])];
+    const members = memberIds.map((employeeId) => ({
+      employeeId,
+      /* The creator owns it; anybody named at creation can write. */
+      role: (employeeId === me ? "owner" : "editor") as DocumentRole,
+      addedAt: now,
+    }));
     const doc: CoworkDocument = {
       organisationId: actingOrganisationId(),
       id: nextId("doc"),
       title: input.title.trim() || "Untitled document",
       createdById: me,
       lastEditedById: null,
+      members,
       memberIds,
       createdAt: now,
       updatedAt: now,
@@ -6248,8 +6263,8 @@ export class MockRepository implements CoworkRepository {
     if (g) return g;
     const doc = getStore().documents.find((d) => d.id === id && !d.deletedAt);
     if (!doc) return fail("not_found", "Document not found.");
-    if (!doc.memberIds.includes(actingId()))
-      return fail("permission_denied", "You are not in this document.");
+    if (!canManageDocument(doc, actingId()))
+      return fail("permission_denied", "Only an owner can rename this document.");
     const next = title.trim();
     if (!next) return fail("validation_failed", "Give the document a name.");
     tick();
@@ -6266,11 +6281,8 @@ export class MockRepository implements CoworkRepository {
     if (!doc) return fail("not_found", "Document not found.");
     /* Only the author. Membership is permission to WRITE in a document, not to
        remove one out from under everybody else in it. */
-    if (doc.createdById !== actingId())
-      return fail(
-        "permission_denied",
-        "Only whoever created this document can delete it.",
-      );
+    if (!canManageDocument(doc, actingId()))
+      return fail("permission_denied", "Only an owner can delete this document.");
     tick();
     doc.deletedAt = nowIso();
     persistStore();
@@ -6287,8 +6299,8 @@ export class MockRepository implements CoworkRepository {
     const s = getStore();
     const doc = s.documents.find((d) => d.id === id && !d.deletedAt);
     if (!doc) return fail("not_found", "Document not found.");
-    if (!doc.memberIds.includes(me))
-      return fail("permission_denied", "You are not in this document.");
+    const refusal = editRefusal(doc, me);
+    if (refusal) return fail("permission_denied", refusal);
     tick();
     const now = nowIso();
     let record = s.documentBodies.find((b) => b.documentId === id);
@@ -6305,6 +6317,35 @@ export class MockRepository implements CoworkRepository {
     doc.lastEditedById = me;
     persistStore();
     return delay(ok(record));
+  }
+
+  async setDocumentMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: DocumentRole | null,
+  ): Promise<ActionResult<CoworkDocument>> {
+    const g = guard();
+    if (g) return g;
+    const doc = getStore().documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc) return fail("not_found", "Document not found.");
+    const refusal = memberChangeRefusal({
+      doc,
+      actorId: actingId(),
+      targetId: employeeId,
+      nextRole: role,
+    });
+    if (refusal) return fail("permission_denied", refusal);
+    tick();
+    const next = writeMembers(doc.members, {
+      employeeId,
+      role,
+      at: nowIso(),
+    });
+    doc.members = next.members;
+    doc.memberIds = next.memberIds;
+    doc.updatedAt = nowIso();
+    persistStore();
+    return delay(ok(doc));
   }
 
   async listMeetings() {

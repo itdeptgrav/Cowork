@@ -67,7 +67,7 @@ import {
 import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CoworkDocument, CoworkDocumentBody, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CoworkDocument, CoworkDocumentBody, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -167,6 +167,12 @@ import {
   readDocument,
 } from "./documents.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
+import {
+  canManage as canManageDocument,
+  editRefusal,
+  memberChangeRefusal,
+  writeMembers,
+} from "../../rules/documents/access.ts";
 import { applySettingsChange } from "../../rules/settings/service.ts";
 import {
   AUDIT_REQUIRED,
@@ -5309,12 +5315,19 @@ export class LegacyRepository {
     const memberIds = [
       ...new Set([me, ...(input.memberIds ?? []).map(String)]),
     ];
+    const members = memberIds.map((employeeId) => ({
+      employeeId,
+      /* The creator owns it; anybody named at creation can write. */
+      role: (employeeId === me ? "owner" : "editor") as DocumentRole,
+      addedAt: now,
+    }));
     const record: CoworkDocument = {
       organisationId: LEGACY_ORGANISATION_ID,
       id: ref.id,
       title: input.title.trim() || "Untitled document",
       createdById: me,
       lastEditedById: null,
+      members,
       memberIds,
       createdAt: now,
       updatedAt: now,
@@ -5349,6 +5362,12 @@ export class LegacyRepository {
     const record = await this.getDocument(id);
     if (!record)
       return { ok: false, code: "not_found", message: "Document not found." };
+    if (!canManageDocument(record, String(this.#ctx.employeeId)))
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only an owner can rename this document.",
+      };
     const { doc, updateDoc } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const now = new Date().toISOString();
@@ -5366,11 +5385,11 @@ export class LegacyRepository {
       return { ok: false, code: "not_found", message: "Document not found." };
     /* Membership is permission to WRITE in a document, not to remove one out
        from under everybody else in it. */
-    if (record.createdById !== me)
+    if (!canManageDocument(record, me))
       return {
         ok: false,
         code: "permission_denied",
-        message: "Only whoever created this document can delete it.",
+        message: "Only an owner can delete this document.",
       };
     const { doc, updateDoc } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
@@ -5390,6 +5409,9 @@ export class LegacyRepository {
     const record = await this.getDocument(id);
     if (!record)
       return { ok: false, code: "not_found", message: "Document not found." };
+    const refusal = editRefusal(record, me);
+    if (refusal)
+      return { ok: false, code: "permission_denied", message: refusal };
     const { doc, setDoc, updateDoc } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const now = new Date().toISOString();
@@ -5413,6 +5435,46 @@ export class LegacyRepository {
         ydocState: body.ydocState ?? null,
         updatedAt: now,
       },
+    };
+  }
+
+  async setDocumentMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: DocumentRole | null,
+  ): Promise<ActionResult<CoworkDocument>> {
+    const record = await this.getDocument(id);
+    if (!record)
+      return { ok: false, code: "not_found", message: "Document not found." };
+    const refusal = memberChangeRefusal({
+      doc: record,
+      actorId: String(this.#ctx.employeeId),
+      targetId: String(employeeId),
+      nextRole: role,
+    });
+    if (refusal)
+      return { ok: false, code: "permission_denied", message: refusal };
+
+    const next = writeMembers(record.members, {
+      employeeId: String(employeeId),
+      role,
+      at: new Date().toISOString(),
+    });
+    const { doc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const now = new Date().toISOString();
+    /* Both lists in ONE write. Firestore cannot query inside an array of
+       objects, so `memberIds` is the `array-contains` index — writing them
+       separately would leave somebody with a role but no way to find the
+       document, or the reverse. */
+    await updateDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id), {
+      members: next.members,
+      memberIds: next.memberIds,
+      updatedAt: now,
+    });
+    return {
+      ok: true,
+      data: { ...record, members: next.members, memberIds: next.memberIds, updatedAt: now },
     };
   }
 

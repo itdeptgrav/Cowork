@@ -65,6 +65,7 @@ import type {
   InterventionItem,
   CoworkDocument,
   CoworkDocumentBody,
+  DocumentRole,
   DocumentSummary,
   MailAttachment,
   MailFolder,
@@ -1512,6 +1513,17 @@ export interface CoworkRepository {
     id: string,
     body: { html: string; ydocState?: string | null },
   ): Promise<ActionResult<CoworkDocumentBody>>;
+  /**
+   * Add somebody, or change what they may do. Owners only.
+   *
+   * `null` removes them. The repository refuses anything that would leave the
+   * document with no owner — see `rules/documents/access.ts`.
+   */
+  setDocumentMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: DocumentRole | null,
+  ): Promise<ActionResult<CoworkDocument>>;
 
   listMeetings(): Promise<Meeting[]>;
   /* Meeting lifecycle. The organiser drives all of it; `manageRefusal` gates. */
