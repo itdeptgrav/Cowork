@@ -39,6 +39,37 @@ test("fields legacy does not send stay EMPTY, never guessed", () => {
   assert.equal(e.workCalendarId, "");
   assert.equal(e.joinedAt, "");
   assert.equal(e.email, "");
+  /* No picture is the ordinary case, and the honest one: nothing here invents a
+     face. */
+  assert.equal(e.profilePictureUrl, null);
+});
+
+test("a stored profile picture reaches the domain instead of being dropped", () => {
+  /* The bug this closes: `readEmployee` has always mapped
+     `cowork_employees.profilePicUrl` into `avatarUrl`, and `toEmployee` never
+     carried it — so real employees with photographs set years ago in the old
+     app were drawn as monograms here. Same class as `estimatedEffortSecs: 0`. */
+  const picture = `data:image/jpeg;base64,${"A".repeat(400)}`;
+  const e = toEmployee(
+    readEmployee({ employeeId: "E1", name: "X", profilePicUrl: picture })!,
+  );
+  assert.equal(e.profilePictureUrl, picture);
+});
+
+test("an unrenderable stored value leaves the monogram rather than a broken image", () => {
+  /* Vetted at the MAPPER, not at the wire layer — which imports no rules — so
+     one bad document cannot put a broken image, or a `javascript:` URL, into
+     every screen that draws that person's name. */
+  for (const bad of [
+    "javascript:alert(1)",
+    "http://example.test/a.jpg",
+    `data:image/jpeg;base64,${"A".repeat(400_000)}`,
+  ]) {
+    const e = toEmployee(
+      readEmployee({ employeeId: "E1", name: "X", profilePicUrl: bad })!,
+    );
+    assert.equal(e.profilePictureUrl, null, bad.slice(0, 32));
+  }
 });
 
 test("an unrecognised role is an employee, never something higher", () => {

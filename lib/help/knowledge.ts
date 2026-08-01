@@ -935,10 +935,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Can my admin approve my emergency?",
     ],
     answer:
-      "Emergency Mode does not move your deadlines by itself. When you turn it off, Cowork asks what happened and for a supporting document — a PDF or a Word file, and both are required — and sends that to your manager as a request. Nothing changes while it waits: you go back to work immediately, and your deadlines stay exactly where they are. Your manager sees who you are, when the emergency started and ended, how long it ran, your explanation and the document, and either approves or declines. If they approve, the full duration is added to every live task you hold that has a deadline — finished and cancelled tasks are left alone — and because the emergency was accepted, the scored deadline moves too, so the time is not counted against you. If they decline they have to say why, nothing about your tasks changes at all, and the request stays in the history as declined. Either way you get a notification. Only your direct manager can decide it: you cannot approve your own, and an administrator does not get to decide it for them. If you have no manager on record, the request cannot be raised — ask an administrator to set your reporting line first.",
+      "Emergency Mode does not move your deadlines by itself. When you turn it off, Cowork asks what happened and for a supporting document — a PDF or a Word file, and both are required — and sends that to your manager as a request. Nothing changes while it waits: you go back to work immediately, and your deadlines stay exactly where they are. Your manager sees who you are, when the emergency started and ended, how long it ran, your explanation and the document, and either approves or declines. If they approve, the full duration is added to every live task you hold that has a deadline — finished and cancelled tasks are left alone — and because the emergency was accepted, the scored deadline moves too, so the time is not counted against you. If they decline they have to say why, nothing about your tasks changes at all, and the request stays in the history as declined. Either way you get a notification. Only your direct manager can decide it: you cannot approve your own, and an administrator does not get to decide it for them — the request names one decider when it is raised, and only that person counts, so a reorganisation afterwards does not move the decision to somebody who was not there for it. The time is added once and only once. Approving a request that has already been approved changes nothing, and a decision — approval or refusal — also clears any leftover claim on your presence record, so one emergency can never be paid twice. If you have no manager on record, the request cannot be raised — ask an administrator to set your reporting line first.",
     related: ["status-break", "task-extension", "people-unplaced"],
     source:
-      "lib/tasks/emergency.ts — emergencyRequestRefusal and emergencyDecisionRefusal; createEmergencyRequest / decideEmergencyRequest; ported from legacy lib/emergencyApproval.js",
+      "lib/rules/tasks/emergency.ts — emergencyRequestRefusal, emergencyDecisionRefusal, emergencyCompensationMs; createEmergencyRequest / decideEmergencyRequest in both repositories; EmergencyRequest.compensationAppliedAt; ported from legacy lib/emergencyApproval.js",
   },
   {
     id: "status-offline",
@@ -1497,6 +1497,34 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "The lens in the top bar is a visibility boundary, not a display preference. Private shows your own work and your own score. Team shows the people reporting to you, including how they compare to each other — a view they never see of themselves. It persists across refreshes and can be linked, because for a manager the team lens is where they work rather than a detour.",
     related: ["scoring-visibility", "task-visibility"],
     source: "LensContext; docs/architecture/PRODUCT.md comparative visibility rule",
+  },
+  {
+    id: "general-profile-picture",
+    category: "general",
+    title: "Your profile picture",
+    keywords: [
+      "profile picture",
+      "profile pic",
+      "avatar",
+      "photo",
+      "headshot",
+      "change my picture",
+      "upload photo",
+      "initials",
+      "monogram",
+    ],
+    examples: [
+      "How do I add a profile picture?",
+      "How do I change my photo?",
+      "Why do I see initials instead of faces?",
+      "Can I remove my profile picture?",
+      "Why can't my colleague see my new picture yet?",
+    ],
+    answer:
+      "Open Profile and click your own avatar — it is the control. Choose an image and it is saved straight away; Remove underneath puts your initials back. Until you set one you have a monogram, coloured from your employee id, and so does everybody who has not set one: nothing generates a face for anybody. You can only change your own. There is no screen for setting somebody else's, because the engine has no way to decide who would be allowed to. Three things are refused, in these words: a file that is not an image gets \u201CPlease select an image file.\u201D, anything over ten megabytes gets \u201CImage must be under 10MB.\u201D, and an empty file gets \u201CThat file is empty.\u201D What is stored is not the file you chose: the picture is cropped to a square from its middle, scaled to 160 pixels and saved as a JPEG, which is around ten kilobytes \u2014 and what you see the moment you choose it is that finished square, not a preview of the original, so nothing changes appearance after saving. A photograph taken on a phone held sideways is rotated the right way up. This is the same picture the old Cowork application uses, because it is the same field on the same record: set it in either and it appears in both. Your own screens update immediately. Colleagues may keep seeing your old picture, or your initials, for a few minutes \u2014 the server keeps its staff list for five minutes and nothing can ask it to forget sooner. A few places always show initials rather than a photograph, and that is deliberate rather than missing: mail shows the sender as an address, and a video room shows whoever the meeting service reports, and in neither case is there an employee record to take a picture from.",
+    related: ["general-what-is-cowork", "people-unplaced"],
+    source:
+      "lib/rules/people/profilePicture.ts; lib/people/encodeProfilePicture.ts; LegacyRepository.setMyProfilePicture; cowork_employees.profilePicUrl",
   },
   {
     id: "general-documents",

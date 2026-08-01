@@ -80,5 +80,19 @@ export interface EmergencyRequest {
    * again for unrelated reasons.
    */
   appliedTaskIds: TaskId[];
+  /**
+   * When the deadline compensation was actually applied. Null until it is.
+   *
+   * **The consumed marker, and it is deliberately separate from `status`.**
+   * `status === "approved"` records a DECISION; this records that the decision
+   * has been paid out. Deriving one from the other would make the shift
+   * re-runnable by anything that can write a status — a retried request, a
+   * second click, a stale `pendingEmergencyGapMs` the old application turns
+   * into another approval — and each replay would move every deadline again.
+   *
+   * The compensation is guarded on this being null, so approving twice moves
+   * deadlines once.
+   */
+  compensationAppliedAt: string | null;
   createdAt: string;
 }

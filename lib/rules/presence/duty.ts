@@ -277,21 +277,37 @@ export function dutyTransition(input: {
   let offlineToCreditMs = 0;
 
   if (prevMode === "emergency") {
+    /**
+     * **An emergency span is never banked, on any exit.**
+     *
+     * It used to be held in `pendingEmergencyGapMs` whenever the person left for
+     * anything but online — "held, not dropped", so the span could not be lost.
+     * That reasoning was sound when nothing else recorded it. It is not now, and
+     * the field became a second claim on the same minutes:
+     *
+     *  · Leaving Emergency Mode is gated by the end-emergency dialog, and the
+     *    transition only runs AFTER the approval request has been raised. By the
+     *    time this executes, the span is already on a `cowork_emergency_approvals`
+     *    record with the reason and the document attached. Nothing is at risk of
+     *    being lost.
+     *  · The old application's `applyPendingEmergencyApproval` turns whatever it
+     *    finds in this field into ANOTHER approval request on its next online
+     *    transition. One emergency would then be decided twice, and approved
+     *    twice would shift every deadline twice.
+     *
+     * So it is actively CLEARED rather than merely left alone — a value written
+     * by the old app, or by a build before this one, must not survive to be
+     * spent. Emergency time reaches a deadline through exactly one door:
+     * `decideEmergencyRequest`, on approval by the named manager.
+     */
     const started = numberOr(previous?.emergencyStartedAtMs, nowMs);
     const span = Math.max(0, nowMs - started);
     if (next === "online") {
       emergencyToRaiseMs = span;
       emergencyReason = textOr(previous?.emergencyReason, null);
-      if (bank && span > 0) {
-        patch.pendingEmergencyGapMs = span;
-        patch.pendingEmergencyReason = emergencyReason;
-      }
-    } else {
-      /* Held, not dropped. They will come online eventually, and the span is
-         the whole subject of the request — it cannot be reconstructed later. */
-      patch.pendingEmergencyGapMs = span > 0 ? span : null;
-      patch.pendingEmergencyReason = textOr(previous?.emergencyReason, null);
     }
+    patch.pendingEmergencyGapMs = null;
+    patch.pendingEmergencyReason = null;
     patch.emergencyStartedAtMs = null;
   }
 

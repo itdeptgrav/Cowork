@@ -169,6 +169,10 @@ import {
 } from "./documents.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
 import { pageSetupRefusal, readPageSetup } from "../../rules/documents/pageSetup.ts";
+import {
+  emergencyCompensationMs,
+  emergencyDecisionRefusal,
+} from "../../rules/tasks/emergency.ts";
 import { storedPictureRefusal } from "../../rules/people/profilePicture.ts";
 import {
   HISTORY_FIELD,
@@ -4092,9 +4096,23 @@ export class LegacyRepository {
       const lostMs = endedSpanMs + returningMs;
       if (lostMs > 0) {
         const shifted = await this.#compensateActiveDeadlines(employeeId, lostMs);
+        /* **Broken down by cause, because the total alone cannot be diagnosed.**
+         * "My deadline moved and nobody approved anything" is a report that fits
+         * two completely different mechanisms — a credited break and a credited
+         * offline absence — and neither involves an emergency, which is gated on
+         * `decideEmergencyRequest`. A single `lostMinutes` figure left the reader
+         * to guess which had fired, and the guess was usually "the emergency".
+         *
+         * `emergencyMinutes` is logged as an explicit zero rather than omitted:
+         * seeing it there and reading 0 is what rules the emergency out, and an
+         * absent key proves nothing. */
         console.info("[presence] DEADLINE COMPENSATION applied:", {
           employeeId,
+          from: input.mode,
           lostMinutes: Math.round(lostMs / 60000),
+          breakMinutes: Math.round(endedSpanMs / 60000),
+          offlineMinutes: Math.round(returningMs / 60000),
+          emergencyMinutes: 0,
           tasksShifted: shifted,
         });
       }
@@ -4143,6 +4161,26 @@ export class LegacyRepository {
    * written and is the thing the caller asked for, and reporting the whole change
    * as failed because a deadline write did would send them to toggle again.
    */
+  /**
+   * Drop any banked emergency span from the duty document.
+   *
+   * Failure is logged and swallowed: the decision has landed and the deadlines
+   * have moved, and reporting the whole thing as failed because a cleanup write
+   * did would send a manager to decide again.
+   */
+  async #clearPendingEmergencyGap(employeeId: string): Promise<void> {
+    try {
+      const { setDoc } = await import("firebase/firestore");
+      await setDoc(
+        await this.#dutyDoc(employeeId),
+        { pendingEmergencyGapMs: null, pendingEmergencyReason: null },
+        { merge: true },
+      );
+    } catch (error) {
+      console.error("[presence] pending emergency gap not cleared:", error);
+    }
+  }
+
   async #compensateActiveDeadlines(
     employeeId: string,
     lostMs: number,
@@ -4750,6 +4788,9 @@ export class LegacyRepository {
           decisionReason: null,
           decidedAt: null,
           appliedTaskIds: [],
+          /* Nothing has been applied — that is what "pending" means, and it is
+             the state the whole gate exists to hold. */
+          compensationAppliedAt: null,
           createdAt: new Date().toISOString(),
         } as EmergencyRequest,
       };
@@ -4819,6 +4860,13 @@ export class LegacyRepository {
            the honest answer; listing the person's open tasks would claim a
            causal link nothing measured. */
         appliedTaskIds: [],
+        /* The consumed marker, read back so a second approval finds it. Absent
+           on every record written before this existed, which reads as "not yet
+           applied" — correct, because those were decided by a path that shifted
+           on approval and could not shift twice from a single decision. */
+        compensationAppliedAt: readInstant(r.compensationAppliedAt)
+          ? new Date(readInstant(r.compensationAppliedAt)!).toISOString()
+          : null,
         createdAt: createdAtMs ? new Date(createdAtMs).toISOString() : "",
       } as EmergencyRequest);
     }
@@ -4842,9 +4890,24 @@ export class LegacyRepository {
    * sends: the span is what the person was actually away for, and a browser is
    * not the right authority on how much time to give back.
    */
+  /**
+   * One emergency request, mapped the way the list maps them.
+   *
+   * **This read the wrong field, and the effect was total.** It looked for
+   * `durationSecs`, which nothing writes — `createEmergencyRequest` stores the
+   * span as `gapMs`, and so does the old application's own
+   * `requestEmergencyApproval`. So the duration was always 0, `lostMs` was
+   * always 0, and **approving an emergency on the real backend moved nothing at
+   * all.** The gate worked; the payout never happened.
+   *
+   * It returns the whole record now rather than two fields, because the decision
+   * needs the named manager, the status and the consumed marker as well — and
+   * because a second, narrower reader of the same document is exactly how the
+   * field names drifted apart in the first place.
+   */
   async #emergencyRequestById(
     requestId: string,
-  ): Promise<{ employeeId: string; durationSecs: number } | null> {
+  ): Promise<EmergencyRequest | null> {
     const { doc, getDoc } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(
@@ -4858,11 +4921,54 @@ export class LegacyRepository {
         : typeof raw.requestedBy === "string"
           ? raw.requestedBy
           : null;
-    const durationSecs =
-      typeof raw.durationSecs === "number" && Number.isFinite(raw.durationSecs)
-        ? Math.max(0, raw.durationSecs)
-        : 0;
-    return employeeId ? { employeeId, durationSecs } : null;
+    if (!employeeId) return null;
+
+    /* `gapMs` is the stored span. `durationSecs` is accepted as well so a
+       record written by a future path is not silently read as zero — the bug
+       above, in the other direction. */
+    const gapMs =
+      typeof raw.gapMs === "number" && Number.isFinite(raw.gapMs)
+        ? Math.max(0, raw.gapMs)
+        : typeof raw.durationSecs === "number" && Number.isFinite(raw.durationSecs)
+          ? Math.max(0, raw.durationSecs) * 1000
+          : 0;
+
+    const status = typeof raw.status === "string" ? raw.status : "pending";
+    const resolvedAtMs = readInstant(raw.resolvedAt);
+    const createdAtMs = readInstant(raw.createdAt);
+    const appliedAtMs = readInstant(raw.compensationAppliedAt);
+    const endedAtMs = resolvedAtMs ?? createdAtMs;
+
+    return {
+      organisationId: LEGACY_ORGANISATION_ID,
+      id: requestId,
+      employeeId: employeeId as EmployeeId,
+      employeeName:
+        typeof raw.employeeName === "string" ? raw.employeeName : employeeId,
+      /* The NAMED decider, frozen when the request was raised. The whole
+         authorisation rests on this one string. */
+      managerId: (typeof raw.tlId === "string" ? raw.tlId : "") as EmployeeId,
+      managerName: typeof raw.tlName === "string" ? raw.tlName : "",
+      startedAt: endedAtMs ? new Date(endedAtMs - gapMs).toISOString() : "",
+      endedAt: endedAtMs ? new Date(endedAtMs).toISOString() : "",
+      durationSecs: Math.max(0, Math.round(gapMs / 1000)),
+      reason: typeof raw.reason === "string" ? raw.reason : "",
+      attachmentId: typeof raw.documentName === "string" ? raw.documentName : "",
+      status:
+        status === "approved"
+          ? "approved"
+          : status === "rejected" || status === "declined"
+            ? "declined"
+            : "pending",
+      decisionReason:
+        typeof raw.decisionReason === "string" ? raw.decisionReason : null,
+      decidedAt: resolvedAtMs ? new Date(resolvedAtMs).toISOString() : null,
+      appliedTaskIds: [],
+      compensationAppliedAt: appliedAtMs
+        ? new Date(appliedAtMs).toISOString()
+        : null,
+      createdAt: createdAtMs ? new Date(createdAtMs).toISOString() : "",
+    };
   }
 
   async decideEmergencyRequest(
@@ -4871,6 +4977,51 @@ export class LegacyRepository {
     decisionReason?: string,
   ): Promise<ActionResult<EmergencyRequest>> {
     const me = String(this.#ctx.employeeId);
+
+    /**
+     * **Read first, decide second, write third.**
+     *
+     * This used to write the status and then shift, with no check of any kind:
+     * whoever called it approved it. The requester could approve their own
+     * emergency, so could a secondary manager, so could anybody who reached the
+     * method — and approving twice moved every deadline twice.
+     *
+     * The record NAMES its decider (`tlId`, frozen when the request was raised),
+     * and `emergencyDecisionRefusal` compares against that identity rather than
+     * against a capability. That is what makes "the employee cannot approve
+     * their own" and "an administrator does not bypass this" true without either
+     * being written as a special case.
+     */
+    const request = await this.#emergencyRequestById(requestId);
+    if (!request)
+      return { ok: false, code: "not_found", message: "Request not found." };
+
+    const refusal = emergencyDecisionRefusal({
+      request,
+      actorId: me,
+      approve,
+      decisionReason: decisionReason ?? "",
+    });
+    if (refusal)
+      return {
+        ok: false,
+        code: refusal.startsWith("A reason")
+          ? "validation_failed"
+          : "permission_denied",
+        message: refusal,
+      };
+
+    /**
+     * **What the approval is worth, decided by the rule and not here.**
+     *
+     * Computed BEFORE the write, from the record as it was read, so the amount
+     * is the one the refusal above was taken against. Zero for a rejection, zero
+     * for a request already applied, zero for anybody who is not the named
+     * manager — the same arithmetic the demo runs.
+     */
+    const lostMs = emergencyCompensationMs({ request, actorId: me, approve });
+    const decidedAt = new Date();
+
     const { doc, updateDoc } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -4879,9 +5030,14 @@ export class LegacyRepository {
         doc(legacyDb(), "cowork_emergency_approvals", requestId),
         {
           status: approve ? "approved" : "rejected",
-          resolvedAt: new Date(),
+          resolvedAt: decidedAt,
           resolvedBy: me,
           resolvedByName: me,
+          /* The consumed marker, written in the SAME update as the status.
+             Separating them would leave a window in which the request reads as
+             approved and unapplied, which is exactly the state a retry pays out
+             against a second time. */
+          ...(lostMs > 0 ? { compensationAppliedAt: decidedAt } : {}),
           ...(decisionReason ? { decisionReason } : {}),
         },
       );
@@ -4899,26 +5055,37 @@ export class LegacyRepository {
     /**
      * **The one place an emergency moves a deadline.**
      *
-     * Applied on APPROVAL and nowhere else. A rejected request shifts nothing,
-     * which is what makes the decision mean something — before this, the time
-     * was already in the deadlines by the time the manager saw the request, so
-     * approving and rejecting had the same effect on the work.
+     * Applied on APPROVAL BY THE NAMED MANAGER and nowhere else. A rejected
+     * request shifts nothing, which is what makes the decision mean something —
+     * before this, the time was already in the deadlines by the time the manager
+     * saw the request, so approving and rejecting had the same effect.
      */
-    if (approve) {
-      const request = await this.#emergencyRequestById(requestId);
-      const lostMs = Math.max(0, (request?.durationSecs ?? 0) * 1000);
-      if (lostMs > 0 && request?.employeeId) {
-        const shifted = await this.#compensateActiveDeadlines(
-          String(request.employeeId),
-          lostMs,
-        );
-        console.info("[presence] EMERGENCY APPROVED, deadlines shifted:", {
-          employeeId: request.employeeId,
-          minutes: Math.round(lostMs / 60000),
-          tasksShifted: shifted,
-        });
-      }
+    if (lostMs > 0) {
+      const shifted = await this.#compensateActiveDeadlines(
+        String(request.employeeId),
+        lostMs,
+      );
+      console.info("[presence] EMERGENCY APPROVED, deadlines shifted:", {
+        employeeId: request.employeeId,
+        decidedBy: me,
+        minutes: Math.round(lostMs / 60000),
+        tasksShifted: shifted,
+      });
     }
+
+    /**
+     * **Whatever was decided, the pending gap is spent.**
+     *
+     * `dutyTransition` no longer banks an emergency span, but the OLD
+     * application still writes `pendingEmergencyGapMs` on its own exits, and its
+     * `applyPendingEmergencyApproval` turns whatever it finds there into ANOTHER
+     * approval request on its next online transition. Left behind, one emergency
+     * would come back for a second decision and a second shift.
+     *
+     * Cleared on a rejection too — a refused emergency owes nothing and must not
+     * leave a claim lying on the document.
+     */
+    await this.#clearPendingEmergencyGap(String(request.employeeId));
 
     notifyRepositoryChanged();
     const mine = await this.listEmergencyRequests("to_decide");

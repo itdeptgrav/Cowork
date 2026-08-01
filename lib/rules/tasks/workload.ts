@@ -90,3 +90,108 @@ export function groupByDay<T>(
   }
   return out;
 }
+
+/* ── Serial scheduling ────────────────────────────────────────────────────── */
+
+/** A `YYYY-MM-DD` key back to a local Date at midnight. */
+export function parseKey(key: string): Date {
+  const [y, m, d] = key.split("-").map(Number);
+  return new Date(y, (m || 1) - 1, d || 1);
+}
+
+/** A local Date to its `YYYY-MM-DD` key. */
+export function keyOfDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/** The office day the schedule fills — local time, Monday–Friday, 09:00–18:30. */
+export const WORK_START_MINUTES = 9 * 60;
+export const WORK_END_MINUTES = 18 * 60 + 30;
+
+function isWeekend(d: Date): boolean {
+  const g = d.getDay();
+  return g === 0 || g === 6;
+}
+
+/** A copy of `d` set to `minutes` past local midnight. */
+export function atMinutes(d: Date, minutes: number): Date {
+  const c = new Date(d.getTime());
+  c.setHours(Math.floor(minutes / 60), minutes % 60, 0, 0);
+  return c;
+}
+
+/**
+ * The next moment work is available at or after `d` (local, Mon–Fri, office day).
+ *
+ * Before the day opens → its opening; after it closes or on a weekend → the next
+ * weekday's opening; already mid-day → `d` unchanged.
+ */
+export function nextWorkStart(d: Date): Date {
+  let c = new Date(d.getTime());
+  for (let guard = 0; guard < 4000; guard++) {
+    if (isWeekend(c)) {
+      c = atMinutes(c, WORK_START_MINUTES);
+      c.setDate(c.getDate() + 1);
+      continue;
+    }
+    const mins = c.getHours() * 60 + c.getMinutes();
+    if (mins < WORK_START_MINUTES) return atMinutes(c, WORK_START_MINUTES);
+    if (mins >= WORK_END_MINUTES) {
+      c = atMinutes(c, WORK_START_MINUTES);
+      c.setDate(c.getDate() + 1);
+      continue;
+    }
+    return c;
+  }
+  return c;
+}
+
+/** Advance `secs` of WORKING time from a work moment, rolling over off-hours. */
+function addWorkSeconds(start: Date, secs: number): Date {
+  let cursor = nextWorkStart(start);
+  let remaining = Math.max(0, secs);
+  for (let guard = 0; guard < 4000 && remaining > 0; guard++) {
+    const dayEnd = atMinutes(cursor, WORK_END_MINUTES);
+    const avail = (dayEnd.getTime() - cursor.getTime()) / 1000;
+    if (remaining <= avail) {
+      cursor = new Date(cursor.getTime() + remaining * 1000);
+      remaining = 0;
+    } else {
+      remaining -= avail;
+      cursor = nextWorkStart(dayEnd);
+    }
+  }
+  return cursor;
+}
+
+export interface ScheduledSpan {
+  id: string;
+  startMs: number;
+  endMs: number;
+}
+
+/**
+ * Lay a serial queue across working time — one thing at a time, no time overlap.
+ *
+ * A person cannot do two tasks at the same MOMENT, but a day has hours, so a day
+ * can hold several. Each task takes its budget of working seconds starting where
+ * the last one ended; a task longer than the rest of the day spills into the next
+ * weekday. The result is a set of non-overlapping [start, end] windows — the
+ * honest picture of a serial worker, several small tasks fitting into one day and
+ * a long one running across several.
+ */
+export function scheduleBusinessTime(
+  items: readonly { id: string; secs: number }[],
+  startMs: number,
+): ScheduledSpan[] {
+  let cursor = nextWorkStart(new Date(startMs));
+  const out: ScheduledSpan[] = [];
+  for (const it of items) {
+    const start = cursor;
+    const end = addWorkSeconds(start, Math.max(60, it.secs));
+    out.push({ id: it.id, startMs: start.getTime(), endMs: end.getTime() });
+    cursor = nextWorkStart(end);
+  }
+  return out;
+}

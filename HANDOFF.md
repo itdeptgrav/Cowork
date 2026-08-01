@@ -2934,3 +2934,91 @@ check-secrets clean. Everything below is where I would look first:
    claim is now corrected rather than implemented. The engine's `/priority-order`
    route only renumbers ranks. A person who never opens the app learns nothing
    until they do.
+
+---
+
+# Session 13 — 2026-08-02 · profile pictures
+
+**tsc clean · 2248 tests passing · `next build` exit 0 · check-secrets clean.**
+Lint: 4 pre-existing errors (`MessagesArea`, `SheetGrid`), none from this work.
+
+## 20.0 · It was already there, and the mapper was throwing it away
+
+`lib/legacy/employees.ts:79` has always mapped `cowork_employees.profilePicUrl`
+into `LegacyEmployee.avatarUrl`. `toEmployee` never carried it onto the domain
+`Employee`, so **every real employee who set a photograph in the old app was
+drawn here as a monogram** — the engine was sending the picture on every
+directory read and this build discarded it. Same class as
+`estimatedEffortSecs: 0` (§9.2): a mapper field silently dropping a value the
+document had. The read half was two lines.
+
+`Avatar`'s header comment claimed "this build ships no photography ... inventing
+faces for invented employees would present synthetic material as genuine". Half
+right, and now restated rather than deleted: **the seed still ships `null`** and
+every demo avatar is still a monogram; real people on the engine have real
+photographs they set themselves. Nothing generates a face.
+
+## 20.1 · Ported, not designed
+
+Every number is the old app's (`cowork-old-frontend/app/coworking/settings/page.js:102-131`):
+centre-crop to a square, 160×160, JPEG quality 0.75, 10MB source cap, and the
+refusals verbatim — *"Please select an image file."*, *"Image must be under
+10MB."* The stored value is a ~10KB data URL on the employee record, so an
+avatar never costs a request and no storage bucket is needed. Reproducing the
+numbers matters more than improving them: **it is the same field on the same
+document**, so a picture set in either app appears in both, and a different
+output size would give one person two resolutions depending on which app they
+opened.
+
+Two things legacy gets wrong are fixed in `lib/people/encodeProfilePicture.ts`:
+**EXIF orientation** (a phone photo taken sideways was stored lying down) and a
+**leaked object URL** it never revokes.
+
+## 20.2 · The cache decision, which is the one that could have broken it
+
+`setMyProfilePicture` must NOT call `invalidatePeople()`. The directory comes
+from the engine's `/employee/list-members`, and **the engine caches that list for
+five minutes with nothing a browser can clear**. Dropping our own 60-second cache
+after a write therefore fetches the stale list *sooner* and overwrites the
+picture the person just set — on their own screen, seconds later.
+
+So the write writes through: `#ownPicture` holds the value, applies it to the
+cached row, and re-applies it to every refill until the engine's copy agrees, at
+which point it retires itself. A picture removed elsewhere is not held forever.
+
+Consequence to state plainly, and the help article does: **colleagues may keep
+seeing the old picture for a few minutes.** Nothing can make that shorter.
+
+## 20.3 · Self only
+
+`setMyProfilePicture(dataUrl: string | null)` takes no employee id. Legacy's own
+settings page writes exactly one document — its author's — and the engine has no
+route that could decide whether one person may change another's face. A method
+with an id would ask a question nothing can answer. `null` removes.
+
+Another browser-to-Firestore write, argued in the same terms as the timer,
+`cowork_duty_status` and `cowork_settings`: the old frontend writes this document
+today, so this adds a **caller**, not a capability.
+
+## 20.4 · Coverage
+
+`Employee.profilePictureUrl` is REQUIRED, which forced all seven construction
+sites at the typechecker rather than leaving them to be found. `Avatar` gained an
+**optional** `src`, so no call site broke; 33 files then had it passed through
+mechanically, and tsc verified every one of those expressions really was an
+`Employee`.
+
+**Five surfaces keep the monogram deliberately**: both mail headers and the
+LiveKit room list have no employee record at all (a sender is an address; a
+participant is an identity string), the emergency-approval row carries only a
+name, and the "empty conversation" placeholder is not a person. The article says
+so, so it reads as a decision rather than a gap.
+
+## 20.5 · Not verified
+
+No browser. Specifically unexercised: the canvas encode on a real photograph
+(EXIF rotation especially), the write against production Firestore, and whether
+the Firestore rules actually permit this client to write `cowork_employees` —
+inferred from the old app performing the identical write, never observed. If it
+is refused, the failure is loud and named (*"Your picture could not be saved: …"*)
+rather than silent.
