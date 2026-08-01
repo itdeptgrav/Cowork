@@ -1,4 +1,4 @@
-import type { Employee, EmployeeId, Meeting, MonitoringSubject, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
 import { presenceIdentityFor } from "../../integrations/livekit/identity.ts";
 import {
@@ -64,10 +64,10 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateTaskInput, Page, TaskQuery, TaskView } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CoworkDocument, CoworkDocumentBody, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -135,6 +135,38 @@ import {
   threadMatchesSearch,
   transportForParties,
 } from "./mail.ts";
+import {
+  DM_COLLECTION,
+  GROUP_COLLECTION,
+  attachmentPreview,
+  debounce,
+  directDocId,
+  driveFileId,
+  messageWriteBody,
+  pairOf,
+  previewOf,
+  readDirectConversationDoc,
+  readGroupConversationDoc,
+  readMessageDoc,
+} from "./messaging.ts";
+import {
+  recipientRefusal,
+  redactBcc,
+} from "../../rules/mail/blindCopy.ts";
+import {
+  APPROVED_LEGACY_STATUSES,
+  buildWorkloadFlow,
+  CANCELLED_LEGACY_STATUSES,
+  CLOSED_LEGACY_STATUSES,
+  type FlowEvent,
+} from "../../rules/dashboard/workloadFlow.ts";
+import {
+  DOCUMENT_BODY_COLLECTION,
+  DOCUMENT_COLLECTION,
+  documentBody as documentRecordFields,
+  readDocument,
+} from "./documents.ts";
+import { previewOfHtml } from "../../rules/documents/preview.ts";
 import { applySettingsChange } from "../../rules/settings/service.ts";
 import {
   AUDIT_REQUIRED,
@@ -215,7 +247,11 @@ import {
 } from "./scoreMap.ts";
 import { readDueAtMs, readInstant, readTask } from "../../legacy/tasks.ts";
 import { firstNumber } from "../../legacy/wire.ts";
+import * as meetHttp from "../../legacy/meetings.ts";
 import {
+  toMeeting,
+  toMeetingEvents,
+  toMeetingParticipants,
   toMeetings,
   toNotifications,
   toWorkloadRows,
@@ -1099,6 +1135,63 @@ export class LegacyRepository {
     if (q.search) {
       const needle = q.search.toLowerCase();
       views = views.filter((v) => v.task.title.toLowerCase().includes(needle));
+    }
+
+    /* **Surface the extension decisions the viewer owns.**
+     *
+     * Both a time-budget extension (`cowork_task_budget_extensions`) and a
+     * deadline extension (`cowork_task_deadline_extensions`) live in their own
+     * collections that the task document never references — and a deadline
+     * extension, unlike the initial proposal, does not even flip the task's
+     * status. So a manager was NEVER told a report had asked for more time or a
+     * later date: the request only ever appeared on the task detail, which the
+     * manager had no reason to open. One query per collection for everything
+     * waiting on THEM, then the matching tasks are flagged so `nextAction`
+     * routes them into "Awaiting your decision" beside review decisions.
+     *
+     * Filtered by `approverId`, so a task is flagged only for the person the
+     * record actually routed to — under cross-department rules that is the
+     * assignee's primary manager, not the creator. */
+    try {
+      const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+      if (me && views.length) {
+        const { collection, getDocs, query, where } = await import(
+          "firebase/firestore"
+        );
+        const { legacyDb } = await import("../../legacy/firebase.ts");
+        const pendingFor = async (name: string): Promise<Set<string>> => {
+          const snap = await getDocs(
+            query(collection(legacyDb(), name), where("approverId", "==", me)),
+          );
+          return new Set(
+            snap.docs
+              .map((d) => d.data() as Record<string, unknown>)
+              .filter(
+                (x) =>
+                  x.status === "pending" || x.status === "counter_proposed",
+              )
+              .map((x) => String(x.taskId)),
+          );
+        };
+        const [budgetToDecide, deadlineToDecide] = await Promise.all([
+          pendingFor("cowork_task_budget_extensions"),
+          pendingFor("cowork_task_deadline_extensions"),
+        ]);
+        if (budgetToDecide.size || deadlineToDecide.size) {
+          for (const v of views) {
+            const id = String(v.task.id);
+            const vv = v as {
+              budgetDecisionPending?: boolean;
+              deadlineDecisionPending?: boolean;
+            };
+            if (budgetToDecide.has(id)) vv.budgetDecisionPending = true;
+            if (deadlineToDecide.has(id)) vv.deadlineDecisionPending = true;
+          }
+        }
+      }
+    } catch (e) {
+      /* Non-fatal: the list still renders, just without the decision flags. */
+      console.error("[listTasks] extension-decision flags:", e);
     }
 
     views.sort(comparerFor(q.sort));
@@ -2059,6 +2152,7 @@ export class LegacyRepository {
     taskId: TaskId,
     thread: "chat" | "draft",
     text: string,
+    attachments: MessageAttachment[] = [],
   ): Promise<ActionResult<never>> {
     if (thread === "draft") {
       return {
@@ -2069,8 +2163,28 @@ export class LegacyRepository {
       } as unknown as ActionResult<never>;
     }
     const id = String(taskId);
+    /* The route stores the attachment array verbatim and reads `type` off the
+       first one to type the message, so send the backend's own inline shape
+       (`type`/`url`/`name`) plus the handles the reader needs to render it: the
+       Drive `fileId` for the media proxy, and size/duration for the file card.
+       This is the same object `listTaskChat` maps straight back to a
+       `MessageAttachment`. */
+    const wire = attachments.map((a) => ({
+      type: a.kind,
+      url: a.url,
+      name: a.name ?? null,
+      fileId: a.fileId ?? null,
+      sizeBytes: a.sizeBytes ?? null,
+      durationSecs: a.durationSecs ?? null,
+    }));
     const result = await this.#write(
-      (token) => sendTaskChatRequest({ token, taskId: id, message: text }),
+      (token) =>
+        sendTaskChatRequest({
+          token,
+          taskId: id,
+          message: text,
+          attachments: wire,
+        }),
       () => id,
     );
     return result as unknown as ActionResult<never>;
@@ -3116,6 +3230,7 @@ export class LegacyRepository {
   async startTimer(taskId: TaskId): Promise<ActionResult<unknown>> {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
+    console.info("[timerdbg] ▶ startTimer invoked", { id }, new Error().stack);
     const { getDoc, setDoc } = await import("firebase/firestore");
 
     const view = await this.#readTaskView(id);
@@ -3201,6 +3316,7 @@ export class LegacyRepository {
   ): Promise<ActionResult<unknown>> {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
+    console.info("[timerdbg] ⏸ pauseTimer invoked", { id, reason });
     const { getDoc, setDoc } = await import("firebase/firestore");
 
     const ref = await this.#timerSession(employeeId, id);
@@ -3293,6 +3409,7 @@ export class LegacyRepository {
       heartbeatAt?: number;
       lastStartTime?: number;
     };
+    console.info("[timerdbg] ♥ heartbeatTimer", { id, isActiveOnRead: data.isActive });
     if (data.isActive !== true) return { ok: true, data: undefined };
 
     const now = Date.now();
@@ -4847,7 +4964,63 @@ export class LegacyRepository {
     return snap.docs.map((d) => {
       const m = d.data() as Record<string, unknown>;
       const type = typeof m.messageType === "string" ? m.messageType : "text";
-      const attachments = Array.isArray(m.attachments) ? m.attachments : [];
+
+      /* Attachments live inline on the message, in one of two shapes: the array
+         the task thread writes (`attachments: [{ type, url, name, fileId, … }]`),
+         or the flat `mediaUrl`/`pdfUrl` fields a message written by the older
+         single-media path carries. Normalise both to `MessageAttachment` so the
+         reader is blind to which wrote it. */
+      const raw: Record<string, unknown>[] = Array.isArray(m.attachments)
+        ? (m.attachments as unknown[]).filter(
+            (a): a is Record<string, unknown> => !!a && typeof a === "object",
+          )
+        : [];
+      if (
+        !raw.length &&
+        (typeof m.mediaUrl === "string" || typeof m.pdfUrl === "string")
+      ) {
+        if (typeof m.mediaUrl === "string")
+          raw.push({
+            type: type === "voice" ? "voice" : "image",
+            url: m.mediaUrl,
+            voiceDuration: m.voiceDuration,
+          });
+        if (typeof m.pdfUrl === "string")
+          raw.push({
+            type: "pdf",
+            url: m.pdfUrl,
+            name: m.pdfFileName,
+            fileId: m.pdfFileId,
+          });
+      }
+      const parsed: MessageAttachment[] = raw
+        .map((o) => {
+          const rawType = typeof o.type === "string" ? o.type : "file";
+          const kind: MessageAttachment["kind"] =
+            rawType === "image" || rawType === "pdf" || rawType === "voice"
+              ? rawType
+              : "file";
+          return {
+            url: typeof o.url === "string" ? o.url : "",
+            kind,
+            name: typeof o.name === "string" ? o.name : null,
+            sizeBytes: typeof o.sizeBytes === "number" ? o.sizeBytes : null,
+            durationSecs:
+              typeof o.durationSecs === "number"
+                ? o.durationSecs
+                : typeof o.voiceDuration === "number"
+                  ? o.voiceDuration
+                  : null,
+            fileId:
+              typeof o.fileId === "string"
+                ? o.fileId
+                : typeof o.pdfFileId === "string"
+                  ? o.pdfFileId
+                  : null,
+          } satisfies MessageAttachment;
+        })
+        .filter((a) => a.url || a.fileId);
+
       return {
         id: typeof m.messageId === "string" ? m.messageId : d.id,
         taskId: id as TaskId,
@@ -4858,20 +5031,15 @@ export class LegacyRepository {
             : ((typeof m.senderId === "string" ? m.senderId : "") as EmployeeId),
         senderName: typeof m.senderName === "string" ? m.senderName : "",
         text: typeof m.text === "string" ? m.text : "",
-        /* Legacy stores whole attachment objects inline; the domain holds ids.
-           The url is the only stable handle there is, so it stands in as the
-           id — there is no attachment collection to point at. */
-        attachmentIds: attachments
-          .map((a) =>
-            a && typeof a === "object" && typeof (a as { url?: unknown }).url === "string"
-              ? ((a as { url: string }).url)
-              : null,
-          )
-          .filter((u): u is string => u !== null),
+        /* The url is the only stable handle there is, so it stands in as the id
+           for callers that just want a flat list — there is no attachment
+           collection to point at. */
+        attachmentIds: parsed.map((a) => a.url).filter(Boolean),
+        attachments: parsed.length ? parsed : undefined,
         messageType:
           type === "system"
             ? ("system" as const)
-            : attachments.length
+            : parsed.length
               ? ("attachment" as const)
               : ("text" as const),
         createdAt: readInstant(m.createdAt)
@@ -5041,16 +5209,454 @@ export class LegacyRepository {
     );
   }
 
+  /* ── Documents ──────────────────────────────────────────────────────────
+   *
+   * `cowork_documents` and `cowork_document_bodies`, browser-to-Firestore.
+   *
+   * **Not through the engine, and deliberately so.** There is no document route
+   * on `grav-cms-backend` and adding one would be the write-inversion this
+   * migration was told not to do. The collection is new — legacy has nothing
+   * like it — so nothing here has to stay legible to the old app.
+   *
+   * Bodies are a SEPARATE collection keyed by document id rather than a field
+   * on the record: a list read would otherwise pull every body to render a
+   * sidebar, and Firestore bills per document read.
+   */
+  async listDocuments(): Promise<DocumentSummary[]> {
+    const me = String(this.#ctx.employeeId);
+    const { collection, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), DOCUMENT_COLLECTION),
+        where("memberIds", "array-contains", me),
+      ),
+    );
+    const docs = snap.docs
+      .map((d) => readDocument(d.id, d.data() as Record<string, unknown>))
+      .filter((d): d is CoworkDocument => d !== null && !d.deletedAt)
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+    /* Previews come from the bodies of the documents already listed, read in
+       parallel. Capped, because a person in two hundred documents would
+       otherwise issue two hundred reads to draw a sidebar. */
+    const withPreview = await Promise.all(
+      docs.slice(0, 40).map(async (d) => ({
+        ...d,
+        preview: previewOfHtml((await this.#documentBodyHtml(d.id)) ?? ""),
+      })),
+    );
+    return [
+      ...withPreview,
+      ...docs.slice(40).map((d) => ({ ...d, preview: "" })),
+    ];
+  }
+
+  async #documentBodyHtml(id: string): Promise<string | null> {
+    const { doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id));
+    if (!snap.exists()) return null;
+    const raw = snap.data() as Record<string, unknown>;
+    return typeof raw.html === "string" ? raw.html : "";
+  }
+
+  async getDocument(id: string): Promise<CoworkDocument | null> {
+    const me = String(this.#ctx.employeeId);
+    const { doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id));
+    if (!snap.exists()) return null;
+    const record = readDocument(id, snap.data() as Record<string, unknown>);
+    /* Not a member is indistinguishable from not existing, on purpose: a 403
+       on a document id confirms the document is real. */
+    if (!record || record.deletedAt || !record.memberIds.includes(me))
+      return null;
+    return record;
+  }
+
+  async getDocumentBody(id: string): Promise<CoworkDocumentBody | null> {
+    const record = await this.getDocument(id);
+    if (!record) return null;
+    const { doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id));
+    if (!snap.exists())
+      return { documentId: id, html: "", ydocState: null, updatedAt: record.updatedAt };
+    const raw = snap.data() as Record<string, unknown>;
+    return {
+      documentId: id,
+      html: typeof raw.html === "string" ? raw.html : "",
+      ydocState: typeof raw.ydocState === "string" ? raw.ydocState : null,
+      updatedAt:
+        typeof raw.updatedAt === "string" ? raw.updatedAt : record.updatedAt,
+    };
+  }
+
+  async createDocument(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+  }): Promise<ActionResult<CoworkDocument>> {
+    const me = String(this.#ctx.employeeId);
+    const { doc, setDoc, collection } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const now = new Date().toISOString();
+    const ref = doc(collection(legacyDb(), DOCUMENT_COLLECTION));
+    /* The creator is always a member — a document nobody can open is not a
+       document, and a member list that forgot the author is how that happens. */
+    const memberIds = [
+      ...new Set([me, ...(input.memberIds ?? []).map(String)]),
+    ];
+    const record: CoworkDocument = {
+      organisationId: LEGACY_ORGANISATION_ID,
+      id: ref.id,
+      title: input.title.trim() || "Untitled document",
+      createdById: me,
+      lastEditedById: null,
+      memberIds,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      driveFileId: null,
+      driveSyncedAt: null,
+    };
+    try {
+      await setDoc(ref, documentRecordFields(record));
+      await setDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, ref.id), {
+        html: "",
+        ydocState: null,
+        updatedAt: now,
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: e instanceof Error ? e.message : "The document could not be created.",
+      };
+    }
+    return { ok: true, data: record };
+  }
+
+  async renameDocument(
+    id: string,
+    title: string,
+  ): Promise<ActionResult<CoworkDocument>> {
+    const next = title.trim();
+    if (!next)
+      return { ok: false, code: "validation_failed", message: "Give the document a name.", field: "title" };
+    const record = await this.getDocument(id);
+    if (!record)
+      return { ok: false, code: "not_found", message: "Document not found." };
+    const { doc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const now = new Date().toISOString();
+    await updateDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id), {
+      title: next,
+      updatedAt: now,
+    });
+    return { ok: true, data: { ...record, title: next, updatedAt: now } };
+  }
+
+  async deleteDocument(id: string): Promise<ActionResult<void>> {
+    const me = String(this.#ctx.employeeId);
+    const record = await this.getDocument(id);
+    if (!record)
+      return { ok: false, code: "not_found", message: "Document not found." };
+    /* Membership is permission to WRITE in a document, not to remove one out
+       from under everybody else in it. */
+    if (record.createdById !== me)
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only whoever created this document can delete it.",
+      };
+    const { doc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    /* Soft. The body is left alone — a delete that destroyed the text would
+       make the record unrecoverable while still looking recoverable. */
+    await updateDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id), {
+      deletedAt: new Date().toISOString(),
+    });
+    return { ok: true, data: undefined };
+  }
+
+  async saveDocumentBody(
+    id: string,
+    body: { html: string; ydocState?: string | null },
+  ): Promise<ActionResult<CoworkDocumentBody>> {
+    const me = String(this.#ctx.employeeId);
+    const record = await this.getDocument(id);
+    if (!record)
+      return { ok: false, code: "not_found", message: "Document not found." };
+    const { doc, setDoc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const now = new Date().toISOString();
+
+    /* `merge` so a phase-1 save carrying no CRDT state cannot erase the state a
+       collaborative session wrote. */
+    const patch: Record<string, unknown> = { html: body.html, updatedAt: now };
+    if (body.ydocState !== undefined) patch.ydocState = body.ydocState;
+    await setDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id), patch, {
+      merge: true,
+    });
+    await updateDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id), {
+      updatedAt: now,
+      lastEditedById: me,
+    });
+    return {
+      ok: true,
+      data: {
+        documentId: id,
+        html: body.html,
+        ydocState: body.ydocState ?? null,
+        updatedAt: now,
+      },
+    };
+  }
+
   /** Scheduled meetings. `GET /cowork/schedule-meet/list`. */
   async listMeetings(): Promise<Meeting[]> {
     const token = await this.#token();
-    const result = await legacyFetch<unknown[]>({
-      path: "/cowork/schedule-meet/list",
-      envelopeKey: "meets",
+    const result = await meetHttp.listMeets({ token });
+    if (!result.ok) throw new Error(result.error.message);
+    return toMeetings((result.data ?? []) as never[]);
+  }
+
+  /**
+   * Meetings, beyond the list.
+   *
+   * **The page these serve was reading one method and throwing on nine.**
+   * `listMeetings` above was the only one implemented here; every other meeting
+   * call fell through to the `NotConnectedError` proxy, so the list rendered and
+   * opening any single meeting failed. It worked against the mock, which
+   * implements all ten — which is exactly how it survived to here.
+   *
+   * The read-back after a write is the same pattern the task writes use: the
+   * engine answers a mutation with `{success:true}` rather than the document, so
+   * the document is fetched again and mapped, and the caller gets a `Meeting`
+   * that came from the store rather than one assembled from the request.
+   */
+  async #meetingWrite(
+    meetingId: string,
+    run: (token: string) => Promise<LegacyResult<unknown>>,
+  ): Promise<ActionResult<Meeting>> {
+    const token = await this.#token();
+    const result = await run(token);
+    if (!result.ok) {
+      return {
+        ok: false,
+        code:
+          result.error.kind === "permission"
+            ? "permission_denied"
+            : result.error.kind === "not_found"
+              ? "not_found"
+              : "validation_failed",
+        message: result.error.message,
+      };
+    }
+    const after = await this.getMeeting(meetingId);
+    if (!after) {
+      return {
+        ok: false,
+        code: "not_found",
+        message: "The meeting was changed but could not be read back.",
+      };
+    }
+    return { ok: true, data: after };
+  }
+
+  async getMeeting(id: string): Promise<Meeting | null> {
+    const token = await this.#token();
+    const result = await meetHttp.getMeet({ token, meetId: String(id) });
+    /* A meeting that is not there is null, not an error — the detail page
+       renders "Meeting not found" for it, and throwing would show a failure
+       banner for the ordinary case of a stale link. */
+    if (!result.ok) {
+      if (result.error.kind === "not_found") return null;
+      throw new Error(result.error.message);
+    }
+    return toMeeting((result.data ?? {}) as never);
+  }
+
+  async listMeetingsForTask(taskId: TaskId): Promise<Meeting[]> {
+    const token = await this.#token();
+    const result = await meetHttp.listMeetsForTask({
       token,
+      taskId: String(taskId),
     });
     if (!result.ok) throw new Error(result.error.message);
     return toMeetings((result.data ?? []) as never[]);
+  }
+
+  /**
+   * Participants, derived from the meeting document rather than fetched.
+   *
+   * The engine sends `participants` and `presence` on the meeting itself, so a
+   * dedicated endpoint would be a second round trip for data already in hand —
+   * and a second chance for the two to disagree.
+   */
+  async listMeetingParticipants(
+    meetingId: string,
+  ): Promise<MeetingParticipant[]> {
+    const token = await this.#token();
+    const result = await meetHttp.getMeet({ token, meetId: String(meetingId) });
+    if (!result.ok) {
+      if (result.error.kind === "not_found") return [];
+      throw new Error(result.error.message);
+    }
+    return toMeetingParticipants((result.data ?? {}) as never);
+  }
+
+  async listMeetingEvents(meetingId: string): Promise<MeetingEvent[]> {
+    const token = await this.#token();
+    const result = await meetHttp.listMeetEvents({
+      token,
+      meetId: String(meetingId),
+    });
+    if (!result.ok) {
+      /* An audit trail that cannot be read is an empty trail, not a broken
+         page: the meeting itself is fine and the events are supporting detail.
+         A meeting created before the log existed genuinely has none. */
+      if (result.error.kind === "not_found") return [];
+      throw new Error(result.error.message);
+    }
+    return toMeetingEvents(String(meetingId), (result.data ?? []) as never[]);
+  }
+
+  async setMeetingStatus(
+    meetingId: string,
+    next: "waiting" | "live" | "completed" | "cancelled" | "archived",
+  ): Promise<ActionResult<Meeting>> {
+    return this.#meetingWrite(meetingId, (token) =>
+      meetHttp.setMeetStatus({ token, meetId: String(meetingId), status: next }),
+    );
+  }
+
+  async setMeetingParticipants(
+    meetingId: string,
+    participantIds: EmployeeId[],
+  ): Promise<ActionResult<Meeting>> {
+    return this.#meetingWrite(meetingId, (token) =>
+      meetHttp.setMeetParticipants({
+        token,
+        meetId: String(meetingId),
+        participants: participantIds.map(String),
+      }),
+    );
+  }
+
+  async openMeetingRoom(meetingId: string): Promise<ActionResult<Meeting>> {
+    return this.#meetingWrite(meetingId, (token) =>
+      meetHttp.startMeetRoom({ token, meetId: String(meetingId) }),
+    );
+  }
+
+  /**
+   * Attendance, and only attendance.
+   *
+   * Returns the caller's own participant row read back from the store, so a
+   * `joinedAt` that the engine stamped is what the caller sees rather than the
+   * time the browser happened to send.
+   */
+  async recordMeetingPresence(
+    meetingId: string,
+    present: boolean,
+  ): Promise<ActionResult<MeetingParticipant>> {
+    const token = await this.#token();
+    const result = await meetHttp.recordMeetPresence({
+      token,
+      meetId: String(meetingId),
+      joined: present,
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        code:
+          result.error.kind === "permission"
+            ? "permission_denied"
+            : result.error.kind === "not_found"
+              ? "not_found"
+              : "validation_failed",
+        message: result.error.message,
+      };
+    }
+    const me = await this.getCurrentEmployee();
+    const rows = await this.listMeetingParticipants(meetingId);
+    const mine = me ? rows.find((r) => r.employeeId === me.id) : undefined;
+    if (!mine) {
+      return {
+        ok: false,
+        code: "not_found",
+        message: "Your attendance was recorded but could not be read back.",
+      };
+    }
+    return { ok: true, data: mine };
+  }
+
+  async createMeeting(
+    input: CreateMeetingInput,
+  ): Promise<ActionResult<Meeting>> {
+    const title = input.title?.trim();
+    if (!title) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Give the meeting a title.",
+        field: "title",
+      };
+    }
+    if (!input.startsAt) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Say when the meeting starts.",
+        field: "startsAt",
+      };
+    }
+    /* Checked here rather than left to the engine, which stores `endsAt`
+       without reading it: a meeting that ends before it starts would be
+       accepted and then render a negative duration. */
+    if (input.endsAt && Date.parse(input.endsAt) <= Date.parse(input.startsAt)) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "The meeting has to end after it starts.",
+        field: "endsAt",
+      };
+    }
+
+    const token = await this.#token();
+    const result = await meetHttp.createMeet({
+      token,
+      title,
+      description: input.description?.trim() || null,
+      participants: (input.participantIds ?? []).map(String),
+      dateTime: input.startsAt,
+      endsAt: input.endsAt || null,
+      agenda: (input.agenda ?? []).map((a) => a.trim()).filter(Boolean),
+      taskId: input.taskId ? String(input.taskId) : null,
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        code:
+          result.error.kind === "permission"
+            ? "permission_denied"
+            : "validation_failed",
+        message: result.error.message,
+      };
+    }
+    const created = toMeeting((result.data ?? {}) as never);
+    if (!created) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "The meeting was created but the engine returned no record.",
+      };
+    }
+    return { ok: true, data: created };
   }
 
   /**
@@ -6156,7 +6762,85 @@ export class LegacyRepository {
    * The flow graph. Legacy reports no weekly arrival or departure counts, so
    * there is nothing to build it from — see `listWorkloadRows`.
    */
-  async getWorkloadFlow() { return null; }
+  /**
+   * The dashboard's signature graph, from the tasks this viewer can see.
+   *
+   * **This was `async getWorkloadFlow() { return null; }`** — a one-line stub,
+   * so the graph rendered an empty state in production for its whole life while
+   * looking complete against the mock, which computes the series in full.
+   *
+   * Reads the SAME documents as `listTasks`, through the same
+   * `#taskDocuments(viewerId)` — so the graph can never show work the task list
+   * would not, which is the failure mode a second, cheaper query would have.
+   *
+   * Only four of the six channels can be answered from legacy's records; see
+   * `lib/rules/dashboard/workloadFlow.ts` for which, and why the missing two
+   * stay at zero rather than being folded into `completed`.
+   */
+  async getWorkloadFlow(q: {
+    scope: TaskScope;
+    weeks: number;
+  }): Promise<WorkloadFlow> {
+    const viewerId = String(this.#ctx.employeeId);
+
+    /* "Team" is the reporting closure, exactly as every other team-scoped read
+       resolves it — never a department mapping. A viewer whose closure cannot
+       be read falls back to themselves rather than to everybody. */
+    let scopeIds = new Set<string>([viewerId]);
+    if (q.scope === "team") {
+      try {
+        const viewer = await this.getViewer();
+        scopeIds = new Set<string>([viewerId, ...viewer.hierarchyIds.map(String)]);
+      } catch {
+        scopeIds = new Set<string>([viewerId]);
+      }
+    }
+    const inScope = (id: string | null | undefined) =>
+      !!id && scopeIds.has(String(id));
+
+    const docs = await this.#taskDocuments(viewerId);
+    const tasks = docs
+      .map((raw) => readTask(raw))
+      .filter((t): t is NonNullable<typeof t> => t !== null)
+      .filter((t) => !t.isDeleted);
+
+    const events: FlowEvent[] = [];
+    for (const t of tasks) {
+      const createdIso = t.createdAtMs
+        ? new Date(t.createdAtMs).toISOString()
+        : null;
+      const assignedHere = t.assigneeIds.some(inScope) || inScope(t.pendingAssigneeId);
+      const createdHere = inScope(t.createdById) || inScope(t.originalAssignedBy);
+
+      /* Two populations, not one event twice — work pushed out against work
+         landed on. Legacy assigns at creation, so both read `createdAt`. */
+      if (createdHere) events.push({ at: createdIso, channel: "created" });
+      if (assignedHere) events.push({ at: createdIso, channel: "assigned" });
+
+      /* A departure counts only for the scope that was CARRYING the work.
+         Counting a close against the person who handed it out would show a
+         manager clearing everything their team finished. */
+      if (assignedHere) {
+        const status = String(t.status ?? "");
+        const closedIso = t.updatedAtMs
+          ? new Date(t.updatedAtMs).toISOString()
+          : createdIso;
+        if (CLOSED_LEGACY_STATUSES.includes(status))
+          events.push({ at: closedIso, channel: "completed" });
+        if (APPROVED_LEGACY_STATUSES.includes(status))
+          events.push({ at: closedIso, channel: "approved" });
+        if (CANCELLED_LEGACY_STATUSES.includes(status))
+          events.push({ at: closedIso, channel: "cancelled" });
+
+        for (const r of t.reworkHistory) {
+          events.push({ at: r.requestedAt, channel: "rework" });
+        }
+      }
+    }
+
+    return buildWorkloadFlow(events, Date.now(), q.weeks);
+  }
+
   async getCurrentEmployee(): Promise<Employee | null> {
     const map = await this.#employeesById();
     return map.get(String(this.#ctx.employeeId)) ?? null;
@@ -6776,7 +7460,11 @@ export class LegacyRepository {
     return snap.docs
       .map((d) => readMailMessage(d.id, d.data() as Record<string, unknown>))
       .filter((m) => mailVisible(m, me))
-      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      /* Everybody but the sender gets an empty bcc list. See the note in
+         `rules/mail/blindCopy.ts` about what this does and does not guarantee
+         when the read is browser-to-Firestore. */
+      .map((m) => redactBcc(m, me));
   }
 
   async listMailAttachments(ids: string[]): Promise<MailAttachment[]> {
@@ -6883,6 +7571,7 @@ export class LegacyRepository {
   async sendMail(input: {
     to: MailParty[];
     cc?: MailParty[];
+    bcc?: MailParty[];
     subject: string;
     body: string;
     attachmentIds?: string[];
@@ -6897,7 +7586,13 @@ export class LegacyRepository {
       return { ok: false, code: "not_found", message: "Employee not found." };
 
     const cc = input.cc ?? [];
-    const transport = transportForParties([...input.to, ...cc]);
+    /* Bcc decides the transport too: one external blind copy makes the whole
+       message external, exactly as it would in To. */
+    const bcc = input.bcc ?? [];
+    const refusal = recipientRefusal({ to: input.to, cc, bcc });
+    if (refusal)
+      return { ok: false, code: "validation_failed", message: refusal };
+    const transport = transportForParties([...input.to, ...cc, ...bcc]);
 
     /* External send goes through the Gmail route, which holds the token. If it
        fails the message is KEPT as a draft with the reason on it, never lost —
@@ -6912,6 +7607,7 @@ export class LegacyRepository {
           body: JSON.stringify({
             to: input.to,
             cc,
+            bcc,
             subject: input.subject,
             body: input.body,
             gmailThreadId: null,
@@ -6952,6 +7648,7 @@ export class LegacyRepository {
       from,
       to: input.to,
       cc,
+      bcc,
       subject: input.subject.trim(),
       body: input.body,
       attachmentIds: input.attachmentIds ?? [],
@@ -7043,6 +7740,1096 @@ export class LegacyRepository {
     }
     if (added > 0) notifyRepositoryChanged();
     return { ok: true, data: { added } };
+  }
+
+  /* ── Collaboration: messages ─────────────────────────────────────────────
+   *
+   * Stored exactly where the old Cowork frontend wrote them: a direct thread is
+   * `cowork_direct_messages/{convId}` (convId = the two ids sorted, joined "_"),
+   * a group is `cowork_groups/{groupId}`, each with a `messages` subcollection.
+   * Read and written browser-direct so a conversation is SHARED between the old
+   * app and this one — the rules already permit it because the old app relied on
+   * the same access. Unread is DERIVED from each message's `readBy`, never
+   * stored, which is how the old app counted it — no second counter to drift. */
+
+  /** Which collection holds a conversation: a direct thread has a doc in
+   *  `cowork_direct_messages`; anything else is a group. One read, so a group id
+   *  and a direct pair can never be confused — with a `"_"` id treated as direct
+   *  for the first message of a thread whose parent doc has not landed yet. */
+  async #conversationCollection(conversationId: string): Promise<string> {
+    try {
+      const { doc, getDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const dm = await getDoc(doc(legacyDb(), DM_COLLECTION, conversationId));
+      if (dm.exists()) return DM_COLLECTION;
+    } catch {
+      /* fall through to the id-shape guess */
+    }
+    return conversationId.includes("_") ? DM_COLLECTION : GROUP_COLLECTION;
+  }
+
+  /** How many messages in one conversation are unread FOR ME: not mine, and my
+   *  id is not yet in `readBy`. A single-inequality query needs no composite
+   *  index, and matches the old list's own rule. */
+  async #conversationUnread(
+    collectionName: string,
+    conversationId: string,
+    me: string,
+  ): Promise<number> {
+    try {
+      const { collection, getDocs, query, where } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const snap = await getDocs(
+        query(
+          collection(legacyDb(), collectionName, conversationId, "messages"),
+          where("senderId", "!=", me),
+        ),
+      );
+      return snap.docs.filter((d) => {
+        const rb = (d.data() as { readBy?: unknown }).readBy;
+        return !Array.isArray(rb) || !rb.includes(me);
+      }).length;
+    } catch {
+      return 0;
+    }
+  }
+
+  async listConversations(): Promise<
+    (Conversation & { participants: Employee[] })[]
+  > {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me) return [];
+    const { collection, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const directory = await this.#employeesById();
+
+    const [dmSnap, groupSnap] = await Promise.all([
+      getDocs(
+        query(
+          collection(legacyDb(), DM_COLLECTION),
+          where("participantIds", "array-contains", me),
+        ),
+      ).catch(() => null),
+      getDocs(
+        query(
+          collection(legacyDb(), GROUP_COLLECTION),
+          where("memberIds", "array-contains", me),
+        ),
+      ).catch(() => null),
+    ]);
+
+    const base: { conv: Conversation; coll: string }[] = [];
+    for (const d of dmSnap?.docs ?? [])
+      base.push({
+        conv: readDirectConversationDoc(
+          d.id,
+          d.data() as Record<string, unknown>,
+          LEGACY_ORGANISATION_ID,
+        ),
+        coll: DM_COLLECTION,
+      });
+    for (const d of groupSnap?.docs ?? [])
+      base.push({
+        conv: readGroupConversationDoc(
+          d.id,
+          d.data() as Record<string, unknown>,
+          LEGACY_ORGANISATION_ID,
+        ),
+        coll: GROUP_COLLECTION,
+      });
+
+    /* Unread and participants for every conversation in parallel — the list is
+       one round-trip deep rather than N sequential reads. */
+    const resolved = await Promise.all(
+      base.map(async ({ conv, coll }) => ({
+        ...conv,
+        unreadCount: await this.#conversationUnread(coll, conv.id, me),
+        participants: conv.participantIds
+          .map((id) => directory.get(id))
+          .filter((e): e is Employee => !!e),
+      })),
+    );
+
+    /* Most-recently-active first; a thread with no messages yet sorts last. */
+    resolved.sort((a, b) =>
+      (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""),
+    );
+    return resolved;
+  }
+
+  async listMessages(conversationId: string): Promise<Message[]> {
+    const { collection, getDocs, orderBy, query } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const coll = await this.#conversationCollection(conversationId);
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), coll, conversationId, "messages"),
+        orderBy("createdAt", "asc"),
+      ),
+    ).catch(() => null);
+    if (!snap) return [];
+    return snap.docs.map((d) =>
+      readMessageDoc(d.id, conversationId, d.data() as Record<string, unknown>),
+    );
+  }
+
+  async sendMessage(
+    conversationId: string,
+    text: string,
+    attachments?: MessageAttachment[],
+    replyTo?: MessageReply | null,
+  ): Promise<ActionResult<Message>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Sign in to send a message.",
+      };
+    const body = text.trim();
+    const media = attachments ?? [];
+    /* A message may be all caption, all media, or both — but not empty. */
+    if (!body && media.length === 0)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Write a message.",
+        field: "text",
+      };
+
+    const { doc, serverTimestamp, setDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const coll = await this.#conversationCollection(conversationId);
+    const directory = await this.#employeesById();
+    const senderName = directory.get(me)?.displayName ?? me;
+    const messageId =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `m_${me}_${Date.now()}`;
+
+    try {
+      await setDoc(doc(legacyDb(), coll, conversationId, "messages", messageId), {
+        ...messageWriteBody({
+          messageId,
+          conversationId,
+          senderId: me,
+          senderName,
+          text: body,
+          threadType: coll === DM_COLLECTION ? "direct" : "group",
+          attachments: media,
+          replyTo: replyTo ?? null,
+        }),
+        createdAt: serverTimestamp(),
+      });
+
+      /* Bump the parent's last-message line so the list re-sorts and previews
+         without opening the thread. `merge` creates the parent if a brand-new
+         direct thread has not written it yet, and never clobbers participants.
+         With media and no caption the preview names the media, as the old app
+         stored it. */
+      const previewType = media.length ? media[0].kind : "text";
+      const lastMessage = {
+        text: body || (media.length ? attachmentPreview(media[0].kind) : ""),
+        senderId: me,
+        senderName,
+        messageType: previewType,
+        sentAt: serverTimestamp(),
+      };
+      const parent =
+        coll === DM_COLLECTION
+          ? {
+              conversationId,
+              participantIds: pairOf(conversationId),
+              lastMessage,
+              updatedAt: serverTimestamp(),
+            }
+          : { lastMessage, lastMessageTime: serverTimestamp(), updatedAt: serverTimestamp() };
+      await setDoc(doc(legacyDb(), coll, conversationId), parent, {
+        merge: true,
+      });
+
+      notifyRepositoryChanged();
+      return {
+        ok: true,
+        data: {
+          id: messageId,
+          conversationId,
+          senderId: me,
+          senderName,
+          text: body,
+          attachmentIds: [],
+          attachments: media,
+          replyToId: replyTo?.messageId ?? null,
+          replyTo: replyTo ?? null,
+          createdAt: new Date().toISOString(),
+          readBy: [me],
+        },
+      };
+    } catch (e) {
+      console.error("[sendMessage]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The message could not be sent.",
+      };
+    }
+  }
+
+  /**
+   * Upload one file for a message, returning the attachment to hand to
+   * `sendMessage`. Images and voice go to Cloudinary, a PDF to Drive — the same
+   * routes and the same Firebase-token auth the old app used, so nothing new is
+   * needed on the backend. A Drive PDF keeps its `fileId` so the reader streams
+   * it through the media proxy that actually loads.
+   */
+  async uploadMessageAttachment(
+    file: File,
+  ): Promise<ActionResult<MessageAttachment>> {
+    const base = process.env.NEXT_PUBLIC_LEGACY_API_URL;
+    if (!base)
+      return {
+        ok: false,
+        code: "offline",
+        message: "File uploads are not configured.",
+      };
+    const mime = file.type || "";
+    const kind: MessageAttachment["kind"] = mime.startsWith("image/")
+      ? "image"
+      : mime.startsWith("audio/")
+        ? "voice"
+        : mime === "application/pdf"
+          ? "pdf"
+          : "file";
+    try {
+      const { idToken } = await import("../../legacy/firebase.ts");
+      const token = await idToken();
+      if (!token)
+        return {
+          ok: false,
+          code: "permission_denied",
+          message: "Sign in to attach a file.",
+        };
+      const form = new FormData();
+      form.append("file", file);
+      /* **Everything goes to Google Drive, not Cloudinary.** The backend's
+         Cloudinary routes (`/upload/image`, `/upload/voice`) fail with "Must
+         supply api_key" — it is not configured — whereas Drive is, and a Drive
+         `fileId` is exactly what the media proxy needs to display the file. The
+         route is named for PDFs but uploads ANY file, keeping its real name and
+         mime type, so an image or a voice note round-trips just the same. */
+      const res = await fetch(`${base}/cowork/upload/pdf`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+      if (!res.ok) {
+        /* Surface the backend's own reason — a misconfigured store or a rejected
+           file is diagnosable only if the actual message reaches the screen. */
+        const detail = (await res.json().catch(() => ({}))) as {
+          error?: unknown;
+        };
+        return {
+          ok: false,
+          code: "offline",
+          message:
+            typeof detail.error === "string" && detail.error
+              ? `Upload failed: ${detail.error}`
+              : `The upload failed (${res.status}). Please try again.`,
+        };
+      }
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      const url =
+        (typeof data.publicUrl === "string" && data.publicUrl) ||
+        (typeof data.secure_url === "string" && data.secure_url) ||
+        (typeof data.cloudinary_url === "string" && data.cloudinary_url) ||
+        (typeof data.url === "string" && data.url) ||
+        "";
+      if (!url)
+        return {
+          ok: false,
+          code: "offline",
+          message: "The upload returned no file.",
+        };
+      const fileId =
+        typeof data.fileId === "string" ? data.fileId : driveFileId(url);
+      return {
+        ok: true,
+        data: {
+          url,
+          kind,
+          name: file.name || null,
+          sizeBytes: Number.isFinite(file.size) ? file.size : null,
+          durationSecs: null,
+          fileId,
+        },
+      };
+    } catch (e) {
+      console.error("[uploadMessageAttachment]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The upload failed. Please try again.",
+      };
+    }
+  }
+
+  async editMessage(
+    conversationId: string,
+    messageId: string,
+    text: string,
+  ): Promise<ActionResult<Message>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    const body = text.trim();
+    if (!body)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "A message cannot be emptied by editing — delete it instead.",
+        field: "text",
+      };
+    try {
+      const { doc, getDoc, serverTimestamp, updateDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const data = snap.data() as Record<string, unknown>;
+      /* Only the author edits, and never a tombstone. */
+      if (data.senderId !== me)
+        return {
+          ok: false,
+          code: "permission_denied",
+          message: "You can only edit your own messages.",
+        };
+      if (data.isDeleted === true)
+        return {
+          ok: false,
+          code: "invalid_state",
+          message: "A deleted message cannot be edited.",
+        };
+      await updateDoc(ref, {
+        text: body,
+        isEdited: true,
+        editedAt: serverTimestamp(),
+      });
+      notifyRepositoryChanged();
+      return {
+        ok: true,
+        data: readMessageDoc(messageId, conversationId, {
+          ...data,
+          text: body,
+          isEdited: true,
+          editedAt: new Date().toISOString(),
+        }),
+      };
+    } catch (e) {
+      console.error("[editMessage]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The edit could not be saved.",
+      };
+    }
+  }
+
+  async deleteMessage(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { doc, getDoc, serverTimestamp, updateDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return { ok: true, data: undefined };
+      const data = snap.data() as Record<string, unknown>;
+      if (data.senderId !== me)
+        return {
+          ok: false,
+          code: "permission_denied",
+          message: "You can only delete your own messages.",
+        };
+      /* Soft delete: keep the row so the thread's shape is preserved, but clear
+         the content and mark it — the same tombstone the old app renders. */
+      await updateDoc(ref, {
+        isDeleted: true,
+        deletedAt: serverTimestamp(),
+        text: "",
+        attachments: [],
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[deleteMessage]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The message could not be deleted.",
+      };
+    }
+  }
+
+  async createConversation(
+    input: CreateConversationInput,
+  ): Promise<ActionResult<Conversation>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    const others = [...new Set(input.participantIds)].filter((id) => id !== me);
+    if (others.length === 0)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message:
+          input.kind === "group"
+            ? "Choose at least two people for a group."
+            : "Choose somebody to message.",
+        field: "participantIds",
+      };
+
+    const { addDoc, collection, doc, getDoc, serverTimestamp, setDoc } =
+      await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+
+    if (input.kind === "direct") {
+      if (others.length > 1)
+        return {
+          ok: false,
+          code: "validation_failed",
+          message:
+            "A direct message is between two people. Create a group instead.",
+          field: "participantIds",
+        };
+      const other = others[0];
+      const id = directDocId(me, other);
+      const ref = doc(legacyDb(), DM_COLLECTION, id);
+      const existing = await getDoc(ref).catch(() => null);
+      const participantIds = [me, other].sort();
+      if (!existing?.exists()) {
+        await setDoc(ref, {
+          conversationId: id,
+          participantIds,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        notifyRepositoryChanged();
+      }
+      /* Deduplicated on the pair: messaging somebody you already have a thread
+         with reopens it rather than starting a second one beside it. */
+      return {
+        ok: true,
+        data: existing?.exists()
+          ? readDirectConversationDoc(
+              id,
+              existing.data() as Record<string, unknown>,
+              LEGACY_ORGANISATION_ID,
+            )
+          : {
+              organisationId: LEGACY_ORGANISATION_ID,
+              id,
+              kind: "direct",
+              participantIds,
+              title: null,
+              groupId: null,
+              lastMessageAt: null,
+              lastMessagePreview: null,
+              unreadCount: 0,
+            },
+      };
+    }
+
+    /* Group. */
+    if (others.length < 2)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "A group needs at least two other people.",
+        field: "participantIds",
+      };
+    const title = (input.title ?? "").trim();
+    if (!title)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Give the group a name.",
+        field: "title",
+      };
+
+    const memberIds = [me, ...others];
+    const groupConv = (id: string, ids: string[]): Conversation => ({
+      organisationId: LEGACY_ORGANISATION_ID,
+      id,
+      kind: "group",
+      participantIds: ids,
+      title,
+      groupId: id,
+      adminIds: [me],
+      lastMessageAt: null,
+      lastMessagePreview: null,
+      unreadCount: 0,
+    });
+    /* Browser-direct create first. If the rules gate it — the old app restricted
+       group creation to CEO/TL through the backend — fall back to that same
+       endpoint with the Firebase token, so a permitted user still succeeds and
+       everyone else gets a clear refusal rather than a silent failure. */
+    try {
+      const ref = await addDoc(collection(legacyDb(), GROUP_COLLECTION), {
+        name: title,
+        memberIds,
+        adminIds: [me],
+        createdBy: me,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        lastMessage: null,
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: groupConv(ref.id, memberIds) };
+    } catch (e) {
+      const viaBackend = await this.#createGroupViaBackend(title, others);
+      if (viaBackend) {
+        notifyRepositoryChanged();
+        return { ok: true, data: viaBackend };
+      }
+      console.error("[createConversation:group]", e);
+      return {
+        ok: false,
+        code: "permission_denied",
+        message:
+          "This group could not be created — you may not have permission to start one here.",
+      };
+    }
+  }
+
+  /** The backend group-create route, for when browser-direct writes to
+   *  `cowork_groups` are not permitted. Gated to CEO/TL on the server, so it
+   *  returns null — and the caller reports the refusal — when the viewer may not. */
+  async #createGroupViaBackend(
+    name: string,
+    otherMemberIds: string[],
+  ): Promise<Conversation | null> {
+    const base = process.env.NEXT_PUBLIC_LEGACY_API_URL;
+    if (!base) return null;
+    try {
+      const { idToken } = await import("../../legacy/firebase.ts");
+      const token = await idToken();
+      if (!token) return null;
+      const res = await fetch(`${base}/cowork/group/create`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name, memberIds: otherMemberIds }),
+      });
+      if (!res.ok) return null;
+      const data = (await res.json().catch(() => ({}))) as Record<
+        string,
+        unknown
+      >;
+      const g = (data.group ?? data) as Record<string, unknown>;
+      const id =
+        typeof g.groupId === "string"
+          ? g.groupId
+          : typeof g.id === "string"
+            ? g.id
+            : null;
+      if (!id) return null;
+      const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+      const members = Array.isArray(g.memberIds)
+        ? (g.memberIds.filter((x) => typeof x === "string") as string[])
+        : [me, ...otherMemberIds];
+      return {
+        organisationId: LEGACY_ORGANISATION_ID,
+        id,
+        kind: "group",
+        participantIds: members,
+        title: name,
+        groupId: id,
+        lastMessageAt: null,
+        lastMessagePreview: null,
+        unreadCount: 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /* ── Group administration ────────────────────────────────────────────────
+   *
+   * Editing a group, its membership, and who runs it — all browser-direct on the
+   * `cowork_groups` doc and all gated on the actor being an admin, checked
+   * against a FRESH read so the permission can never be stale. Where a legacy
+   * group predates `adminIds`, its creator stands in as the admin, so no group is
+   * ever left unmanageable. */
+
+  /** Whether the viewer administers a group, read fresh. */
+  async #isGroupAdmin(groupId: string, me: string): Promise<boolean> {
+    try {
+      const { doc, getDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const snap = await getDoc(doc(legacyDb(), GROUP_COLLECTION, groupId));
+      if (!snap.exists()) return false;
+      const d = snap.data() as Record<string, unknown>;
+      const admins = Array.isArray(d.adminIds)
+        ? (d.adminIds.filter((x) => typeof x === "string") as string[])
+        : [];
+      if (admins.length) return admins.includes(me);
+      return typeof d.createdBy === "string" ? d.createdBy === me : false;
+    } catch {
+      return false;
+    }
+  }
+
+  async updateGroup(
+    groupId: string,
+    patch: { title?: string },
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    const name = (patch.title ?? "").trim();
+    if (patch.title !== undefined && !name)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "A group needs a name.",
+        field: "title",
+      };
+    if (!(await this.#isGroupAdmin(groupId, me)))
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only a group admin can edit the group.",
+      };
+    try {
+      const { doc, serverTimestamp, updateDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
+        ...(patch.title !== undefined ? { name } : {}),
+        updatedAt: serverTimestamp(),
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[updateGroup]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The change could not be saved.",
+      };
+    }
+  }
+
+  async addGroupMember(
+    groupId: string,
+    employeeId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    if (!(await this.#isGroupAdmin(groupId, me)))
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only a group admin can add members.",
+      };
+    try {
+      const { arrayUnion, doc, serverTimestamp, updateDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
+        memberIds: arrayUnion(String(employeeId)),
+        updatedAt: serverTimestamp(),
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[addGroupMember]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The member could not be added.",
+      };
+    }
+  }
+
+  async removeGroupMember(
+    groupId: string,
+    employeeId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    const target = String(employeeId);
+    /* Leaving a group is always your own to do; removing someone else is not. */
+    if (target !== me && !(await this.#isGroupAdmin(groupId, me)))
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only a group admin can remove members.",
+      };
+    try {
+      const { arrayRemove, doc, serverTimestamp, updateDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
+        memberIds: arrayRemove(target),
+        adminIds: arrayRemove(target),
+        updatedAt: serverTimestamp(),
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[removeGroupMember]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The member could not be removed.",
+      };
+    }
+  }
+
+  async setGroupAdmin(
+    groupId: string,
+    employeeId: string,
+    isAdmin: boolean,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    if (!(await this.#isGroupAdmin(groupId, me)))
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only a group admin can change who administers it.",
+      };
+    const target = String(employeeId);
+    try {
+      const {
+        arrayRemove,
+        arrayUnion,
+        doc,
+        getDoc,
+        serverTimestamp,
+        updateDoc,
+      } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const ref = doc(legacyDb(), GROUP_COLLECTION, groupId);
+      if (!isAdmin) {
+        /* A group is never left with no admin: the last one cannot step down. */
+        const snap = await getDoc(ref);
+        const admins = Array.isArray(snap.data()?.adminIds)
+          ? ((snap.data()!.adminIds as unknown[]).filter(
+              (x) => typeof x === "string",
+            ) as string[])
+          : [];
+        if (admins.length <= 1 && admins.includes(target))
+          return {
+            ok: false,
+            code: "invalid_state",
+            message: "A group needs at least one admin.",
+          };
+      }
+      await updateDoc(ref, {
+        adminIds: isAdmin ? arrayUnion(target) : arrayRemove(target),
+        /* Promoting someone brings them into the group if they are not in it. */
+        ...(isAdmin ? { memberIds: arrayUnion(target) } : {}),
+        updatedAt: serverTimestamp(),
+      });
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[setGroupAdmin]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The admin change could not be saved.",
+      };
+    }
+  }
+
+  async markConversationRead(
+    conversationId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { arrayUnion, collection, getDocs, query, where, writeBatch } =
+        await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const snap = await getDocs(
+        query(
+          collection(legacyDb(), coll, conversationId, "messages"),
+          where("senderId", "!=", me),
+        ),
+      );
+      const unread = snap.docs.filter((d) => {
+        const rb = (d.data() as { readBy?: unknown }).readBy;
+        return !Array.isArray(rb) || !rb.includes(me);
+      });
+      if (unread.length) {
+        const batch = writeBatch(legacyDb());
+        unread.forEach((d) => batch.update(d.ref, { readBy: arrayUnion(me) }));
+        await batch.commit();
+        notifyRepositoryChanged();
+      }
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[markConversationRead]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "Could not update the read state.",
+      };
+    }
+  }
+
+  /* ── Realtime ────────────────────────────────────────────────────────────
+   *
+   * The list and the open thread are `useQuery`s, and every `useQuery` re-runs
+   * when `notifyRepositoryChanged()` bumps the version. So "live" is just a
+   * Firestore `onSnapshot` that calls it whenever the underlying data changes —
+   * a message from someone else lands and the list (and the thread, if it is
+   * open) refetch on their own. The very first snapshot is skipped so mounting a
+   * listener does not fire a refetch beside the query's own first read, and the
+   * notify is debounced so a burst of doc changes coalesces into one refresh. */
+
+  /** Live updates for the conversation list: any change to a thread the viewer
+   *  is a party to — a new message, a new conversation, a read-receipt — refreshes
+   *  the list. The returned function detaches both listeners for effect cleanup. */
+  watchConversations(): () => void {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me) return () => {};
+    let cleanup: (() => void) | null = null;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { collection, onSnapshot, query, where } = await import(
+          "firebase/firestore"
+        );
+        const { legacyDb } = await import("../../legacy/firebase.ts");
+        if (disposed) return;
+        const bump = debounce(() => notifyRepositoryChanged(), 250);
+        const attach = (name: string, field: string) => {
+          let first = true;
+          return onSnapshot(
+            query(
+              collection(legacyDb(), name),
+              where(field, "array-contains", me),
+            ),
+            () => {
+              if (first) {
+                first = false;
+                return;
+              }
+              bump();
+            },
+            () => {
+              /* A listener that errors (rules, connectivity) simply goes quiet;
+                 the list still works from its own reads. */
+            },
+          );
+        };
+        const unDm = attach(DM_COLLECTION, "participantIds");
+        const unGroup = attach(GROUP_COLLECTION, "memberIds");
+        cleanup = () => {
+          unDm();
+          unGroup();
+          bump.cancel();
+        };
+      } catch {
+        /* Realtime is an enhancement; its absence leaves the list working. */
+      }
+    })();
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }
+
+  /** Live updates for one open thread: a new, edited, deleted, or newly-read
+   *  message refreshes the message list. */
+  watchConversationMessages(conversationId: string): () => void {
+    let cleanup: (() => void) | null = null;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { collection, onSnapshot } = await import("firebase/firestore");
+        const { legacyDb } = await import("../../legacy/firebase.ts");
+        const coll = await this.#conversationCollection(conversationId);
+        if (disposed) return;
+        const bump = debounce(() => notifyRepositoryChanged(), 200);
+        let first = true;
+        const un = onSnapshot(
+          collection(legacyDb(), coll, conversationId, "messages"),
+          () => {
+            if (first) {
+              first = false;
+              return;
+            }
+            bump();
+          },
+          () => {
+            /* Quietly stop; the thread still works from its own read. */
+          },
+        );
+        cleanup = () => {
+          un();
+          bump.cancel();
+        };
+      } catch {
+        /* No live thread — the query still answers on its own. */
+      }
+    })();
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }
+
+  /* ── Typing & presence ───────────────────────────────────────────────────
+   *
+   * Both browser-direct, because that is the whole app's shape — but confined to
+   * the two Firestore locations the rules already permit. Typing is a stamp on
+   * the CONVERSATION document (a fresh collection would be denied); presence is
+   * read from the same `cowork_duty_status` docs the top bar uses, so "online"
+   * here means exactly what it means there. */
+
+  /** Signal that the viewer is — or is no longer — typing, as `typing.{me}` on
+   *  the conversation document: a client timestamp a reader treats as live for a
+   *  few seconds. Fire-and-forget; a dropped signal is only a missed ellipsis. */
+  async setTyping(conversationId: string, isTyping: boolean): Promise<void> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me) return;
+    try {
+      const { deleteField, doc, setDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      await setDoc(
+        doc(legacyDb(), coll, conversationId),
+        { typing: { [me]: isTyping ? Date.now() : deleteField() } },
+        { merge: true },
+      );
+    } catch {
+      /* Typing is a courtesy; its failure changes nothing that matters. */
+    }
+  }
+
+  /** Who, other than the viewer, is typing right now — a `typing.{id}` stamp
+   *  within the last few seconds. Returns an unsubscribe for effect cleanup. */
+  watchTyping(
+    conversationId: string,
+    onChange: (typingIds: string[]) => void,
+  ): () => void {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    let cleanup: (() => void) | null = null;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { doc, onSnapshot } = await import("firebase/firestore");
+        const { legacyDb } = await import("../../legacy/firebase.ts");
+        const coll = await this.#conversationCollection(conversationId);
+        if (disposed) return;
+        cleanup = onSnapshot(
+          doc(legacyDb(), coll, conversationId),
+          (snap) => {
+            const typing = (snap.data()?.typing ?? {}) as Record<
+              string,
+              unknown
+            >;
+            const now = Date.now();
+            onChange(
+              Object.entries(typing)
+                .filter(
+                  ([id, ts]) =>
+                    id !== me && typeof ts === "number" && now - ts < 6000,
+                )
+                .map(([id]) => id),
+            );
+          },
+          () => {
+            /* Quietly stop; the thread still works without the indicator. */
+          },
+        );
+      } catch {
+        /* No live typing — the thread still works. */
+      }
+    })();
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }
+
+  /** Live online/offline for a set of people, from their `cowork_duty_status`
+   *  docs — "online" means actively on, not away or on a break, exactly as the
+   *  top bar reads it. One listener per person; unsubscribe detaches them all. */
+  watchPresence(
+    employeeIds: string[],
+    onChange: (online: Record<string, boolean>) => void,
+  ): () => void {
+    const ids = [...new Set(employeeIds)].filter(Boolean);
+    let disposed = false;
+    const unsubs: Array<() => void> = [];
+    const online: Record<string, boolean> = {};
+    void (async () => {
+      try {
+        const { onSnapshot } = await import("firebase/firestore");
+        for (const id of ids) {
+          if (disposed) return;
+          const ref = await this.#dutyDoc(id);
+          unsubs.push(
+            onSnapshot(
+              ref,
+              (snap) => {
+                online[id] =
+                  readDutyMode(
+                    snap.exists() ? (snap.data() as DutyDocument) : null,
+                    Date.now(),
+                  ) === "online";
+                onChange({ ...online });
+              },
+              () => {
+                /* A doc we cannot read is simply treated as not-known-online. */
+              },
+            ),
+          );
+        }
+      } catch {
+        /* No live presence — dots just do not show. */
+      }
+    })();
+    return () => {
+      disposed = true;
+      unsubs.forEach((u) => u());
+    };
   }
 }
 

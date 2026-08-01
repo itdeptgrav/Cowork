@@ -94,6 +94,17 @@ export interface MailMessage {
   from: MailParty;
   to: MailParty[];
   cc: MailParty[];
+  /**
+   * Blind copies. Stored, and redacted on every read but the sender's.
+   *
+   * On the message rather than in a side table because the SENDER has to be
+   * able to see who they copied — a blind copy nobody can audit afterwards is a
+   * different problem. `lib/rules/mail/blindCopy.ts` holds the invariant and
+   * every read path goes through its `redactBcc`; a reader who may not see it
+   * gets `[]`, indistinguishable from a message that had none, because "there
+   * was no bcc" and "you may not see the bcc" must not be tellable apart.
+   */
+  bcc: MailParty[];
 
   subject: string;
   /** Plain text in this prototype. HTML is a rendering decision, not a schema one. */

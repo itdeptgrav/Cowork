@@ -86,6 +86,11 @@ export function parseGmailMessage(raw: GmailRawMessage): MailMessage {
     },
     to: parseAddressList(header(raw, "To")),
     cc: parseAddressList(header(raw, "Cc")),
+    /* Usually empty, and that is the header working. Gmail strips Bcc before
+       delivery, so a message you RECEIVED never carries one — this only ever
+       finds anything on a copy of something you SENT, which is exactly where
+       the sender is entitled to see it. */
+    bcc: parseAddressList(header(raw, "Bcc")),
     subject: header(raw, "Subject") || "(no subject)",
     body: extractBody(raw.payload) || (raw.snippet ?? ""),
     attachmentIds: [],

@@ -2,7 +2,6 @@
 
 import { useMemo, useState } from "react";
 import { createPortal } from "react-dom";
-import { Icon } from "@/components/ui/Icons";
 import {
   Button,
   Chip,
@@ -11,12 +10,10 @@ import {
   Input,
   Textarea,
 } from "@/components/ui/Primitives";
+import { RecipientField } from "./RecipientField";
+import { recipientRefusal } from "@/lib/rules/mail/blindCopy";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
-import {
-  resolveParty,
-  sendRefusal,
-  transportNotice,
-} from "@/lib/integrations/mail/transport";
+import { sendRefusal, transportNotice } from "@/lib/integrations/mail/transport";
 import type { MailMessage, MailParty } from "@/lib/domain";
 
 /**
@@ -70,7 +67,19 @@ export function MailCompose({
   const [recipients, setRecipients] = useState<MailParty[]>(
     mode === "reply" && replyTo ? [replyTo.from] : [],
   );
-  const [draft, setDraft] = useState("");
+  /* A reply keeps the visible copies, because dropping them silently removes
+     people from a conversation they were part of. Bcc is NEVER carried over:
+     the blind copies on the message you are replying to are not yours to
+     re-disclose, and on anything but your own sent message you cannot see them
+     anyway. */
+  const [cc, setCc] = useState<MailParty[]>(
+    mode === "reply" && replyTo ? replyTo.cc : [],
+  );
+  const [bcc, setBcc] = useState<MailParty[]>([]);
+  const [showCc, setShowCc] = useState(
+    mode === "reply" && replyTo ? replyTo.cc.length > 0 : false,
+  );
+  const [showBcc, setShowBcc] = useState(false);
   const [subject, setSubject] = useState(
     replyTo
       ? `${mode === "forward" ? "Fwd" : "Re"}: ${replyTo.subject.replace(/^(Re|Fwd):\s*/i, "")}`
@@ -82,16 +91,23 @@ export function MailCompose({
       : "",
   );
 
-  const notice = transportNotice(recipients);
+  const everyone = [...recipients, ...cc, ...bcc];
+  const taken = new Set(everyone.map((p) => p.address));
+  /* All three fields decide the transport. One external address in Bcc takes
+     the whole message outside the company, and a banner reading "Internal
+     message" while that happened would be the worst version of this bug. */
+  const notice = transportNotice(everyone);
   /* One question, asked once: `/api/mail/gmail/status` → `connectionView` →
      `getGmailConnection`. The banner, the disabled state and the server's own
      check now all resolve from that same record, which is what stopped Settings
      and the composer contradicting each other. */
-  const refusal = sendRefusal({
-    recipients,
-    subject,
-    gmailAvailable: gmail.data?.connected ?? false,
-  });
+  const refusal =
+    recipientRefusal({ to: recipients, cc, bcc }) ??
+    sendRefusal({
+      recipients: everyone,
+      subject,
+      gmailAvailable: gmail.data?.connected ?? false,
+    });
 
   /**
    * Send.
@@ -105,12 +121,12 @@ export function MailCompose({
   const [send, state] = useAction(async (r) => {
     const threadId = replyTo && mode === "reply" ? replyTo.threadId : null;
     if (notice.transport === "internal")
-      return r.sendMail({ to: recipients, subject, body, threadId });
+      return r.sendMail({ to: recipients, cc, bcc, subject, body, threadId });
 
     const res = await fetch("/api/mail/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ to: recipients, subject, body }),
+      body: JSON.stringify({ to: recipients, cc, bcc, subject, body }),
     });
     const payload = (await res.json().catch(() => null)) as {
       gmail?: { gmailMessageId: string; gmailThreadId: string };
@@ -119,6 +135,8 @@ export function MailCompose({
 
     return r.sendMail({
       to: recipients,
+      cc,
+      bcc,
       subject,
       body,
       threadId,
@@ -133,27 +151,6 @@ export function MailCompose({
         : (payload?.error ?? "Gmail refused the message."),
     });
   });
-
-  function addRecipient() {
-    const p = resolveParty(draft, directory);
-    if (!p) return;
-    setRecipients((rs) =>
-      rs.some((x) => x.address === p.address) ? rs : [...rs, p],
-    );
-    setDraft("");
-  }
-
-  const suggestions = draft.trim()
-    ? directory
-        .filter(
-          (d) =>
-            !recipients.some((r) => r.address === d.address) &&
-            `${d.displayName} ${d.address}`
-              .toLowerCase()
-              .includes(draft.trim().toLowerCase()),
-        )
-        .slice(0, 4)
-    : [];
 
   if (typeof document === "undefined") return null;
 
@@ -182,76 +179,72 @@ export function MailCompose({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto border-t border-hairline px-6 py-4 scroll-slim">
-          <Field label="To" required>
-            <div className="flex flex-wrap gap-1.5">
-              {recipients.map((r) => (
-                <span
-                  key={r.address}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2.5 py-1 text-[11px] text-ink"
-                >
-                  {r.kind === "employee" ? (
-                    <Icon.user className="h-3 w-3" />
-                  ) : (
-                    <Icon.link className="h-3 w-3" />
-                  )}
-                  {r.displayName}
-                  <button
-                    type="button"
-                    aria-label={`Remove ${r.displayName}`}
-                    onClick={() =>
-                      setRecipients((rs) =>
-                        rs.filter((x) => x.address !== r.address),
-                      )
-                    }
-                    className="text-ink-faint hover:text-ink"
-                  >
-                    <Icon.close className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-            <Input
-              className="mt-1.5"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" || e.key === ",") {
-                  e.preventDefault();
-                  addRecipient();
-                }
-              }}
-              placeholder="Search a colleague, or type an email address"
-            />
-          </Field>
+          {/* One `taken` set across all three fields: the suggestion list never
+              offers somebody who is already addressed, which is what stops the
+              commonest route into "in both To and Bcc". */}
+          <RecipientField
+            label="To"
+            value={recipients}
+            onChange={setRecipients}
+            directory={directory}
+            taken={taken}
+            autoFocus
+          />
 
-          {suggestions.length > 0 && (
-            <ul className="mt-1.5 flex flex-col gap-0.5">
-              {suggestions.map((sug) => (
-                <li key={sug.employeeId}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setRecipients((rs) => [
-                        ...rs,
-                        {
-                          kind: "employee",
-                          employeeId: sug.employeeId,
-                          address: sug.address,
-                          displayName: sug.displayName,
-                        },
-                      ]);
-                      setDraft("");
-                    }}
-                    className="flex w-full items-baseline gap-2 rounded-inset px-2.5 py-1.5 text-left text-sm transition-colors hover:bg-[var(--control)]"
-                  >
-                    <span className="text-ink">{sug.displayName}</span>
-                    <span className="text-[11px] text-ink-faint">
-                      {sug.address}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
+          {/* Gmail's pattern, and it earns its keep: most messages have neither,
+              and two permanently-visible empty fields above the subject push the
+              message itself off the first screen. */}
+          {!(showCc && showBcc) && (
+            <div className="mt-1.5 flex gap-3">
+              {!showCc && (
+                <button
+                  type="button"
+                  onClick={() => setShowCc(true)}
+                  className="text-[11px] text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+                >
+                  Add Cc
+                </button>
+              )}
+              {!showBcc && (
+                <button
+                  type="button"
+                  onClick={() => setShowBcc(true)}
+                  className="text-[11px] text-ink-faint underline-offset-2 hover:text-ink hover:underline"
+                >
+                  Add Bcc
+                </button>
+              )}
+            </div>
+          )}
+
+          {showCc && (
+            <div className="mt-3">
+              <RecipientField
+                label="Cc"
+                hint="Everyone on the message sees who is in Cc."
+                value={cc}
+                onChange={setCc}
+                directory={directory}
+                taken={taken}
+                autoFocus
+              />
+            </div>
+          )}
+
+          {showBcc && (
+            <div className="mt-3">
+              <RecipientField
+                label="Bcc"
+                /* Said at the point of use, because this is the field people
+                   are most likely to be wrong about. */
+                hint="Nobody else on the message sees these people — not even each other."
+                value={bcc}
+                onChange={setBcc}
+                directory={directory}
+                taken={taken}
+                autoFocus
+              />
+            </div>
           )}
 
           {/* What will actually happen. From the same function that routes the

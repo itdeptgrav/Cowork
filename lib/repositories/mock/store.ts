@@ -10,6 +10,8 @@
  */
 
 import type {
+  CoworkDocument,
+  CoworkDocumentBody,
   Approval,
   Attachment,
   AttendanceDay,
@@ -205,6 +207,8 @@ export interface Store {
   mailThreads: MailThread[];
   mailMessages: MailMessage[];
   mailAttachments: MailAttachment[];
+  documents: CoworkDocument[];
+  documentBodies: CoworkDocumentBody[];
   meetingParticipants: MeetingParticipant[];
   meetingEvents: MeetingEvent[];
   notifications: Notification[];
@@ -343,6 +347,8 @@ function build(): Store {
     mailThreads: [],
     mailMessages: [],
     mailAttachments: [],
+    documents: [],
+    documentBodies: [],
     meetingParticipants: [],
     meetingEvents: [],
     notifications: clone(seed.notifications),

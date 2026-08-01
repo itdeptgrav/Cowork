@@ -186,6 +186,12 @@
   --field-vignette: rgba(24, 24, 28, 0.38);
   --body-bg: #cfcfcf;
 
+  /* The document page. Paper in light, a lifted panel in dark — a white sheet
+     on a dark deck is a lamp, and nobody edits prose on one for an hour. */
+  --doc-page: #ffffff;
+  --doc-page-ink: #101014;
+  --doc-rule: rgba(10, 10, 10, 0.08);
+
   --row-hover: rgba(10, 10, 10, 0.04);
   --row-live: rgba(10, 10, 10, 0.055);
 
@@ -296,6 +302,10 @@
   --field-spec-light: 0.16;
   --field-spec-dark: 0.5;
   --field-vignette: rgba(0, 0, 0, 0.5);
+
+  --doc-page: #191920;
+  --doc-page-ink: #ececf1;
+  --doc-rule: rgba(255, 255, 255, 0.09);
 
   --row-hover: rgba(255, 255, 255, 0.05);
   --row-live: rgba(255, 255, 255, 0.07);
@@ -806,3 +816,84 @@
  * Nothing to add: it is the stylesheet as authored. Named here so the three
  * modes are legible in one place rather than two being implicit.
  */
+
+
+/* ── The document page ────────────────────────────────────────────────────────
+ *
+ * ProseMirror emits plain semantic HTML and inherits nothing, so the editor
+ * would otherwise render headings and body text at the same size. These are
+ * scoped to `.prose-cowork` rather than global, because the same markup appears
+ * in mail previews and help articles where the page metrics would be wrong.
+ */
+.prose-cowork {
+  color: var(--doc-page-ink);
+}
+.prose-cowork:focus { outline: none; }
+.prose-cowork > * + * { margin-top: 0.75em; }
+.prose-cowork h1 { font-size: 1.75em; font-weight: 400; line-height: 1.25; margin-top: 1.2em; }
+.prose-cowork h2 { font-size: 1.4em; font-weight: 400; line-height: 1.3; margin-top: 1.1em; }
+.prose-cowork h3 { font-size: 1.15em; font-weight: 500; margin-top: 1em; }
+.prose-cowork p { line-height: 1.65; }
+.prose-cowork ul,
+.prose-cowork ol { padding-inline-start: 1.5em; }
+.prose-cowork ul { list-style: disc; }
+.prose-cowork ol { list-style: decimal; }
+.prose-cowork li > p { margin: 0; }
+.prose-cowork blockquote {
+  border-inline-start: 3px solid var(--doc-rule);
+  padding-inline-start: 1em;
+  color: color-mix(in srgb, var(--doc-page-ink) 70%, transparent);
+}
+.prose-cowork pre {
+  background: color-mix(in srgb, var(--doc-page-ink) 7%, transparent);
+  border-radius: var(--radius-inset);
+  padding: 0.85em 1em;
+  overflow-x: auto;
+  font-size: 0.9em;
+}
+.prose-cowork code { font-size: 0.9em; }
+.prose-cowork hr { border: 0; border-top: 1px solid var(--doc-rule); margin: 1.6em 0; }
+.prose-cowork a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+.prose-cowork img { max-width: 100%; height: auto; border-radius: var(--radius-inset); }
+
+/* Tables. `border-collapse` plus a fixed layout, or a column drag resizes the
+   whole table instead of the column. */
+.prose-cowork table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  overflow: hidden;
+}
+.prose-cowork th,
+.prose-cowork td {
+  border: 1px solid var(--doc-rule);
+  padding: 0.45em 0.6em;
+  vertical-align: top;
+  position: relative;
+}
+.prose-cowork th {
+  background: color-mix(in srgb, var(--doc-page-ink) 5%, transparent);
+  font-weight: 500;
+  text-align: start;
+}
+.prose-cowork .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--color-field-slate) 22%, transparent);
+  pointer-events: none;
+}
+
+/* Checklists. The control is real — clicking it toggles the stored state. */
+.prose-cowork ul[data-type="taskList"] { list-style: none; padding-inline-start: 0.25em; }
+.prose-cowork ul[data-type="taskList"] li { display: flex; gap: 0.55em; align-items: flex-start; }
+.prose-cowork ul[data-type="taskList"] li > label { margin-top: 0.25em; }
+
+/* The empty-document prompt. An editor with no placeholder reads as broken. */
+.prose-cowork p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: inline-start;
+  height: 0;
+  pointer-events: none;
+  color: color-mix(in srgb, var(--doc-page-ink) 40%, transparent);
+}

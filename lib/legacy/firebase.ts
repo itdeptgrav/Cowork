@@ -6,6 +6,7 @@ import {
   type User,
   getAuth,
   onAuthStateChanged,
+  onIdTokenChanged,
   signInWithEmailAndPassword,
   signOut as fbSignOut,
 } from "firebase/auth";
@@ -163,6 +164,20 @@ export function watchAuth(
   handler: (user: User | null) => void,
 ): () => void {
   return onAuthStateChanged(legacyFirebase().auth, handler);
+}
+
+/**
+ * Subscribe to ID-TOKEN changes, not just sign-in state.
+ *
+ * Fires on the same events as `watchAuth` PLUS every silent token refresh — the
+ * SDK renews the one-hour token on its own, and only this callback is told. It
+ * is how the mirrored auth cookie is kept in step with the live token, so the
+ * Edge middleware never sees an expired copy and bounces a signed-in person.
+ */
+export function watchIdToken(
+  handler: (user: User | null) => void,
+): () => void {
+  return onIdTokenChanged(legacyFirebase().auth, handler);
 }
 
 /**

@@ -16,6 +16,7 @@ export * from "./priority";
 export * from "./projects";
 export * from "./scoring";
 export * from "./work";
+export * from "./documents";
 export * from "./music";
 export * from "./mail";
 export * from "./office";

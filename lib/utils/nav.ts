@@ -22,6 +22,7 @@ export const navItems: NavItem[] = [
   { label: "Mail", href: "/mail", match: ["/mail"] },
   { label: "Messages", href: "/messages", match: ["/messages", "/groups"] },
   { label: "Meetings", href: "/meetings", match: ["/meetings"] },
+  { label: "Workspace", href: "/workspace", match: ["/workspace"] },
 ];
 
 /**

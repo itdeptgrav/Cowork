@@ -347,6 +347,53 @@ test("self task: once the manager counters, it is the assignee's move again", ()
   assert.equal(action.label, "Accept the time budget");
 });
 
+test("a pending budget-extension decision surfaces to the approver", () => {
+  /* The reported gap: a report asked for more time, the record lives in its own
+     collection off the task, and the manager was never told. The repository sets
+     `budgetDecisionPending` for exactly the approver, and `nextAction` routes it
+     into "Awaiting your decision". */
+  const view = {
+    task: {
+      id: "t-1",
+      type: "standard",
+      status: "in_progress",
+      deadline: { state: "unset" },
+    },
+    assignments: [{ employeeId: "e-02" }], // someone else is the assignee
+    approvals: [],
+    pendingApprovals: [],
+    budgetDecisionPending: true,
+  } as unknown as Parameters<typeof nextAction>[0];
+  const action = nextAction(view, "e-01"); // the manager/approver, not the assignee
+  assert.equal(action.actor, "you");
+  assert.equal(action.label, "Decide the time budget");
+  assert.match(action.href ?? "", /^\/tasks\/t-1$/);
+});
+
+test("a pending deadline-extension decision surfaces to the routed approver", () => {
+  /* The user's report: Pramod asked for a later date and it never reached
+     Rakesh. A deadline extension never flips the task status, so `deadline.state`
+     stays `agreed` — the repository flags the routed approver instead, and this
+     is where that flag becomes a visible decision, even though the viewer is not
+     the creator. */
+  const view = {
+    task: {
+      id: "t-2",
+      type: "standard",
+      status: "in_progress",
+      deadline: { state: "agreed" }, // NOT proposed — the status never moved
+    },
+    assignments: [{ employeeId: "e-02" }],
+    approvals: [],
+    pendingApprovals: [],
+    deadlineDecisionPending: true,
+  } as unknown as Parameters<typeof nextAction>[0];
+  const action = nextAction(view, "e-01"); // the routed approver, not the creator
+  assert.equal(action.actor, "you");
+  assert.equal(action.label, "Decide deadline");
+  assert.match(action.href ?? "", /^\/tasks\/t-2\/deadline$/);
+});
+
 /* ── Approver visibility ──────────────────────────────────────────────────── */
 
 /**

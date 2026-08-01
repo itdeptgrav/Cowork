@@ -31,16 +31,21 @@ export async function POST(request: Request) {
   const body = (await request.json().catch(() => null)) as {
     to?: MailParty[];
     cc?: MailParty[];
+    bcc?: MailParty[];
     subject?: string;
     body?: string;
     gmailThreadId?: string | null;
   } | null;
-  if (!body?.to?.length)
+  /* A Bcc-only message is a real shape — mailing a list without disclosing it
+     is the usual reason to reach for Bcc — so the check is that SOMEBODY is
+     addressed, not that `to` is populated. */
+  const to = body?.to ?? [];
+  const cc = body?.cc ?? [];
+  const bcc = body?.bcc ?? [];
+  if (to.length + cc.length + bcc.length === 0)
     return NextResponse.json({ error: "No recipients." }, { status: 400 });
 
-  const to = body.to;
-  const cc = body.cc ?? [];
-  const transport = transportFor([...to, ...cc]);
+  const transport = transportFor([...to, ...cc, ...bcc]);
 
   /* Belt and braces: an internal message reaching this route is a bug in the
      caller, and sending it through Gmail would take a private conversation
@@ -84,9 +89,10 @@ export async function POST(request: Request) {
       },
       to,
       cc,
-      subject: body.subject ?? "",
-      body: body.body ?? "",
-      gmailThreadId: body.gmailThreadId ?? null,
+      bcc,
+      subject: body?.subject ?? "",
+      body: body?.body ?? "",
+      gmailThreadId: body?.gmailThreadId ?? null,
     });
     return NextResponse.json({ ok: true, gmail: result });
   } catch (e) {

@@ -170,6 +170,13 @@ export interface Conversation {
   participantIds: EmployeeId[];
   title: string | null;
   groupId: string | null;
+  /**
+   * The members who administer a GROUP — rename it, add or remove people, and
+   * promote others. Empty/absent for a direct message. The creator starts as the
+   * sole admin; a group that lost its admins (legacy data) falls back to treating
+   * its creator as one so it is never left unmanageable.
+   */
+  adminIds?: EmployeeId[];
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   unreadCount: number;
@@ -192,6 +199,46 @@ export function directConversationKey(participantIds: EmployeeId[]): string {
   return [...new Set(participantIds)].sort().join("|");
 }
 
+/**
+ * A file carried by a message, stored INLINE on the message the way the existing
+ * chat documents hold it — a URL and a kind, not a separate attachment record.
+ *
+ * Distinct from `Message.attachmentIds`, which references the normalised
+ * `Attachment` records the prototype and mail use. Chat messages written by the
+ * old app (and read back browser-direct) carry their media inline, so this is
+ * what the real threads actually display.
+ */
+export interface MessageAttachment {
+  url: string;
+  kind: "image" | "pdf" | "voice" | "file";
+  name: string | null;
+  sizeBytes: number | null;
+  /** Length of a voice note in seconds, where one is recorded. */
+  durationSecs: number | null;
+  /**
+   * The Google Drive file id, where the media is Drive-hosted.
+   *
+   * Drive's own `thumbnail`/`googleusercontent` image URLs no longer load in an
+   * `<img>` reliably, so the UI streams Drive files through the backend media
+   * proxy keyed on this id instead. Null for a Cloudinary asset (voice, some
+   * images), whose URL is served directly.
+   */
+  fileId: string | null;
+}
+
+/**
+ * The message a reply quotes, denormalised onto the reply itself.
+ *
+ * Carries the quoted sender and a snippet of text so the quote renders without a
+ * second read — and stays legible even when the original is older than the
+ * loaded window or has since been deleted. `messageId` is the scroll target.
+ */
+export interface MessageReply {
+  messageId: string;
+  senderName: string;
+  text: string;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -199,8 +246,20 @@ export interface Message {
   senderName: string;
   text: string;
   attachmentIds: string[];
+  /**
+   * Inline media on the message, where it has any. Optional because most
+   * messages have none and the prototype models its few through `attachmentIds`;
+   * the real (browser-direct) threads populate it from the stored document.
+   */
+  attachments?: MessageAttachment[];
   replyToId: string | null;
+  /** The quoted message, where this one is a reply. */
+  replyTo?: MessageReply | null;
   createdAt: string;
+  /** When the sender last edited the text; null/absent if never edited. */
+  editedAt?: string | null;
+  /** True for a soft-deleted message — its slot and tombstone remain. */
+  isDeleted?: boolean;
   readBy: EmployeeId[];
 }
 

@@ -1,4 +1,9 @@
-import type { Meeting, Notification } from "@/lib/domain";
+import type {
+  Meeting,
+  MeetingEvent,
+  MeetingParticipant,
+  Notification,
+} from "@/lib/domain";
 import { LEGACY_ORGANISATION_ID } from "./map.ts";
 
 /**
@@ -83,6 +88,25 @@ export interface LegacyMeetingDoc {
   isCancelled?: boolean;
   livekitRoomName?: string;
   createdAt?: unknown;
+  /* Written by the engine only since the meetings page was connected. Every
+     one of these is absent on a meeting scheduled before that, which is why
+     each reads through a fallback rather than being assumed present. */
+  endsAt?: unknown;
+  agenda?: unknown;
+  taskId?: string | null;
+  startedAt?: unknown;
+  endedAt?: unknown;
+  presence?: Record<string, { joinedAt?: unknown; leftAt?: unknown }>;
+}
+
+/** One row of `cowork_scheduled_meets/{id}/events`. */
+export interface LegacyMeetingEventDoc {
+  id?: string;
+  type?: string;
+  actorId?: string;
+  actorName?: string;
+  detail?: string;
+  createdAt?: unknown;
 }
 
 /**
@@ -109,21 +133,26 @@ export function toMeeting(doc: LegacyMeetingDoc): Meeting | null {
     organiserId: doc.createdBy ?? "",
     participantIds: readParticipants(doc.participants),
     startsAt: toIso(doc.dateTime) ?? "",
-    /* No end time in legacy. Empty, never guessed. */
-    endsAt: "",
+    /* Still empty for a meeting scheduled before the engine recorded one — the
+       old rule holds, absent stays absent rather than becoming a guessed hour. */
+    endsAt: toIso(doc.endsAt) ?? "",
     status: readMeetingStatus(doc),
     joinToken: null,
     /* Legacy reports neither, and both are claims about what was captured. */
     recordingEnabled: false,
     hasSummary: false,
     livekitRoomName: doc.livekitRoomName ?? null,
-    agenda: [],
-    taskId: null,
+    agenda: Array.isArray(doc.agenda)
+      ? doc.agenda.filter((a): a is string => typeof a === "string" && a.trim() !== "")
+      : [],
+    taskId: doc.taskId ?? null,
     projectId: null,
-    startedAt: null,
-    endedAt: null,
-    /* Would require an end time to compute. */
-    actualDurationSecs: null,
+    startedAt: toIso(doc.startedAt),
+    endedAt: toIso(doc.endedAt),
+    /* Measured from the actual run, never from the schedule: a meeting booked
+       for an hour that ran twenty records twenty. Null unless BOTH ends are
+       recorded — one alone cannot produce a duration. */
+    actualDurationSecs: readActualDurationSecs(doc),
     transcriptId: null,
     actionItems: [],
   };
@@ -152,6 +181,90 @@ export function readParticipants(value: unknown): string[] {
       return null;
     })
     .filter((id): id is string => Boolean(id));
+}
+
+/**
+ * How long the meeting actually ran, or null.
+ *
+ * Requires BOTH ends. A meeting that started and has not ended has no duration
+ * yet — reporting the time so far as its length would make a running meeting
+ * look finished, and reporting zero would be worse.
+ */
+export function readActualDurationSecs(doc: LegacyMeetingDoc): number | null {
+  const started = toIso(doc.startedAt);
+  const ended = toIso(doc.endedAt);
+  if (!started || !ended) return null;
+  const secs = (Date.parse(ended) - Date.parse(started)) / 1000;
+  return Number.isFinite(secs) && secs >= 0 ? Math.round(secs) : null;
+}
+
+/**
+ * The participant list, derived from the meeting document.
+ *
+ * There is no participants endpoint and there does not need to be: the engine
+ * already sends `participants` and `presence` on the meeting itself, so a
+ * separate call would be a second round trip for data already in hand.
+ *
+ * The ORGANISER is included even when absent from `participants` — legacy
+ * stores them separately in `createdBy`, and a meeting whose own organiser does
+ * not appear in its attendance list reads as a data fault.
+ */
+export function toMeetingParticipants(
+  doc: LegacyMeetingDoc,
+): MeetingParticipant[] {
+  const meetingId = String(doc.id ?? doc.meetId ?? "");
+  if (!meetingId) return [];
+
+  const organiserId = doc.createdBy ?? "";
+  const ids = readParticipants(doc.participants);
+  const ordered = organiserId && !ids.includes(organiserId) ? [organiserId, ...ids] : ids;
+
+  return ordered.map((employeeId) => {
+    const p = doc.presence?.[employeeId];
+    const joinedAt = toIso(p?.joinedAt);
+    const leftAt = toIso(p?.leftAt);
+    return {
+      id: `${meetingId}:${employeeId}`,
+      meetingId,
+      employeeId,
+      role: employeeId === organiserId ? "organiser" : "participant",
+      joinedAt,
+      leftAt,
+      /* "absent" is a judgement about a meeting that is over, and this mapper
+         does not know whether it is. Somebody who never joined is `invited`
+         until something with that knowledge says otherwise. */
+      attendanceStatus: !joinedAt ? "invited" : leftAt ? "left" : "joined",
+    };
+  });
+}
+
+const MEETING_EVENT_TYPES: readonly MeetingEvent["type"][] = [
+  "created", "updated", "participant_added", "participant_removed", "opened",
+  "started", "joined", "left", "ended", "cancelled", "archived",
+];
+
+export function toMeetingEvents(
+  meetingId: string,
+  docs: readonly LegacyMeetingEventDoc[],
+): MeetingEvent[] {
+  return docs
+    .map((d, i): MeetingEvent | null => {
+      const type = MEETING_EVENT_TYPES.find((t) => t === d.type);
+      /* An unrecognised type is dropped rather than coerced to "updated": the
+         log is the audit trail, and an entry relabelled to something that did
+         not happen is worse than a gap. */
+      if (!type) return null;
+      return {
+        id: String(d.id ?? `${meetingId}:${i}`),
+        meetingId,
+        type,
+        actorId: d.actorId ?? "",
+        actorName: d.actorName?.trim() || d.actorId || "",
+        detail: d.detail?.trim() ?? "",
+        createdAt: toIso(d.createdAt) ?? "",
+      };
+    })
+    .filter((e): e is MeetingEvent => e !== null);
 }
 
 export function readMeetingStatus(doc: LegacyMeetingDoc): Meeting["status"] {

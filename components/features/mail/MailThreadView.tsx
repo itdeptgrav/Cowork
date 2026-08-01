@@ -120,7 +120,21 @@ function MessageCard({ message }: { message: MailMessage }) {
             {message.from.displayName}
           </span>
           <span className="block truncate text-[11px] text-ink-faint">
-            to {message.to.map((p) => p.displayName).join(", ")}
+            to {message.to.map((p) => p.displayName).join(", ") || "—"}
+            {message.cc.length > 0 && (
+              <> · cc {message.cc.map((p) => p.displayName).join(", ")}</>
+            )}
+            {/* Non-empty ONLY for the sender: every other read has already had
+                this list emptied by `redactBcc`, so there is no viewer check to
+                get wrong here — the data itself carries the answer. */}
+            {message.bcc.length > 0 && (
+              <>
+                {" · "}
+                <span className="text-ink-muted">
+                  bcc {message.bcc.map((p) => p.displayName).join(", ")}
+                </span>
+              </>
+            )}
           </span>
         </span>
         {message.transport === "gmail" && <Chip tone="neutral">Gmail</Chip>}

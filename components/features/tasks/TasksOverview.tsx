@@ -131,6 +131,7 @@ export function TasksOverview({ scope }: { scope: TaskScope }) {
     "Review submission",
     "Approve or reject",
     "Decide deadline",
+    "Decide the time budget",
     "Respond to counter",
   ]);
   const decisions = open

@@ -450,16 +450,33 @@ export async function createSubtask(input: {
  * The engine fans out the notification, which is why this is a write rather
  * than a Firestore append: a message written straight to the document would
  * reach the thread and nobody's bell.
+ *
+ * The body field is `text`, not `message`. The route reads `req.body.text`
+ * (`services/taskForward.service.js` → `sendTaskChat`), so the old
+ * `{ message }` body arrived as an empty `text` and the send failed validation
+ * with "text or attachments required". `message` is kept alongside `text` only
+ * so an older build of the route that still read it keeps working.
+ *
+ * `attachments` are whole objects stored inline on the message document — the
+ * route derives the message type from `attachments[0].type` and stores the
+ * array verbatim, so each carries the `fileId` the media proxy needs to load
+ * Drive-hosted files.
  */
 export async function sendTaskChat(input: {
   token: string;
   taskId: string;
   message: string;
+  attachments?: unknown[];
 }): Promise<LegacyResult<unknown>> {
+  const hasAttachments = Array.isArray(input.attachments) && input.attachments.length > 0;
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/chat`,
     method: "POST",
-    body: { message: input.message },
+    body: {
+      text: input.message,
+      message: input.message,
+      ...(hasAttachments ? { attachments: input.attachments } : {}),
+    },
     token: input.token,
   });
 }

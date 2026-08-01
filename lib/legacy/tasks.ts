@@ -309,6 +309,8 @@ export interface LegacyTask {
    * separate two tasks, the one that has been waiting longer goes first.
    */
   createdAtMs: number | null;
+  /** Legacy's only close stamp. There is no `completedAt` in the collection. */
+  updatedAtMs: number | null;
   /** Per-person rank. Empty when the engine wrote none. */
   assigneePriorities: Record<string, number>;
   /** Set when a TL supplied the hours estimate for somebody else's task. */
@@ -469,8 +471,17 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
             downloadUrl:
               typeof a.downloadUrl === "string" ? a.downloadUrl : String(a.url),
           })),
+        /* The engine writes `sentBackAt`; `requestedAt` was never a field it
+           produced, so every rework entry read back null. Checked against the
+           live collection — all seven rework entries carry `sentBackAt` and
+           none carries `requestedAt`. Both names are read so a document written
+           under either is dated. */
         requestedAt:
-          typeof r.requestedAt === "string" ? r.requestedAt : null,
+          typeof r.sentBackAt === "string"
+            ? r.sentBackAt
+            : typeof r.requestedAt === "string"
+              ? r.requestedAt
+              : null,
       })),
     budgetNegotiation: (() => {
       const raw = doc.budgetNegotiation as Record<string, unknown> | undefined;
@@ -580,6 +591,7 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
       .map((r) => (typeof r === "string" ? r.trim() : ""))
       .filter((r) => r !== ""),
     createdAtMs: readInstant(doc.createdAt),
+    updatedAtMs: readInstant(doc.updatedAt),
     assigneePriorities:
       doc.assigneePriorities && typeof doc.assigneePriorities === "object"
         ? doc.assigneePriorities

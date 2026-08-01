@@ -224,6 +224,22 @@ export function StatusButton() {
         setOpen(false);
         return;
       }
+      /**
+       * **The popover has to be open for this to be reachable.**
+       *
+       * `confirming` renders INSIDE `{open && …}`, and the two callers of this
+       * function disagree about whether the popover is up. An ordinary switch
+       * runs from the open menu, so setting the flag was enough. The deferred
+       * emergency exit does not: `choose` closes the popover before showing the
+       * modal, so on the way back this set a flag on a panel that was not
+       * mounted — the request was sent, the dialog closed, and going online
+       * silently did nothing.
+       *
+       * Coming back to an open picker is also the correct behaviour on its own
+       * terms: leaving an emergency for `online` still owes a screen share, and
+       * that is the step being reopened.
+       */
+      setOpen(true);
       setConfirming(true);
       return;
     }

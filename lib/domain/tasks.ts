@@ -8,6 +8,7 @@
  */
 
 import type { EmployeeId } from "./identity";
+import type { MessageAttachment } from "./work";
 
 export type TaskId = string;
 
@@ -523,6 +524,16 @@ export interface TaskChatMessage {
   senderName: string;
   text: string;
   attachmentIds: string[];
+  /**
+   * Whole attachment objects for inline rendering (image/pdf/voice/file).
+   *
+   * The task thread — like the message thread — stores attachments inline on
+   * the message rather than in a separate collection, so the rendered object is
+   * the stored object. `attachmentIds` remains the flat list of URLs for
+   * callers that only need handles; `attachments` carries the kind, name, size
+   * and the Drive `fileId` the media proxy needs to actually load the file.
+   */
+  attachments?: MessageAttachment[];
   messageType: "text" | "system" | "attachment";
   createdAt: string;
 }

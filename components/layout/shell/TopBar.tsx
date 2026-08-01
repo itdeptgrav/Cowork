@@ -16,7 +16,6 @@ import { useSession } from "@/components/features/auth/SessionProvider";
 import { canAccessAdminConsole } from "@/lib/rules/admin/access";
 import { useMusic } from "@/components/features/music/MusicContext";
 import { StatusButton } from "@/components/features/status/StatusButton";
-import { ProfileSwitcher } from "./ProfileSwitcher";
 import { SignOutButton } from "@/components/features/auth/SignOutButton";
 import type { Lens } from "@/lib/utils/types";
 
@@ -314,8 +313,6 @@ export function TopBar() {
                   on a task page, and going online should not require finding a
                   particular screen first. The manager side is untouched. */}
               <StatusButton />
-              {/* Development only; compiled out of production builds. */}
-              <ProfileSwitcher />
               {/* Present only while a session is running, so "what am I working
                   on" is answerable from any route without a dead slot when the
                   answer is nothing. */}

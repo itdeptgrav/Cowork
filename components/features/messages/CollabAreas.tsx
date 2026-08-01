@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Avatar, AvatarStack } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import { Breadcrumb, WorkspaceHead } from "@/components/ui/Workspace";
@@ -18,8 +18,10 @@ import {
   Textarea,
   QueryError,
 } from "@/components/ui/Primitives";
+import { MeetingLobby } from "@/components/features/meetings/MeetingLobby";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDate, formatDateTime } from "@/lib/utils/format";
+import type { Meeting } from "@/lib/domain";
 
 /* ── Groups ───────────────────────────────────────────────────────────────── */
 
@@ -333,69 +335,162 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
   );
 }
 
+/**
+ * Scheduling a meeting, and then starting it.
+ *
+ * Two things this used to get wrong, both of which made the organiser a
+ * stranger to their own meeting:
+ *
+ *  1. **They were not in it.** `participantIds` started empty and the organiser
+ *     was stored only in `createdBy`. An ordinary employee's meeting list reads
+ *     `participants array-contains me`, so a meeting whose organiser was not in
+ *     that array did not appear on their own page. Now they are seeded in, and
+ *     shown as a chip that cannot be switched off — you cannot un-invite
+ *     yourself from a meeting you are calling.
+ *  2. **Scheduling ended in a sentence.** "Meeting scheduled." and nothing to
+ *     press: back to the list, find the meeting you had just made, open it.
+ *     Now the lobby opens beside the form with the camera preview already
+ *     running, and Join goes straight in.
+ */
 export function NewMeetingForm() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [participantIds, setParticipantIds] = useState<string[]>([]);
-  const [startsAt, setStartsAt] = useState("2026-07-28T10:00");
+  const [startsAt, setStartsAt] = useState("");
+  const [created, setCreated] = useState<Meeting | null>(null);
+
   const people = useQuery((r) => r.listEmployees(), []);
+  const me = useQuery((r) => r.getCurrentEmployee(), []);
+  const myId = me.data?.id ?? null;
+
+  /**
+   * The organiser is in the list by CONSTRUCTION, not by seeding state.
+   *
+   * An effect that pushed the id in would be a synchronous setState in an
+   * effect — a cascading render — and it would leave a window in which the
+   * organiser was absent. Derived here instead, so no such state exists and
+   * there is nothing to keep in step. The engine dedupes as well; neither side
+   * relies on the other having done it.
+   */
+  const effectiveParticipantIds = myId
+    ? [myId, ...participantIds.filter((id) => id !== myId)]
+    : participantIds;
+
+  useEffect(() => {
+    if (startsAt) return;
+    /* The next half hour, local. A fixed date in the source was shipping a
+       default that had already passed.
+
+       Deferred to the next frame rather than set in the effect body — the same
+       reason `ThemeContext` defers its own sync. This reads an external system
+       (the wall clock) that the server cannot agree with, and setting it
+       synchronously cascades a render. */
+    const frame = requestAnimationFrame(() => {
+      const d = new Date(Date.now() + 30 * 60_000);
+      d.setSeconds(0, 0);
+      d.setMinutes(d.getMinutes() < 30 ? 30 : 60);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      setStartsAt(
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`,
+      );
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [startsAt]);
+
   const [create, state] = useAction((r) =>
     r.createMeeting({
       title,
       description: description || null,
-      participantIds,
+      participantIds: effectiveParticipantIds,
       startsAt: new Date(startsAt).toISOString(),
       endsAt: new Date(new Date(startsAt).getTime() + 3600_000).toISOString(),
     }),
   );
-  const [done, setDone] = useState(false);
+
+  /* Everybody except the organiser, who is rendered separately and fixed. */
+  const others = (people.data ?? []).filter((p) => p.id !== myId);
 
   return (
     <>
       <Breadcrumb
         items={[
           { label: "Meetings", href: "/meetings" },
-          { label: "Schedule" },
+          { label: created ? created.title : "Schedule" },
         ]}
       />
       <h1 className="mt-2 mb-4 text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
-        Schedule a meeting
+        {created ? "Ready when you are" : "Schedule a meeting"}
       </h1>
-      <div className="max-w-[720px]">
+
+      {/* The lobby takes a column of its own from the deck breakpoint up, and
+          stacks beneath the form below it — a camera preview squeezed into a
+          third of a phone screen is not a preview. */}
+      <div
+        className={
+          created
+            ? "grid max-w-[1080px] items-start gap-4 deck:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]"
+            : "max-w-[720px]"
+        }
+      >
         <Panel>
           <Field
             label="Title"
             required
             error={state.errorField === "title" ? state.error : null}
           >
-            <Input value={title} onChange={(e) => setTitle(e.target.value)} />
+            <Input
+              value={title}
+              disabled={Boolean(created)}
+              onChange={(e) => setTitle(e.target.value)}
+            />
           </Field>
           <Field label="Agenda" className="mt-3">
             <Textarea
               rows={3}
               value={description}
+              disabled={Boolean(created)}
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
-          <Field label="Starts" required className="mt-3">
+          <Field
+            label="Starts"
+            required
+            className="mt-3"
+            error={state.errorField === "startsAt" ? state.error : null}
+          >
             <Input
               type="datetime-local"
               value={startsAt}
+              disabled={Boolean(created)}
               onChange={(e) => setStartsAt(e.target.value)}
             />
           </Field>
+
           <div className="mt-3">
             <span className="mb-1.5 block text-sm font-medium text-ink">
               Participants
             </span>
             <div className="flex flex-wrap gap-1.5">
-              {(people.data ?? []).map((p) => {
+              {/* The organiser, fixed. Rendered as a chip rather than a
+                  disabled button so it never reads as something that failed
+                  to switch on. */}
+              {me.data && (
+                <span
+                  className="rounded-full bg-ink px-2.5 py-1 text-sm text-[var(--body-bg)]"
+                  title="You are always in a meeting you call"
+                >
+                  {me.data.displayName}
+                  <span className="ml-1.5 opacity-60">you</span>
+                </span>
+              )}
+              {others.map((p) => {
                 const on = participantIds.includes(p.id);
                 return (
                   <button
                     key={p.id}
                     type="button"
                     aria-pressed={on}
+                    disabled={Boolean(created)}
                     onClick={() =>
                       setParticipantIds((c) =>
                         c.includes(p.id)
@@ -403,7 +498,7 @@ export function NewMeetingForm() {
                           : [...c, p.id],
                       )
                     }
-                    className={`rounded-full px-2.5 py-1 text-sm transition-colors ${
+                    className={`rounded-full px-2.5 py-1 text-sm transition-colors disabled:opacity-50 ${
                       on
                         ? "bg-ink text-[var(--body-bg)]"
                         : "bg-[var(--control)] text-ink-muted"
@@ -415,32 +510,50 @@ export function NewMeetingForm() {
               })}
             </div>
           </div>
+
           {state.error && !state.errorField && (
             <div className="mt-3">
               <InlineError message={state.error} code={state.errorCode} />
             </div>
           )}
-          {done && (
-            <p className="mt-3 rounded-inset bg-[color-mix(in_srgb,var(--state-positive)_18%,transparent)] px-3.5 py-2.5 text-sm text-[var(--state-positive-ink)]">
-              Meeting scheduled.
-            </p>
-          )}
-          <div className="mt-4 flex justify-end">
-            <Button
-              tone="primary"
-              disabled={state.isPending || !title.trim()}
-              onClick={async () => {
-                const r = await create();
-                if (r.ok) {
-                  setDone(true);
+
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            {created ? (
+              /* Not a reset of the same form: a second meeting is a second
+                 meeting, and leaving the first one's lobby on screen while
+                 typing the next one's title is two meetings in one place. */
+              <Button
+                onClick={() => {
+                  setCreated(null);
                   setTitle("");
-                }
-              }}
-            >
-              {state.isPending ? "Scheduling…" : "Schedule"}
-            </Button>
+                  setDescription("");
+                  setParticipantIds([]);
+                }}
+              >
+                Schedule another
+              </Button>
+            ) : (
+              <Button
+                tone="primary"
+                disabled={state.isPending || !title.trim() || !startsAt}
+                onClick={async () => {
+                  const r = await create();
+                  if (r.ok) setCreated(r.data);
+                }}
+              >
+                {state.isPending ? "Scheduling…" : "Schedule"}
+              </Button>
+            )}
           </div>
         </Panel>
+
+        {created && (
+          <MeetingLobby
+            meeting={created}
+            displayName={me.data?.displayName ?? "You"}
+            onDismiss={() => setCreated(null)}
+          />
+        )}
       </div>
     </>
   );

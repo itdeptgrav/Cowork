@@ -63,6 +63,9 @@ import type {
   GoalActivity,
   Group,
   InterventionItem,
+  CoworkDocument,
+  CoworkDocumentBody,
+  DocumentSummary,
   MailAttachment,
   MailFolder,
   MailMessage,
@@ -75,6 +78,8 @@ import type {
   MeetingEvent,
   MeetingParticipant,
   Message,
+  MessageAttachment,
+  MessageReply,
   MonitoringPerformance,
   MonitoringSubject,
   Notification,
@@ -233,6 +238,28 @@ export interface TaskView {
    * one. Null otherwise, and null where the department has no lead recorded.
    */
   budgetOwner: Employee | null;
+  /**
+   * The viewer owns a pending time-budget EXTENSION decision on this task.
+   *
+   * Set by `listTasks`/`#readTaskView` from `cowork_task_budget_extensions` —
+   * the request lives in its own collection the task never references, so
+   * without this a manager was never told a report asked for more time. Drives
+   * `nextAction` → "Decide the time budget", which is what puts it in the
+   * approver's "Awaiting your decision", the same as a deadline or a review.
+   */
+  budgetDecisionPending?: boolean;
+  /**
+   * The viewer owns a pending DEADLINE-extension decision on this task.
+   *
+   * The date twin of `budgetDecisionPending`. A deadline extension lives in
+   * `cowork_task_deadline_extensions` and — unlike the initial proposal — never
+   * flips the task's own status, so `deadline.state` stays `agreed` and nothing
+   * on the list would show it. `listTasks` sets this for exactly the routed
+   * approver (the assignee's primary manager under cross-department routing, who
+   * is NOT necessarily the creator), and `nextAction` turns it into
+   * "Decide deadline".
+   */
+  deadlineDecisionPending?: boolean;
   /**
    * The time-budget negotiation, where one is running.
    *
@@ -1189,7 +1216,10 @@ export interface CoworkRepository {
     taskId: TaskId,
     thread: "chat" | "draft",
     text: string,
-    attachmentIds: string[],
+    /** Whole attachment objects (as returned by `uploadMessageAttachment`), not
+        ids: the task thread stores them inline on the message, mirroring the
+        message thread. Pass `[]` for a text-only message. */
+    attachments: MessageAttachment[],
   ): Promise<ActionResult<TaskChatMessage>>;
   listTaskEvents(taskId: TaskId): Promise<TaskEvent[]>;
   listAttachments(ids: string[]): Promise<Attachment[]>;
@@ -1323,7 +1353,34 @@ export interface CoworkRepository {
   sendMessage(
     conversationId: string,
     text: string,
+    /** Media to send with the text, where any. A message may carry attachments
+     *  and no caption, so an empty `text` with a non-empty list is valid. */
+    attachments?: MessageAttachment[],
+    /** The message this one replies to, where it is a reply. */
+    replyTo?: MessageReply | null,
   ): Promise<ActionResult<Message>>;
+  /** Edit the text of your own message. Re-stamps it as edited. */
+  editMessage(
+    conversationId: string,
+    messageId: string,
+    text: string,
+  ): Promise<ActionResult<Message>>;
+  /** Soft-delete your own message: the slot and a tombstone remain. */
+  deleteMessage(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>>;
+  /**
+   * Upload one file for a message and return the attachment to send.
+   *
+   * Optional: only a backend with an upload endpoint provides it, so the
+   * in-memory prototype omits it and the composer's attach control stays off.
+   * The two-step shape — upload, then `sendMessage` with the result — keeps the
+   * message write a single Firestore document with no half-sent state.
+   */
+  uploadMessageAttachment?(
+    file: File,
+  ): Promise<ActionResult<MessageAttachment>>;
   /**
    * Start a conversation, or return the existing one.
    *
@@ -1344,6 +1401,51 @@ export interface CoworkRepository {
    * on which components happened to mount.
    */
   markConversationRead(conversationId: string): Promise<ActionResult<void>>;
+  /**
+   * Live updates for the conversation list, where the backend has a live channel.
+   *
+   * Optional on purpose: a backend without one (the in-memory prototype) simply
+   * omits it, and the list still refreshes on the viewer's own writes. Returns an
+   * unsubscribe the caller detaches on unmount. The method drives updates through
+   * the same change signal every query already listens to, so nothing new has to
+   * be threaded through the UI.
+   */
+  watchConversations?(): () => void;
+  /** Live updates for one open conversation's messages; unsubscribe on unmount. */
+  watchConversationMessages?(conversationId: string): () => void;
+  /** Signal the viewer is (or is no longer) typing in a conversation. */
+  setTyping?(conversationId: string, isTyping: boolean): Promise<void>;
+  /** Who else is typing in a conversation, live. Unsubscribe on unmount. */
+  watchTyping?(
+    conversationId: string,
+    onChange: (typingIds: string[]) => void,
+  ): () => void;
+  /** Live online/offline for a set of people. Unsubscribe on unmount. */
+  watchPresence?(
+    employeeIds: string[],
+    onChange: (online: Record<string, boolean>) => void,
+  ): () => void;
+  /** Rename a group chat. Admin only. */
+  updateGroup?(
+    groupId: string,
+    patch: { title?: string },
+  ): Promise<ActionResult<void>>;
+  /** Add someone to a group chat. Admin only. */
+  addGroupMember?(
+    groupId: string,
+    employeeId: string,
+  ): Promise<ActionResult<void>>;
+  /** Remove someone from a group chat — or leave it, if it is you. */
+  removeGroupMember?(
+    groupId: string,
+    employeeId: string,
+  ): Promise<ActionResult<void>>;
+  /** Promote or demote a group admin. Admin only; a group keeps at least one. */
+  setGroupAdmin?(
+    groupId: string,
+    employeeId: string,
+    isAdmin: boolean,
+  ): Promise<ActionResult<void>>;
   listGroups(): Promise<Group[]>;
   getGroup(id: string): Promise<(Group & { members: Employee[] }) | null>;
   /* Mail — one mailbox, both transports. `folder` is a view, not a partition. */
@@ -1361,10 +1463,18 @@ export interface CoworkRepository {
     flag: "starred" | "trashed",
     on: boolean,
   ): Promise<ActionResult<void>>;
-  /** Transport is decided by the recipients, never by the caller. */
+  /**
+   * Transport is decided by the recipients, never by the caller.
+   *
+   * **Every field counts toward that decision.** One external address in `bcc`
+   * makes the whole message external, exactly as it would in `to` — the message
+   * is one artefact and cannot half-leave the building.
+   */
   sendMail(input: {
     to: MailParty[];
     cc?: MailParty[];
+    /** Blind. See `lib/rules/mail/blindCopy.ts` for what that has to mean. */
+    bcc?: MailParty[];
     subject: string;
     body: string;
     attachmentIds?: string[];
@@ -1380,6 +1490,29 @@ export interface CoworkRepository {
     mailboxAddress: string,
   ): Promise<ActionResult<{ added: number }>>;
 
+  /* ── Documents ──────────────────────────────────────────────────────────
+   *
+   * Phase 1 of the collaborative editor. The body is a separate read because a
+   * list of thirty documents must not fetch thirty bodies to render a sidebar.
+   *
+   * `saveDocumentBody` is deliberately last-write-wins and says so: with one
+   * editor that is correct, and phase 2 replaces the mechanism entirely with a
+   * CRDT rather than layering locking on top of it. */
+  listDocuments(): Promise<DocumentSummary[]>;
+  getDocument(id: string): Promise<CoworkDocument | null>;
+  getDocumentBody(id: string): Promise<CoworkDocumentBody | null>;
+  createDocument(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+  }): Promise<ActionResult<CoworkDocument>>;
+  renameDocument(id: string, title: string): Promise<ActionResult<CoworkDocument>>;
+  /** Soft. A deleted document is recoverable until something reaps it. */
+  deleteDocument(id: string): Promise<ActionResult<void>>;
+  saveDocumentBody(
+    id: string,
+    body: { html: string; ydocState?: string | null },
+  ): Promise<ActionResult<CoworkDocumentBody>>;
+
   listMeetings(): Promise<Meeting[]>;
   /* Meeting lifecycle. The organiser drives all of it; `manageRefusal` gates. */
   listMeetingParticipants(meetingId: string): Promise<MeetingParticipant[]>;
@@ -1392,6 +1525,19 @@ export interface CoworkRepository {
     meetingId: string,
     participantIds: EmployeeId[],
   ): Promise<ActionResult<Meeting>>;
+  /**
+   * Open the room, and return the meeting now carrying it.
+   *
+   * Separate from `setMeetingStatus("live")` because the room is a real thing
+   * that has to be created before it can be entered: this mints the LiveKit
+   * room and the join code, and sets the status as a CONSEQUENCE. Setting the
+   * status alone would mark a meeting live with no room behind it, and everyone
+   * arriving would be told the room is not open.
+   *
+   * Idempotent — called on a meeting that is already live it returns the room
+   * that exists rather than replacing it.
+   */
+  openMeetingRoom(meetingId: string): Promise<ActionResult<Meeting>>;
   /** Attendance only. The token route is what controls entry. */
   recordMeetingPresence(
     meetingId: string,

@@ -17,9 +17,21 @@ import {
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { NewChatDialog } from "./NewChatDialog";
+import { GroupSettings } from "./GroupSettings";
+import {
+  MessageAttachments,
+  formatBytes,
+  mediaUrl,
+} from "./MessageAttachments";
 import { formatRelative } from "@/lib/utils/format";
 import { useNow } from "@/lib/hooks/useNow";
-import type { Conversation, Employee, Message } from "@/lib/domain";
+import type {
+  Conversation,
+  Employee,
+  Message,
+  MessageAttachment,
+  MessageReply,
+} from "@/lib/domain";
 
 /**
  * Messages.
@@ -52,6 +64,11 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
   const router = useRouter();
   const viewerId = useViewerId();
   const conversations = useQuery((r) => r.listConversations(), []);
+  const repo = useRepo();
+  /* Live: a message from anyone in any of the viewer's threads refreshes the
+     list on its own. `watchConversations` is optional — a backend without a live
+     channel simply omits it and the list still updates on the viewer's writes. */
+  useEffect(() => repo.watchConversations?.(), [repo]);
   const [newChat, setNewChat] = useState<null | "direct" | "group">(null);
   const [search, setSearch] = useState("");
 
@@ -401,12 +418,44 @@ function Thread({
 }) {
   const repo = useRepo();
   const [text, setText] = useState("");
+  const [pending, setPending] = useState<MessageAttachment[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const editing = editingId !== null;
+  const [typingIds, setTypingIds] = useState<string[]>([]);
+  const [online, setOnline] = useState<Record<string, boolean>>({});
+  const [showGroupSettings, setShowGroupSettings] = useState(false);
+  const typingSentRef = useRef(0);
+  const fileRef = useRef<HTMLInputElement>(null);
+  /* The attach control only appears where the backend actually accepts uploads;
+     the in-memory prototype omits `uploadMessageAttachment`, so it stays off
+     rather than failing silently. */
+  const canUpload = typeof repo.uploadMessageAttachment === "function";
   const messages = useQuery((r) => r.listMessages(c.id), [c.id]);
-  const [send, state] = useAction((r) => r.sendMessage(c.id, text));
+  const [send, state] = useAction((r) =>
+    r.sendMessage(c.id, text, pending.length ? pending : undefined, replyingTo),
+  );
+  const [saveEdit, editState] = useAction((r) =>
+    r.editMessage(c.id, editingId ?? "", text),
+  );
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const others = c.participants.filter((p) => p.id !== viewerId);
   const list = messages.data ?? [];
+
+  const typingNames = typingIds
+    .map((id) => c.participants.find((p) => p.id === id)?.firstName)
+    .filter((n): n is string => !!n);
+  const typingLabel =
+    typingNames.length === 0
+      ? null
+      : typingNames.length === 1
+        ? `${typingNames[0]} is typing…`
+        : typingNames.length === 2
+          ? `${typingNames[0]} and ${typingNames[1]} are typing…`
+          : `${typingNames.length} people are typing…`;
 
   /* Opening a thread is what marks it read — the list's badge is a fact about
      the reader, so it clears where the reading happens rather than on a query
@@ -424,6 +473,26 @@ function Thread({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [c.id, c.unreadCount]);
 
+  /* Live: new, edited, or deleted messages in THIS thread stream in without a
+     refresh. Optional on the repository, so a backend with no live channel leaves
+     the thread working from its own read. */
+  useEffect(() => repo.watchConversationMessages?.(c.id), [repo, c.id]);
+
+  /* Live typing + presence — both browser-direct on Firestore, both optional so
+     the prototype simply shows neither. */
+  useEffect(() => {
+    setTypingIds([]);
+    return repo.watchTyping?.(c.id, setTypingIds);
+  }, [repo, c.id]);
+  useEffect(() => {
+    const ids = c.participants.filter((p) => p.id !== viewerId).map((p) => p.id);
+    if (!ids.length) return;
+    return repo.watchPresence?.(ids, setOnline);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repo, c.id]);
+  /* Stop signalling typing when the thread changes or unmounts. */
+  useEffect(() => () => void repo.setTyping?.(c.id, false), [repo, c.id]);
+
   /* Pinned to the newest message, the way every thread in every messaging
      product opens. Without this a long conversation opens at its oldest line
      and the composer sits below content nobody asked to re-read. */
@@ -433,13 +502,84 @@ function Thread({
   }, [list.length, c.id]);
 
   async function submit() {
-    if (!text.trim() || state.isPending) return;
+    if (uploading || state.isPending || editState.isPending) return;
+    /* Editing reuses the composer: the same box, the same Enter-to-commit, but
+       it saves the change to an existing message rather than writing a new one. */
+    if (editing) {
+      if (!text.trim()) return;
+      const r = await saveEdit();
+      if (r.ok) {
+        setEditingId(null);
+        setText("");
+        messages.refetch();
+      }
+      return;
+    }
+    if (!text.trim() && pending.length === 0) return;
     const r = await send();
     if (r.ok) {
       setText("");
+      setPending([]);
+      setReplyingTo(null);
+      setUploadError(null);
+      typingSentRef.current = 0;
+      void repo.setTyping?.(c.id, false);
       messages.refetch();
       onSent();
     }
+  }
+
+  function startReply(m: Message) {
+    setEditingId(null);
+    setReplyingTo({ messageId: m.id, senderName: m.senderName, text: m.text });
+  }
+  function startEdit(m: Message) {
+    setReplyingTo(null);
+    setEditingId(m.id);
+    setText(m.text);
+  }
+  async function removeMessage(m: Message) {
+    if (typeof window !== "undefined" && !window.confirm("Delete this message?"))
+      return;
+    const r = await repo.deleteMessage(c.id, m.id);
+    if (r.ok) messages.refetch();
+  }
+
+  /* Typing is signalled at most once every few seconds while the box has content,
+     and cleared the moment a message is sent — enough for a live ellipsis on the
+     other side without a Firestore write per keystroke. */
+  function onType(v: string) {
+    setText(v);
+    if (editing) return;
+    const now = Date.now();
+    if (v && now - typingSentRef.current > 3500) {
+      typingSentRef.current = now;
+      void repo.setTyping?.(c.id, true);
+    }
+  }
+
+  /* Upload is its own step: the file lands on the backend first, then the send
+     writes ONE message document carrying the returned attachment — so a failed
+     upload never leaves a half-sent message, and the composer keeps the file
+     staged until you actually send. */
+  async function handleFiles(picked: File[]) {
+    if (!repo.uploadMessageAttachment) return;
+    const list = picked.slice(0, MAX_ATTACHMENTS);
+    setUploadError(null);
+    setUploading(true);
+    /* Upload the batch in parallel; each result is independent, so a single bad
+       file only drops itself and the rest still stage. */
+    const results = await Promise.all(
+      list.map((f) => repo.uploadMessageAttachment!(f)),
+    );
+    setUploading(false);
+    const ready = results
+      .filter((r): r is { ok: true; data: MessageAttachment } => r.ok)
+      .map((r) => r.data);
+    if (ready.length)
+      setPending((prev) => [...prev, ...ready].slice(0, MAX_ATTACHMENTS));
+    const failed = results.find((r) => !r.ok);
+    if (failed && !failed.ok) setUploadError(failed.message);
   }
 
   return (
@@ -483,7 +623,9 @@ function Thread({
                   .slice(0, 3)
                   .map((p) => p.firstName)
                   .join(", ")}${others.length > 3 ? " and others" : ""}`
-              : (others[0]?.designation ?? "Direct message")}
+              : online[others[0]?.id ?? ""]
+                ? "Online"
+                : (others[0]?.designation ?? "Direct message")}
           </p>
         </div>
 
@@ -495,7 +637,26 @@ function Thread({
             View profile
           </Link>
         )}
+        {c.kind === "group" && (
+          <button
+            type="button"
+            onClick={() => setShowGroupSettings(true)}
+            className="flex shrink-0 items-center gap-1.5 rounded-full bg-[var(--control)] px-3 py-1.5 text-xs text-ink transition-colors hover:bg-[var(--control-hover)]"
+          >
+            <Icon.settings className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">Group info</span>
+          </button>
+        )}
       </header>
+
+      {showGroupSettings && (
+        <GroupSettings
+          conversation={c}
+          viewerId={viewerId}
+          onClose={() => setShowGroupSettings(false)}
+          onChanged={onSent}
+        />
+      )}
 
       <div
         ref={scrollRef}
@@ -528,27 +689,155 @@ function Thread({
             participants={c.participants}
             viewerId={viewerId}
             group={c.kind === "group"}
+            onReply={startReply}
+            onEdit={startEdit}
+            onDelete={removeMessage}
           />
         )}
       </div>
 
       <div className="border-t border-hairline px-4 py-3">
-        {state.error && (
+        {typingLabel && (
+          <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-ink-faint">
+            <span className="flex gap-0.5" aria-hidden>
+              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-200ms]" />
+              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-100ms]" />
+              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint" />
+            </span>
+            {typingLabel}
+          </div>
+        )}
+        {(state.error || editState.error) && (
           <div className="mb-2">
-            <InlineError compact message={state.error} code={state.errorCode} />
+            <InlineError
+              compact
+              message={(state.error ?? editState.error) as string}
+              code={state.errorCode ?? editState.errorCode}
+            />
+          </div>
+        )}
+        {uploadError && (
+          <div className="mb-2">
+            <InlineError compact message={uploadError} />
+          </div>
+        )}
+        {replyingTo && !editing && (
+          <div className="mb-2 flex items-start gap-2 rounded-[10px] border-s-2 border-ink-faint/50 bg-[var(--control)] px-2.5 py-1.5 text-xs">
+            <div className="min-w-0 flex-1">
+              <div className="font-medium text-ink">
+                Replying to {replyingTo.senderName}
+              </div>
+              <div className="truncate text-ink-muted">{replyingTo.text}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setReplyingTo(null)}
+              aria-label="Cancel reply"
+              className="shrink-0 rounded-full px-1.5 text-base leading-none text-ink-muted hover:text-ink"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {editing && (
+          <div className="mb-2 flex items-center gap-2 rounded-[10px] bg-[var(--control)] px-2.5 py-1.5 text-xs">
+            <Icon.history className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+            <span className="flex-1 font-medium text-ink">Editing message</span>
+            <button
+              type="button"
+              onClick={() => {
+                setEditingId(null);
+                setText("");
+              }}
+              aria-label="Cancel edit"
+              className="shrink-0 rounded-full px-1.5 text-base leading-none text-ink-muted hover:text-ink"
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {pending.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-2">
+            {pending.map((a, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-2 rounded-[10px] bg-[var(--control)] p-1.5 pe-2 text-xs"
+              >
+                {a.kind === "image" ? (
+                  /* eslint-disable-next-line @next/next/no-img-element */
+                  <img
+                    src={mediaUrl(a)}
+                    alt=""
+                    className="h-9 w-9 shrink-0 rounded-[6px] object-cover"
+                  />
+                ) : (
+                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-[6px] bg-[var(--surface-raised)] text-ink-muted">
+                    <Icon.attach className="h-4 w-4" />
+                  </span>
+                )}
+                <span className="min-w-0 max-w-[150px]">
+                  <span className="block truncate text-ink">
+                    {a.name ?? a.kind}
+                  </span>
+                  {a.sizeBytes ? (
+                    <span className="block text-[11px] text-ink-faint">
+                      {formatBytes(a.sizeBytes)}
+                    </span>
+                  ) : null}
+                </span>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setPending((prev) => prev.filter((_, j) => j !== i))
+                  }
+                  aria-label="Remove attachment"
+                  className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-base leading-none text-ink-muted hover:bg-[var(--surface-raised)] hover:text-ink"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {uploading && (
+          <div className="mb-2 flex items-center gap-2 text-xs text-ink-muted">
+            <span className="flex gap-0.5" aria-hidden>
+              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-200ms]" />
+              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-100ms]" />
+              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint" />
+            </span>
+            Uploading…
           </div>
         )}
         <div className="flex items-end gap-2">
+          <input
+            ref={fileRef}
+            type="file"
+            accept="image/*,application/pdf,audio/*"
+            multiple
+            hidden
+            onChange={(e) => {
+              /* Snapshot into a STATIC array before clearing the input.
+                 `e.target.files` is a LIVE FileList — clearing `value` empties it
+                 out from under us, so capturing the reference and then clearing
+                 left `handleFiles` with zero files and the upload silently never
+                 started. `Array.from` copies the File objects, which survive. */
+              const list = e.target.files ? Array.from(e.target.files) : [];
+              e.currentTarget.value = "";
+              if (list.length) void handleFiles(list);
+            }}
+          />
           <button
             type="button"
-            /* Present and honestly disabled. Attachments have a place in the
-               model — `Message.attachmentIds` — and no upload path behind them,
-               and a control that silently does nothing is worse than one that
-               says why it cannot. */
-            disabled
+            onClick={() => fileRef.current?.click()}
+            disabled={!canUpload || uploading || state.isPending || editing}
             aria-label="Attach a file"
-            title="Attachments are not available yet"
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
+            title={
+              canUpload
+                ? "Attach an image, PDF, or audio file"
+                : "Attachments are not available here"
+            }
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
           >
             <Icon.attach className="h-4 w-4" />
           </button>
@@ -556,7 +845,7 @@ function Thread({
           <Textarea
             rows={1}
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={(e) => onType(e.target.value)}
             onKeyDown={(e) => {
               /* Enter sends, Shift+Enter breaks the line — the convention every
                  messaging product shares, and the reason the field is one row
@@ -566,11 +855,15 @@ function Thread({
                 void submit();
               }
             }}
-            placeholder={`Message ${
-              c.kind === "group"
-                ? conversationTitle(c, viewerId)
-                : (others[0]?.firstName ?? "")
-            }`.trim()}
+            placeholder={
+              editing
+                ? "Edit your message"
+                : `Message ${
+                    c.kind === "group"
+                      ? conversationTitle(c, viewerId)
+                      : (others[0]?.firstName ?? "")
+                  }`.trim()
+            }
             aria-label="Write a message"
             /* `Textarea`'s base sets `resize-y`, and which of two Tailwind
                utilities wins depends on their order in the emitted stylesheet
@@ -584,8 +877,15 @@ function Thread({
           <button
             type="button"
             onClick={submit}
-            disabled={state.isPending || !text.trim()}
-            aria-label="Send"
+            disabled={
+              state.isPending ||
+              editState.isPending ||
+              uploading ||
+              (editing
+                ? !text.trim()
+                : !text.trim() && pending.length === 0)
+            }
+            aria-label={editing ? "Save edit" : "Send"}
             className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-[var(--body-bg)] transition-opacity duration-[180ms] ease-[var(--ease-deck)] hover:opacity-90 disabled:opacity-30"
           >
             <Icon.send className="h-4 w-4" />
@@ -610,12 +910,25 @@ function MessageList({
   participants,
   viewerId,
   group,
+  onReply,
+  onEdit,
+  onDelete,
 }: {
   messages: Message[];
   participants: Employee[];
   viewerId: string | null;
   group: boolean;
+  onReply: (m: Message) => void;
+  onEdit: (m: Message) => void;
+  onDelete: (m: Message) => void;
 }) {
+  /* Clicking a reply quote scrolls its original into view. An imperative read is
+     the right tool: the target is a sibling `<li>`, not state this list owns. */
+  const jumpTo = (id: string) =>
+    document
+      .getElementById(`msg-${id}`)
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+
   return (
     <ol className="flex flex-col gap-0.5">
       {messages.map((m, i) => {
@@ -630,9 +943,10 @@ function MessageList({
         const endsRun = !continues(m, next);
         const newDay = !prev || !sameDay(prev.createdAt, m.createdAt);
         const sender = participants.find((p) => p.id === m.senderId);
+        const deleted = m.isDeleted === true;
 
         return (
-          <li key={m.id}>
+          <li key={m.id} id={`msg-${m.id}`}>
             {newDay && (
               <div className="flex items-center gap-3 py-3">
                 <span className="h-px flex-1 bg-hairline" />
@@ -664,8 +978,9 @@ function MessageList({
                 </span>
               )}
 
+              {/* `group` so the actions reveal on hovering this one message. */}
               <div
-                className={`flex max-w-[min(78%,60ch)] items-end gap-2 ${mine ? "flex-row-reverse" : ""}`}
+                className={`group flex max-w-[min(78%,60ch)] items-end gap-2 ${mine ? "flex-row-reverse" : ""}`}
               >
                 {/* Always present, so every bubble in a run keeps one edge;
                     only the picture is conditional. Empty it has no height, so
@@ -681,14 +996,71 @@ function MessageList({
                   )}
                 </span>
                 <span
-                  className={`min-w-0 rounded-inset px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                  className={`flex min-w-0 flex-col gap-1.5 rounded-inset px-3.5 py-2 text-sm leading-relaxed ${
                     mine
                       ? "bg-ink text-[var(--body-bg)]"
                       : "bg-[var(--surface-raised)] text-ink shadow-[inset_0_0_0_1px_var(--color-hairline)]"
                   }`}
                 >
-                  {m.text}
+                  {m.replyTo && (
+                    <button
+                      type="button"
+                      onClick={() => jumpTo(m.replyTo!.messageId)}
+                      className={`block rounded-[8px] border-s-2 px-2 py-1 text-left ${
+                        mine
+                          ? "border-white/50 bg-white/10"
+                          : "border-ink-faint/50 bg-black/[0.04]"
+                      }`}
+                    >
+                      <span className="block text-[11px] font-medium opacity-80">
+                        {m.replyTo.senderName}
+                      </span>
+                      <span className="block truncate text-xs opacity-70">
+                        {m.replyTo.text}
+                      </span>
+                    </button>
+                  )}
+                  {!deleted && m.attachments && m.attachments.length > 0 && (
+                    <MessageAttachments items={m.attachments} mine={mine} />
+                  )}
+                  {m.text && (
+                    <span
+                      className={`whitespace-pre-wrap ${deleted ? "italic opacity-60" : ""}`}
+                    >
+                      {m.text}
+                    </span>
+                  )}
                 </span>
+
+                {!deleted && (
+                  <span className="flex shrink-0 items-center gap-1.5 self-center text-[11px] text-ink-faint opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    <button
+                      type="button"
+                      onClick={() => onReply(m)}
+                      className="hover:text-ink"
+                    >
+                      Reply
+                    </button>
+                    {mine && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onEdit(m)}
+                          className="hover:text-ink"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onDelete(m)}
+                          className="hover:text-ink"
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </span>
+                )}
               </div>
 
               {endsRun && (
@@ -697,6 +1069,7 @@ function MessageList({
                   className={`mt-1 text-[11px] text-ink-faint ${mine ? "pe-9" : "ps-9"}`}
                 >
                   {clock(m.createdAt)}
+                  {m.editedAt ? " · edited" : ""}
                 </span>
               )}
             </div>
@@ -707,6 +1080,10 @@ function MessageList({
   );
 }
 
+/** How many files one message may carry — a sane ceiling on a single send. */
+const MAX_ATTACHMENTS = 10;
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
 /**

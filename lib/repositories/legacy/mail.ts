@@ -25,6 +25,7 @@ import type {
   MailTransport,
 } from "../../domain/mail.ts";
 import type { Employee } from "../../domain/identity.ts";
+import { mailVisibleTo } from "../../rules/mail/blindCopy.ts";
 
 export const MAIL_COLLECTION = "cowork_mails";
 
@@ -56,6 +57,7 @@ export function readMailMessage(
     from: readParty(d.from),
     to: parties(d.to),
     cc: parties(d.cc),
+    bcc: parties(d.bcc),
     subject: typeof d.subject === "string" ? d.subject : "",
     body: typeof d.body === "string" ? d.body : "",
     attachmentIds: ids(d.attachmentIds),
@@ -79,8 +81,9 @@ export function readMailMessage(
 /** Visible to you if you sent it, or you are a recipient. The same rule the
  *  mock enforces; an external party (no employee id) never matches. */
 export function mailVisible(m: MailMessage, me: string): boolean {
-  if (m.from.employeeId === me) return true;
-  return [...m.to, ...m.cc].some((p) => p.employeeId === me);
+  /* Delegates so the two backends and the rule cannot drift — `bcc` counts, or
+     a blind-copied person could not open their own mail. */
+  return mailVisibleTo(m, me);
 }
 
 /** Which folder a message sits in FOR YOU. Trash and drafts are per-person. */
@@ -101,8 +104,13 @@ export function participantIdsOf(
   from: MailParty,
   to: MailParty[],
   cc: MailParty[],
+  /* Bcc IS indexed. This array is how a person finds their own mail — leaving
+     the blind copies out would deliver a message its recipient could never
+     query. The party objects are redacted on read; these ids are the delivery
+     index, not the disclosure. */
+  bcc: MailParty[] = [],
 ): string[] {
-  const ids = [from, ...to, ...cc]
+  const ids = [from, ...to, ...cc, ...bcc]
     .map((p) => p.employeeId)
     .filter((x): x is string => !!x);
   return [...new Set(ids)];
@@ -213,6 +221,7 @@ export function mailMessageBody(
     from: m.from,
     to: m.to,
     cc: m.cc,
+    bcc: m.bcc,
     subject: m.subject,
     body: m.body,
     attachmentIds: m.attachmentIds,
@@ -225,6 +234,6 @@ export function mailMessageBody(
     createdAt: m.createdAt,
     gmailMessageId: m.gmailMessageId,
     deliveryError: m.deliveryError,
-    participantIds: participantIdsOf(m.from, m.to, m.cc),
+    participantIds: participantIdsOf(m.from, m.to, m.cc, m.bcc),
   };
 }

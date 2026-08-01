@@ -88,6 +88,8 @@ import type {
   MeetingEventType,
   MeetingParticipant,
   Message,
+  MessageAttachment,
+  MessageReply,
   Notification,
   PriorityAcknowledgement,
   PriorityCascade,
@@ -222,6 +224,18 @@ import {
   type WeekSchedule,
 } from "@/lib/rules/tasks/deadlineCompensation";
 import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
+import { previewOfHtml } from "@/lib/rules/documents/preview";
+import type {
+  CoworkDocument,
+  CoworkDocumentBody,
+  DocumentSummary,
+} from "@/lib/domain";
+import {
+  mailVisibleTo,
+  recipientRefusal,
+  redactBcc,
+  threadParticipants,
+} from "@/lib/rules/mail/blindCopy";
 import {
   assigneeCountRefusal,
   selfAssignmentRefusal,
@@ -5070,11 +5084,11 @@ export class MockRepository implements CoworkRepository {
     taskId: TaskId,
     thread: "chat" | "draft",
     text: string,
-    attachmentIds: string[],
+    attachments: MessageAttachment[],
   ): Promise<ActionResult<TaskChatMessage>> {
     const g = guard();
     if (g) return g;
-    if (!text.trim() && !attachmentIds.length)
+    if (!text.trim() && !attachments.length)
       return fail("validation_failed", "Write a message.", "text");
     tick();
     const s = getStore();
@@ -5086,8 +5100,9 @@ export class MockRepository implements CoworkRepository {
       senderId: actingId(),
       senderName: me.displayName,
       text: text.trim(),
-      attachmentIds,
-      messageType: attachmentIds.length ? "attachment" : "text",
+      attachmentIds: attachments.map((a) => a.url),
+      attachments: attachments.length ? attachments : undefined,
+      messageType: attachments.length ? "attachment" : "text",
       createdAt: nowIso(),
     };
     s.chat.push(m);
@@ -5847,10 +5862,13 @@ export class MockRepository implements CoworkRepository {
   async sendMessage(
     conversationId: string,
     text: string,
+    attachments?: MessageAttachment[],
+    replyTo?: MessageReply | null,
   ): Promise<ActionResult<Message>> {
     const g = guard();
     if (g) return g;
-    if (!text.trim())
+    const media = attachments ?? [];
+    if (!text.trim() && media.length === 0)
       return fail("validation_failed", "Write a message.", "text");
     tick();
     const s = getStore();
@@ -5862,7 +5880,9 @@ export class MockRepository implements CoworkRepository {
       senderName: me.displayName,
       text: text.trim(),
       attachmentIds: [],
-      replyToId: null,
+      attachments: media,
+      replyToId: replyTo?.messageId ?? null,
+      replyTo: replyTo ?? null,
       createdAt: nowIso(),
       readBy: [actingId()],
     };
@@ -5870,7 +5890,7 @@ export class MockRepository implements CoworkRepository {
     const c = s.conversations.find((x) => x.id === conversationId);
     if (c) {
       c.lastMessageAt = m.createdAt;
-      c.lastMessagePreview = m.text;
+      c.lastMessagePreview = m.text || (media.length ? "📎 Attachment" : "");
       /* Your own message cannot leave you with something unread. Without this
          the badge counts the sender's own text and never clears, which reads as
          a broken thread rather than a full one. */
@@ -5887,6 +5907,55 @@ export class MockRepository implements CoworkRepository {
    * than on creation order: `sorted(a, b)` matches regardless of who started
    * it, which is what stops "message Tobias" twice producing two threads.
    */
+  async editMessage(
+    conversationId: string,
+    messageId: string,
+    text: string,
+  ): Promise<ActionResult<Message>> {
+    const g = guard();
+    if (g) return g;
+    const body = text.trim();
+    if (!body)
+      return fail(
+        "validation_failed",
+        "A message cannot be emptied by editing — delete it instead.",
+        "text",
+      );
+    const s = getStore();
+    const m = s.messages.find(
+      (x) => x.id === messageId && x.conversationId === conversationId,
+    );
+    if (!m) return fail("not_found", "That message is gone.");
+    if (m.senderId !== actingId())
+      return fail("permission_denied", "You can only edit your own messages.");
+    if (m.isDeleted)
+      return fail("invalid_state", "A deleted message cannot be edited.");
+    tick();
+    m.text = body;
+    m.editedAt = nowIso();
+    return delay(ok(m));
+  }
+
+  async deleteMessage(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.messages.find(
+      (x) => x.id === messageId && x.conversationId === conversationId,
+    );
+    if (!m) return delay(ok(undefined));
+    if (m.senderId !== actingId())
+      return fail("permission_denied", "You can only delete your own messages.");
+    tick();
+    m.isDeleted = true;
+    m.text = "";
+    m.attachments = [];
+    return delay(ok(undefined));
+  }
+
   async createConversation(
     input: CreateConversationInput,
   ): Promise<ActionResult<Conversation>> {
@@ -5955,6 +6024,9 @@ export class MockRepository implements CoworkRepository {
       /* No `Group` record — see `CreateConversationInput`. A chat group and an
          administered group are different objects and this is the former. */
       groupId: null,
+      /* The creator is the first admin of a group; a direct thread has none, so
+         the key is omitted rather than set to `undefined`. */
+      ...(input.kind === "group" ? { adminIds: [me] } : {}),
       lastMessageAt: null,
       lastMessagePreview: null,
       unreadCount: 0,
@@ -5981,6 +6053,97 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(undefined));
   }
 
+  #groupConv(id: string) {
+    return getStore().conversations.find(
+      (c) => c.id === id && c.kind === "group",
+    );
+  }
+
+  async updateGroup(
+    groupId: string,
+    patch: { title?: string },
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const c = this.#groupConv(groupId);
+    if (!c) return fail("not_found", "Group not found.");
+    if (!(c.adminIds ?? []).includes(actingId()))
+      return fail("permission_denied", "Only a group admin can edit the group.");
+    if (patch.title !== undefined) {
+      const t = patch.title.trim();
+      if (!t) return fail("validation_failed", "A group needs a name.", "title");
+      c.title = t;
+    }
+    tick();
+    return delay(ok(undefined));
+  }
+
+  async addGroupMember(
+    groupId: string,
+    employeeId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const c = this.#groupConv(groupId);
+    if (!c) return fail("not_found", "Group not found.");
+    if (!(c.adminIds ?? []).includes(actingId()))
+      return fail("permission_denied", "Only a group admin can add members.");
+    if (!c.participantIds.includes(employeeId))
+      c.participantIds = [...c.participantIds, employeeId];
+    tick();
+    return delay(ok(undefined));
+  }
+
+  async removeGroupMember(
+    groupId: string,
+    employeeId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const c = this.#groupConv(groupId);
+    if (!c) return fail("not_found", "Group not found.");
+    if (employeeId !== actingId() && !(c.adminIds ?? []).includes(actingId()))
+      return fail(
+        "permission_denied",
+        "Only a group admin can remove members.",
+      );
+    c.participantIds = c.participantIds.filter((x) => x !== employeeId);
+    c.adminIds = (c.adminIds ?? []).filter((x) => x !== employeeId);
+    tick();
+    return delay(ok(undefined));
+  }
+
+  async setGroupAdmin(
+    groupId: string,
+    employeeId: string,
+    isAdmin: boolean,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const c = this.#groupConv(groupId);
+    if (!c) return fail("not_found", "Group not found.");
+    if (!(c.adminIds ?? []).includes(actingId()))
+      return fail(
+        "permission_denied",
+        "Only a group admin can change who administers it.",
+      );
+    const admins = new Set(c.adminIds ?? []);
+    if (isAdmin) {
+      /* Additive — promoting a second, third, … admin never displaces the
+         first. A group can carry as many admins as it likes. */
+      admins.add(employeeId);
+      if (!c.participantIds.includes(employeeId))
+        c.participantIds = [...c.participantIds, employeeId];
+    } else {
+      if (admins.size <= 1 && admins.has(employeeId))
+        return fail("invalid_state", "A group needs at least one admin.");
+      admins.delete(employeeId);
+    }
+    c.adminIds = [...admins];
+    tick();
+    return delay(ok(undefined));
+  }
+
   async listGroups() {
     return delay([...getStore().groups]);
   }
@@ -5995,6 +6158,155 @@ export class MockRepository implements CoworkRepository {
         .filter(Boolean) as Employee[],
     });
   }
+  /* ── Documents ────────────────────────────────────────────────────────── */
+
+  /**
+   * Documents this person may open.
+   *
+   * Membership, not visibility-by-hierarchy. A document is a place people write
+   * together and being somebody's manager is not by itself a reason to be in
+   * one — unlike a task, where the reporting line IS the visibility rule.
+   */
+  async listDocuments(): Promise<DocumentSummary[]> {
+    const me = actingId();
+    const s = getStore();
+    return delay(
+      s.documents
+        .filter((d) => !d.deletedAt && d.memberIds.includes(me))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .map((d) => ({
+          ...d,
+          preview: previewOfHtml(
+            s.documentBodies.find((b) => b.documentId === d.id)?.html ?? "",
+          ),
+        })),
+    );
+  }
+
+  async getDocument(id: string): Promise<CoworkDocument | null> {
+    const me = actingId();
+    const d = getStore().documents.find((x) => x.id === id && !x.deletedAt);
+    return delay(d && d.memberIds.includes(me) ? d : null);
+  }
+
+  async getDocumentBody(id: string): Promise<CoworkDocumentBody | null> {
+    const doc = await this.getDocument(id);
+    if (!doc) return null;
+    return delay(
+      getStore().documentBodies.find((b) => b.documentId === id) ?? {
+        documentId: id,
+        html: "",
+        ydocState: null,
+        updatedAt: doc.updatedAt,
+      },
+    );
+  }
+
+  async createDocument(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+  }): Promise<ActionResult<CoworkDocument>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    tick();
+    const now = nowIso();
+    /* The creator is always a member. A document nobody can open is not a
+       document, and the commonest way to write one is to pass a member list
+       that forgot the author. */
+    const memberIds = [...new Set([me, ...(input.memberIds ?? [])])];
+    const doc: CoworkDocument = {
+      organisationId: actingOrganisationId(),
+      id: nextId("doc"),
+      title: input.title.trim() || "Untitled document",
+      createdById: me,
+      lastEditedById: null,
+      memberIds,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+      driveFileId: null,
+      driveSyncedAt: null,
+    };
+    const s = getStore();
+    s.documents.push(doc);
+    s.documentBodies.push({
+      documentId: doc.id,
+      html: "",
+      ydocState: null,
+      updatedAt: now,
+    });
+    persistStore();
+    return delay(ok(doc));
+  }
+
+  async renameDocument(
+    id: string,
+    title: string,
+  ): Promise<ActionResult<CoworkDocument>> {
+    const g = guard();
+    if (g) return g;
+    const doc = getStore().documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc) return fail("not_found", "Document not found.");
+    if (!doc.memberIds.includes(actingId()))
+      return fail("permission_denied", "You are not in this document.");
+    const next = title.trim();
+    if (!next) return fail("validation_failed", "Give the document a name.");
+    tick();
+    doc.title = next;
+    doc.updatedAt = nowIso();
+    persistStore();
+    return delay(ok(doc));
+  }
+
+  async deleteDocument(id: string): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const doc = getStore().documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc) return fail("not_found", "Document not found.");
+    /* Only the author. Membership is permission to WRITE in a document, not to
+       remove one out from under everybody else in it. */
+    if (doc.createdById !== actingId())
+      return fail(
+        "permission_denied",
+        "Only whoever created this document can delete it.",
+      );
+    tick();
+    doc.deletedAt = nowIso();
+    persistStore();
+    return delay(ok(undefined));
+  }
+
+  async saveDocumentBody(
+    id: string,
+    body: { html: string; ydocState?: string | null },
+  ): Promise<ActionResult<CoworkDocumentBody>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const s = getStore();
+    const doc = s.documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc) return fail("not_found", "Document not found.");
+    if (!doc.memberIds.includes(me))
+      return fail("permission_denied", "You are not in this document.");
+    tick();
+    const now = nowIso();
+    let record = s.documentBodies.find((b) => b.documentId === id);
+    if (!record) {
+      record = { documentId: id, html: "", ydocState: null, updatedAt: now };
+      s.documentBodies.push(record);
+    }
+    record.html = body.html;
+    /* Only overwritten when given. A phase-1 save carries no CRDT state and
+       must not erase the state a collaborative session wrote. */
+    if (body.ydocState !== undefined) record.ydocState = body.ydocState;
+    record.updatedAt = now;
+    doc.updatedAt = now;
+    doc.lastEditedById = me;
+    persistStore();
+    return delay(ok(record));
+  }
+
   async listMeetings() {
     return delay(
       [...getStore().meetings].sort((a, b) =>
@@ -6116,8 +6428,7 @@ export class MockRepository implements CoworkRepository {
 
   /** A message reaches you if you sent it or it was addressed to you. */
   #mailVisible(m: MailMessage, me: EmployeeId): boolean {
-    if (m.from.employeeId === me) return true;
-    return [...m.to, ...m.cc].some((p) => p.employeeId === me);
+    return mailVisibleTo(m, me);
   }
 
   #inFolder(m: MailMessage, me: EmployeeId, folder: MailFolder): boolean {
@@ -6138,7 +6449,10 @@ export class MockRepository implements CoworkRepository {
         .mailMessages.filter(
           (m) => m.threadId === threadId && this.#mailVisible(m, me),
         )
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+        /* The read that would otherwise disclose the blind copy. Everybody but
+           the sender gets an empty list. */
+        .map((m) => redactBcc(m, me)),
     );
   }
 
@@ -6210,6 +6524,7 @@ export class MockRepository implements CoworkRepository {
   async sendMail(input: {
     to: MailParty[];
     cc?: MailParty[];
+    bcc?: MailParty[];
     subject: string;
     body: string;
     attachmentIds?: string[];
@@ -6225,9 +6540,16 @@ export class MockRepository implements CoworkRepository {
     if (!meEmp) return fail("not_found", "Employee not found.");
 
     const cc = input.cc ?? [];
-    const transport = transportFor([...input.to, ...cc]);
-    const refusal = sendRefusal({
-      recipients: [...input.to, ...cc],
+    /* Bcc counts toward the transport exactly as To does: one external blind
+       copy makes the whole message external. Deciding transport from the
+       visible fields alone would send a message internally while one of its
+       recipients sat outside the company. */
+    const bcc = input.bcc ?? [];
+    const transport = transportFor([...input.to, ...cc, ...bcc]);
+    const refusal =
+      recipientRefusal({ to: input.to, cc, bcc }) ??
+      sendRefusal({
+      recipients: [...input.to, ...cc, ...bcc],
       subject: input.subject,
       /* An internal send is never blocked by Gmail being down — the whole
          reason the transports are separate.
@@ -6238,7 +6560,7 @@ export class MockRepository implements CoworkRepository {
          external send was refused while Settings said "Connected". */
       gmailAvailable:
         transport === "internal" || !!input.gmail || !!input.deliveryError,
-    });
+      });
     if (refusal && !input.deliveryError)
       return fail("validation_failed", refusal);
 
@@ -6259,7 +6581,7 @@ export class MockRepository implements CoworkRepository {
         organisationId: actingOrganisationId(),
         id: nextId("mth"),
         subject: input.subject.trim(),
-        participants: [from, ...input.to, ...cc],
+        participants: threadParticipants(from, input.to, cc),
         lastMessageAt: now,
         lastMessagePreview: input.body.slice(0, 140),
         messageCount: 0,
@@ -6278,6 +6600,7 @@ export class MockRepository implements CoworkRepository {
       from,
       to: input.to,
       cc,
+      bcc,
       subject: input.subject.trim(),
       body: input.body,
       attachmentIds: input.attachmentIds ?? [],
@@ -6301,7 +6624,7 @@ export class MockRepository implements CoworkRepository {
     /* Internal recipients get a Cowork notification. External ones get an
        email; notifying them here would be notifying nobody. */
     if (!input.deliveryError) {
-      for (const p of [...input.to, ...cc]) {
+      for (const p of [...input.to, ...cc, ...bcc]) {
         if (!p.employeeId) continue;
         this.#notify(
           p.employeeId,
@@ -6577,6 +6900,25 @@ export class MockRepository implements CoworkRepository {
     }
     persistStore();
     return delay(ok(m));
+  }
+
+  /**
+   * Open the room.
+   *
+   * Delegates to `setMeetingStatus("live")`, which already mints the room name
+   * and stamps `startedAt` — the engine does the same two things in the other
+   * order, creating the room and setting the status as a consequence. Written
+   * as a delegation rather than a copy so the two cannot drift.
+   *
+   * Idempotent: a meeting already live returns as it stands.
+   */
+  async openMeetingRoom(meetingId: string): Promise<ActionResult<Meeting>> {
+    const g = guard();
+    if (g) return g;
+    const m = getStore().meetings.find((x) => x.id === meetingId);
+    if (!m) return fail("not_found", "Meeting not found.");
+    if (m.status === "live") return delay(ok(m));
+    return this.setMeetingStatus(meetingId, "live");
   }
 
   async setMeetingParticipants(

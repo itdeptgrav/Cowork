@@ -370,8 +370,12 @@ test("a reorder is one batch, so the queue is never half-renumbered", () => {
      lives.** `(n + 1) * 1000` is the tie-break the old drag handler writes
      alongside the rank; losing it would let two tasks sharing a rank fall back to
      whatever order the directory returned. The engine route preserves it. */
+  /* The active backend moved to `grav-cms-backend`; the `/priority-order` engine
+     route (and its `order` stride) lives there, not in the older `cowork-old-backend`
+     checkout, which predates it. Reading the stale path made `indexOf` miss and the
+     slice fall back to the file's last character. */
   const engine = readFileSync(
-    "/Users/risheeray/Documents/cowork-old-backend/routes/task_routes/taskForward.js",
+    "/Users/risheeray/grav-cms-backend/routes/task_routes/taskForward.js",
     "utf8",
   );
   const route = engine.slice(

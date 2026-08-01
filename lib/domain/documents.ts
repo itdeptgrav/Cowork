@@ -1,0 +1,79 @@
+import type { EmployeeId } from "./identity";
+
+/**
+ * A collaborative document.
+ *
+ * ## Why the body is stored apart from the record
+ *
+ * `CoworkDocument` is the thing a LIST needs — title, who touched it, when. The
+ * body is fetched only when a document is opened. A list of thirty documents
+ * that carried thirty bodies would read a megabyte to render a sidebar, and
+ * Firestore charges by document read rather than by field.
+ *
+ * ## Two representations of the same content, on purpose
+ *
+ * `html` is what the editor loads and what search and export read. `ydocState`
+ * is the CRDT's own binary state, base64'd, and it is the authority once
+ * collaboration is on: it carries the edit history the merge algorithm needs,
+ * which HTML cannot express. Phase 1 writes only `html`; phase 2 adds
+ * `ydocState` and makes it the source, with `html` kept as its projection.
+ *
+ * They are not allowed to disagree silently — whoever writes `ydocState` writes
+ * the matching `html` in the same operation.
+ */
+export interface CoworkDocument {
+  /**
+   * Owning tenant. Every read is scoped to it; every write stamps it.
+   *
+   * Denormalised onto the record rather than joined through a parent, matching
+   * every other directly-queried entity in this domain.
+   */
+  organisationId: string;
+  id: string;
+  title: string;
+  createdById: EmployeeId;
+  /** Who last committed a change. Null on a document nobody has edited yet. */
+  lastEditedById: EmployeeId | null;
+  /**
+   * Who may open it.
+   *
+   * Includes the creator. A document with an empty list is unreachable by
+   * anybody, including its author — so the repository refuses to write one.
+   */
+  memberIds: EmployeeId[];
+  createdAt: string;
+  updatedAt: string;
+  /** Soft. A deleted document is recoverable until something reaps it. */
+  deletedAt: string | null;
+
+  /**
+   * The Drive file this mirrors, once it has been pushed.
+   *
+   * Null until the first push. Phase 4 fills it; it is on the record from the
+   * start so a document created now can be mirrored later without a migration.
+   */
+  driveFileId: string | null;
+  driveSyncedAt: string | null;
+}
+
+/** The body, fetched only when a document is opened. */
+export interface CoworkDocumentBody {
+  documentId: string;
+  /** ProseMirror's HTML. Empty string is a genuinely empty document. */
+  html: string;
+  /**
+   * The Yjs state vector, base64. Null until collaboration writes one.
+   *
+   * Stored rather than rebuilt from `html` because rebuilding loses the edit
+   * history, and two clients rebuilding independently would produce documents
+   * that can never merge.
+   */
+  ydocState: string | null;
+  updatedAt: string;
+}
+
+/** What a list row shows. */
+export interface DocumentSummary extends CoworkDocument {
+  /** First line of text, for the list. Never the whole body. */
+  preview: string;
+}

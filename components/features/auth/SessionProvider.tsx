@@ -17,7 +17,14 @@ import { LENS_STORAGE_KEY } from "@/components/layout/shell/LensContext";
 import { archetypeForLegacyRole, LEGACY_LANDING } from "@/lib/auth/roleMap";
 import { fetchIdentity } from "@/lib/legacy/auth";
 import { applyRuleOverrides } from "@/lib/config/settings";
-import { idToken, signOut as firebaseSignOut, watchAuth } from "@/lib/legacy/firebase";
+import type { User } from "firebase/auth";
+import {
+  currentUser,
+  idToken,
+  signOut as firebaseSignOut,
+  watchAuth,
+  watchIdToken,
+} from "@/lib/legacy/firebase";
 import { isConfigured } from "@/lib/legacy/config";
 import { PUBLIC_ENV } from "@/lib/legacy/publicEnv";
 import { clearFirebaseCookie, writeFirebaseCookie } from "@/lib/auth/firebaseCookie";
@@ -408,6 +415,47 @@ export function SessionProvider({
       void load();
     });
   }, [anonymous, load]);
+
+  /**
+   * Keep the Edge's cookie copy alive across the SDK's silent token refreshes.
+   *
+   * `load` runs on `onAuthStateChanged`, which does NOT fire when Firebase renews
+   * the one-hour token on its own — so on that path alone the mirrored cookie
+   * ages out mid-session and the middleware bounces a signed-in person to the
+   * sign-in page (the reported `/messages` bounce). `onIdTokenChanged` fires on
+   * every refresh; re-writing the cookie there keeps the token the Edge sees as
+   * live as the one the client holds.
+   *
+   * The visibility handler closes the other gap: a tab left untouched past the
+   * refresh window is given a fresh cookie the instant it is looked at again, so
+   * the first navigation after a long idle does not race an expired copy to the
+   * gate. Both are cheap — `getIdToken()` is a local read unless the token has
+   * actually expired.
+   */
+  useEffect(() => {
+    if (anonymous || !isConfigured(PUBLIC_ENV)) return;
+    const refresh = (user: User | null) => {
+      if (!user) {
+        clearFirebaseCookie();
+        return;
+      }
+      void user
+        .getIdToken()
+        .then(writeFirebaseCookie)
+        .catch(() => {
+          /* A failed refresh is not a sign-out: `load` owns that decision. */
+        });
+    };
+    const unwatch = watchIdToken(refresh);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh(currentUser());
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      unwatch();
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [anonymous]);
 
   /**
    * The watchdog, and the reason it is a wall clock rather than a timeout on

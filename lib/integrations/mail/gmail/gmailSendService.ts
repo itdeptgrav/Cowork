@@ -28,6 +28,7 @@ export function buildMime(input: {
   from: MailParty;
   to: MailParty[];
   cc: MailParty[];
+  bcc: MailParty[];
   subject: string;
   body: string;
   inReplyTo?: string | null;
@@ -37,6 +38,10 @@ export function buildMime(input: {
     `From: ${addr(input.from)}`,
     `To: ${input.to.map(addr).join(", ")}`,
     ...(input.cc.length ? [`Cc: ${input.cc.map(addr).join(", ")}`] : []),
+    /* Gmail strips this header before delivery and uses it to fan the message
+       out — which is why a Bcc header is correct here and would be a disclosure
+       anywhere else. Each recipient's copy arrives with no Bcc line at all. */
+    ...(input.bcc.length ? [`Bcc: ${input.bcc.map(addr).join(", ")}`] : []),
     `Subject: ${encodeHeader(input.subject)}`,
     "MIME-Version: 1.0",
     'Content-Type: text/plain; charset="UTF-8"',

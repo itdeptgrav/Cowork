@@ -194,6 +194,32 @@ export function nextAction(
   if (task.status === "assignment_rejected")
     return { label: "Assignment rejected", actor: "nobody" };
 
+  /* **A pending time-budget EXTENSION the viewer owns.** Its record lives in
+     `cowork_task_budget_extensions`, off the task, so none of the status/deadline
+     branches below would ever surface it — the repository sets this flag for
+     exactly the manager it waits on. Placed high so it lands in "Awaiting your
+     decision" beside deadline and review decisions rather than being hidden
+     behind whatever the task's own status happens to be. */
+  if (view.budgetDecisionPending) {
+    return {
+      label: "Decide the time budget",
+      actor: "you",
+      href: `/tasks/${id}`,
+    };
+  }
+
+  /* **A pending DEADLINE extension the viewer owns.** Same gap as the budget
+     twin above, and worse: a deadline extension never flips the task status, so
+     `deadline.state` below stays `agreed` and nothing there would surface it.
+     The repository sets this for exactly the routed approver. */
+  if (view.deadlineDecisionPending) {
+    return {
+      label: "Decide deadline",
+      actor: "you",
+      href: `/tasks/${id}/deadline`,
+    };
+  }
+
   if (task.status === "pending_approval") {
     const isApprover = view.pendingApprovals.some(
       (a) => a.approverId === viewerId,
