@@ -9,6 +9,7 @@ import {
   heartbeatPatch,
   isStale,
   ownsClaim,
+  queueAnchorMs,
   readDutyMode,
   storedMode,
   type DutyDocument,
@@ -258,4 +259,64 @@ test("a nonsense hours value is ignored rather than rendered", () => {
 test("yesterday's hours are not reported as today's", () => {
   const yesterday = dutyDayKey(T0 - 86_400_000);
   assert.equal(dailyHoursSecs({ dailyHours: { [yesterday]: 8 } }, T0), 0);
+});
+
+/* ── Queue anchor: freeze the projection while online ─────────────────────── */
+
+test("an online person freezes the projection at their session start", () => {
+  /* Came online an hour ago; the anchor is that moment, not now, so the
+     projected finish does not creep with the clock while they sit available. */
+  const onlineSince = T0 - 3_600_000;
+  const doc: DutyDocument & { updatedAt: number } = {
+    mode: "online",
+    heartbeatAt: T0 - 10_000,
+    updatedAt: onlineSince,
+  };
+  assert.equal(queueAnchorMs(doc, T0), onlineSince);
+});
+
+test("an offline person anchors at now, because their work genuinely slips", () => {
+  const doc: DutyDocument & { updatedAt: number } = {
+    mode: "offline",
+    updatedAt: T0 - 3_600_000,
+  };
+  assert.equal(queueAnchorMs(doc, T0), T0);
+  assert.equal(queueAnchorMs(null, T0), T0);
+});
+
+test("a break or emergency anchors at now — only online is frozen", () => {
+  for (const mode of ["break", "emergency"] as const) {
+    const doc: DutyDocument & { updatedAt: number } = {
+      mode,
+      updatedAt: T0 - 3_600_000,
+    };
+    assert.equal(queueAnchorMs(doc, T0), T0, `${mode} should not freeze`);
+  }
+});
+
+test("a stale online claim is not frozen at whenever they were last here", () => {
+  /* `readDutyMode` resolves a stale online claim to offline, so the anchor is
+     now — freezing at a session start from before they vanished would hold the
+     projection at a time that is no longer true. */
+  const doc: DutyDocument & { updatedAt: number } = {
+    mode: "online",
+    heartbeatAt: T0 - (STALE_AFTER_MS + 60_000),
+    updatedAt: T0 - 7_200_000,
+  };
+  assert.equal(queueAnchorMs(doc, T0), T0);
+});
+
+test("an untrustworthy session start falls back to now, never past the clock", () => {
+  const base = { mode: "online", heartbeatAt: T0 - 10_000 } as const;
+  /* A future value (clock skew), a missing field, and a Firestore Timestamp on a
+     pre-migration doc are each not a usable millisecond session start. */
+  assert.equal(queueAnchorMs({ ...base, updatedAt: T0 + 60_000 }, T0), T0);
+  assert.equal(queueAnchorMs({ ...base }, T0), T0);
+  assert.equal(
+    queueAnchorMs(
+      { ...base, updatedAt: { seconds: 1 } } as unknown as DutyDocument,
+      T0,
+    ),
+    T0,
+  );
 });

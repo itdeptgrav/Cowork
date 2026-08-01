@@ -81,6 +81,14 @@ export interface DutyDocument {
   heartbeatAt?: number | null;
   /** Which connection claimed `online`. Our addition — see `ownsClaim`. */
   presenceConnectionId?: string | null;
+  /**
+   * Epoch ms of the last MODE CHANGE — written by `dutyTransition`'s patch and,
+   * deliberately, by nothing else: a heartbeat restates the claim through
+   * `heartbeatPatch`, which omits it. So while a person stays online this holds
+   * the moment their session began, which is what `queueAnchorMs` freezes the
+   * completion projection against.
+   */
+  updatedAt?: number | null;
 }
 
 /**
@@ -408,7 +416,7 @@ export function heartbeatPatch(nowMs: number, connectionId: string | null) {
  */
 export function queueAnchorMs(doc: DutyDocument | null, nowMs: number): number {
   if (!doc || readDutyMode(doc, nowMs) !== "online") return nowMs;
-  const since = (doc as { updatedAt?: unknown }).updatedAt;
+  const since: unknown = doc.updatedAt;
   /* A number in ms, at or before now. Anything else — a Firestore Timestamp on a
      pre-migration doc, a clock-skewed future value, a missing field — is not a
      trustworthy session start, and `now` is the safe fallback. */

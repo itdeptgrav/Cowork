@@ -7,6 +7,7 @@ import {
   dutyTransition,
   heartbeatPatch,
   ownsClaim,
+  queueAnchorMs,
   readDutyMode,
   storedMode,
   type DutyDocument,
@@ -5880,20 +5881,31 @@ export class LegacyRepository {
       const { addWorkingSecs } = await import(
         "../../legacy-ui/officeDueDate.js"
       );
-      const from = new Date().toISOString().slice(0, 10);
-      const to = new Date(Date.now() + 365 * 86_400_000)
+      const nowMs = Date.now();
+      const from = new Date(nowMs).toISOString().slice(0, 10);
+      const to = new Date(nowMs + 365 * 86_400_000)
         .toISOString()
         .slice(0, 10);
-      const [policy, blockedDates, logged] = await Promise.all([
+      const [policy, blockedDates, logged, duty] = await Promise.all([
         this.getOfficePolicy(),
         this.listBlockedDates(employeeId, from, to).catch(() => []),
         /* What is already done, so the chain schedules what is LEFT. Work done
            at 04:53 counts in full; the office calendar governs only when the
            remainder can happen. */
         this.#loggedSecsByTask(employeeId),
+        /* The assignee's presence, to freeze the projection while they are
+           online — an available person's finish date must not creep with the
+           clock. A failed read costs the freeze, not the projection. */
+        this.#readDutyDoc(employeeId).catch(() => null),
       ]);
       const blocked = new Set(blockedDates.map((b) => b.date));
       const byId = new Map(tasks.map((t) => [t.id, t as never]));
+
+      /* Anchored at the online-session start while the assignee is available, so
+         the projected completion holds steady and moves only by time genuinely
+         lost — the committed deadline's rule, applied to its projection. */
+      const anchorMs = queueAnchorMs(duty, nowMs);
+      const nowIso = new Date(nowMs).toISOString();
 
       const chained = chainDeadlines({
         queue: order
@@ -5919,12 +5931,20 @@ export class LegacyRepository {
               loggedSecs: logged.get(x.id) ?? 0,
             };
           }) as never,
-        anchorMs: Date.now(),
-        addWorkingSecs: (anchorMs: number, secs: number) =>
-          addWorkingSecs(anchorMs, secs, policy.schedule, blocked, policy.breaks),
+        anchorMs,
+        addWorkingSecs: (fromMs: number, secs: number) =>
+          addWorkingSecs(fromMs, secs, policy.schedule, blocked, policy.breaks),
       });
       for (const c of chained) {
-        if (c.dueDate) dueDates.set(String(c.taskId), c.dueDate);
+        if (!c.dueDate) continue;
+        /* A frozen anchor can place a task the person has already been available
+           long enough to finish behind the clock. Show that as due NOW rather
+           than as a past date, which reads as broken; a future completion passes
+           through frozen, which is the whole point. */
+        dueDates.set(
+          String(c.taskId),
+          Date.parse(c.dueDate) < nowMs ? nowIso : c.dueDate,
+        );
       }
     } catch {
       /* A failed calendar read costs the derived date, not the queue. */

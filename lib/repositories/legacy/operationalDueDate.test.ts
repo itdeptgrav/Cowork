@@ -110,16 +110,24 @@ test("the repository chains the queue rather than reading the stored deadline", 
   assert.ok(at > 0);
   const fn = src.slice(at, at + 2800);
   assert.match(fn, /chainDeadlines\(\{/);
-  assert.match(fn, /addWorkingSecs\(anchorMs, secs, policy\.schedule, blocked, policy\.breaks\)/);
+  assert.match(fn, /addWorkingSecs\(fromMs, secs, policy\.schedule, blocked, policy\.breaks\)/);
   /* Settled hours only. Planning against a proposed budget would promise time
      nobody has agreed to. */
   /* Through the shared resolver now, so the chain lays out exactly the seconds
      the Details panel shows — they were different numbers, which is how T646
      read "00:00:00" beside a correct completion date. */
   assert.match(fn, /senderTimerWindowSecs: resolveTimeBudget\(x\)/);
-  /* The anchor is NOW, and the chain moves it forward. Not creation time, not
-     an approval time, and not a stored deadline. */
-  assert.match(fn, /anchorMs: Date\.now\(\)/);
+  /* The anchor is FROZEN while the assignee is online — their session start, not
+     the live clock — so an available person's projected finish does not creep
+     with the wall clock. It falls back to now only when they are genuinely away.
+     Never a creation time, an approval time, or a stored deadline. */
+  assert.match(fn, /const anchorMs = queueAnchorMs\(duty, nowMs\)/);
+  assert.match(fn, /anchorMs,\n/);
+  assert.equal(
+    /anchorMs: Date\.now\(\)/.test(fn),
+    false,
+    "the projection is re-anchored at the live clock, which is the creep",
+  );
   assert.equal(
     /fixedDeadline|dueAtMs|readDueAtMs/.test(fn),
     false,

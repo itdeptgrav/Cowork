@@ -249,10 +249,12 @@ test("the list and the task page get their dates from one chain", () => {
   );
   assert.match(src, /this\.#activeQueueOf\(subjectId\)/);
   assert.match(src, /queue: \(subjectId && queuesBySubject\.get\(subjectId\)\)/);
-  /* And the chain is seeded from now plus settled budgets — never a stored
-     deadline, a creation time or an approval time. */
+  /* And the chain is seeded from settled budgets and a presence-frozen anchor —
+     the assignee's online-session start, so an available person's projection
+     does not creep — never a stored deadline, a creation time or an approval
+     time. */
   const fn = src.slice(src.indexOf("async #chainQueue("), src.indexOf("async #chainQueue(") + 2600);
-  assert.match(fn, /anchorMs: Date\.now\(\)/);
+  assert.match(fn, /const anchorMs = queueAnchorMs\(duty, nowMs\)/);
   assert.match(fn, /senderTimerWindowSecs: resolveTimeBudget\(x\)/);
   assert.equal(
     /dueAtMs|fixedDeadline|createdAtMs/.test(fn),
