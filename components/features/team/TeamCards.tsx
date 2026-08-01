@@ -10,6 +10,7 @@ import {
   teamLoad,
   type MemberLoad,
 } from "@/components/features/dashboard/signals";
+import { LiveWorkLine } from "./LiveWork";
 import { taskLandingDate } from "./PersonCalendar";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { STATUS_META } from "@/lib/status/employeeStatus";
@@ -102,6 +103,12 @@ function EmployeeCard({
 
   const meta = duty ? STATUS_META[duty] : null;
   const s = subject.data ?? null;
+  /* The task the "right now" line is about, sliced from the tasks this card
+     already holds — no extra read, and null when the running task is one this
+     viewer may not see. */
+  const current = s?.currentTaskId
+    ? (tasks.find((v) => v.task.id === s.currentTaskId) ?? null)
+    : null;
   const state = load ? LOAD_STATE[load.state] : null;
   const width = (n: number) => `${(n / busiest) * 100}%`;
   /* "Kab tak kaam hai" — the furthest their queue projects out. */
@@ -173,6 +180,12 @@ function EmployeeCard({
                 <span data-figure>{duration(s?.onlineSecondsToday ?? 0)}</span>{" "}
                 online today
               </p>
+              {/* How the time they were given is going. A card in a three-up
+                  grid has room for the answer but not the working, so this is
+                  one line and one bar; the full breakdown is on their page. */}
+              {current && (
+                <LiveWorkLine view={current} employeeId={String(person.id)} />
+              )}
             </>
           )}
         </div>

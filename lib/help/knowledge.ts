@@ -1026,14 +1026,43 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why can't I open this person's record?",
     ],
     answer:
-      "Team, then the person, opens their record. Overview is the whole working day in one place: their live screen with the session beneath it, what they are working on right now and the task it belongs to, the day's activity in order, the moments that stood out, how loaded they are, what stands out about the day, who they are working with, and their performance — score contribution across C1–C4, the trailing trend, goals, and what landed today. Tasks, Score and Attendance sit behind their own tabs. Everything on it follows the same boundary as every other team surface: you see the people in your own reporting line and your own record, and nobody else. Opening someone outside it shows the boundary rather than an error, because not being their manager is not a fault. Live monitoring is narrower still — it reaches only the people beneath you, so a record you can read may show performance without a screen.",
+      "Team, then the person, opens their record. Overview is the whole working day in one place: their live screen with the session beneath it, what they are working on right now — the task, its running clock, and how the time it was given is going — the day's activity in order, the moments that stood out, how loaded they are, what stands out about the day, who they are working with, and their performance — score contribution across C1–C4, the trailing trend, goals, and what landed today. Tasks, Score and Attendance sit behind their own tabs. Everything on it follows the same boundary as every other team surface: you see the people in your own reporting line and your own record, and nobody else. Opening someone outside it shows the boundary rather than an error, because not being their manager is not a fault. Live monitoring is narrower still — it reaches only the people beneath you, so a record you can read may show performance without a screen.",
     related: [
       "roles-scopes",
       "status-no-feed",
       "team-observations",
+      "team-time-budget-reading",
       "scoring-visibility",
     ],
     source: "PersonMonitor composition; viewer.hierarchyIds gate in PersonPage",
+  },
+
+  {
+    id: "team-time-budget-reading",
+    category: "roles",
+    title: "Reading the time given against the time worked",
+    keywords: [
+      "asked for",
+      "time given",
+      "time left",
+      "still needed",
+      "overtime",
+      "incomplete",
+      "window closed",
+      "agreed time used",
+      "budget breakdown",
+      "how long have they worked",
+    ],
+    examples: [
+      "What do Asked for, Worked and Time left mean on someone's record?",
+      "Why does it say Incomplete when they still have time left?",
+      "Where do I see how much of a task's time has been used?",
+    ],
+    answer:
+      "On a person's record under Team, and on their card in the team grid, Right now shows the task they are on with its clock and how the time it was given is going. Three figures read across: Asked for is the window agreed for the task and never moves, Worked is what their timer has actually logged, and the third is what is left of the window. Beneath them a bar shows the percentage of the agreed time used, and Due states when the window runs out — counted in working time, so it advances only while their clock is running and freezes the moment they pause. The third figure is renamed as the situation changes, and the name is the point. Time left means they are inside the window. Still needed, shown with Incomplete, means the window has run out while some of the agreed time was never worked — the task is late and the work has not happened, which is a different situation from working too long. Overtime means they have logged more than was agreed, and the figure is how far past it they are. Window closed means the window has run out with the budget spent. A task with no agreed window says so instead: nothing is measured against a figure nobody settled on. Where extensions were granted, the original window and what it grew to are both shown. The same figures appear to the person doing the work on the task itself, from the same clock, so the two of you never see different numbers.",
+    related: ["team-person-record", "task-extension", "task-deadline-modes"],
+    source:
+      "lib/rules/tasks/workProgress.ts; components/features/team/LiveWork.tsx",
   },
 
   {
