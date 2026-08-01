@@ -34,6 +34,15 @@ export interface FeasibilityTask extends QueueTask {
   status?: string;
   /** The budget negotiation's state, where the task has one. */
   budgetState?: string | null;
+  /**
+   * Legacy's STORED date — `deadline.dueAt` / `officialDueAt`.
+   *
+   * The COMMITMENT, and never the chain's output. It is what scoring measures
+   * and it is not what this module computes: `completionTime` below is when the
+   * work will actually happen. A confirmation dialog that showed one of them
+   * under the other's name would be lying about a promise.
+   */
+  committedDueAt?: string | null;
 }
 
 export interface BlockingTask {
@@ -61,7 +70,13 @@ export interface SimulatedEntry {
   title: string;
   position: number;
   estimatedDuration: number;
+  /**
+   * The OPERATIONAL date — when the work actually finishes, given everything
+   * ahead of it in this order. Not the commitment; see `committedDueAt`.
+   */
   completionTime: string | null;
+  /** The stored commitment, carried through unchanged. */
+  committedDueAt: string | null;
   /** Seconds this task moved LATER because of the insertion. 0 when unmoved. */
   movedLaterSeconds: number;
 }
@@ -80,6 +95,23 @@ export interface Feasibility {
   suggestions: Suggestion[];
   /** The whole queue as simulated, in order — for a UI to show the knock-on. */
   simulatedQueue: SimulatedEntry[];
+  /**
+   * The queue as it stands TODAY, in its current order, subject included.
+   *
+   * The BEFORE half of a before/after. Computed here rather than by asking the
+   * repository a second time, for two reasons that both matter: a second call
+   * re-scans the whole task collection, the office policy, the blocked dates and
+   * the timer subcollection — and it stamps a different `Date.now()`, so the two
+   * halves of one comparison would be measured from two different moments and
+   * every row would show a spurious drift.
+   *
+   * Deliberately NOT the same chain `movedLaterSeconds` is measured against.
+   * That baseline is the queue with the subject REMOVED, which answers "what did
+   * inserting this cost"; this one answers "what does the queue look like now",
+   * and quietly merging them would silently rewrite every delay figure in the
+   * product.
+   */
+  baselineQueue: SimulatedEntry[];
   /** Only those the insertion actually pushed later. */
   affectedTasks: SimulatedEntry[];
   /**
@@ -234,6 +266,9 @@ export function calculateDeadlineFeasibility(input: {
     status: "confirmed",
     senderTimerWindowSecs: Math.max(0, Math.round(input.estimatedWorkSeconds)),
     loggedSecs: Math.max(0, Math.round(input.alreadyWorkedSeconds ?? 0)),
+    /* Filled from the same field as every other row, so the subject is not the
+       one entry in the list with an empty commitment column. */
+    committedDueAt: input.committedDeadline ?? null,
   } as FeasibilityTask;
 
   const subjectId = String(subject.taskId);
@@ -328,9 +363,39 @@ export function calculateDeadlineFeasibility(input: {
         position: i + 1,
         estimatedDuration: windowSecsFor(t),
         completionTime: now,
+        committedDueAt: t.committedDueAt ?? null,
         movedLaterSeconds,
       };
     });
+
+  /* The queue as it stands today: the ranked order with the subject where it
+     currently sits — or at the back when it is not in the queue yet, which is
+     the product's own rule for new work. Chained from the same `nowMs` as the
+     simulation, so a before/after comparison measures one moment. */
+  const currentIndex =
+    currentPosition !== null
+      ? Math.max(0, Math.min(ordered.length, currentPosition - 1))
+      : ordered.length;
+  const baselineOrder: FeasibilityTask[] = [...ordered];
+  baselineOrder.splice(currentIndex, 0, subject);
+  const baselineChain = chainDeadlines({
+    queue: baselineOrder as QueueTask[],
+    anchorMs: input.nowMs,
+    addWorkingSecs: input.addWorkingSecs,
+  });
+  const baselineQueue: SimulatedEntry[] = baselineOrder
+    .filter((t) => windowSecsFor(t) > 0)
+    .map((t, i) => ({
+      taskId: String(t.taskId),
+      title: t.title ?? String(t.taskId),
+      position: i + 1,
+      estimatedDuration: windowSecsFor(t),
+      completionTime:
+        baselineChain.find((c) => c.taskId === t.taskId)?.dueDate ?? null,
+      committedDueAt: t.committedDueAt ?? null,
+      /* Zero by construction — this IS the unmoved state. */
+      movedLaterSeconds: 0,
+    }));
 
   const affectedTasks = simulatedQueue.filter(
     (e) => e.taskId !== subject.taskId && e.movedLaterSeconds > 0,
@@ -368,6 +433,7 @@ export function calculateDeadlineFeasibility(input: {
         : "There is no estimated work time, so no completion date can be worked out.",
       suggestions: [],
       simulatedQueue,
+      baselineQueue,
       affectedTasks,
       calculationTrace,
     };
@@ -388,6 +454,7 @@ export function calculateDeadlineFeasibility(input: {
       explanation: "The committed deadline could not be read, so feasibility is unknown.",
       suggestions: [],
       simulatedQueue,
+      baselineQueue,
       affectedTasks,
       calculationTrace,
     };
@@ -415,6 +482,7 @@ export function calculateDeadlineFeasibility(input: {
       ? []
       : suggestionsFor({ simulatedPosition, blocking: blockingTasks }),
     simulatedQueue,
+    baselineQueue,
     affectedTasks,
     calculationTrace,
   };

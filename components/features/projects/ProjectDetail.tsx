@@ -156,6 +156,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 initials: m.employee.initials,
                 hue: m.employee.hue,
                 name: m.employee.displayName,
+                src: m.employee.profilePictureUrl,
               }))}
               overflow={Math.max(0, members.length - 4)}
             />
@@ -454,6 +455,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                   <Avatar
                     initials={owner.initials}
                     hue={owner.hue}
+                    src={owner.profilePictureUrl}
                     name={owner.displayName}
                     size="sm"
                   />
@@ -497,6 +499,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                   <Avatar
                     initials={m.employee.initials}
                     hue={m.employee.hue}
+                    src={m.employee.profilePictureUrl}
                     name={m.employee.displayName}
                     size="sm"
                   />

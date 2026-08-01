@@ -189,6 +189,7 @@ export function MeetingCard({
           initials: p.initials,
           hue: p.hue,
           name: p.displayName,
+          src: p.profilePictureUrl,
         }))}
         overflow={Math.max(0, parts.length - 3)}
       />

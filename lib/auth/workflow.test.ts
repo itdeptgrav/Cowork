@@ -42,6 +42,7 @@ function emp(id: string, name: string, dept: string | null): Employee {
     email: null,
     initials: name.slice(0, 2),
     hue: 0,
+    profilePictureUrl: null,
     departmentId: dept,
     departmentName: dept,
     designation: null,

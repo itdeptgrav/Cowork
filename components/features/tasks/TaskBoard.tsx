@@ -162,6 +162,7 @@ function BoardCard({ view }: { view: TaskView }) {
             <Avatar
               initials={view.assignees[0].initials}
               hue={view.assignees[0].hue}
+              src={view.assignees[0].profilePictureUrl}
               name={view.assignees[0].displayName}
               size="sm"
             />

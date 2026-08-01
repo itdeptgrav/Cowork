@@ -179,6 +179,7 @@ export function ChatPanel({
                   <Avatar
                     initials={person.initials}
                     hue={person.hue}
+                    src={person.profilePictureUrl}
                     name={person.displayName}
                     size="sm"
                   />

@@ -1,15 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  Button,
-  Field,
-  InlineError,
-  Textarea,
-} from "@/components/ui/Primitives";
+import { Button, InlineError } from "@/components/ui/Primitives";
 import { useAction, useRepo } from "@/lib/hooks/useRepository";
+import { useListReorder } from "@/lib/hooks/useListReorder";
+import { PriorityConfirmDialog } from "./PriorityConfirmDialog";
+import type { QueueSnapshotRow } from "@/lib/rules/tasks/priorityPreview";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
-import type { Feasibility } from "@/lib/rules/tasks/deadlineFeasibility";
+import type { Feasibility, SimulatedEntry } from "@/lib/rules/tasks/deadlineFeasibility";
 
 /**
  * Will this land in time if it goes here?
@@ -66,6 +64,7 @@ export function FeasibilityPreview({
   estimatedWorkSeconds,
   committedDeadline,
   selectable = false,
+  subjectTitle,
   onBudgetChange,
 }: {
   /** Whose week this is measured against — the assignee, never the viewer. */
@@ -79,6 +78,15 @@ export function FeasibilityPreview({
    * control that does not persist would read as setting the priority.
    */
   selectable?: boolean;
+  /**
+   * The subject task's real name.
+   *
+   * The queue renders it as "This task", which is right in a list the reader is
+   * placing it into — but wrong in a confirmation captioned as their whole
+   * queue, where every other row carries a name. Optional, because the panel is
+   * also used where there is no task yet.
+   */
+  subjectTitle?: string;
   /**
    * Lets the panel drive the budget too.
    *
@@ -117,10 +125,11 @@ export function FeasibilityPreview({
      changes underneath — somebody finishes a task while this is open — is
      picked up instead of being pinned to a stale list. */
   const [order, setOrder] = useState<string[] | null>(null);
-  const [dragId, setDragId] = useState<string | null>(null);
-  const [overIndex, setOverIndex] = useState<number | null>(null);
   const [reason, setReason] = useState("");
   const [applied, setApplied] = useState(false);
+  /* The confirmation standing between a dragged order and the write. Null until
+     somebody presses Apply; nothing is saved while it is open. */
+  const [confirming, setConfirming] = useState(false);
   const subjectId = taskId ?? "__proposed__";
 
   /* Keyed by the inputs. A verdict computed for four hours must never be shown
@@ -133,9 +142,26 @@ export function FeasibilityPreview({
   const [failedKey, setFailedKey] = useState<string | null>(null);
   const [showTrace, setShowTrace] = useState(false);
 
-  /* The engine's answer for the CURRENT inputs, or nothing. An answer computed
-     for four hours must never be shown beside a dropdown reading twelve. */
-  const result = answer?.key === key ? answer.result : null;
+  /**
+   * The engine's last answer, and whether it is still the answer to what is on
+   * screen.
+   *
+   * **The panel no longer empties itself between answers.** It used to drop to
+   * `null` the instant an input changed, which meant every single drop replaced
+   * the whole card — verdict, dates, queue, chips, reason field — with one line
+   * of text for the settle delay plus a four-way Firestore read. That blank was
+   * the largest part of the reported lag, and it also destroyed the very DOM
+   * nodes a reorder animation needs.
+   *
+   * The rule at the top of this file still holds: an answer must never be shown
+   * beside inputs it does not answer. `stale` is how it holds. The ORDER stays
+   * live because it is the reader's own arrangement rather than a computed
+   * figure; everything derived from it is marked and dimmed until the engine
+   * has caught up. `useRepository` already draws this distinction — stale is not
+   * the same as absent.
+   */
+  const result = answer?.result ?? null;
+  const stale = answer !== null && answer.key !== key;
 
   /* What "apply" would write: the employee's REAL tasks in the order on
      screen. A task not yet assigned to them cannot be in their queue, so it is
@@ -158,8 +184,45 @@ export function FeasibilityPreview({
   const applying = applyState.isPending;
   const applyError = applyState.error;
 
+  /* The order ON SCREEN: the reader's arrangement if they have made one, else
+     the engine's. Derived before any early return, because the drag hook below
+     is a hook and cannot sit behind one. */
+  const rowIds = order ?? result?.simulatedQueue.map((e) => e.taskId) ?? [];
+
+  /* Dragging is offered only where trying a position is — the same rule, since
+     both do the same thing by different means. A queue of one has no order to
+     rearrange, so the handles would be decoration. */
+  const reorderable = selectable && rowIds.length > 1;
+
+  /* The drag itself lives in `useListReorder`: one state change per gesture, an
+     insertion line moved outside React, and the drop bound to the LIST so a
+     release between two rows cannot be swallowed. The arithmetic is
+     `lib/rules/ui/dragReorder.ts`, which is where the downward off-by-one is
+     tested rather than asserted against this file's source. */
+  const {
+    dragId,
+    listProps: dragListProps,
+    itemProps,
+    setListNode,
+    setIndicatorNode,
+    setRowNode,
+  } = useListReorder({
+    ids: rowIds,
+    enabled: reorderable,
+    onReorder: (next) => {
+      setOrder(next);
+      /* The chips read the same order, so the two controls cannot disagree
+         about where this task now sits. */
+      setTryPosition(next.indexOf(subjectId) + 1);
+    },
+  });
+
   useEffect(() => {
     if (!employeeId || estimatedWorkSeconds <= 0) return;
+    /* Not while a drag is in flight. A preview landing mid-gesture re-renders the
+       list, which invalidates the row offsets measured at `dragstart` — and an
+       answer for an order the reader has not settled on is noise anyway. */
+    if (dragId !== null) return;
     let cancelled = false;
 
     const timer = setTimeout(() => {
@@ -196,6 +259,7 @@ export function FeasibilityPreview({
     estimatedWorkSeconds,
     committedDeadline,
     order,
+    dragId,
   ]);
 
   if (!employeeId || estimatedWorkSeconds <= 0) return null;
@@ -211,9 +275,9 @@ export function FeasibilityPreview({
   }
 
   if (!result) {
-    /* Named rather than a bare skeleton: the reader has just changed a number
-       and needs to know the figure below it is being redone, not that something
-       is broken. */
+    /* FIRST load only. Once there is an answer the panel keeps it and marks the
+       order-dependent figures as recomputing — see `stale`. Emptying the card on
+       every drop is what made this feel slow. */
     return (
       <p className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3.5 py-3 text-[12px] text-ink-faint">
         Checking deadline impact…
@@ -221,38 +285,18 @@ export function FeasibilityPreview({
     );
   }
 
-  /* Dragging is offered only where trying a position is — the same rule, since
-     both do the same thing by different means. A queue of one has no order to
-     rearrange, so the handles would be decoration. */
-  const reorderable = selectable && result.simulatedQueue.length > 1;
+  /* Rows in the order on screen, each hydrated from the last answer. Title and
+     duration do not depend on the order and stay exact; the date and the delay
+     do, and are dimmed while `stale`. */
+  /* "This task" is the right label inside the queue the reader is placing it
+     into, and the wrong one in a confirmation listing their whole week. */
+  const taskTitleFor = (e: SimulatedEntry) =>
+    e.taskId === subjectId ? (subjectTitle ?? e.title) : e.title;
 
-  const endDrag = () => {
-    setDragId(null);
-    setOverIndex(null);
-  };
-
-  /* Move the dragged row to where the gap is, and hand the WHOLE resulting
-     order to the engine. The component decides where rows sit; it never works
-     out what that means for a date. */
-  const commitDrag = () => {
-    if (!dragId || overIndex === null) return endDrag();
-    const ids = result.simulatedQueue.map((e) => e.taskId);
-    const from = ids.indexOf(dragId);
-    if (from === -1) return endDrag();
-    /* The gap index counts the dragged row while it is still in place, so a
-       downward move lands one short without this. */
-    const to = overIndex > from ? overIndex - 1 : overIndex;
-    if (to !== from) {
-      const next = [...ids];
-      next.splice(from, 1);
-      next.splice(to, 0, dragId);
-      setOrder(next);
-      /* The chips read the same order, so the two controls cannot disagree
-         about where this task now sits. */
-      setTryPosition(next.indexOf(subjectId) + 1);
-    }
-    endDrag();
-  };
+  const entryById = new Map(result.simulatedQueue.map((e) => [e.taskId, e]));
+  const rows = rowIds
+    .map((id) => entryById.get(id))
+    .filter((e): e is NonNullable<typeof e> => e !== undefined);
 
   /* A chip is a drag by other means. It must move the task within whatever
      order is currently on screen — setting `tryPosition` alone would be
@@ -347,50 +391,31 @@ export function FeasibilityPreview({
           </p>
 
           <ol
-            className="mt-1.5 space-y-1"
-            onDragOver={(ev) => {
-              /* Required, or the browser refuses the drop outright. */
-              if (dragId) ev.preventDefault();
-            }}
+            /* `relative`, because the insertion line is positioned inside it.
+               The line is OUT OF FLOW on purpose: the version this replaces
+               pushed the rows apart with a real element, which moved the very
+               rows whose measurements decided where it should be drawn — so it
+               chased itself and stalled. Nothing moves during a drag now. */
+            className="relative mt-1.5 space-y-1"
+            ref={setListNode}
+            {...dragListProps}
           >
-            {result.simulatedQueue.map((e, i) => {
+            <div
+              aria-hidden
+              /* Written to imperatively by the hook. Do NOT give this a `style`
+                 prop — it would silently fight those writes. */
+              ref={setIndicatorNode}
+              className="drop-line pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 -mt-px rounded-full bg-ink/45"
+            />
+            {rows.map((e, i) => {
               const isThis = e.taskId === subjectId;
               const width = longest > 0 ? (e.estimatedDuration / longest) * 100 : 0;
               const dragging = dragId === e.taskId;
-              /* The gap opens ABOVE this row when the pointer is over its top
-                 half, and above the next one otherwise — so the placeholder
-                 sits exactly where the row will land, not near it. */
-              const gapAbove = dragId !== null && overIndex === i;
               return (
-                <li key={e.taskId}>
-                  {gapAbove && (
-                    <div
-                      aria-hidden
-                      className="mb-1 h-7 rounded-[6px] border border-dashed border-ink/30 bg-ink/[0.04] transition-all"
-                    />
-                  )}
+                <li key={e.taskId} ref={setRowNode(e.taskId)} className="flip-row">
                   <div
-                    draggable={reorderable}
-                    onDragStart={(ev) => {
-                      setDragId(e.taskId);
-                      setOverIndex(i);
-                      ev.dataTransfer.effectAllowed = "move";
-                      /* Firefox drops the drag immediately without payload. */
-                      ev.dataTransfer.setData("text/plain", e.taskId);
-                    }}
-                    onDragEnd={endDrag}
-                    onDragOver={(ev) => {
-                      if (!dragId) return;
-                      ev.preventDefault();
-                      const box = ev.currentTarget.getBoundingClientRect();
-                      const above = ev.clientY < box.top + box.height / 2;
-                      setOverIndex(above ? i : i + 1);
-                    }}
-                    onDrop={(ev) => {
-                      ev.preventDefault();
-                      commitDrag();
-                    }}
-                    className={`rounded-[6px] px-1.5 py-1 transition-[opacity,background-color] duration-150 ${
+                    {...itemProps(e.taskId)}
+                    className={`rounded-[6px] px-1.5 py-1 transition-opacity duration-150 ${
                       isThis ? "bg-[var(--control)]" : ""
                     } ${dragging ? "opacity-40" : ""} ${
                       reorderable ? "cursor-grab active:cursor-grabbing" : ""
@@ -411,7 +436,7 @@ export function FeasibilityPreview({
                           isThis ? "text-ink" : "text-ink-faint"
                         }`}
                       >
-                        P{e.position}
+                        P{i + 1}
                       </span>
                       <span
                         className={`min-w-0 flex-1 truncate text-[12px] ${
@@ -433,17 +458,29 @@ export function FeasibilityPreview({
                       }`}
                     >
                       {/* Effort as a bar, so the queue reads as a shape rather
-                          than a column of numbers. */}
+                          than a column of numbers. Scaled rather than resized:
+                          animating `width` re-lays out the whole list for the
+                          length of the transition, and a transform composites. */}
                       <span
                         aria-hidden
-                        style={{ width: `${Math.max(4, width)}%` }}
-                        className={`h-1 max-w-[45%] rounded-full transition-all duration-200 ${
-                          isThis ? "bg-ink/70" : "bg-ink/20"
-                        }`}
-                      />
-                      {/* WHEN it lands — the column the table was missing. */}
+                        className="h-1 w-[45%] max-w-[45%] overflow-hidden rounded-full"
+                      >
+                        <span
+                          className={`block h-full w-full origin-left rounded-full transition-transform duration-200 ${
+                            isThis ? "bg-ink/70" : "bg-ink/20"
+                          }`}
+                          style={{ transform: `scaleX(${Math.max(0.04, width / 100)})` }}
+                        />
+                      </span>
+                      {/* WHEN it lands — the column the table was missing.
+                          Dimmed while the engine is recomputing for an order the
+                          reader has just built, because a date is the one figure
+                          here that the order changes. */}
                       {e.completionTime && (
-                        <span data-figure className="text-[11px] text-ink-faint">
+                        <span
+                          data-figure
+                          className={`text-[11px] text-ink-faint ${stale ? "opacity-45" : ""}`}
+                        >
                           {formatStamp(e.completionTime)}
                         </span>
                       )}
@@ -463,7 +500,7 @@ export function FeasibilityPreview({
                       ) : (
                         <span
                           data-figure
-                          className={`text-[11px] ${
+                          className={`text-[11px] ${stale ? "opacity-45" : ""} ${
                             e.movedLaterSeconds > 0
                               ? "text-[var(--danger,#c4553d)]"
                               : "text-ink-faint/70"
@@ -476,19 +513,19 @@ export function FeasibilityPreview({
                       )}
                     </div>
                   </div>
-                  {/* The gap after the last row, for a drop at the very end. */}
-                  {dragId !== null &&
-                    overIndex === i + 1 &&
-                    i === result.simulatedQueue.length - 1 && (
-                      <div
-                        aria-hidden
-                        className="mt-1 h-7 rounded-[6px] border border-dashed border-ink/30 bg-ink/[0.04] transition-all"
-                      />
-                    )}
                 </li>
               );
             })}
           </ol>
+
+          {/* Said once, under the list, rather than as a spinner over it. The
+              order on screen is the reader's own and is never wrong; only the
+              dates hanging off it are being redone. */}
+          {stale && (
+            <p aria-live="polite" className="mt-1 text-[11px] text-ink-faint">
+              Recomputing the dates for this order…
+            </p>
+          )}
 
           {selectable && (
             <div className="mt-2 space-y-1.5">
@@ -570,46 +607,32 @@ export function FeasibilityPreview({
                           {"\u2713"} Priority applied.
                         </p>
                       ) : (
-                        <div className="mt-2">
-                          {/* Required by the same rule that governs every other
-                              priority change: the person affected is shown who
-                              moved their work and why. A planner reordering
-                              from here is not exempt from that. */}
-                          <Field
-                            label="Why this order?"
-                            hint="Recorded on the tasks and shown to the person whose queue this is."
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {/* Opens the confirmation. It writes NOTHING — the
+                              reason and the write both live in the dialog, which
+                              is where legacy put them too, so nobody reorders
+                              somebody else's week without first seeing what it
+                              does to their dates. */}
+                          <Button
+                            tone="primary"
+                            size="sm"
+                            data-help="feasibility-apply-order"
+                            disabled={applying}
+                            onClick={() => setConfirming(true)}
                           >
-                            <Textarea
-                              rows={2}
-                              value={reason}
-                              onChange={(ev) => setReason(ev.target.value)}
-                            />
-                          </Field>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            <Button
-                              tone="primary"
-                              size="sm"
-                              data-help="feasibility-apply-order"
-                              disabled={applying || reason.trim().length === 0}
-                              onClick={async () => {
-                                const r = await applyOrder();
-                                if (r.ok) setApplied(true);
-                              }}
-                            >
-                              Apply this priority
-                            </Button>
-                            <Button
-                              size="sm"
-                              disabled={applying}
-                              onClick={() => {
-                                setOrder(null);
-                                setTryPosition(null);
-                                setReason("");
-                              }}
-                            >
-                              Reset
-                            </Button>
-                          </div>
+                            Apply this priority
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={applying}
+                            onClick={() => {
+                              setOrder(null);
+                              setTryPosition(null);
+                              setReason("");
+                            }}
+                          >
+                            Reset
+                          </Button>
                         </div>
                       )}
                     </>
@@ -674,6 +697,53 @@ export function FeasibilityPreview({
           )}
         </div>
       )}
+
+      {/* Nothing is written until this is confirmed. Both columns come from the
+          SAME engine answer — one call, one clock — so the before and the after
+          cannot drift apart, and the dialog reads `diffQueues`, which is also
+          what the person whose queue this is will be shown afterwards. */}
+      {confirming && (
+        <PriorityConfirmDialog
+          subjectName={employeeName ?? null}
+          before={snapshotOf(result.baselineQueue, taskTitleFor)}
+          after={snapshotOf(rows, taskTitleFor)}
+          reason={reason}
+          onReason={setReason}
+          pending={applying}
+          error={applyError}
+          onCancel={() => setConfirming(false)}
+          onConfirm={async () => {
+            const r = await applyOrder();
+            if (r.ok) {
+              setConfirming(false);
+              setApplied(true);
+            }
+          }}
+        />
+      )}
     </div>
   );
+}
+
+/**
+ * A queue as the confirmation reads it.
+ *
+ * The date is `completionTime` — when the work actually finishes in this order.
+ * That is the figure a reorder changes, and on this backend it is also what gets
+ * written: confirming re-chains the queue and rewrites each task's due date from
+ * exactly these numbers.
+ */
+function snapshotOf(
+  entries: readonly SimulatedEntry[],
+  titleFor: (entry: SimulatedEntry) => string,
+): QueueSnapshotRow[] {
+  return entries.map((e, i) => ({
+    taskId: e.taskId,
+    title: titleFor(e),
+    /* The index, not `position`: the rows on screen may be an order the engine
+       has not answered for yet, and a rank from the previous answer beside a
+       list in a new order is the one figure that would be wrong. */
+    rank: i + 1,
+    dueAt: e.completionTime,
+  }));
 }

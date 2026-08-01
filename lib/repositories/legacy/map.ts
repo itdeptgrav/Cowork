@@ -1,3 +1,4 @@
+import { readProfilePicture } from "@/lib/rules/people/profilePicture";
 import type { ChannelId, Employee, ScoreOverview, Viewer } from "@/lib/domain";
 import type { LegacyEmployee } from "@/lib/legacy/employees";
 import type { LegacyScoreDashboard } from "@/lib/legacy/scoring";
@@ -75,6 +76,13 @@ export function toEmployee(row: LegacyEmployee): Employee {
     displayName: row.name,
     initials: initialsOf(firstName, lastName, id),
     hue: hueFor(id),
+    /* **Already read, and thrown away here until now.** `readLegacyEmployee`
+       has been mapping `cowork_employees.profilePicUrl` into `avatarUrl` all
+       along; this mapper simply never carried it, so every avatar in this
+       product drew a monogram for people who had set a photograph years ago.
+       Same bug class as `estimatedEffortSecs: 0` — a mapper field that silently
+       dropped a value the document had. */
+    profilePictureUrl: readProfilePicture(row.avatarUrl),
     email: row.email ?? "",
     /* **The department NAME, normalised, is the department id.**
      *

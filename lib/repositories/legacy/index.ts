@@ -68,7 +68,7 @@ import {
 import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -169,6 +169,16 @@ import {
 } from "./documents.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
 import { pageSetupRefusal, readPageSetup } from "../../rules/documents/pageSetup.ts";
+import { storedPictureRefusal } from "../../rules/people/profilePicture.ts";
+import {
+  HISTORY_FIELD,
+  cascadeFromEntries,
+  entryFor,
+  groupKey,
+  readEntry,
+  type QueueDeadlineMove,
+  type StoredCascadeEntry,
+} from "./priorityCascades.ts";
 import { absenceCreditMs } from "../../rules/presence/workingTime.ts";
 import {
   grantBreakCredit,
@@ -459,6 +469,21 @@ export class LegacyRepository {
    * see their own edit and far shorter than a session.
    */
   #peopleFetchedAtMs = 0;
+  /**
+   * The picture we know is in Firestore, held until the engine agrees.
+   *
+   * **This exists because invalidating the cache would make a new photograph
+   * DISAPPEAR rather than appear.** The directory comes from the engine's
+   * `/employee/list-members`, and the engine caches that list for five minutes
+   * with nothing a browser can call to clear it. So dropping our own 60-second
+   * cache after a write simply fetches the stale list sooner and overwrites the
+   * picture the person just set, on their own screen, seconds after they set it.
+   *
+   * Writing through instead: the value is applied to the cached row, and
+   * re-applied to each freshly-fetched list until the engine's own copy carries
+   * it — at which point this retires itself.
+   */
+  #ownPicture: string | null = null;
 
   /** How long a directory or tree answer is trusted. */
   static readonly PEOPLE_TTL_MS = 60_000;
@@ -535,6 +560,15 @@ export class LegacyRepository {
       const map = new Map<string, Employee>();
       for (const row of result.data) {
         map.set(String(row.employeeId), toEmployee(row));
+      }
+      /* Our own picture, re-applied over the engine's copy of us until the two
+         agree — see `#ownPicture`. Retired the moment the engine catches up, so
+         a picture removed elsewhere is not held on screen forever. */
+      const me = String(this.#ctx.employeeId ?? "");
+      const mine = me ? map.get(me) : undefined;
+      if (this.#ownPicture !== null && mine) {
+        if (mine.profilePictureUrl === this.#ownPicture) this.#ownPicture = null;
+        else map.set(me, { ...mine, profilePictureUrl: this.#ownPicture });
       }
       /* Stamped on SUCCESS only. Stamping before the fetch would start the
          window running against an answer that might never arrive. */
@@ -4471,19 +4505,119 @@ export class LegacyRepository {
   /**
    * Acknowledging a priority cascade.
    *
-   * A cascade is a new-product concept: a record of every deadline that moved
-   * because something was promoted above it. Legacy computes none — which is
-   * why `listPendingAcknowledgements` is empty and this is unreachable in
-   * practice rather than merely refused. Wired to a refusal anyway, so that if
-   * a cascade ever does reach the gate the button says something true.
+   * **This used to refuse, on a premise that was false.** The comment here said
+   * "the Cowork engine does not record priority cascades, so there is nothing to
+   * acknowledge" — but the engine writes one per shifted task into
+   * `cowork_tasks.deadlineAutoExtendedHistory[]`, and the old frontend's
+   * `PriorityChangeAckModal.jsx` has been reading and clearing them all along.
+   * The refusal was the reason the blocking gate could never be dismissed.
+   *
+   * The write is the old modal's, verbatim: read the task, map the entries in
+   * this group to `acknowledgedByEmployee: true`, put the array back. A whole-
+   * array rewrite rather than an `arrayUnion`, because the flag is being flipped
+   * on an existing element and Firestore cannot address one by index.
    */
-  async acknowledgeCascade(): Promise<ActionResult<never>> {
+  async acknowledgeCascade(
+    cascadeId: string,
+    timerPausedTaskId: TaskId | null,
+  ): Promise<ActionResult<PriorityAcknowledgement>> {
+    const me = String(this.#ctx.employeeId ?? "");
+    if (!me)
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Sign in to acknowledge a priority change.",
+      };
+
+    const groups = await this.#pendingCascadeGroups(me);
+    const group = groups.get(cascadeId);
+    if (!group || group.length === 0)
+      /* Success, not an error. The gate polls every couple of seconds against a
+         modal with no Cancel and no close cross, so a second confirmation
+         arriving after the first landed must clear it rather than trap somebody
+         in a receipt they have already answered. */
+      return {
+        ok: true,
+        data: {
+          id: `ack_${cascadeId}`,
+          cascadeId,
+          employeeId: me,
+          affectedTaskIds: [],
+          acknowledgedAt: new Date().toISOString(),
+          timerPausedTaskId: timerPausedTaskId ? String(timerPausedTaskId) : null,
+        },
+      };
+
+    const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+
+    for (const { taskId } of group) {
+      const ref = doc(legacyDb(), "cowork_tasks", taskId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) continue;
+      const raw = (snap.data() as Record<string, unknown>)[HISTORY_FIELD];
+      if (!Array.isArray(raw)) continue;
+      const next = raw.map((row) => {
+        const entry = readEntry(row);
+        if (!entry || groupKey(entry) !== cascadeId) return row;
+        return { ...(row as Record<string, unknown>), acknowledgedByEmployee: true };
+      });
+      await updateDoc(ref, { [HISTORY_FIELD]: next });
+    }
+
+    notifyRepositoryChanged();
     return {
-      ok: false,
-      code: "invalid_state",
-      message:
-        "The Cowork engine does not record priority cascades, so there is nothing to acknowledge.",
-    } as unknown as ActionResult<never>;
+      ok: true,
+      data: {
+        id: `ack_${cascadeId}`,
+        cascadeId,
+        employeeId: me,
+        affectedTaskIds: group.map((g) => g.taskId),
+        acknowledgedAt: new Date().toISOString(),
+        timerPausedTaskId: timerPausedTaskId ? String(timerPausedTaskId) : null,
+      },
+    };
+  }
+
+  /**
+   * The unacknowledged history entries this person holds, grouped into events.
+   *
+   * The key is legacy's — `shiftedByTaskId|at` — so N tasks bumped by one action
+   * become ONE receipt rather than a wall of modals, and so this app and the old
+   * one agree about what counts as a single event.
+   */
+  async #pendingCascadeGroups(
+    employeeId: string,
+  ): Promise<Map<string, { entry: StoredCascadeEntry; taskId: string; taskTitle: string }[]>> {
+    const { collection, getDocs, query, where } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), "cowork_tasks"),
+        where("assigneeIds", "array-contains", employeeId),
+      ),
+    );
+
+    const groups = new Map<
+      string,
+      { entry: StoredCascadeEntry; taskId: string; taskTitle: string }[]
+    >();
+    for (const d of snap.docs) {
+      const data = d.data() as Record<string, unknown>;
+      const history = data[HISTORY_FIELD];
+      if (!Array.isArray(history)) continue;
+      const title = typeof data.title === "string" ? data.title : d.id;
+      for (const row of history) {
+        const entry = readEntry(row);
+        if (!entry || entry.acknowledgedByEmployee) continue;
+        const key = groupKey(entry);
+        groups.set(key, [
+          ...(groups.get(key) ?? []),
+          { entry, taskId: d.id, taskTitle: title },
+        ]);
+      }
+    }
+    return groups;
   }
 
   /**
@@ -6333,6 +6467,7 @@ export class LegacyRepository {
         senderTimerWindowSecs: resolveTimeBudget(t),
         loggedSecs: logged.get(t.id) ?? 0,
         parentTaskId: t.parentTaskId,
+        committedDueAt: t.dueAtMs === null ? null : new Date(t.dueAtMs).toISOString(),
       }));
 
     const { addWorkingSecs, explainAddWorkingSecs } = await import(
@@ -6534,7 +6669,7 @@ export class LegacyRepository {
   async #recalculateQueueDeadlines(
     employeeId: string,
     parentTaskId: string | null,
-  ): Promise<void> {
+  ): Promise<QueueDeadlineMove[]> {
     try {
       const { collection, doc, getDoc, getDocs, query, where, updateDoc } =
         await import("firebase/firestore");
@@ -6556,15 +6691,27 @@ export class LegacyRepository {
         ),
       );
 
-      const queue = queueFor({
-        tasks: peers.docs.map((d) => ({
-          taskId: d.id,
-          ...(d.data() as Record<string, unknown>),
-        })),
-        employeeId,
-        parentTaskId,
-      });
-      if (queue.length === 0) return;
+      const raw = peers.docs.map((d) => ({
+        taskId: d.id,
+        ...(d.data() as Record<string, unknown>),
+      }));
+      const queue = queueFor({ tasks: raw, employeeId, parentTaskId });
+      if (queue.length === 0) return [];
+
+      /* What each date WAS, read before anything is written. The receipt the
+         person whose queue this is has to acknowledge is built from the
+         difference, and a "previous" read after the write would be the new value
+         under an old name. */
+      const wasDue = new Map<string, string | null>();
+      const titles = new Map<string, string>();
+      for (const t of raw) {
+        const read = readTask(t as never);
+        wasDue.set(
+          String(t.taskId),
+          read?.dueAtMs == null ? null : new Date(read.dueAtMs).toISOString(),
+        );
+        titles.set(String(t.taskId), read?.title ?? String(t.taskId));
+      }
 
       const nowMs = Date.now();
       const { addWorkingSecs } = await import("../../legacy-ui/officeDueDate.js");
@@ -6586,12 +6733,20 @@ export class LegacyRepository {
          fails takes the whole queue's dates with it, and a partially-rewritten
          queue is still ordered correctly — each date was computed from the one
          before it. */
+      const applied: QueueDeadlineMove[] = [];
       for (const { taskId, dueDate } of moved) {
         await updateDoc(doc(db, "cowork_tasks", taskId), {
           dueDate,
           updatedAt: new Date(),
         });
+        applied.push({
+          taskId,
+          title: titles.get(taskId) ?? taskId,
+          previousDueAt: wasDue.get(taskId) ?? null,
+          newDueAt: dueDate,
+        });
       }
+      return applied;
     } catch (error) {
       /* Legacy's own `console.error("[drag-priority-conflict]", …)`, and its own
          decision to swallow. The RANK has already been written and is what the
@@ -6599,6 +6754,10 @@ export class LegacyRepository {
          failed would send them to do it again, and the next Play recomputes the
          date anyway. */
       console.error("[priority-deadline] queue recalculation failed:", error);
+      /* Nothing moved, as far as anybody can tell. An empty list is the honest
+         answer here — the ranks landed and the dates did not — and it keeps the
+         receipt from announcing shifts that never happened. */
+      return [];
     }
   }
 
@@ -6860,6 +7019,11 @@ export class LegacyRepository {
      * **The ORDER is still decided here.** The route writes 1..N over whatever
      * list it is given and does not sort — `calculatePriorityOrder` remains the
      * only place that decides sequence. No rule moved. */
+    /* Read BEFORE the write, or "previous" is the new value under an old name.
+       The manager's confirmation needed this same snapshot a moment ago; this is
+       the authoritative one, taken as late as possible. */
+    const before = await this.#queueSnapshot(id).catch(() => [] as CascadeOrderEntry[]);
+
     const posted = await setPriorityOrder({
       token: await this.#token(),
       employeeId: id,
@@ -6890,11 +7054,208 @@ export class LegacyRepository {
 
     /* The same re-scheduling a single rank change triggers. A reorder IS the
        drag path legacy runs this from, so it is if anything the more important
-       of the two — the whole queue has just been renumbered. */
-    await this.#recalculateQueueDeadlines(id, await this.#parentOf(String(orderedTaskIds[0])));
+       of the two — the whole queue has just been renumbered. It now REPORTS what
+       it moved, which is what makes an honest receipt possible. */
+    const moves = await this.#recalculateQueueDeadlines(
+      id,
+      await this.#parentOf(String(orderedTaskIds[0])),
+    );
 
     notifyRepositoryChanged();
-    return { ok: true, data: null };
+
+    /* ── The receipt ──────────────────────────────────────────────────────
+     *
+     * Written LAST, and never at the cost of the reorder. The ranks are already
+     * committed — transactionally, by the engine — so a failure here loses a
+     * notification, not state. Retrying the whole call would double-apply.
+     *
+     * Nothing is written when the actor is reordering their own queue: a receipt
+     * telling somebody that they themselves moved their work is a modal they
+     * cannot dismiss for news they already have. */
+    const actor = String(this.#ctx.employeeId ?? "");
+    if (actor === id) return { ok: true, data: null };
+
+    try {
+      const cascade = await this.#recordReorderReceipt({
+        employeeId: id,
+        orderedTaskIds: orderedTaskIds.map(String),
+        before,
+        moves,
+        reason: _reason,
+      });
+      return { ok: true, data: cascade };
+    } catch (error) {
+      /* Legacy's own decision on the same class of failure, and for the same
+         reason: the change the person asked for has landed. Failing it now would
+         send them to do it again. */
+      console.error("[priority-cascade] the receipt could not be written:", error);
+      return { ok: true, data: null };
+    }
+  }
+
+  /**
+   * Read a person's queue as an ordered, dated list.
+   *
+   * Used either side of a reorder, so the two snapshots are read the same way
+   * and can be compared. Titles and dates come from `readTask`, which is the one
+   * place a stored task becomes a domain one.
+   */
+  async #queueSnapshot(
+    employeeId: string,
+    orderOverride?: readonly string[],
+  ): Promise<CascadeOrderEntry[]> {
+    const { collection, getDocs, query, where } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), "cowork_tasks"),
+        where("assigneeIds", "array-contains", employeeId),
+      ),
+    );
+    const byId = new Map<string, { title: string; dueAt: string | null; rank: number }>();
+    for (const d of snap.docs) {
+      const t = readTask({ ...(d.data() as Record<string, unknown>), id: d.id } as never);
+      if (!t || t.isDeleted) continue;
+      const storedRank = t.assigneePriorities[employeeId] ?? t.priority ?? null;
+      if (
+        !isActiveWorkload({
+          taskId: t.id,
+          status: toTaskStatus(t),
+          storedRank,
+          budgetState: t.budgetNegotiation?.state ?? null,
+          accepted: t.confirmedByIds.includes(employeeId),
+        })
+      )
+        continue;
+      byId.set(t.id, {
+        title: t.title,
+        dueAt: t.dueAtMs === null ? null : new Date(t.dueAtMs).toISOString(),
+        rank: typeof storedRank === "number" ? storedRank : Number.MAX_SAFE_INTEGER,
+      });
+    }
+
+    /* The order asked for, then anything it did not name — dropping the rest
+       would report a queue shorter than the one the person actually holds. */
+    const ids = orderOverride
+      ? [
+          ...orderOverride.filter((tid) => byId.has(tid)),
+          ...[...byId.keys()].filter((tid) => !orderOverride.includes(tid)),
+        ]
+      : [...byId.keys()].sort((a, b) => byId.get(a)!.rank - byId.get(b)!.rank);
+
+    return ids.map((taskId, i) => ({
+      taskId,
+      taskTitle: byId.get(taskId)!.title,
+      rank: i + 1,
+      dueAt: byId.get(taskId)!.dueAt,
+    }));
+  }
+
+  /**
+   * Write the history entries the acknowledgement is built from.
+   *
+   * Into `cowork_tasks.deadlineAutoExtendedHistory[]` — **the engine's own
+   * field**, the one its P1 path writes and the one the old frontend's modal
+   * reads. That is deliberate: a parallel collection would leave two products
+   * keeping two records of one event, and somebody acknowledging in this app
+   * would still be shown the old app's modal for the same change.
+   *
+   * A browser-to-Firestore write with no route behind it, which is the same
+   * documented exception the timer and the duty document carry — and for the
+   * same reason: legacy's own client performs this identical write
+   * (`PriorityChangeAckModal.jsx` flips the flag the same way) and no engine
+   * route exists for it.
+   */
+  async #recordReorderReceipt(input: {
+    employeeId: string;
+    orderedTaskIds: string[];
+    before: CascadeOrderEntry[];
+    moves: QueueDeadlineMove[];
+    reason: string;
+  }): Promise<PriorityCascade | null> {
+    if (input.moves.length === 0 && input.before.length === 0) return null;
+
+    const after = await this.#queueSnapshot(input.employeeId, input.orderedTaskIds);
+    const rankBefore = new Map(input.before.map((r) => [r.taskId, r.rank]));
+    const rankAfter = new Map(after.map((r) => [r.taskId, r.rank]));
+
+    /* The task the reorder was about: the one that moved furthest, in either
+       direction. An insert moves exactly one row by more than one place. */
+    let subject = after[0] ?? input.before[0] ?? null;
+    let furthest = -1;
+    for (const row of after) {
+      const was = rankBefore.get(row.taskId);
+      if (was === undefined) continue;
+      const distance = Math.abs(was - row.rank);
+      if (distance > furthest) {
+        furthest = distance;
+        subject = row;
+      }
+    }
+    if (!subject) return null;
+
+    const me = await this.getCurrentEmployee().catch(() => null);
+    const at = new Date().toISOString();
+    const { doc, updateDoc, arrayUnion } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+
+    for (const move of input.moves) {
+      /* The task that triggered it does not receive a receipt about itself. */
+      if (move.taskId === subject.taskId) continue;
+      await updateDoc(doc(legacyDb(), "cowork_tasks", move.taskId), {
+        [HISTORY_FIELD]: arrayUnion(
+          entryFor({
+            move,
+            triggeringTaskId: subject.taskId,
+            triggeringTaskTitle: subject.taskTitle,
+            previousRank: rankBefore.get(move.taskId) ?? null,
+            newRank: rankAfter.get(move.taskId) ?? null,
+            reason: input.reason,
+            changedById: String(this.#ctx.employeeId ?? ""),
+            changedByName: me?.displayName ?? "",
+            at,
+            queueBefore: input.before,
+            queueAfter: after,
+          }),
+        ),
+      });
+    }
+
+    return {
+      id: `${subject.taskId}|${at}`,
+      triggeringTaskId: subject.taskId,
+      triggeringTaskTitle: subject.taskTitle,
+      employeeId: input.employeeId,
+      reason: input.reason || "No reason was given.",
+      changedById: String(this.#ctx.employeeId ?? ""),
+      changedByName: me?.displayName ?? "",
+      effects: input.moves
+        .filter((m) => m.taskId !== subject.taskId)
+        .map((m) => ({
+          taskId: m.taskId,
+          taskTitle: m.title,
+          previousRank: rankBefore.get(m.taskId) ?? 0,
+          newRank: rankAfter.get(m.taskId) ?? 0,
+          previousDueAt: m.previousDueAt,
+          newDueAt: m.newDueAt,
+          previousWindowSecs: null,
+          newWindowSecs: null,
+          shiftedBySecs:
+            m.previousDueAt === null
+              ? 0
+              : Math.max(
+                  0,
+                  Math.round(
+                    (Date.parse(m.newDueAt) - Date.parse(m.previousDueAt)) / 1000,
+                  ),
+                ),
+          creditedWorkedSecs: 0,
+        })),
+      previousOrder: input.before,
+      newOrder: after,
+      createdAt: at,
+      acknowledgedAt: null,
+    };
   }
 
   /**
@@ -7142,6 +7503,84 @@ export class LegacyRepository {
   async getCurrentEmployee(): Promise<Employee | null> {
     const map = await this.#employeesById();
     return map.get(String(this.#ctx.employeeId)) ?? null;
+  }
+
+  /**
+   * Set — or remove — your own profile picture.
+   *
+   * **Self only, and there is no id parameter to make it otherwise.** Legacy's
+   * own settings page writes exactly one document, its author's
+   * (`cowork-old-frontend/app/coworking/settings/page.js:124`), and the engine
+   * exposes no route that could answer "may this person change that person's
+   * face". A method that took an id would be asking a question nothing can
+   * decide.
+   *
+   * ## Another browser-to-Firestore write, and the same named exception
+   *
+   * The engine has no endpoint for this field. `cowork_employees.profilePicUrl`
+   * is written straight from the browser by the old application today, which is
+   * both why the Firestore rules already permit it and why writing it here adds
+   * a CALLER rather than a capability — the same argument the timer,
+   * `cowork_duty_status` and `cowork_settings` rest on.
+   *
+   * The value is validated here as well as at the picker, because the size that
+   * matters is the ENCODED one and a file picker cannot know it until the canvas
+   * has run.
+   */
+  async setMyProfilePicture(
+    dataUrl: string | null,
+  ): Promise<ActionResult<Employee>> {
+    const employeeId = String(this.#ctx.employeeId ?? "");
+    if (!employeeId)
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Sign in to change your profile picture.",
+      };
+
+    if (dataUrl !== null) {
+      const refusal = storedPictureRefusal(dataUrl);
+      if (refusal)
+        return { ok: false, code: "validation_failed", message: refusal };
+    }
+
+    const { doc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    try {
+      /* `updateDoc`, never `setDoc(..., { merge: true })`: a missing employee
+         record must fail loudly rather than be created as a document holding
+         nothing but a face. */
+      await updateDoc(doc(legacyDb(), "cowork_employees", employeeId), {
+        /* LEGACY'S FIELD NAME. The old app reads this same key, so a picture set
+           here shows up there and vice versa — one picture per person, not two. */
+        profilePicUrl: dataUrl,
+      });
+    } catch (error) {
+      return {
+        ok: false,
+        code: "conflict",
+        message:
+          error instanceof Error
+            ? `Your picture could not be saved: ${error.message}`
+            : "Your picture could not be saved.",
+      };
+    }
+
+    /* Written through rather than invalidated — see `#ownPicture`. */
+    this.#ownPicture = dataUrl;
+    const map = await this.#employeesById();
+    const me = map.get(employeeId);
+    if (me) map.set(employeeId, { ...me, profilePictureUrl: dataUrl });
+    notifyRepositoryChanged();
+
+    const updated = map.get(employeeId);
+    if (!updated)
+      return {
+        ok: false,
+        code: "not_found",
+        message: "Your employee record could not be read back.",
+      };
+    return { ok: true, data: updated };
   }
 
   /**
@@ -7610,7 +8049,27 @@ export class LegacyRepository {
    * `ShellFrame` and polls every 2.5 seconds outside `useQuery`, so the
    * rejection escaped and took the whole shell down.
    */
-  async listPendingAcknowledgements() { return []; }
+  async listPendingAcknowledgements(
+    employeeId?: EmployeeId,
+  ): Promise<PriorityCascade[]> {
+    const me = String(employeeId ?? this.#ctx.employeeId ?? "");
+    if (!me) return [];
+    try {
+      const groups = await this.#pendingCascadeGroups(me);
+      return [...groups.values()]
+        .map((entries) => cascadeFromEntries({ employeeId: me, entries }))
+        .filter((c): c is PriorityCascade => c !== null)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    } catch (error) {
+      /* Never rejects. `PriorityAckGate` is mounted in `ShellFrame` and polls
+         this outside `useQuery`, so a rejection escapes and takes the whole
+         application down — which is exactly what happened when this method threw.
+         An empty list degrades to "no receipt right now"; a throw degrades to a
+         blank product. */
+      console.error("[priority-cascade] pending acknowledgements unreadable:", error);
+      return [];
+    }
+  }
 
   /**
    * Music, and the demo controls.

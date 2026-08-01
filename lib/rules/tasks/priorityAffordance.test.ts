@@ -24,6 +24,7 @@ function emp(id: string): Employee {
     displayName: id,
     initials: "XX",
     hue: 0,
+    profilePictureUrl: null,
     email: null,
     departmentId: null,
     departmentName: null,

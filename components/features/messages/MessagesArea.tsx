@@ -293,6 +293,7 @@ function ConversationRow({
             initials: p.initials,
             hue: p.hue,
             name: p.displayName,
+            src: p.profilePictureUrl,
           }))}
           overflow={Math.max(0, others.length - 2)}
         />
@@ -300,6 +301,7 @@ function ConversationRow({
         <Avatar
           initials={others[0].initials}
           hue={others[0].hue}
+          src={others[0].profilePictureUrl}
           name={others[0].displayName}
           size="md"
         />
@@ -600,6 +602,7 @@ function Thread({
               initials: p.initials,
               hue: p.hue,
               name: p.displayName,
+              src: p.profilePictureUrl,
             }))}
             overflow={Math.max(0, others.length - 3)}
           />
@@ -608,6 +611,7 @@ function Thread({
             <Avatar
               initials={others[0].initials}
               hue={others[0].hue}
+              src={others[0].profilePictureUrl}
               name={others[0].displayName}
               size="md"
             />
@@ -1003,6 +1007,7 @@ function MessageList({
                     <Avatar
                       initials={sender.initials}
                       hue={sender.hue}
+                      src={sender.profilePictureUrl}
                       name={sender.displayName}
                       size="sm"
                     />

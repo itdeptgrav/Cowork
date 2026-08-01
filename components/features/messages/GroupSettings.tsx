@@ -179,6 +179,7 @@ export function GroupSettings({
                     <Avatar
                       initials={p.initials}
                       hue={p.hue}
+                      src={p.profilePictureUrl}
                       name={p.displayName}
                       size="sm"
                     />
@@ -311,6 +312,7 @@ function AddMemberPicker({
                 <Avatar
                   initials={e.initials}
                   hue={e.hue}
+                  src={e.profilePictureUrl}
                   name={e.displayName}
                   size="sm"
                 />

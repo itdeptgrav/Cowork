@@ -1,8 +1,27 @@
+"use client";
+
+import { useState } from "react";
+
 /**
- * Monogram avatars. This build ships no photography — docs/architecture/PRODUCT.md records that
- * no real people exist in the data, and inventing faces for invented employees
- * would present synthetic material as genuine. Hues come from the field
- * palette so identity varies without introducing new colour.
+ * Avatars: a monogram by default, a photograph when the person supplied one.
+ *
+ * **This header used to say the build ships no photography.** That reasoning was
+ * sound and is now only half true, so it is restated rather than deleted: the
+ * seeded people are invented, and inventing faces for them would present
+ * synthetic material as genuine — so the fixture seeds `null` and every demo
+ * avatar is still a monogram. Real employees on the engine are a different
+ * matter. They have had photographs on `cowork_employees.profilePicUrl` for
+ * years, the old application has always drawn them, and this one was discarding
+ * the value at the mapper.
+ *
+ * So: **nothing here generates a face.** A photograph appears only where a real
+ * person put one, and the monogram is both the default and the fallback. Hues
+ * come from the field palette so identity varies without introducing new colour.
+ *
+ * A picture that fails to load falls back to the monogram rather than to a
+ * broken-image box — and the failed source is remembered rather than a boolean
+ * flag, so a person who replaces a broken picture sees the new one immediately
+ * instead of staying broken until the page reloads.
  */
 
 /* Field hues, but none darker than ~#93a5bd: the monogram is real text, and the
@@ -28,6 +47,12 @@ interface AvatarProps {
   size?: keyof typeof sizes;
   name?: string;
   className?: string;
+  /**
+   * Their picture, if they set one. Optional, so no call site is obliged to
+   * have a person record — a mail sender is an address, not an employee, and
+   * those surfaces keep their monogram honestly.
+   */
+  src?: string | null;
 }
 
 export function Avatar({
@@ -36,24 +61,47 @@ export function Avatar({
   size = "md",
   name,
   className = "",
+  src,
 }: AvatarProps) {
   const [from, to] = fieldHues[hue];
+  /* The source that FAILED, not a boolean. A person who replaces a broken
+     picture would otherwise keep their monogram until the page reloaded. */
+  const [failed, setFailed] = useState<string | null>(null);
+  const photo = src && src !== failed ? src : null;
 
   return (
     <span
-      className={`inline-grid shrink-0 place-items-center rounded-full font-medium tracking-tight text-black/85 ring-1 ring-white/40 ${sizes[size]} ${className}`}
+      className={`relative inline-grid shrink-0 place-items-center overflow-hidden rounded-full font-medium tracking-tight text-black/85 ring-1 ring-white/40 ${sizes[size]} ${className}`}
+      /* The gradient stays behind the photograph, so a data URL that has not
+         decoded yet is a monogram-coloured disc rather than a white hole. */
       style={{ background: `linear-gradient(148deg, ${from}, ${to})` }}
       role="img"
       aria-label={name ? `${name} avatar` : undefined}
       aria-hidden={name ? undefined : true}
     >
       {initials}
+      {photo && (
+        /* A raw `img`: the src is a `data:` URL, which `next/image` cannot
+           optimise and would only add a proxy hop to. */
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={photo}
+          alt=""
+          onError={() => setFailed(photo)}
+          className="absolute inset-0 h-full w-full object-cover"
+        />
+      )}
     </span>
   );
 }
 
 interface AvatarStackProps {
-  people: { initials: string; hue: 0 | 1 | 2 | 3 | 4 | 5; name: string }[];
+  people: {
+    initials: string;
+    hue: 0 | 1 | 2 | 3 | 4 | 5;
+    name: string;
+    src?: string | null;
+  }[];
   overflow?: number;
 }
 
@@ -66,6 +114,7 @@ export function AvatarStack({ people, overflow = 0 }: AvatarStackProps) {
           initials={p.initials}
           hue={p.hue}
           name={p.name}
+          src={p.src}
           size="sm"
           className="-ml-2 ring-2 ring-white/55 first:ml-0"
         />

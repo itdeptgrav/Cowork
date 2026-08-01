@@ -438,10 +438,26 @@ test("absent concepts explain themselves in the product's words", () => {
   for (const phrase of [
     "keeps no event log",
     "not part of the Cowork engine's task model",
-    "does not record priority cascades",
   ]) {
     assert.ok(source.includes(phrase), `missing explanation: ${phrase}`);
   }
+
+  /* REMOVED ON PURPOSE — "does not record priority cascades" used to be listed
+     here as an absent concept. It was never absent: the engine writes one entry
+     per shifted task into `cowork_tasks.deadlineAutoExtendedHistory[]`, and the
+     old frontend's `PriorityChangeAckModal.jsx` has been reading and clearing
+     them the whole time. The repository refused on a premise it had got wrong,
+     which is why the blocking acknowledgement gate could never be dismissed.
+
+     Asserted as an absence of the CLAIM, so the false sentence cannot come
+     back — and worded to survive this file quoting it in a comment. */
+  assert.equal(
+    /does not record priority cascades, so there is nothing to acknowledge/.test(
+      source,
+    ),
+    false,
+    "the repository is claiming again that legacy stores no cascade",
+  );
 });
 
 /* ── Due date ─────────────────────────────────────────────────────────────── */

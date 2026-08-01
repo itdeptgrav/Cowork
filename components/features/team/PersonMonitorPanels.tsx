@@ -674,6 +674,7 @@ export function CollaborationPanel({
                   <Avatar
                     initials={c.person.initials}
                     hue={c.person.hue}
+                    src={c.person.profilePictureUrl}
                     name={c.person.displayName}
                     size="sm"
                   />

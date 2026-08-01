@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Avatar } from "@/components/ui/Avatar";
+import { ProfilePicture } from "./ProfilePicture";
 import { Icon, type IconName } from "@/components/ui/Icons";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { GmailConnection } from "@/components/features/mail/GmailConnection";
@@ -159,12 +159,8 @@ export function ProfilePage() {
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center gap-3">
-        <Avatar
-          initials={p.initials}
-          hue={p.hue}
-          name={p.displayName}
-          size="lg"
-        />
+        {/* The avatar IS the control — see `ProfilePicture`. */}
+        <ProfilePicture person={p} onChanged={me.refetch} />
         <div>
           <h1 className="text-[clamp(1.25rem,1.9vw,1.625rem)] leading-tight font-light tracking-[-0.03em] text-ink">
             {p.displayName}

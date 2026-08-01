@@ -2770,3 +2770,167 @@ Where I would look first, in order:
    change: the Yjs path is untouched, but the schema is not — `blockStyle` and
    `pageBreak` add attributes and a node, and every client must run the same
    code for the CRDT to merge. An old tab open against a new one is the case.
+
+---
+
+# Session 12 — 2026-08-01 · the priority swap: drag, confirmation, receipt
+
+## 19.0 · The premise this session had to correct first
+
+Three comments in `lib/repositories/legacy/index.ts` asserted that **legacy
+neither computes nor stores a priority cascade**, and concluded that an empty
+`listPendingAcknowledgements` was *the true answer* rather than a gap. §5 of this
+document repeated it.
+
+**It is false, and it was load-bearing.** Verified in the reference repos:
+
+| | |
+|---|---|
+| `grav-cms-backend/services/taskForward.service.js:2688,2726` | writes one entry per shifted task into `cowork_tasks.deadlineAutoExtendedHistory[]` — `oldPriority`, `newPriority`, `oldDeadline`, `newDeadline`, `reason`, `changedByName`, `acknowledgedByEmployee: false`, `at` |
+| `cowork-old-frontend/components/coworking/tasks/PriorityChangeAckModal.jsx` | reads exactly those, groups by `shiftedByTaskId|at`, and flips the flag on Confirm |
+| `lib/legacy/tasks.ts:795` | `checkPriorityConflict` → `POST /cowork/task/p1-conflict-check`, **already ported and never called** |
+
+So the concept, the storage and a live consumer all existed. The refusal at
+`acknowledgeCascade` is why the blocking gate could never be dismissed, and the
+hardcoded `[]` is why it never appeared. Both are now real reads and writes of
+**the engine's own field** — not a new collection, because the old app is still
+reading that field and two records of one event would let somebody acknowledge in
+one product and be asked again by the other.
+
+**Do not "restore" the old comments.** A test now asserts the false sentence
+cannot come back (`taskActions.test.ts`).
+
+## 19.1 · The drag was not slow; four things in our own code were
+
+Reported as a laggy animation. None of it was the DnD API:
+
+1. **The panel emptied itself after every drop.** `result` was
+   `answer?.key === key ? answer.result : null`, so a drop nulled it and replaced
+   verdict, dates, queue, chips and the reason field with one line of text for
+   350ms **plus four uncached Firestore reads**. Largest single cause. Now the
+   card keeps the last answer and marks it `stale`; the order stays live (it is
+   the reader's own arrangement) and every order-dependent figure dims under
+   *"Recomputing the dates for this order…"*.
+2. **The drop indicator was an in-flow element.** Mounting it pushed the very
+   rows whose `getBoundingClientRect()` decided where it should go — positive
+   feedback, so it trailed the pointer and stalled in the gap it had just opened.
+   Now one out-of-flow line moved by `transform`.
+3. **`setOverIndex` fired on every `dragover`**, re-rendering a 680-line
+   component ~60×/s. Now one React state change per gesture: the offsets are
+   measured once at `dragstart` and the line is painted by a direct style write
+   inside `requestAnimationFrame`.
+4. **The dialog re-centred as the panel grew**, moving rows under a stationary
+   pointer. `max-h-[85vh]` + internal scroll.
+
+**And a correctness bug, not a performance one: dropping on the gap lost the
+reorder.** `onDrop` was bound per row; the dashed gap had no handler, so
+releasing where the affordance told you to aim discarded the change silently.
+`lib/help/knowledge.ts` already shipped *"I dragged a task but the order did not
+change — why?"* as an example question. The drop is bound to the LIST now.
+
+Native HTML5 DnD is **kept** — it gives a compositor-rendered drag image,
+Escape-to-cancel and edge auto-scroll for free. **Touch is still unsupported**
+(§9.8 stands), but the mechanics now live behind `lib/hooks/useListReorder.ts`
+and a pointer backend is a one-file swap.
+
+## 19.2 · Nothing writes a priority without a confirmation now
+
+There were **two** reorder surfaces and only one of them was even deliberate:
+
+- `FeasibilityPreview` (in `PriorityDialog`) — an Apply button that wrote.
+- **`TaskTable` rows — wrote the moment you let go**, with a reason nobody typed:
+  `"Reordered from the task list"`. An accidental drag rearranged somebody's week
+  and sent them a receipt citing a sentence no human wrote.
+
+Both now open `PriorityConfirmDialog` and write nothing until Confirm. The
+wording is legacy's own (`page.js:5660`): *Confirm Priority Change*,
+`Moving "{title}"`, `P{old} → P{new}`, *Reason for this change*, placeholder
+*"e.g. Client escalation, needs to ship today"*, Cancel beside Confirm.
+
+**Added beyond legacy**, because legacy could not answer the question people
+actually have: the list is the WHOLE queue, twice — *Now* and *After this
+change* — with the date each task lands in each order and a per-row *later by /
+earlier by / no change*.
+
+## 19.3 · The dates in that dialog had to be made true first
+
+**The existing preview's dates are not the dates the write produces.**
+`previewDeadlineFeasibility` chains from `Date.now()`; `#recalculateQueueDeadlines`
+chains from `anchorMsFor` — today's office opening, or the leader's start. At
+14:00 those differ by the whole morning.
+
+`Feasibility` therefore gained `baselineQueue`: the queue as it stands today,
+subject included, chained from **the same `nowMs`** as the simulation. Before and
+after come from ONE call — a second call would re-scan the whole task collection
+AND stamp a different clock, so every row would show a drift nobody caused.
+
+**`baselineQueue` is a THIRD chain, not the existing `baseline`.** That one is
+the queue with the subject *removed*, which is what `movedLaterSeconds` means;
+merging them would silently rewrite every "delayed +Xh" figure in the product.
+
+`SimulatedEntry` also gained `committedDueAt` — the stored commitment — kept in a
+separate field from `completionTime` because one is a promise and the other is a
+projection.
+
+## 19.4 · One diff rule, two dialogs
+
+`lib/rules/tasks/priorityPreview.ts` — `diffQueues`, `summariseDiff`,
+`subjectOf`, `isNoOpReorder`. The manager's confirmation and the employee's
+receipt both read it, so they cannot describe one reorder differently.
+
+Two rules worth not re-deriving:
+
+- **Positions and deadlines are counted separately.** A reorder can move five
+  rows and no deadline. Saying "5 deadlines moved" for that is the exact defect
+  `priorityCascade.ts` was rewritten over.
+- **`subjectOf` keys on MAGNITUDE, not direction.** Writing its test caught the
+  first version: it preferred promotions, so dragging a task to the *bottom*
+  named one of the rows it passed — a task the reader never touched. Only the
+  dragged row can move by more than one place.
+
+## 19.5 · Files
+
+| File | Why |
+|---|---|
+| `lib/rules/ui/dragReorder.ts` (+test) | insertion index, the downward off-by-one, drawn-at offset — was a regex against component source, is now 13 tests |
+| `lib/hooks/useListReorder.ts` | the drag. One state change per gesture; list owns the drop |
+| `lib/rules/tasks/priorityPreview.ts` (+test) | the before/after diff both dialogs read |
+| `components/features/tasks/PriorityConfirmDialog.tsx` | the confirmation, in legacy's words |
+| `components/features/tasks/PriorityReorderConfirm.tsx` | fetches the two queues for the task-list drag |
+| `lib/repositories/legacy/priorityCascades.ts` | the engine's history entry, read and written |
+| `lib/rules/tasks/deadlineFeasibility.ts` | `baselineQueue`, `committedDueAt` |
+
+## 19.6 · Assertions changed on purpose
+
+Seven, each with the reason recorded **in the test** (§17.8's rule):
+
+- `feasibilityPreview.test.ts` — the blanking rule became the `stale` rule; the
+  drag handlers moved to the hook; the off-by-one regex became a real test in
+  `dragReorder.test.ts`; the reason moved into the confirmation.
+- `taskActions.test.ts` — *"does not record priority cascades"* removed from the
+  absent-concepts list, and its return banned.
+- `workMap.test.ts` — was *"empty because legacy has no such queue"*, an argument
+  from a false premise. It now pins the property that actually matters: the
+  method must **never reject**, because `PriorityAckGate` polls it from
+  `ShellFrame` outside `useQuery` and a throw blanks the whole application.
+
+## 19.7 · Not verified
+
+**No browser.** tsc clean, 2230 tests passing, `next build` exit 0,
+check-secrets clean. Everything below is where I would look first:
+
+1. **The drag, on a real screen.** The FLIP, the insertion line and the
+   measure-once assumption are all untested outside types. §16.6 still stands: no
+   frame rate has ever been measured in this product.
+2. **The receipt, end to end, with two accounts.** A manager reorders; the
+   employee's gate must appear, list both orders, and Confirm must clear it — and
+   must clear the OLD app's modal too, since both read the same field.
+3. **`#queueSnapshot` runs three Firestore reads per reorder** (before, after,
+   and the recompute's own). Acceptable for a deliberate action, but unmeasured.
+4. **The engine's own P1 path also writes this field.** A reorder made in the old
+   app and one made here now both produce receipts; they have not been seen
+   interleaved.
+5. **No notification is emitted** — the gate's comment claimed one was, and that
+   claim is now corrected rather than implemented. The engine's `/priority-order`
+   route only renumbers ranks. A person who never opens the app learns nothing
+   until they do.

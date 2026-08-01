@@ -17,6 +17,7 @@ const code = (p: string) =>
 
 const CARD = "components/features/tasks/FeasibilityPreview.tsx";
 const DIALOG = "components/features/tasks/PriorityDialog.tsx";
+const CONFIRM = "components/features/tasks/PriorityConfirmDialog.tsx";
 
 test("the component only calls the repository", () => {
   const src = code(CARD);
@@ -31,18 +32,20 @@ test("the component only calls the repository", () => {
     assert.equal(src.includes(own), false, `the card computes "${own}" itself`);
   }
 
-  /* `splice` IS allowed — rearranging a list of ids is what a drag is, and the
-     result goes straight back to the engine. What is banned is deciding what
-     an order MEANS. So the line is drawn at the two reorder helpers: splice
-     anywhere else would be the card doing queue logic of its own. */
+  /* CHANGED ON PURPOSE — was 4 splices in two helpers.
+     The drag's own arithmetic (which gap the pointer is over, and the
+     off-by-one when a row moves downward past its own place) moved OUT of this
+     component into `lib/rules/ui/dragReorder.ts`, where it is tested against
+     inputs instead of asserted against this file's text. Two splices are left,
+     both in `moveSubjectTo`, which rearranges a list of ids in response to a
+     chip — still a drag by other means, still not deciding what an order MEANS.
+     Splice anywhere else would be the card doing queue logic of its own. */
   const splices = (src.match(/\.splice\(/g) ?? []).length;
-  assert.equal(splices, 4, "splice moved outside the two reorder helpers");
-  for (const helper of ["const commitDrag", "const moveSubjectTo"]) {
-    const at = src.indexOf(helper);
-    assert.ok(at !== -1, `${helper} is gone`);
-    const body = src.slice(at, src.indexOf("\n  };", at));
-    assert.equal((body.match(/\.splice\(/g) ?? []).length, 2);
-  }
+  assert.equal(splices, 2, "splice moved outside moveSubjectTo");
+  const helperAt = src.indexOf("const moveSubjectTo");
+  assert.ok(helperAt !== -1, "moveSubjectTo is gone");
+  const body = src.slice(helperAt, src.indexOf("\n  };", helperAt));
+  assert.equal((body.match(/\.splice\(/g) ?? []).length, 2);
 });
 
 test("no arithmetic on the result beyond flipping a sign for display", () => {
@@ -80,15 +83,34 @@ test("the budget form shows the preview between the number and the button", () =
   assert.match(form.slice(0, 2600), /estimatedWorkSeconds=\{hours \* 3600\}/);
 });
 
-test("changing the budget re-asks rather than showing the old verdict", () => {
-  /* A verdict computed for four hours must never sit beside a dropdown reading
-     twelve. The answer carries the question it answers. */
+test("a figure is never shown as an answer to a question it does not answer", () => {
+  /* CHANGED ON PURPOSE — this used to pin `answer?.key === key ? answer.result
+     : null`, i.e. the whole card emptying itself the instant any input changed.
+     That was the largest part of the reported drag lag: every drop replaced the
+     verdict, the dates, the queue, the chips and the reason field with one line
+     of text for the settle delay plus a four-way Firestore read, and it
+     destroyed the DOM nodes a reorder animation needs.
+
+     The RULE has not changed — a verdict computed for four hours must never sit
+     beside a dropdown reading twelve. What changed is how it is kept: the card
+     holds the last answer and marks it `stale`, and every figure the pending
+     input invalidates is dimmed under an explicit label. Restoring the blanking
+     would be a regression, which is why this assertion is worded as the rule
+     rather than as the expression. */
   const src = code(CARD);
   /* Keyed on the PREVIEWED position, which may be one being tried rather than
      the saved one. */
   assert.match(src, /const key = `\$\{employeeId\}\|\$\{position\}\|\$\{estimatedWorkSeconds\}/);
-  assert.match(src, /answer\?\.key === key \? answer\.result : null/);
+  assert.match(src, /const stale = answer !== null && answer\.key !== key;/);
+  /* The first load still has nothing to show, and says so. */
   assert.match(src, /Checking deadline impact/);
+  /* And the recomputing state is named rather than left as a silent dimming. */
+  assert.match(src, /Recomputing the dates for this order/);
+  /* Every order-dependent figure carries the mark. */
+  assert.ok(
+    (src.match(/stale \? "opacity-45" : ""/g) ?? []).length >= 2,
+    "a date or a delay is shown at full strength while it is being recomputed",
+  );
 });
 
 test("the assignee is named on the card", () => {
@@ -303,10 +325,24 @@ test("budget selection is offered only where the budget is being set", () => {
 /* ── Drag and drop ────────────────────────────────────────────────────────── */
 
 test("rows are draggable and the dragged order is what the engine is asked", () => {
+  /* CHANGED ON PURPOSE — the handlers were per-row and inline; they now come
+     from `useListReorder`. The drop moved to the LIST, which is a fix and not a
+     refactor: with per-row handlers, releasing over the gap between two rows hit
+     no handler at all and the reorder was silently discarded. */
   const src = code(CARD);
-  assert.match(src, /draggable=\{reorderable\}/);
-  assert.match(src, /onDragStart=/);
-  assert.match(src, /onDrop=/);
+  assert.match(src, /\{\.\.\.itemProps\(e\.taskId\)\}/);
+  assert.match(src, /\{\.\.\.dragListProps\}/);
+  /* The list carries the drop. This is the pin on the lost-drop bug: with the
+     handler on each row, releasing over the gap between two rows hit nothing and
+     the reorder was discarded without a word. */
+  assert.match(src, /ref=\{setListNode\}/);
+  assert.match(src, /enabled: reorderable,/);
+  /* No per-row drag handler survives — that is the pin on the lost drop. */
+  assert.equal(
+    /onDragOver=|onDragStart=|onDrop=/.test(src),
+    false,
+    "a drag handler is bound in the component again",
+  );
   /* The order goes back INTO the engine. The component never turns a position
      into a date — that is the whole point of the override existing. */
   assert.match(src, /orderOverride: order/);
@@ -318,15 +354,30 @@ test("rows are draggable and the dragged order is what the engine is asked", () 
 });
 
 test("a downward drop lands where the gap is, not one row short", () => {
-  /* The gap index counts the dragged row while it is still in place. Off by
-     one here means every downward drag silently lands too high. */
-  assert.match(code(CARD), /const to = overIndex > from \? overIndex - 1 : overIndex;/);
+  /* CHANGED ON PURPOSE — this was a regex reading this component for the
+     expression `const to = overIndex > from ? overIndex - 1 : overIndex;`,
+     because there was no function to test. There is now: `moveWithin` in
+     `lib/rules/ui/dragReorder.ts`, and `dragReorder.test.ts` asserts the
+     behaviour directly, including the case the regex could never reach — that a
+     row can be dragged all the way to the BOTTOM.
+
+     What is pinned here is that the component did not grow its own copy. */
+  const src = code(CARD);
+  assert.equal(
+    /overIndex|const to = /.test(src),
+    false,
+    "the component is doing insertion arithmetic again",
+  );
+  assert.match(src, /useListReorder/);
 });
 
 test("dragging never writes a priority", () => {
+  /* CHANGED ON PURPOSE — the drop handler was `commitDrag` in this file; it is
+     now the hook's `onReorder` callback. The GUARANTEE is unchanged and is what
+     this test is for: a drop rearranges local state and nothing reaches the
+     repository until somebody confirms. */
   const src = code(CARD);
-  /* The drop handler sets local state and nothing else. */
-  assert.match(src, /const commitDrag = \(\) => \{/);
+  assert.match(src, /onReorder: \(next\) => \{/);
   assert.match(src, /setOrder\(next\)/);
   /* `reorderPriorities` appears exactly once, and it is the button's. */
   assert.equal(
@@ -336,19 +387,83 @@ test("dragging never writes a priority", () => {
   );
   const call = src.slice(src.indexOf("reorderPriorities"));
   assert.equal(
-    /onDrop|onDragEnd|commitDrag/.test(call.slice(0, 200)),
+    /onDrop|onDragEnd|onReorder/.test(call.slice(0, 200)),
     false,
     "a drag reaches the write",
   );
 });
 
 test("applying is explicit, reasoned, and refuses an empty reason", () => {
+  /* CHANGED ON PURPOSE — the reason field and the disabled expression used to
+     sit on this card, and pressing "Apply this priority" wrote immediately.
+     A confirmation now stands in front of the write, and the reason moved into
+     it, which is where legacy put both.
+
+     The RULE is unchanged and is what this test is for: nothing is written
+     without an explicit press, and no priority change is made without a reason
+     the person whose queue moved will be shown. */
   const src = code(CARD);
+  const confirm = code(CONFIRM);
+
   assert.match(src, /Apply this priority/);
-  assert.match(src, /disabled=\{applying \|\| reason\.trim\(\)\.length === 0\}/);
-  /* Same rule as every other priority change: the person whose queue moved is
-     told who moved it and why. Reordering from a planner is not exempt. */
+  /* The button OPENS the confirmation. It must not write. */
+  assert.match(src, /onClick=\{\(\) => setConfirming\(true\)\}/);
+  const applyAt = src.indexOf("Apply this priority");
+  assert.ok(applyAt !== -1, "the apply button is gone");
+  assert.equal(
+    /reorderPriorities/.test(src.slice(applyAt - 700, applyAt)),
+    false,
+    "the apply button reaches the write without a confirmation",
+  );
+
+  /* The write is still this card's, and still exactly one call — moving it into
+     the dialog would give the product a second path that writes an order. */
   assert.match(src, /reorderPriorities\(employeeId \?\? "", applyIds, reason\.trim\(\)\)/);
+  assert.match(src, /onConfirm=\{async \(\) => \{/);
+
+  /* And the refusal moved with the field. */
+  assert.match(confirm, /const blank = reason\.trim\(\)\.length === 0;/);
+  assert.match(confirm, /disabled=\{pending \|\| blank\}/);
+});
+
+test("the confirmation shows the whole queue, before and after, with dates", () => {
+  /* The point of the dialog. A list of only the rows that moved — which is what
+     legacy showed — cannot answer "what does my week look like after this",
+     and a rank change with no date beside it cannot be weighed at all. */
+  const confirm = code(CONFIRM);
+  assert.match(confirm, /Now/);
+  assert.match(confirm, /After this change/);
+  assert.match(confirm, /diffQueues\(before, after\)/);
+  /* Both halves come from ONE engine answer, so they share a clock. Two calls
+     would stamp two different `Date.now()`s and every row would show a drift
+     nobody caused. */
+  const src = code(CARD);
+  assert.match(src, /snapshotOf\(result\.baselineQueue, taskTitleFor\)/);
+  assert.match(src, /snapshotOf\(rows, taskTitleFor\)/);
+  /* And the dialog computes no dates of its own. */
+  assert.equal(
+    /chainDeadlines|addWorkingSecs|Date\.parse\(/.test(confirm),
+    false,
+    "the confirmation is computing dates itself",
+  );
+});
+
+test("the confirmation can be cancelled; the employee's receipt cannot", () => {
+  /* Two dialogs, two different situations. Before the write there is a decision
+     to decline, so Cancel and Escape both exist. Afterwards the change has
+     already happened and there is nothing to decline — the receipt has one
+     action, and no cross, no backdrop dismissal and no Escape. */
+  const confirm = code(CONFIRM);
+  assert.match(confirm, /Cancel/);
+  assert.match(confirm, /e\.key === "Escape" && !pending/);
+
+  const gate = code("components/features/tasks/PriorityAckGate.tsx");
+  assert.equal(/Cancel|Dismiss|onClose/.test(gate), false, "the receipt offers a way out");
+  assert.equal(
+    /addEventListener\("keydown"/.test(gate),
+    false,
+    "the receipt can be escaped",
+  );
 });
 
 test("the unsaved state is stated, not implied", () => {
@@ -379,7 +494,10 @@ test("the chips and the drag agree about where the task is", () => {
 
 test("reordering is offered only where a position can be tried, and never on one row", () => {
   const src = code(CARD);
-  assert.match(src, /const reorderable = selectable && result\.simulatedQueue\.length > 1;/);
+  /* CHANGED ON PURPOSE — read from the rows ON SCREEN rather than from the
+     engine's last answer, because the two differ for as long as a dragged order
+     is being recomputed, and the handles must not disappear mid-gesture. */
+  assert.match(src, /const reorderable = selectable && rowIds\.length > 1;/);
   /* The priority dialog now mounts THIS panel as its drag reorder control — it
      passes `selectable`, so the handles appear there and the write is this
      panel's `reorderPriorities`. One drag in the product, not two. */

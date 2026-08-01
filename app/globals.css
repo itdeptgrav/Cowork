@@ -1066,3 +1066,30 @@
     outline: 0 !important;
   }
 }
+
+
+/* ── Reordering a list by dragging ────────────────────────────────────────────
+ *
+ * Two transitions, and they are the whole of the drag's motion. Both are
+ * transitions rather than animations or JS, which is the point: the
+ * low-performance mode and `prefers-reduced-motion` already clamp every
+ * transition in the document to 0.01ms, so neither needs to read a profile and
+ * neither can be forgotten. The element still arrives exactly where it belongs;
+ * only the travel is removed.
+ */
+
+/* The insertion line. `transform` and `opacity` only — the hook writes both
+   directly, outside React, and a layout property here would put the browser
+   back into reflow on a pointer move. */
+.drop-line {
+  transition:
+    transform 120ms cubic-bezier(0.32, 0.72, 0, 1),
+    opacity 120ms cubic-bezier(0.32, 0.72, 0, 1);
+  will-change: transform;
+}
+
+/* Rows settling into their new places after a drop (FLIP). The transform is set
+   and cleared by the hook; this is only how long it takes. */
+.flip-row {
+  transition: transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}

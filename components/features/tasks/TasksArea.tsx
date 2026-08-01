@@ -524,7 +524,7 @@ function Workload() {
                 className="grid grid-cols-2 gap-2 px-4 py-2.5 deck:grid-cols-[minmax(0,1fr)_90px_90px_90px_110px] deck:items-center"
               >
                 <span className="flex items-center gap-2.5">
-                  <Avatar initials={p.initials} hue={p.hue} size="sm" />
+                  <Avatar initials={p.initials} hue={p.hue} src={p.profilePictureUrl} size="sm" />
                   <span className="min-w-0">
                     <span className="block truncate text-sm text-ink">
                       {p.displayName}

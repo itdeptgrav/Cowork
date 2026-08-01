@@ -125,6 +125,10 @@ function emp(
     email: `${first.toLowerCase()}.${last.toLowerCase()}@cowork.example`,
     initials: `${first[0]}${last[0]}`,
     hue,
+    /* The seed ships no faces. Inventing one for an invented person would
+       present synthetic material as genuine — the same reason `Avatar` draws a
+       monogram. A real upload in the demo still works and still shows. */
+    profilePictureUrl: null,
     departmentId: dept.toLowerCase(),
     departmentName: dept,
     designation,

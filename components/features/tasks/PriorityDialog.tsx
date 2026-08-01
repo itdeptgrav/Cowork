@@ -86,7 +86,11 @@ export function PriorityDialog({
         className="absolute inset-0 cursor-default bg-[var(--body-bg)]/60 backdrop-blur-[4px]"
       />
 
-      <div className="frost-panel relative w-[min(520px,96vw)] rounded-panel px-6 py-5">
+      {/* Bounded and scrolling INSIDE, because the panel is centred: a queue
+          long enough to grow the panel re-centres it, which moves every row
+          under a stationary pointer mid-drag and makes the measured offsets
+          wrong. Native drag-and-drop auto-scrolls this container for free. */}
+      <div className="frost-panel relative max-h-[85vh] w-[min(560px,96vw)] overflow-y-auto overscroll-contain rounded-panel px-6 py-5">
         <h2
           id="prio-title"
           className="text-[22px] leading-tight font-light tracking-[-0.03em] text-ink"
@@ -125,6 +129,7 @@ export function PriorityDialog({
             taskId={view.task.id}
             estimatedWorkSeconds={workSecs}
             committedDeadline={view.task.deadline.dueAt}
+            subjectTitle={view.task.title}
             selectable
           />
         ) : (

@@ -67,6 +67,7 @@ export function GroupsPage() {
                       initials: m.initials,
                       hue: m.hue,
                       name: m.displayName,
+                      src: m.profilePictureUrl,
                     }))}
                     overflow={Math.max(0, members.length - 4)}
                   />
@@ -120,6 +121,7 @@ export function GroupDetail({ groupId }: { groupId: string }) {
                 <Avatar
                   initials={m.initials}
                   hue={m.hue}
+                  src={m.profilePictureUrl}
                   name={m.displayName}
                   size="sm"
                 />
@@ -227,6 +229,7 @@ export function MeetingsPage() {
                             initials: p.initials,
                             hue: p.hue,
                             name: p.displayName,
+                            src: p.profilePictureUrl,
                           }))}
                           overflow={Math.max(0, parts.length - 3)}
                         />
@@ -298,6 +301,7 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
                 <Avatar
                   initials={p.initials}
                   hue={p.hue}
+                  src={p.profilePictureUrl}
                   name={p.displayName}
                   size="sm"
                 />

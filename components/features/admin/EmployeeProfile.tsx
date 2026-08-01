@@ -129,7 +129,7 @@ function Header({
 }) {
   return (
     <div className="mt-2 flex flex-wrap items-center gap-4">
-      <Avatar initials={p.initials} hue={p.hue} name={p.displayName} size="lg" />
+      <Avatar initials={p.initials} hue={p.hue} src={p.profilePictureUrl} name={p.displayName} size="lg" />
       <div className="min-w-0 flex-1">
         <h1 className="truncate text-[clamp(1.25rem,1.9vw,1.625rem)] leading-tight font-light tracking-[-0.03em] text-ink">
           {p.displayName}

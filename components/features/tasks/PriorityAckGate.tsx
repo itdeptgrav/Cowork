@@ -21,13 +21,19 @@ import {
  * commitments silently changed must see that they changed. What legacy got
  * wrong, and this fixes:
  *
- *  · Legacy wrote the acknowledgement client-side into a history array. Here it
- *    goes through the repository like every other mutation.
- *  · Legacy notified only the manager. The affected person now gets a
- *    notification too, so this modal is a confirmation rather than the first
- *    they hear of it.
+ *  · Legacy wrote the acknowledgement client-side into a history array. It still
+ *    lands in the same field — `cowork_tasks.deadlineAutoExtendedHistory[]`, the
+ *    one the engine writes and the old app reads — but through the repository
+ *    like every other mutation, so the old modal and this one clear each other.
  *  · Legacy's modal appeared only if the person happened to open the tasks
  *    page. This lives in the shell, so it appears wherever they are.
+ *
+ * **No notification is emitted.** This comment used to claim the affected person
+ * also receives one; nothing on the production stack sends it — the engine's
+ * `/priority-order` route only renumbers ranks. The mock does emit one, so the
+ * two repositories genuinely differ, and stating otherwise here made a false
+ * promise about the one case that matters: somebody who is not looking at the
+ * app. This modal is what they get, and it waits for them.
  */
 export function PriorityAckGate() {
   const { uiPollMs } = usePerformanceProfile();
@@ -79,7 +85,10 @@ export function PriorityAckGate() {
       {/* No onClick — this cannot be dismissed by clicking outside. */}
       <div className="absolute inset-0 bg-[var(--body-bg)]/70 backdrop-blur-[6px]" />
 
-      <div className="frost-panel relative w-[min(520px,96vw)] rounded-panel px-6 py-5">
+      {/* Bounded, because it now lists the whole queue: a person with fifteen
+          tasks would otherwise get a modal taller than the window, with the only
+          button on it below the fold and no way to scroll to it. */}
+      <div className="frost-panel relative max-h-[88vh] w-[min(560px,96vw)] overflow-y-auto overscroll-contain rounded-panel px-6 py-5">
         <p className="text-[11px] font-medium tracking-[0.09em] text-ink-muted uppercase">
           Acknowledgement required
         </p>
@@ -108,6 +117,50 @@ export function PriorityAckGate() {
           <p className="text-xs text-ink-faint">Reason given</p>
           <p className="mt-1 text-sm text-ink">{pending.reason}</p>
         </div>
+
+        {/* THE ORDER, before and after.
+            The list below it names only the tasks whose deadline moved, which is
+            the right answer to "what did this cost me" and the wrong one to
+            "what am I doing next" — a reorder can change the whole sequence and
+            move no date at all. Both questions get asked, so both are answered.
+
+            Absent on a record written before the orders were carried, in which
+            case the effects list stands alone rather than an empty table. */}
+        {(pending.newOrder?.length ?? 0) > 0 && (
+          <div className="mt-4">
+            <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+              Your order now
+            </p>
+            <ol className="mt-1.5 divide-y divide-hairline">
+              {(pending.newOrder ?? []).map((row) => {
+                const was =
+                  (pending.previousOrder ?? []).find((p) => p.taskId === row.taskId) ?? null;
+                const moved = was !== null && was.rank !== row.rank;
+                return (
+                  <li
+                    key={row.taskId}
+                    className="flex flex-wrap items-baseline gap-x-2.5 gap-y-0.5 py-1.5"
+                  >
+                    <span data-figure className="w-7 shrink-0 text-[11px] text-ink">
+                      P{row.rank}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[13px] text-ink">
+                      {row.taskTitle}
+                    </span>
+                    {moved && (
+                      <Chip tone="neutral">
+                        was P{was!.rank}
+                      </Chip>
+                    )}
+                    <span className="text-[11px] text-ink-faint">
+                      {row.dueAt ? formatDateTime(row.dueAt) : "No date"}
+                    </span>
+                  </li>
+                );
+              })}
+            </ol>
+          </div>
+        )}
 
         <ul className="mt-4 divide-y divide-hairline empty:mt-0">
           {pending.effects.map((e) => (

@@ -25,7 +25,10 @@ import {
   parseRef,
   rangeLabel,
   readSheet,
+  readWorkbook,
   writeSheet,
+  writeWorkbook,
+  type Workbook,
 } from "./grid.ts";
 
 /* ── Column addressing ────────────────────────────────────────────────────── */
@@ -606,6 +609,80 @@ test("a chart reads series from rows when the orientation says so", () => {
     cols.series.map((s) => s.name),
     ["Q1", "Q2"],
   );
+});
+
+/* ── Workbooks (sheet tabs) ───────────────────────────────────────────────── */
+
+test("a workbook round-trips its sheets, tab names/colours and active id", () => {
+  const wb: Workbook = {
+    sheets: [
+      {
+        id: "a",
+        name: "Data",
+        color: "#ff0000",
+        cells: { A1: "1" },
+        styles: {},
+        rows: 200,
+        cols: 26,
+      },
+      {
+        id: "b",
+        name: "Summary",
+        cells: { A1: "=2+2" },
+        styles: { A1: { bold: true } },
+        rows: 100,
+        cols: 10,
+      },
+    ],
+    activeId: "b",
+  };
+  const back = readWorkbook(writeWorkbook(wb));
+  assert.equal(back.sheets.length, 2);
+  assert.equal(back.sheets[0].id, "a");
+  assert.equal(back.sheets[0].name, "Data");
+  assert.equal(back.sheets[0].color, "#ff0000");
+  assert.equal(back.sheets[0].cells.A1, "1");
+  assert.equal(back.sheets[1].cells.A1, "=2+2");
+  assert.deepEqual(back.sheets[1].styles.A1, { bold: true });
+  assert.equal(back.activeId, "b");
+});
+
+test("a legacy single-sheet body opens as a one-tab workbook", () => {
+  const legacy = writeSheet({
+    cells: { A1: "hi" },
+    styles: {},
+    rows: 200,
+    cols: 26,
+  });
+  const wb = readWorkbook(legacy);
+  assert.equal(wb.sheets.length, 1, "wrapped as one tab");
+  assert.equal(wb.sheets[0].name, "Sheet 1");
+  assert.equal(wb.sheets[0].cells.A1, "hi");
+  assert.equal(wb.activeId, wb.sheets[0].id);
+});
+
+test("an empty or corrupt body opens as a blank one-tab workbook", () => {
+  for (const j of [null, undefined, "", "{bad", "42", "[]"]) {
+    const wb = readWorkbook(j as string | null | undefined);
+    assert.equal(wb.sheets.length, 1, `blank for ${JSON.stringify(j)}`);
+    assert.equal(wb.sheets[0].id, "sheet-1");
+    assert.equal(wb.sheets[0].name, "Sheet 1");
+  }
+});
+
+test("workbook reading de-duplicates ids and clamps a bad active id", () => {
+  const wb = readWorkbook(
+    JSON.stringify({
+      sheets: [
+        { id: "dup", name: "One", cells: {}, styles: {}, rows: 10, cols: 5 },
+        { id: "dup", name: "Two", cells: {}, styles: {}, rows: 10, cols: 5 },
+      ],
+      activeId: "missing",
+    }),
+  );
+  assert.equal(wb.sheets.length, 2);
+  assert.notEqual(wb.sheets[0].id, wb.sheets[1].id, "ids made unique");
+  assert.equal(wb.activeId, wb.sheets[0].id, "unknown active id falls to first");
 });
 
 /* ── Error explanations ───────────────────────────────────────────────────── */

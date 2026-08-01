@@ -200,6 +200,7 @@ function ProjectCard({ view }: { view: ProjectView }) {
         <Avatar
           initials={owner.initials}
           hue={owner.hue}
+          src={owner.profilePictureUrl}
           name={owner.displayName}
           size="sm"
         />
@@ -275,6 +276,7 @@ function ProjectCard({ view }: { view: ProjectView }) {
             initials: m.employee.initials,
             hue: m.employee.hue,
             name: m.employee.displayName,
+            src: m.employee.profilePictureUrl,
           }))}
           overflow={Math.max(0, members.length - 3)}
         />
@@ -331,6 +333,7 @@ function ProjectTable({ rows }: { rows: ProjectView[] }) {
               <Avatar
                 initials={v.owner.initials}
                 hue={v.owner.hue}
+                src={v.owner.profilePictureUrl}
                 name={v.owner.displayName}
                 size="sm"
               />

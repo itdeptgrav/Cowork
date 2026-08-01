@@ -49,6 +49,7 @@ function emp(id: string, over: Partial<Employee> = {}): Employee {
     displayName: id,
     initials: "XX",
     hue: 0,
+    profilePictureUrl: null,
     email: null,
     departmentId: null,
     departmentName: null,

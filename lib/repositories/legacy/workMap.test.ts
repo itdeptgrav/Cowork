@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   readMeetingStatus,
@@ -204,10 +205,20 @@ test("every shell-mounted read resolves rather than throwing", async () => {
   }
 });
 
-test("priority acknowledgements are empty because legacy has no such queue", async () => {
-  /* Not a placeholder. The only "acknowledge" in cowork-old-backend is the
-     Accountant module's audit notes — a different product. Cowork's priority is
-     a numeric field with no acknowledgement step, so "none pending" is true. */
+test("priority acknowledgements degrade to empty; they never reject", async () => {
+  /* CHANGED ON PURPOSE — this used to assert that an empty list was THE TRUE
+     ANSWER, on the premise that "Cowork's priority is a numeric field with no
+     acknowledgement step". That premise was wrong. The engine writes a record
+     per shifted task into `cowork_tasks.deadlineAutoExtendedHistory[]`
+     (`taskForward.service.js`, `acknowledgedByEmployee: false`) and legacy's own
+     `PriorityChangeAckModal.jsx` reads it. The repository now reads the same
+     field, so an empty list means "nothing pending", not "no such concept".
+
+     What still holds, and is the reason this test exists: it must never reject.
+     `PriorityAckGate` is mounted in `ShellFrame` and polls this outside
+     `useQuery`, so a rejection escapes and blanks the whole application — which
+     is what happened when the method threw. With no credentials, as here, the
+     read fails and the answer degrades to empty rather than to a broken app. */
   const { LegacyRepository } = await import("./index.ts");
   const repo = new LegacyRepository({
     getToken: async () => null,
@@ -216,6 +227,12 @@ test("priority acknowledgements are empty because legacy has no such queue", asy
     hasManager: false,
   });
   assert.deepEqual(await repo.listPendingAcknowledgements(), []);
+
+  /* And the read is a real one now — pinned so the method cannot quietly revert
+     to a hardcoded `[]` and take the employee's receipt with it. */
+  const source = readFileSync("lib/repositories/legacy/index.ts", "utf8");
+  assert.match(source, /#pendingCascadeGroups/);
+  assert.match(source, /deadlineAutoExtendedHistory|HISTORY_FIELD/);
 });
 
 /* ── People / team surfaces ───────────────────────────────────────────────── */

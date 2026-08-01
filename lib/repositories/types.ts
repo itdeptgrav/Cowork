@@ -422,6 +422,18 @@ export interface CoworkRepository {
    */
   getViewer(employeeId?: EmployeeId): Promise<Viewer>;
   getCurrentEmployee(): Promise<Employee>;
+  /**
+   * Set or remove YOUR OWN profile picture.
+   *
+   * No id parameter, deliberately: the engine exposes no route that could decide
+   * whether one person may change another's face, and legacy's own settings page
+   * writes exactly one document — its author's. `null` removes the picture and
+   * restores the monogram.
+   *
+   * The value is a `data:image/jpeg` URL produced by `encodeProfilePicture`;
+   * the size is re-checked at the write, because only the encoder knows it.
+   */
+  setMyProfilePicture(dataUrl: string | null): Promise<ActionResult<Employee>>;
   listEmployees(): Promise<Employee[]>;
   /**
    * The people the acting viewer may create work for.

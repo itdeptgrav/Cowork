@@ -84,4 +84,9 @@ export const MOCK_STORE_STORAGE_KEY = "cowork-mock-store";
  * braces for anyone whose browser is holding a v1 payload written before that
  * fingerprint existed.
  */
-export const MOCK_STORE_SCHEMA_VERSION = 10;
+/* v11: `PriorityCascade` gained `previousOrder` / `newOrder`. A v10 payload
+   holds cascades without them, and `PriorityAckGate` maps over both — from a
+   component mounted in `ShellFrame` and polled outside `useQuery`, so the
+   TypeError would blank the whole application rather than one panel. The seed
+   fingerprint cannot see a shape change, which is what this counter is for. */
+export const MOCK_STORE_SCHEMA_VERSION = 11;

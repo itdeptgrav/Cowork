@@ -13,6 +13,7 @@ import {
   ALL_STATUSES,
 } from "./statusMeta";
 import { PriorityDialog } from "./PriorityDialog";
+import { PriorityReorderConfirm } from "./PriorityReorderConfirm";
 import { TimerControl } from "./TimerControl";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
@@ -117,10 +118,19 @@ export function TaskTable({
      dragging P5 above P2 pushes the old P2/P3/P4 each down one. */
   const [dragId, setDragId] = useState<string | null>(null);
   const [overId, setOverId] = useState<string | null>(null);
-  const [reorderPriority] = useAction(
-    (r, employeeId: string, ids: string[]) =>
-      r.reorderPriorities(employeeId, ids, "Reordered from the task list"),
-  );
+  /* The order a drop produced, waiting to be confirmed. Nothing is written
+     while this is set — see `PriorityReorderConfirm`. */
+  const [pendingReorder, setPendingReorder] = useState<{
+    employeeId: string;
+    employeeName: string | null;
+    subject: {
+      taskId: string;
+      title: string;
+      workSecs: number;
+      committedDeadline: string | null;
+    };
+    orderedTaskIds: string[];
+  } | null>(null);
 
   /* A completed, cancelled or rejected task keeps the rank it finished with — a
      record, not live workload — so it never joins a reorder. */
@@ -161,7 +171,20 @@ export function TaskTable({
     return null;
   };
 
-  async function commitReorder(assigneeId: string, activeIds: string[]) {
+  /**
+   * A drop STAGES a reorder; it no longer performs one.
+   *
+   * This used to write immediately, with a reason nobody typed — so an
+   * accidental drag rearranged somebody's week and sent them a receipt citing a
+   * sentence no human had written. The new order now goes to a confirmation
+   * showing what it does to every date, and the reason is given there.
+   */
+  function commitReorder(
+    assigneeId: string,
+    assigneeName: string | null,
+    activeIds: string[],
+    rows: TaskView[],
+  ) {
     const held = dragId;
     const target = overId;
     setDragId(null);
@@ -176,8 +199,25 @@ export function TaskTable({
     let at = without.indexOf(target);
     if (from < to) at += 1;
     const next = [...without.slice(0, at), held, ...without.slice(at)];
-    const r = await reorderPriority(assigneeId, next);
-    if (r.ok) refetch();
+
+    const moved = rows.find((v) => v.task.id === held);
+    if (!moved) return;
+    setPendingReorder({
+      employeeId: assigneeId,
+      employeeName: assigneeName,
+      subject: {
+        taskId: held,
+        title: moved.task.title,
+        /* The preview is anchored on the dragged task's own budget — the same
+           figure the queue chain uses for it. */
+        workSecs:
+          moved.task.deadline.currentWindowSecs ??
+          moved.task.estimatedEffortSecs ??
+          0,
+        committedDeadline: moved.task.deadline.dueAt,
+      },
+      orderedTaskIds: next,
+    });
   }
 
   const { data, isLoading, error, refetch } = useQuery(
@@ -663,14 +703,26 @@ export function TaskTable({
                               onDragOver={
                                 rowDraggable
                                   ? () => {
-                                      if (dragId) setOverId(v.task.id);
+                                      /* Only when it CHANGES. `dragover` fires
+                                         continuously while the pointer is over a
+                                         row, and an unconditional write here
+                                         re-rendered every row in the table
+                                         dozens of times a second — which is the
+                                         whole of the lag people reported. */
+                                      if (dragId && overId !== v.task.id)
+                                        setOverId(v.task.id);
                                     }
                                   : undefined
                               }
                               onDrop={
                                 rowDraggable
                                   ? () =>
-                                      commitReorder(groupAssigneeId!, activeIds)
+                                      commitReorder(
+                                        groupAssigneeId!,
+                                        g.label ?? null,
+                                        activeIds,
+                                        items,
+                                      )
                                   : undefined
                               }
                               onDragEnd={() => {
@@ -724,6 +776,20 @@ export function TaskTable({
           onClose={() => setPriorityFor(null)}
           onDone={() => {
             setPriorityFor(null);
+            refetch();
+          }}
+        />
+      )}
+
+      {pendingReorder && (
+        <PriorityReorderConfirm
+          employeeId={pendingReorder.employeeId}
+          employeeName={pendingReorder.employeeName}
+          subject={pendingReorder.subject}
+          orderedTaskIds={pendingReorder.orderedTaskIds}
+          onCancel={() => setPendingReorder(null)}
+          onDone={() => {
+            setPendingReorder(null);
             refetch();
           }}
         />
@@ -963,6 +1029,7 @@ function Row({
           <Avatar
             initials={ownerEmp.initials}
             hue={ownerEmp.hue}
+            src={ownerEmp.profilePictureUrl}
             name={`Owner ${ownerEmp.displayName}`}
             size="sm"
           />
@@ -980,6 +1047,7 @@ function Row({
           <Avatar
             initials={view.assignees[0].initials}
             hue={view.assignees[0].hue}
+            src={view.assignees[0].profilePictureUrl}
             name={view.assignees[0].displayName}
             size="sm"
           />

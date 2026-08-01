@@ -61,14 +61,7 @@ export interface CellStyle {
 export type StyleMap = Record<string, CellStyle>;
 
 export type ChartType =
-  | "column"
-  | "bar"
-  | "line"
-  | "area"
-  | "pie"
-  | "doughnut"
-  | "scatter"
-  | "combo";
+  "column" | "bar" | "line" | "area" | "pie" | "doughnut" | "scatter" | "combo";
 
 /**
  * A chart placed on the sheet, drawn from a data range.
@@ -239,6 +232,167 @@ export function isFormula(raw: string): boolean {
   return raw.trimStart().startsWith("=");
 }
 
+/** The blank sheet returned whenever there is nothing readable. */
+function emptySheet(): SheetData {
+  return { cells: {}, styles: {}, rows: DEFAULT_ROWS, cols: DEFAULT_COLS };
+}
+
+/**
+ * Parse one ALREADY-DECODED sheet object into SheetData, tolerating anything.
+ *
+ * Split out of `readSheet` so a workbook can reuse it for each of its sheets;
+ * `readSheet` is the thin JSON wrapper below.
+ */
+function parseSheet(input: unknown): SheetData {
+  if (!input || typeof input !== "object") return emptySheet();
+  const raw = input as Partial<SheetData>;
+  const cells: CellMap = {};
+  for (const [ref, value] of Object.entries(raw.cells ?? {})) {
+    /* Both halves checked: a key that is not a reference cannot be placed on
+         the grid, and a non-string value would reach the engine as an object. */
+    if (parseRef(ref) && typeof value === "string")
+      cells[ref.toUpperCase()] = value;
+  }
+  const styles: StyleMap = {};
+  for (const [ref, style] of Object.entries(raw.styles ?? {})) {
+    if (parseRef(ref) && style && typeof style === "object") {
+      styles[ref.toUpperCase()] = style as CellStyle;
+    }
+  }
+  const chartTypes = [
+    "column",
+    "bar",
+    "line",
+    "area",
+    "pie",
+    "doughnut",
+    "scatter",
+    "combo",
+  ];
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+  const charts: ChartSpec[] = [];
+  for (const c of Array.isArray(raw.charts) ? raw.charts : []) {
+    const spec = c as Partial<ChartSpec>;
+    if (
+      spec &&
+      typeof spec.id === "string" &&
+      typeof spec.range === "string" &&
+      typeof spec.type === "string" &&
+      chartTypes.includes(spec.type)
+    ) {
+      charts.push({
+        id: spec.id,
+        type: spec.type as ChartType,
+        range: spec.range,
+        title: typeof spec.title === "string" ? spec.title : "Chart",
+        /* Embedded-object placement & config — only kept when well-typed, so a
+             corrupt field falls back to the grid's default rather than throwing. */
+        ...(num(spec.x) !== undefined ? { x: num(spec.x) } : {}),
+        ...(num(spec.y) !== undefined ? { y: num(spec.y) } : {}),
+        ...(num(spec.w) !== undefined ? { w: num(spec.w) } : {}),
+        ...(num(spec.h) !== undefined ? { h: num(spec.h) } : {}),
+        ...(num(spec.z) !== undefined ? { z: num(spec.z) } : {}),
+        ...(typeof spec.legend === "boolean" ? { legend: spec.legend } : {}),
+        ...(typeof spec.axes === "boolean" ? { axes: spec.axes } : {}),
+        ...(spec.orientation === "rows" || spec.orientation === "cols"
+          ? { orientation: spec.orientation }
+          : {}),
+        ...(typeof spec.stacked === "boolean" ? { stacked: spec.stacked } : {}),
+      });
+    }
+  }
+  const condKinds = [
+    "greater",
+    "greaterEqual",
+    "less",
+    "lessEqual",
+    "equal",
+    "notEqual",
+    "between",
+    "notBetween",
+    "textContains",
+    "textStarts",
+    "textEnds",
+    "blank",
+    "notBlank",
+    "error",
+    "duplicate",
+    "unique",
+    "top",
+    "bottom",
+    "topPercent",
+    "bottomPercent",
+    "aboveAvg",
+    "belowAvg",
+    "colorScale",
+    "dataBar",
+    "iconSet",
+  ];
+  const iconSets = ["arrows", "traffic", "flags"];
+  const readCondStyle = (s: unknown): ConditionalStyle | undefined => {
+    if (!s || typeof s !== "object") return undefined;
+    const o = s as Record<string, unknown>;
+    const out: ConditionalStyle = {};
+    if (typeof o.bg === "string") out.bg = o.bg;
+    if (typeof o.textColor === "string") out.textColor = o.textColor;
+    if (o.bold === true) out.bold = true;
+    if (o.italic === true) out.italic = true;
+    if (o.border === true) out.border = true;
+    return Object.keys(out).length ? out : undefined;
+  };
+  const conditionals: ConditionalRule[] = [];
+  for (const c of Array.isArray(raw.conditionals) ? raw.conditionals : []) {
+    const rule = c as Partial<ConditionalRule>;
+    if (
+      rule &&
+      typeof rule.id === "string" &&
+      typeof rule.range === "string" &&
+      typeof rule.kind === "string" &&
+      condKinds.includes(rule.kind)
+    ) {
+      const style = readCondStyle(rule.style);
+      conditionals.push({
+        id: rule.id,
+        range: rule.range,
+        kind: rule.kind as ConditionalKind,
+        ...(num(rule.value) !== undefined ? { value: num(rule.value) } : {}),
+        ...(num(rule.value2) !== undefined ? { value2: num(rule.value2) } : {}),
+        ...(typeof rule.color === "string" ? { color: rule.color } : {}),
+        ...(typeof rule.text === "string" ? { text: rule.text } : {}),
+        /* Read permissively but emit sparsely: `enabled` defaults to on, so
+             only an explicit `false` is worth storing. */
+        ...(rule.enabled === false ? { enabled: false } : {}),
+        ...(num(rule.order) !== undefined ? { order: num(rule.order) } : {}),
+        ...(typeof rule.stopIfTrue === "boolean"
+          ? { stopIfTrue: rule.stopIfTrue }
+          : {}),
+        ...(style ? { style } : {}),
+        ...(typeof rule.iconSet === "string" && iconSets.includes(rule.iconSet)
+          ? { iconSet: rule.iconSet as IconSet }
+          : {}),
+        ...(typeof rule.minColor === "string"
+          ? { minColor: rule.minColor }
+          : {}),
+        ...(typeof rule.midColor === "string"
+          ? { midColor: rule.midColor }
+          : {}),
+        ...(typeof rule.maxColor === "string"
+          ? { maxColor: rule.maxColor }
+          : {}),
+      });
+    }
+  }
+  return {
+    cells,
+    styles,
+    rows: clamp(raw.rows ?? DEFAULT_ROWS, 1, MAX_ROWS),
+    cols: clamp(raw.cols ?? DEFAULT_COLS, 1, MAX_COLS),
+    ...(charts.length ? { charts } : {}),
+    ...(conditionals.length ? { conditionals } : {}),
+  };
+}
+
 /**
  * Read a stored sheet, tolerating anything.
  *
@@ -248,137 +402,37 @@ export function isFormula(raw: string): boolean {
  * blank, because the second still lets somebody paste their data back in.
  */
 export function readSheet(json: string | null | undefined): SheetData {
-  const empty: SheetData = {
-    cells: {},
-    styles: {},
-    rows: DEFAULT_ROWS,
-    cols: DEFAULT_COLS,
-  };
-  if (!json) return empty;
+  if (!json) return emptySheet();
   try {
-    const raw = JSON.parse(json) as Partial<SheetData>;
-    if (!raw || typeof raw !== "object") return empty;
-    const cells: CellMap = {};
-    for (const [ref, value] of Object.entries(raw.cells ?? {})) {
-      /* Both halves checked: a key that is not a reference cannot be placed on
-         the grid, and a non-string value would reach the engine as an object. */
-      if (parseRef(ref) && typeof value === "string") cells[ref.toUpperCase()] = value;
-    }
-    const styles: StyleMap = {};
-    for (const [ref, style] of Object.entries(raw.styles ?? {})) {
-      if (parseRef(ref) && style && typeof style === "object") {
-        styles[ref.toUpperCase()] = style as CellStyle;
-      }
-    }
-    const chartTypes = [
-      "column",
-      "bar",
-      "line",
-      "area",
-      "pie",
-      "doughnut",
-      "scatter",
-      "combo",
-    ];
-    const num = (v: unknown): number | undefined =>
-      typeof v === "number" && Number.isFinite(v) ? v : undefined;
-    const charts: ChartSpec[] = [];
-    for (const c of Array.isArray(raw.charts) ? raw.charts : []) {
-      const spec = c as Partial<ChartSpec>;
-      if (
-        spec &&
-        typeof spec.id === "string" &&
-        typeof spec.range === "string" &&
-        typeof spec.type === "string" &&
-        chartTypes.includes(spec.type)
-      ) {
-        charts.push({
-          id: spec.id,
-          type: spec.type as ChartType,
-          range: spec.range,
-          title: typeof spec.title === "string" ? spec.title : "Chart",
-          /* Embedded-object placement & config — only kept when well-typed, so a
-             corrupt field falls back to the grid's default rather than throwing. */
-          ...(num(spec.x) !== undefined ? { x: num(spec.x) } : {}),
-          ...(num(spec.y) !== undefined ? { y: num(spec.y) } : {}),
-          ...(num(spec.w) !== undefined ? { w: num(spec.w) } : {}),
-          ...(num(spec.h) !== undefined ? { h: num(spec.h) } : {}),
-          ...(num(spec.z) !== undefined ? { z: num(spec.z) } : {}),
-          ...(typeof spec.legend === "boolean" ? { legend: spec.legend } : {}),
-          ...(typeof spec.axes === "boolean" ? { axes: spec.axes } : {}),
-          ...(spec.orientation === "rows" || spec.orientation === "cols"
-            ? { orientation: spec.orientation }
-            : {}),
-          ...(typeof spec.stacked === "boolean" ? { stacked: spec.stacked } : {}),
-        });
-      }
-    }
-    const condKinds = [
-      "greater", "greaterEqual", "less", "lessEqual", "equal", "notEqual",
-      "between", "notBetween", "textContains", "textStarts", "textEnds",
-      "blank", "notBlank", "error", "duplicate", "unique", "top", "bottom",
-      "topPercent", "bottomPercent", "aboveAvg", "belowAvg", "colorScale",
-      "dataBar", "iconSet",
-    ];
-    const iconSets = ["arrows", "traffic", "flags"];
-    const readCondStyle = (s: unknown): ConditionalStyle | undefined => {
-      if (!s || typeof s !== "object") return undefined;
-      const o = s as Record<string, unknown>;
-      const out: ConditionalStyle = {};
-      if (typeof o.bg === "string") out.bg = o.bg;
-      if (typeof o.textColor === "string") out.textColor = o.textColor;
-      if (o.bold === true) out.bold = true;
-      if (o.italic === true) out.italic = true;
-      if (o.border === true) out.border = true;
-      return Object.keys(out).length ? out : undefined;
-    };
-    const conditionals: ConditionalRule[] = [];
-    for (const c of Array.isArray(raw.conditionals) ? raw.conditionals : []) {
-      const rule = c as Partial<ConditionalRule>;
-      if (
-        rule &&
-        typeof rule.id === "string" &&
-        typeof rule.range === "string" &&
-        typeof rule.kind === "string" &&
-        condKinds.includes(rule.kind)
-      ) {
-        const style = readCondStyle(rule.style);
-        conditionals.push({
-          id: rule.id,
-          range: rule.range,
-          kind: rule.kind as ConditionalKind,
-          ...(num(rule.value) !== undefined ? { value: num(rule.value) } : {}),
-          ...(num(rule.value2) !== undefined ? { value2: num(rule.value2) } : {}),
-          ...(typeof rule.color === "string" ? { color: rule.color } : {}),
-          ...(typeof rule.text === "string" ? { text: rule.text } : {}),
-          /* Read permissively but emit sparsely: `enabled` defaults to on, so
-             only an explicit `false` is worth storing. */
-          ...(rule.enabled === false ? { enabled: false } : {}),
-          ...(num(rule.order) !== undefined ? { order: num(rule.order) } : {}),
-          ...(typeof rule.stopIfTrue === "boolean"
-            ? { stopIfTrue: rule.stopIfTrue }
-            : {}),
-          ...(style ? { style } : {}),
-          ...(typeof rule.iconSet === "string" && iconSets.includes(rule.iconSet)
-            ? { iconSet: rule.iconSet as IconSet }
-            : {}),
-          ...(typeof rule.minColor === "string" ? { minColor: rule.minColor } : {}),
-          ...(typeof rule.midColor === "string" ? { midColor: rule.midColor } : {}),
-          ...(typeof rule.maxColor === "string" ? { maxColor: rule.maxColor } : {}),
-        });
-      }
-    }
-    return {
-      cells,
-      styles,
-      rows: clamp(raw.rows ?? DEFAULT_ROWS, 1, MAX_ROWS),
-      cols: clamp(raw.cols ?? DEFAULT_COLS, 1, MAX_COLS),
-      ...(charts.length ? { charts } : {}),
-      ...(conditionals.length ? { conditionals } : {}),
-    };
+    return parseSheet(JSON.parse(json));
   } catch {
-    return empty;
+    return emptySheet();
   }
+}
+
+/** A sheet as its stored plain object — empties dropped (see writeSheet). */
+function sheetToObject(data: SheetData): Record<string, unknown> {
+  const cells: CellMap = {};
+  for (const [ref, value] of Object.entries(data.cells)) {
+    if (value !== "") cells[ref] = value;
+  }
+  const styles: StyleMap = {};
+  for (const [ref, style] of Object.entries(data.styles)) {
+    if (
+      style &&
+      Object.values(style).some((v) => v !== undefined && v !== false)
+    ) {
+      styles[ref] = style;
+    }
+  }
+  return {
+    cells,
+    styles,
+    rows: data.rows,
+    cols: data.cols,
+    ...(data.charts?.length ? { charts: data.charts } : {}),
+    ...(data.conditionals?.length ? { conditionals: data.conditionals } : {}),
+  };
 }
 
 /**
@@ -389,23 +443,98 @@ export function readSheet(json: string | null | undefined): SheetData {
  * as large as it ever was.
  */
 export function writeSheet(data: SheetData): string {
-  const cells: CellMap = {};
-  for (const [ref, value] of Object.entries(data.cells)) {
-    if (value !== "") cells[ref] = value;
+  return JSON.stringify(sheetToObject(data));
+}
+
+/* ── Workbooks (multiple sheet tabs) ──────────────────────────────────────── */
+
+/** A named sheet within a workbook — the tab and its data. */
+export interface SheetTab extends SheetData {
+  id: string;
+  name: string;
+  /** An optional tab colour (any CSS colour). */
+  color?: string;
+}
+
+/** A document's sheets, in tab order, and which one was last active. */
+export interface Workbook {
+  sheets: SheetTab[];
+  activeId?: string;
+}
+
+/** A ceiling on tabs, mirroring the row/col bounds. */
+export const MAX_SHEETS = 32;
+
+/** A fresh document: one blank sheet. */
+export function blankWorkbook(): Workbook {
+  const id = "sheet-1";
+  return { sheets: [{ id, name: "Sheet 1", ...emptySheet() }], activeId: id };
+}
+
+/**
+ * Read a stored workbook, tolerating anything — and transparently upgrading the
+ * LEGACY single-sheet shape.
+ *
+ * A document written before tabs stored one bare SheetData (`{cells,rows,…}`);
+ * one written after stores `{sheets:[…]}`. A `sheets` array reads as a workbook;
+ * anything else is wrapped as a single tab — so every old document opens as a
+ * one-tab workbook with no migration step, and never as a blank.
+ */
+export function readWorkbook(json: string | null | undefined): Workbook {
+  if (!json) return blankWorkbook();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return blankWorkbook();
   }
-  const styles: StyleMap = {};
-  for (const [ref, style] of Object.entries(data.styles)) {
-    if (style && Object.values(style).some((v) => v !== undefined && v !== false)) {
-      styles[ref] = style;
-    }
+  if (!raw || typeof raw !== "object") return blankWorkbook();
+  const obj = raw as { sheets?: unknown; activeId?: unknown };
+  if (!Array.isArray(obj.sheets)) {
+    const id = "sheet-1";
+    return {
+      sheets: [{ id, name: "Sheet 1", ...parseSheet(raw) }],
+      activeId: id,
+    };
   }
+  const sheets: SheetTab[] = [];
+  const seen = new Set<string>();
+  for (const s of obj.sheets.slice(0, MAX_SHEETS)) {
+    if (!s || typeof s !== "object") continue;
+    const t = s as { id?: unknown; name?: unknown; color?: unknown };
+    let id =
+      typeof t.id === "string" && t.id ? t.id : `sheet-${sheets.length + 1}`;
+    while (seen.has(id)) id = `${id}-${sheets.length + 1}`;
+    seen.add(id);
+    sheets.push({
+      id,
+      name:
+        typeof t.name === "string" && t.name
+          ? t.name
+          : `Sheet ${sheets.length + 1}`,
+      ...(typeof t.color === "string" ? { color: t.color } : {}),
+      ...parseSheet(s),
+    });
+  }
+  if (sheets.length === 0) return blankWorkbook();
+  const activeId =
+    typeof obj.activeId === "string" &&
+    sheets.some((s) => s.id === obj.activeId)
+      ? obj.activeId
+      : sheets[0].id;
+  return { sheets, activeId };
+}
+
+/** Write a workbook to its stored JSON — each sheet compacted, empties dropped. */
+export function writeWorkbook(wb: Workbook): string {
   return JSON.stringify({
-    cells,
-    styles,
-    rows: data.rows,
-    cols: data.cols,
-    ...(data.charts?.length ? { charts: data.charts } : {}),
-    ...(data.conditionals?.length ? { conditionals: data.conditionals } : {}),
+    sheets: wb.sheets.map((s) => ({
+      id: s.id,
+      name: s.name,
+      ...(s.color ? { color: s.color } : {}),
+      ...sheetToObject(s),
+    })),
+    ...(wb.activeId ? { activeId: wb.activeId } : {}),
   });
 }
 
@@ -424,7 +553,9 @@ function clamp(n: number, lo: number, hi: number): number {
 export function displayValue(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "number") {
-    return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(10)));
+    return Number.isInteger(value)
+      ? String(value)
+      : String(Number(value.toFixed(10)));
   }
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
   if (typeof value === "object") {
@@ -490,15 +621,79 @@ export function rangeLabel(r: Rect): string {
  * custom plugins elsewhere, not listed here until they resolve.
  */
 export const COMMON_FUNCTIONS: readonly string[] = [
-  "ABS", "AND", "AVERAGE", "AVERAGEIF", "CEILING", "CONCATENATE", "COUNT",
-  "COUNTA", "COUNTIF", "COUNTIFS", "DATE", "DATEDIF", "DAY", "EDATE", "EOMONTH",
-  "FILTER", "FIND", "FLOOR", "HLOOKUP", "HOUR", "IF", "IFERROR", "IFS", "INDEX",
-  "INT", "ISBLANK", "LEFT", "LEN", "LOWER", "MATCH", "MAX", "MAXIFS", "MEDIAN",
-  "MID", "MIN", "MINIFS", "MINUTE", "MOD", "MONTH", "NETWORKDAYS", "NOT", "NOW",
-  "OR", "POWER", "PRODUCT", "PROPER", "RIGHT", "ROUND", "ROUNDDOWN", "ROUNDUP",
-  "SEARCH", "SECOND", "SQRT", "STDEV", "SUBSTITUTE", "SUM", "SUMIF", "SUMIFS",
-  "SUMPRODUCT", "SWITCH", "TEXT", "TEXTJOIN", "TIME", "TODAY", "TRANSPOSE",
-  "TRIM", "UPPER", "VALUE", "VLOOKUP", "WEEKDAY", "WORKDAY", "XLOOKUP", "YEAR",
+  "ABS",
+  "AND",
+  "AVERAGE",
+  "AVERAGEIF",
+  "CEILING",
+  "CONCATENATE",
+  "COUNT",
+  "COUNTA",
+  "COUNTIF",
+  "COUNTIFS",
+  "DATE",
+  "DATEDIF",
+  "DAY",
+  "EDATE",
+  "EOMONTH",
+  "FILTER",
+  "FIND",
+  "FLOOR",
+  "HLOOKUP",
+  "HOUR",
+  "IF",
+  "IFERROR",
+  "IFS",
+  "INDEX",
+  "INT",
+  "ISBLANK",
+  "LEFT",
+  "LEN",
+  "LOWER",
+  "MATCH",
+  "MAX",
+  "MAXIFS",
+  "MEDIAN",
+  "MID",
+  "MIN",
+  "MINIFS",
+  "MINUTE",
+  "MOD",
+  "MONTH",
+  "NETWORKDAYS",
+  "NOT",
+  "NOW",
+  "OR",
+  "POWER",
+  "PRODUCT",
+  "PROPER",
+  "RIGHT",
+  "ROUND",
+  "ROUNDDOWN",
+  "ROUNDUP",
+  "SEARCH",
+  "SECOND",
+  "SQRT",
+  "STDEV",
+  "SUBSTITUTE",
+  "SUM",
+  "SUMIF",
+  "SUMIFS",
+  "SUMPRODUCT",
+  "SWITCH",
+  "TEXT",
+  "TEXTJOIN",
+  "TIME",
+  "TODAY",
+  "TRANSPOSE",
+  "TRIM",
+  "UPPER",
+  "VALUE",
+  "VLOOKUP",
+  "WEEKDAY",
+  "WORKDAY",
+  "XLOOKUP",
+  "YEAR",
 ];
 
 /**
@@ -592,7 +787,13 @@ export function offsetReferences(
        the quantifier backtracking (`LOG10(` matching as `LOG1`); excluding `(`
        skips function names. */
     /(\$?)([A-Za-z]+)(\$?)(\d+)(?![\w(])/g,
-    (whole, colAbs: string, colLetters: string, rowAbs: string, rowDigits: string) => {
+    (
+      whole,
+      colAbs: string,
+      colLetters: string,
+      rowAbs: string,
+      rowDigits: string,
+    ) => {
       const col = columnIndex(colLetters);
       if (col < 0) return whole;
       const row = Number(rowDigits) - 1;
@@ -681,7 +882,10 @@ export function formatNumber(
         ) + "%"
       );
     case "comma":
-      return value.toLocaleString("en-IN", fixed ?? { maximumFractionDigits: 2 });
+      return value.toLocaleString(
+        "en-IN",
+        fixed ?? { maximumFractionDigits: 2 },
+      );
     default:
       /* No named format but decimals set (the decimal buttons on a plain
          number): fixed places, no grouping. Otherwise the shortest honest form. */
@@ -709,7 +913,9 @@ export interface CellSummary {
  * as zero, matching what Sheets shows.
  */
 export function summarize(values: readonly number[]): CellSummary {
-  const nums = values.filter((v) => typeof v === "number" && Number.isFinite(v));
+  const nums = values.filter(
+    (v) => typeof v === "number" && Number.isFinite(v),
+  );
   if (nums.length === 0)
     return { count: 0, sum: 0, avg: null, min: null, max: null };
   const sum = nums.reduce((a, b) => a + b, 0);
@@ -859,12 +1065,14 @@ export interface CellContext {
 /** A red→yellow→green heat colour for `t` in 0..1 (low red, high green). */
 export function colorScale(t: number): string {
   const x = Math.max(0, Math.min(1, t));
-  const stops: readonly (readonly [number, readonly [number, number, number]])[] =
-    [
-      [0, [248, 105, 107]],
-      [0.5, [255, 235, 132]],
-      [1, [99, 190, 123]],
-    ];
+  const stops: readonly (readonly [
+    number,
+    readonly [number, number, number],
+  ])[] = [
+    [0, [248, 105, 107]],
+    [0.5, [255, 235, 132]],
+    [1, [99, 190, 123]],
+  ];
   let lo = stops[0];
   let hi = stops[stops.length - 1];
   for (let i = 0; i < stops.length - 1; i++) {
@@ -934,7 +1142,10 @@ function pickIcon(set: IconSet, t: number): { ch: string; color: string } {
 }
 
 /** The formatting a highlight rule paints — its rich style, or a fallback fill. */
-function highlight(rule: ConditionalRule, fallbackBg: string): ConditionalResult {
+function highlight(
+  rule: ConditionalRule,
+  fallbackBg: string,
+): ConditionalResult {
   const s = rule.style;
   const res: ConditionalResult = {};
   /* A chosen style wins; else the legacy `color`; else the kind's default fill,
@@ -1044,7 +1255,9 @@ export function evalConditional(
     case "colorScale": {
       if (v === null) return null;
       const t =
-        stats.max === stats.min ? 0.5 : (v - stats.min) / (stats.max - stats.min);
+        stats.max === stats.min
+          ? 0.5
+          : (v - stats.min) / (stats.max - stats.min);
       return { bg: scaleColor(t, rule) };
     }
     case "dataBar": {
@@ -1076,30 +1289,55 @@ export function evalConditional(
 export function describeConditional(rule: ConditionalRule): string {
   const n = rule.value ?? 0;
   switch (rule.kind) {
-    case "greater": return `Cell > ${n}`;
-    case "greaterEqual": return `Cell ≥ ${n}`;
-    case "less": return `Cell < ${n}`;
-    case "lessEqual": return `Cell ≤ ${n}`;
-    case "equal": return `Cell = ${n}`;
-    case "notEqual": return `Cell ≠ ${n}`;
-    case "between": return `Between ${n} and ${rule.value2 ?? 0}`;
-    case "notBetween": return `Not between ${n} and ${rule.value2 ?? 0}`;
-    case "textContains": return `Text contains "${rule.text ?? ""}"`;
-    case "textStarts": return `Text starts with "${rule.text ?? ""}"`;
-    case "textEnds": return `Text ends with "${rule.text ?? ""}"`;
-    case "blank": return "Cell is blank";
-    case "notBlank": return "Cell is not blank";
-    case "error": return "Cell has an error";
-    case "duplicate": return "Duplicate values";
-    case "unique": return "Unique values";
-    case "top": return `Top ${n || 10} items`;
-    case "bottom": return `Bottom ${n || 10} items`;
-    case "topPercent": return `Top ${n || 10}%`;
-    case "bottomPercent": return `Bottom ${n || 10}%`;
-    case "aboveAvg": return "Above average";
-    case "belowAvg": return "Below average";
-    case "colorScale": return "Colour scale";
-    case "dataBar": return "Data bar";
-    case "iconSet": return `Icon set (${rule.iconSet ?? "arrows"})`;
+    case "greater":
+      return `Cell > ${n}`;
+    case "greaterEqual":
+      return `Cell ≥ ${n}`;
+    case "less":
+      return `Cell < ${n}`;
+    case "lessEqual":
+      return `Cell ≤ ${n}`;
+    case "equal":
+      return `Cell = ${n}`;
+    case "notEqual":
+      return `Cell ≠ ${n}`;
+    case "between":
+      return `Between ${n} and ${rule.value2 ?? 0}`;
+    case "notBetween":
+      return `Not between ${n} and ${rule.value2 ?? 0}`;
+    case "textContains":
+      return `Text contains "${rule.text ?? ""}"`;
+    case "textStarts":
+      return `Text starts with "${rule.text ?? ""}"`;
+    case "textEnds":
+      return `Text ends with "${rule.text ?? ""}"`;
+    case "blank":
+      return "Cell is blank";
+    case "notBlank":
+      return "Cell is not blank";
+    case "error":
+      return "Cell has an error";
+    case "duplicate":
+      return "Duplicate values";
+    case "unique":
+      return "Unique values";
+    case "top":
+      return `Top ${n || 10} items`;
+    case "bottom":
+      return `Bottom ${n || 10} items`;
+    case "topPercent":
+      return `Top ${n || 10}%`;
+    case "bottomPercent":
+      return `Bottom ${n || 10}%`;
+    case "aboveAvg":
+      return "Above average";
+    case "belowAvg":
+      return "Below average";
+    case "colorScale":
+      return "Colour scale";
+    case "dataBar":
+      return "Data bar";
+    case "iconSet":
+      return `Icon set (${rule.iconSet ?? "arrows"})`;
   }
 }

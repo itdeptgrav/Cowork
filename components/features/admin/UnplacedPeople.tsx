@@ -72,6 +72,7 @@ export function UnplacedPeople() {
             <Avatar
               initials={p.initials}
               hue={p.hue}
+              src={p.profilePictureUrl}
               name={p.displayName}
               size="sm"
             />

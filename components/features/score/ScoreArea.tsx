@@ -122,6 +122,7 @@ export function ScoreOverviewPage({
                   <Avatar
                     initials={me.data.initials}
                     hue={me.data.hue}
+                    src={me.data.profilePictureUrl}
                     name={me.data.displayName}
                     size="lg"
                   />

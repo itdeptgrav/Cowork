@@ -75,6 +75,7 @@ export function QuickAssign() {
                   <Avatar
                     initials={p.initials}
                     hue={p.hue}
+                    src={p.profilePictureUrl}
                     name={p.displayName}
                     size="md"
                   />

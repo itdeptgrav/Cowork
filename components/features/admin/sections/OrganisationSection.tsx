@@ -195,6 +195,7 @@ export function OrganisationSection() {
                           <Avatar
                             initials={person.initials}
                             hue={person.hue}
+                            src={person.profilePictureUrl}
                             name={person.displayName}
                             size="sm"
                           />

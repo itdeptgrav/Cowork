@@ -334,6 +334,7 @@ export function ProjectPanel({
                       <Avatar
                         initials={s.assignees[0].initials}
                         hue={s.assignees[0].hue}
+                        src={s.assignees[0].profilePictureUrl}
                         name={s.assignees[0].displayName}
                         size="sm"
                       />

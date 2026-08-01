@@ -371,6 +371,7 @@ export function TopBar() {
                     <Avatar
                       initials={me.initials}
                       hue={me.hue}
+                      src={me.profilePictureUrl}
                       name={me.displayName}
                       size="md"
                     />

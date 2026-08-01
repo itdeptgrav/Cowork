@@ -785,6 +785,7 @@ function FactsRail({
               <Avatar
                 initials={v.owner.initials}
                 hue={v.owner.hue}
+                src={v.owner.profilePictureUrl}
                 name={v.owner.displayName}
                 size="sm"
               />
@@ -805,6 +806,7 @@ function FactsRail({
                   initials: a.initials,
                   hue: a.hue,
                   name: a.displayName,
+                  src: a.profilePictureUrl,
                 }))}
               />
               <span className="truncate text-sm text-ink">
@@ -821,6 +823,7 @@ function FactsRail({
                   initials: a.initials,
                   hue: a.hue,
                   name: a.displayName,
+                  src: a.profilePictureUrl,
                 }))}
               />
               <span className="truncate text-sm text-ink">

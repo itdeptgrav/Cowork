@@ -226,6 +226,7 @@ import {
 import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
 import { previewOfHtml } from "@/lib/rules/documents/preview";
 import { pageSetupRefusal } from "@/lib/rules/documents/pageSetup";
+import { storedPictureRefusal } from "@/lib/rules/people/profilePicture";
 import {
   canManage as canManageDocument,
   canView as canViewDocument,
@@ -235,6 +236,7 @@ import {
 } from "@/lib/rules/documents/access";
 import type {
   CoworkDocument,
+  CascadeOrderEntry,
   CoworkDocumentBody,
   DocumentKind,
   DocumentPageSetup,
@@ -426,6 +428,31 @@ export class MockRepository implements CoworkRepository {
 
   async getCurrentEmployee() {
     return delay(getStore().employees.find((e) => e.id === actingId())!);
+  }
+
+  /**
+   * Set or remove your own picture.
+   *
+   * Stores exactly what the person chose. That is not fabricated data — a
+   * picture somebody uploaded in the demo is theirs — which is why the SEED
+   * ships none: inventing faces for invented people would be, and the monogram
+   * is the honest default for them.
+   */
+  async setMyProfilePicture(
+    dataUrl: string | null,
+  ): Promise<ActionResult<Employee>> {
+    const g = guard();
+    if (g) return g;
+    if (dataUrl !== null) {
+      const refusal = storedPictureRefusal(dataUrl);
+      if (refusal) return fail("validation_failed", refusal);
+    }
+    const me = getStore().employees.find((e) => e.id === actingId());
+    if (!me) return fail("not_found", "Your employee record could not be read.");
+    tick();
+    me.profilePictureUrl = dataUrl;
+    persistStore();
+    return delay(ok(me));
   }
   async listEmployees(): Promise<Employee[]> {
     return delay([...getStore().employees]);
@@ -2333,6 +2360,24 @@ export class MockRepository implements CoworkRepository {
   ): PriorityCascade | null {
     const s = getStore();
     const before = new Map(ordered.map((a) => [a.taskId, a.rank]));
+
+    /* The WHOLE queue as it stands, captured before anything is renumbered.
+       Read from `#orderedFor` rather than from `ordered`, which may be a subset:
+       a caller that omitted a task would otherwise produce a "full order" with
+       the person's own work missing from it. */
+    const entryOf = (taskId: string, rank: number): CascadeOrderEntry => {
+      const t = s.tasks.find((x) => x.id === taskId);
+      return {
+        taskId,
+        taskTitle: t?.title ?? taskId,
+        rank,
+        dueAt: t?.deadline.dueAt ?? null,
+      };
+    };
+    const previousOrder = this.#orderedFor(employeeId).map((a, i) =>
+      entryOf(a.taskId, i + 1),
+    );
+
     ordered.forEach((a, i) => {
       a.rank = i + 1;
     });
@@ -2423,17 +2468,36 @@ export class MockRepository implements CoworkRepository {
      * a new one, so the existing record is returned rather than duplicated. */
     const candidate = { employeeId, triggeringTaskId: topTask.id, reason };
     if (isDuplicateCascade(candidate, s.cascades, now().getTime())) {
-      return (
-        s.cascades.find(
-          (c) =>
-            c.employeeId === employeeId &&
-            c.triggeringTaskId === topTask.id &&
-            c.reason === reason,
-        ) ?? null
+      const existing = s.cascades.find(
+        (c) =>
+          c.employeeId === employeeId &&
+          c.triggeringTaskId === topTask.id &&
+          c.reason === reason,
       );
+      /* One cascade, one notification, one acknowledgement — but the snapshot is
+         refreshed. Returning it untouched would show somebody a "new order" that
+         is one reorder out of date, which is worse than a duplicate: it is a
+         confident wrong answer about the queue in front of them. */
+      if (existing) {
+        this.#renumber([String(employeeId)]);
+        existing.effects = effects;
+        existing.newOrder = this.#orderedFor(employeeId).map((a, i) =>
+          entryOf(a.taskId, i + 1),
+        );
+      }
+      return existing ?? null;
     }
 
     const me = s.employees.find((e) => e.id === actingId())!;
+    /* Taken AFTER the ranks and the shifted dates have been written, and after a
+       renumber, so a task the caller omitted carries its repaired rank rather
+       than a stale one. `#renumber` is idempotent, so the callers' own calls
+       stay exactly where they are. */
+    this.#renumber([String(employeeId)]);
+    const newOrder = this.#orderedFor(employeeId).map((a, i) =>
+      entryOf(a.taskId, i + 1),
+    );
+
     const cascade: PriorityCascade = {
       id: nextId("cas"),
       triggeringTaskId: topTask.id,
@@ -2443,6 +2507,8 @@ export class MockRepository implements CoworkRepository {
       changedById: actingId(),
       changedByName: me.displayName,
       effects,
+      previousOrder,
+      newOrder,
       createdAt: nowIso(),
       acknowledgedAt: null,
     };
@@ -4274,6 +4340,7 @@ export class MockRepository implements CoworkRepository {
         status: t.status,
         assigneeIds: [String(input.employeeId)],
         senderTimerWindowSecs: t.estimatedEffortSecs ?? 0,
+        committedDueAt: t.deadline.dueAt,
       }));
     return calculateDeadlineFeasibility({
       taskId: input.taskId ? String(input.taskId) : undefined,
@@ -7513,6 +7580,8 @@ export class MockRepository implements CoworkRepository {
       lastName: input.lastName.trim(),
       displayName: `${input.firstName.trim()} ${input.lastName.trim()}`,
       initials: `${input.firstName.trim()[0]}${input.lastName.trim()[0]}`,
+      /* Nobody arrives with a face. They set one, or they keep the monogram. */
+      profilePictureUrl: null,
       email,
       hue: (s.employees.length % 6) as 0 | 1 | 2 | 3 | 4 | 5,
       departmentId: input.departmentId,
@@ -8024,6 +8093,7 @@ export class MockRepository implements CoworkRepository {
       displayName: input.displayName,
       initials:
         (parts[0]?.[0] ?? "?") + (parts.length > 1 ? (parts.at(-1)?.[0] ?? "") : ""),
+      profilePictureUrl: null,
       /* Deterministic from the id, so the monogram colour is stable across
          sessions rather than changing on every sign-in. */
       hue: (input.employeeId

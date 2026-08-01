@@ -49,6 +49,19 @@ export interface Employee {
   /** Index into the field palette so monograms vary without new colour. */
   hue: 0 | 1 | 2 | 3 | 4 | 5;
   /**
+   * Their picture, or null for the monogram.
+   *
+   * A `data:image/jpeg` URL — a 160px square at quality 0.75, six to twelve
+   * kilobytes — carried ON the record rather than behind a second fetch, so an
+   * avatar never costs a request. That is the old application's own decision and
+   * its own field (`cowork_employees.profilePicUrl`), which it still reads; this
+   * is the same picture, not a parallel one.
+   *
+   * Null is ordinary and permanent for anyone who has not set one. Nothing here
+   * generates a face — see `components/ui/Avatar.tsx`.
+   */
+  profilePictureUrl: string | null;
+  /**
    * Work email. The directory address, and the address an invitation goes to.
    *
    * On the EMPLOYEE rather than on `User`, deliberately. `User` is the

@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { Avatar } from "@/components/ui/Avatar";
 import { IconTabs, WorkspaceHead, Breadcrumb } from "@/components/ui/Workspace";
@@ -12,9 +13,12 @@ import {
   Panel,
   PermissionDenied,
   ProvisionalBadge,
+  Segmented,
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { PersonMonitor } from "./PersonMonitor";
+import { TeamCards } from "./TeamCards";
+import { PersonCalendar } from "./PersonCalendar";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useDutyModes } from "@/lib/hooks/useDutyMode";
 import { totalMeasured } from "@/lib/rules/scoring/scoreDisplay";
@@ -46,6 +50,12 @@ export function TeamRoster() {
      dot behind for somebody who went home. */
   const duty = useDutyModes(reports.map((p) => p.id));
 
+  /* Two readings of the same roster: the table compares everyone down a few
+     columns; the cards give each person's situation — presence, what they're
+     on, their load — as one tile. The manager picks which question they're
+     asking. */
+  const [view, setView] = useState<"list" | "cards">("list");
+
   if (isLoading) return <SkeletonRows rows={6} />;
   if (error) return <ErrorState body={error} onRetry={refetch} />;
 
@@ -63,12 +73,24 @@ export function TeamRoster() {
            would be worse than a link from the place they already look. */
         action={
           reports.length > 0 ? (
-            <Link
-              href="/manager"
-              className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-[var(--control-hover)]"
-            >
-              Live monitoring
-            </Link>
+            <div className="flex items-center gap-2">
+              <Segmented
+                label="Team view"
+                size="sm"
+                value={view}
+                onChange={setView}
+                options={[
+                  { id: "list", label: "List" },
+                  { id: "cards", label: "Cards" },
+                ]}
+              />
+              <Link
+                href="/manager"
+                className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-[var(--control-hover)]"
+              >
+                Live monitoring
+              </Link>
+            </div>
           ) : undefined
         }
       />
@@ -82,21 +104,31 @@ export function TeamRoster() {
         </Panel>
       ) : (
         <>
-          <Panel padded={false} className="mb-4">
-            <div className="hidden grid-cols-[minmax(0,1fr)_120px_110px_90px_90px_90px] items-center gap-2 border-b border-hairline px-4 py-1.5 text-[11px] tracking-[0.09em] text-ink-faint uppercase deck:grid">
-              <span>Person</span>
-              <span>Score</span>
-              <span>Open tasks</span>
-              <span className="text-right">Overdue</span>
-              <span className="text-right">In review</span>
-              <span className="text-right">Rework</span>
+          {view === "list" ? (
+            <Panel padded={false} className="mb-4">
+              <div className="hidden grid-cols-[minmax(0,1fr)_120px_110px_90px_90px_90px] items-center gap-2 border-b border-hairline px-4 py-1.5 text-[11px] tracking-[0.09em] text-ink-faint uppercase deck:grid">
+                <span>Person</span>
+                <span>Score</span>
+                <span>Open tasks</span>
+                <span className="text-right">Overdue</span>
+                <span className="text-right">In review</span>
+                <span className="text-right">Rework</span>
+              </div>
+              <div className="divide-y divide-hairline">
+                {reports.map((p) => (
+                  <PersonRow
+                    key={p.id}
+                    id={p.id}
+                    duty={duty.get(p.id) ?? null}
+                  />
+                ))}
+              </div>
+            </Panel>
+          ) : (
+            <div className="mb-4">
+              <TeamCards reports={reports} duty={duty} />
             </div>
-            <div className="divide-y divide-hairline">
-              {reports.map((p) => (
-                <PersonRow key={p.id} id={p.id} duty={duty.get(p.id) ?? null} />
-              ))}
-            </div>
-          </Panel>
+          )}
 
           <p className="text-[11px] text-ink-faint">
             Comparison is visible only looking down the reporting chain. The
@@ -141,6 +173,7 @@ function PersonRow({ id, duty }: { id: string; duty: DutyMode | null }) {
         <Avatar
           initials={p.initials}
           hue={p.hue}
+          src={p.profilePictureUrl}
           name={p.displayName}
           size="sm"
         />
@@ -209,7 +242,7 @@ function PersonRow({ id, duty }: { id: string; duty: DutyMode | null }) {
 
 /* ── One person ───────────────────────────────────────────────────────────── */
 
-type PersonTab = "overview" | "tasks" | "score" | "attendance";
+type PersonTab = "overview" | "tasks" | "score" | "attendance" | "calendar";
 
 export function PersonPage({
   employeeId,
@@ -253,6 +286,12 @@ export function PersonPage({
       icon: "tasks" as const,
     },
     {
+      id: "calendar",
+      label: "Calendar",
+      href: `/team/${employeeId}/calendar`,
+      icon: "calendar" as const,
+    },
+    {
       id: "score",
       label: "Score",
       href: `/team/${employeeId}/score`,
@@ -290,6 +329,7 @@ export function PersonPage({
             <Avatar
               initials={p.initials}
               hue={p.hue}
+              src={p.profilePictureUrl}
               name={p.displayName}
               size="lg"
             />
@@ -338,6 +378,8 @@ export function PersonPage({
 
           {tab === "tasks" && <PersonTasks employeeId={employeeId} />}
 
+          {tab === "calendar" && <PersonCalendar employeeId={employeeId} />}
+
           {tab === "score" && score.data && (
             <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
               <div className="deck:col-span-7">
@@ -353,6 +395,7 @@ export function PersonPage({
                       <Avatar
                         initials={p.initials}
                         hue={p.hue}
+                        src={p.profilePictureUrl}
                         name={p.displayName}
                         size="md"
                       />
@@ -373,8 +416,7 @@ export function PersonPage({
                           data-figure
                           className="text-xs text-slab-ink-muted"
                         >
-                          {totalMeasured(score.data) ?? "—"}{" "}
-                          measured
+                          {totalMeasured(score.data) ?? "—"} measured
                         </span>
                       </p>
                     </div>
@@ -618,6 +660,7 @@ export function PeopleDirectory() {
                   <Avatar
                     initials={p.initials}
                     hue={p.hue}
+                    src={p.profilePictureUrl}
                     name={p.displayName}
                     size="md"
                   />
@@ -674,6 +717,7 @@ export function PersonProfile({ employeeId }: { employeeId: string }) {
         <Avatar
           initials={p.initials}
           hue={p.hue}
+          src={p.profilePictureUrl}
           name={p.displayName}
           size="lg"
         />

@@ -187,6 +187,7 @@ export function NewChatDialog({
                     <Avatar
                       initials={p.initials}
                       hue={p.hue}
+                      src={p.profilePictureUrl}
                       name={p.displayName}
                       size="sm"
                     />
@@ -317,6 +318,7 @@ function PersonRow({
         <Avatar
           initials={person.initials}
           hue={person.hue}
+          src={person.profilePictureUrl}
           name={person.displayName}
           size="md"
         />
