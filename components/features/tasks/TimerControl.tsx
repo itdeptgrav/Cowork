@@ -8,6 +8,7 @@ import { useEmployeeStatus } from "@/components/features/status/useEmployeeStatu
 import { Icon } from "@/components/ui/Icons";
 import { Button, InlineError } from "@/components/ui/Primitives";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { useWatchedTimerSession } from "@/lib/hooks/useTimerSession";
 import { useNow } from "@/lib/hooks/useNow";
 import { formatTimer } from "@/lib/utils/format";
 import {
@@ -15,7 +16,6 @@ import {
   elapsedSecs,
   timerDisplayState,
 } from "@/lib/rules/tasks/timer";
-import type { TimerSession } from "@/lib/domain";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
 import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
 import type { TaskView } from "@/lib/repositories";
@@ -75,49 +75,6 @@ export function useTicker(startedAtRealMs: number | null): number {
 }
 
 
-/**
- * The live session for whoever is DOING the work.
- *
- * Two things this fixes at once.
- *
- * **Whose timer.** `getTimer` reads the acting employee's session, so a manager
- * opening a report's task was shown their OWN clock on somebody else's work —
- * usually nothing at all. The subject here is the assignee, so Rishee viewing
- * Anant's task sees Anant's timer.
- *
- * **Live.** `watchTimerSession` is a Firestore listener on the same document
- * the employee's own browser writes, so a manager sees a start or a pause
- * without refreshing. It is the existing realtime channel — legacy has no REST
- * route or socket for timers — and observation only: nothing here writes.
- */
-function useAssigneeSession(
-  taskId: string,
-  assigneeId: string | null,
-): TimerSession | null {
-  /*
-   * Keyed by subject, so a change of person discards the previous clock without
-   * an effect that sets state. Storing the key ALONGSIDE the session and
-   * comparing on read is what keeps a previous person's timer from lingering
-   * under a new one while the first snapshot is still in flight — the same
-   * guarantee a `setSession(null)` in an effect gives, without the extra render
-   * and without the lint rule it breaks.
-   */
-  const key = assigneeId ? `${assigneeId}:${taskId}` : "";
-  const [entry, setEntry] = useState<{ key: string; session: TimerSession | null }>(
-    { key: "", session: null },
-  );
-  const repo = useRepo();
-
-  useEffect(() => {
-    if (!assigneeId) return;
-    return repo.watchTimerSession(assigneeId, taskId, (session) =>
-      setEntry({ key: `${assigneeId}:${taskId}`, session }),
-    );
-  }, [repo, taskId, assigneeId]);
-
-  return entry.key === key ? entry.session : null;
-}
-
 export function TimerControl({
   view,
   size = "row",
@@ -150,7 +107,11 @@ export function TimerControl({
      viewer's own one-shot read) is kept only as the first paint before the
      listener delivers, and is never preferred over it. */
   const assigneeId = view.assignments[0]?.employeeId ?? null;
-  const live = useAssigneeSession(taskId, assigneeId ? String(assigneeId) : null);
+  /* **Whose timer.** `getTimer` reads the ACTING employee's session, so a
+     manager opening a report's task was shown their own clock on somebody
+     else's work — usually nothing at all. The subject here is the assignee, so
+     Rishee viewing Anant's task sees Anant's timer, live. */
+  const live = useWatchedTimerSession(assigneeId ? String(assigneeId) : null, taskId);
   const session = live ?? timer.data;
 
   /**

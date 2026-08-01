@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/Icons";
 import { Chip, Meter, ProvisionalBadge } from "@/components/ui/Primitives";
 import { MonitorCard, Sparkline, clockTime, duration } from "@/components/features/monitoring/MonitorParts";
 import { ActivityTimeline } from "@/components/features/monitoring/ActivityTimeline";
+import { LiveTaskWork } from "./LiveWork";
 import { formatDate } from "@/lib/utils/format";
 import type {
   ActivityEvent,
@@ -93,22 +94,16 @@ export function RightNowPanel({
           </p>
 
           {task ? (
-            <Link
-              href={`/tasks/${task.task.id}`}
-              className="group -mx-2 mt-3 block rounded-inset px-2 py-2 transition-colors hover:bg-[var(--row-hover)]"
-            >
-              <span className="flex items-baseline gap-2">
-                <span className="min-w-0 flex-1 truncate text-xs font-medium text-ink">
-                  {task.task.title}
-                </span>
-                <Icon.chevronRight className="h-3 w-3 shrink-0 translate-y-px text-ink-faint transition-transform duration-[180ms] ease-[var(--ease-deck)] group-hover:translate-x-0.5" />
-              </span>
-              <span className="mt-1 block truncate text-[11px] text-ink-faint">
-                {task.project?.name ?? "No project"}
-                {task.task.deadline.dueAt &&
-                  ` · due ${formatDate(task.task.deadline.dueAt)}`}
-              </span>
-              <span className="mt-2 flex flex-wrap items-center gap-1.5">
+            <div className="mt-3 border-t border-hairline pt-3">
+              {/* **The clock and the budget, not just the name.** A task title
+                  and a due date cannot tell a report comfortably inside their
+                  window from one who has burned it with nothing to show, and
+                  those are the two situations this panel exists to separate.
+                  `LiveTaskWork` owns the live session and the reading; the
+                  chips below stay here because they are facts about the TASK
+                  rather than about the time spent on it. */}
+              <LiveTaskWork view={task} employeeId={subject.employeeId} />
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
                 {task.isOverdue && <Chip tone="overdue">Overdue</Chip>}
                 {task.task.isBlocked && <Chip tone="blocked">Blocked</Chip>}
                 {task.reworkCount > 0 && (
@@ -117,11 +112,15 @@ export function RightNowPanel({
                     {task.reworkCount > 1 ? "s" : ""}
                   </Chip>
                 )}
-                {!task.isOverdue &&
-                  !task.task.isBlocked &&
-                  task.reworkCount === 0 && <Chip>On track</Chip>}
-              </span>
-            </Link>
+                <Link
+                  href={`/tasks/${task.task.id}`}
+                  className="group ml-auto inline-flex items-center gap-1 text-[11px] text-ink-muted transition-colors hover:text-ink"
+                >
+                  Open task
+                  <Icon.chevronRight className="h-3 w-3 shrink-0 transition-transform duration-[180ms] ease-[var(--ease-deck)] group-hover:translate-x-0.5" />
+                </Link>
+              </div>
+            </div>
           ) : (
             <p className="mt-3 border-t border-hairline pt-3 text-xs text-ink-faint">
               No Cowork task is linked to the current activity.
