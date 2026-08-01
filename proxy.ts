@@ -137,7 +137,7 @@ async function hasLiveFirebaseToken(
   }
 }
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
   const signedIn = await hasLiveFirebaseToken(
     request.cookies.get(FIREBASE_COOKIE)?.value ??

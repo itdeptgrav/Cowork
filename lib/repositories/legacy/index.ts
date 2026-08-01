@@ -2615,18 +2615,39 @@ export class LegacyRepository {
     }
 
     /* The manager's own figure, as a new TOTAL. Null when they granted exactly
-       what was asked — "granted what you asked" and "granted 4h" are different
-       facts, and the confirmation card shows the second as a change. */
+       what was asked — which is the only thing the decision card offers. */
     const granted =
       options?.grantedSecs !== undefined &&
       Math.round(options.grantedSecs) !== record.newBudgetSecs
         ? Math.max(1, Math.round(options.grantedSecs))
         : null;
 
+    /* **The manager's approval APPLIES the budget and settles the request, in
+       one step.** The hours belong to the manager and the backend authorises
+       only them to set hours — `/set-budget` refuses anyone else (taskForward.js:
+       "Only … who manages the assignee, can set hours") — so the manager is the
+       one party who can make the grant take effect, and they are the caller here.
+       The earlier design left the record at `approved` for the ASSIGNEE to
+       confirm and apply, but the assignee's apply always 403'd, so that step
+       could never land. Applying here, as the manager, is what makes "approve"
+       mean the budget moved — which is what this card's own contract promised. */
+    const agreedSecs = granted ?? record.newBudgetSecs;
+    const applied = await this.#applyAgreedBudget(record.taskId, agreedSecs);
+    if (!applied.ok) {
+      return {
+        ok: false,
+        code: "conflict",
+        message: applied.message,
+      } as ActionResult<TimeBudgetExtensionRecord | null>;
+    }
+
+    const approver = this.#ctx.employeeId ? String(this.#ctx.employeeId) : null;
     await updateDoc(ref, {
-      status: "approved",
+      status: "accepted",
       approvedAt: decidedAt,
       approvedSecs: granted,
+      confirmedAt: decidedAt,
+      confirmedBy: approver,
       ...(options?.reason ? { reason: options.reason } : {}),
     });
     notifyRepositoryChanged();
@@ -2634,9 +2655,11 @@ export class LegacyRepository {
       ok: true,
       data: {
         ...record,
-        status: "approved",
+        status: "accepted",
         approvedAt: decidedAt,
         approvedSecs: granted,
+        confirmedAt: decidedAt,
+        confirmedBy: approver,
         reason: options?.reason ?? record.reason,
       },
     };

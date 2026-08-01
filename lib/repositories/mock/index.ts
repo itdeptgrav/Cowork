@@ -3111,15 +3111,33 @@ export class MockRepository implements CoworkRepository {
       return { ok: true, data: rec };
     }
 
-    rec.status = "approved";
-    rec.approvedAt = nowIso();
-    /* Null when the manager granted exactly what was asked, so the confirmation
-       card can tell "your figure" from "their figure". */
-    rec.approvedSecs =
+    /* The manager's own figure. Null when they granted exactly what was asked —
+       which is the only thing the decision card offers. */
+    const granted =
       options?.grantedSecs !== undefined &&
       Math.round(options.grantedSecs) !== rec.newBudgetSecs
         ? Math.max(1, Math.round(options.grantedSecs))
         : null;
+
+    /* **The manager's approval APPLIES the budget and settles the request, in
+       one step.** The hours belong to the manager, and the backend authorises
+       only them to set hours (`/set-budget` refuses anyone else) — so the manager
+       is the one party who can make the grant take effect, and they are the
+       caller here. Leaving the record at `approved` for the ASSIGNEE to confirm
+       handed the applying step to somebody the backend would refuse, so it could
+       never land. Applying here is what makes "approve" mean the budget moved. */
+    const agreedSecs = granted ?? rec.newBudgetSecs;
+    const t = s.tasks.find((x) => x.id === rec.taskId);
+    if (t) {
+      t.deadline.currentWindowSecs = agreedSecs;
+      t.estimatedEffortSecs = agreedSecs;
+      t.updatedAt = nowIso();
+    }
+    rec.status = "accepted";
+    rec.approvedAt = nowIso();
+    rec.approvedSecs = granted;
+    rec.confirmedAt = nowIso();
+    rec.confirmedBy = actingId();
     if (options?.reason) rec.reason = options.reason;
     tick();
     return { ok: true, data: rec };
