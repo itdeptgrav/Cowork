@@ -14,8 +14,11 @@ import {
 } from "@/lib/rules/documents/access";
 import {
   cellRef,
+  chartData,
   columnLabel,
   displayValue,
+  evalConditional,
+  explainError,
   formatNumber,
   formulaAcceptsReference,
   formulaFunctionPrefix,
@@ -28,16 +31,31 @@ import {
   parseClipboardTable,
   parseRef,
   rangeLabel,
+  rangeToRect,
   readSheet,
   summarize,
   writeSheet,
   type CellPos,
   type CellStyle,
+  type ChartSpec,
+  type ChartType,
+  type ConditionalKind,
+  type ConditionalRule,
   type NumberFormat,
+  type RuleStats,
   type SheetData,
 } from "@/lib/rules/sheets/grid";
 import { useCollabSession } from "./useCollabSession";
 import { ShareMenu } from "./ShareMenu";
+import {
+  SheetChartObject,
+  CHART_DEFAULT_W,
+  CHART_DEFAULT_H,
+} from "./SheetChartObject";
+import { ChartPanel } from "./ChartPanel";
+import { ConditionalPanel } from "./ConditionalPanel";
+import { SheetContextMenu, type MenuAction } from "./SheetContextMenu";
+import type { SelectionState, SheetCommand } from "./sheetCommands";
 
 /**
  * The spreadsheet.
@@ -76,6 +94,13 @@ const FONTS = [
   "Georgia",
 ];
 const SIZES = [8, 9, 10, 11, 12, 14, 16, 18, 20, 24, 28, 36];
+
+/** A stable id, falling back to a deterministic one where crypto is absent. */
+function newId(fallback: string): string {
+  return typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID()
+    : fallback;
+}
 
 export function SheetGrid({ documentId }: { documentId: string }) {
   const doc = useQuery((r) => r.getDocument(documentId), [documentId]);
@@ -122,6 +147,13 @@ export function SheetGrid({ documentId }: { documentId: string }) {
   const [viewportH, setViewportH] = useState(480);
   const [full, setFull] = useState(false);
   const [undoMgr, setUndoMgr] = useState<Y.UndoManager | null>(null);
+  /* The right-click menu's viewport position, or null when closed. */
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  /* The embedded chart currently selected (its config panel is open), or null. */
+  const [selectedChart, setSelectedChart] = useState<string | null>(null);
+  /* The conditional-formatting panel, and which rule's editor is expanded. */
+  const [cfOpen, setCfOpen] = useState(false);
+  const [selectedRule, setSelectedRule] = useState<string | null>(null);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
   const shell = useRef<HTMLDivElement | null>(null);
@@ -135,6 +167,9 @@ export function SheetGrid({ documentId }: { documentId: string }) {
      same structure rather than a copy of it. */
   const yCells = collab.session?.doc.getMap<string>("cells") ?? null;
   const yStyles = collab.session?.doc.getMap<CellStyle>("styles") ?? null;
+  const yCharts = collab.session?.doc.getArray<ChartSpec>("charts") ?? null;
+  const yConds =
+    collab.session?.doc.getArray<ConditionalRule>("conditionals") ?? null;
 
   /**
    * The engine and its sheet id, BUILT AND DESTROYED IN ONE EFFECT.
@@ -191,6 +226,8 @@ export function SheetGrid({ documentId }: { documentId: string }) {
       collab.session!.doc.transact(() => {
         for (const [ref, value] of Object.entries(sheet.cells)) yCells.set(ref, value);
         for (const [ref, style] of Object.entries(sheet.styles)) yStyles?.set(ref, style);
+        if (sheet.charts?.length) yCharts?.push([...sheet.charts]);
+        if (sheet.conditionals?.length) yConds?.push([...sheet.conditionals]);
       });
     };
     if (collab.session.provider.synced) apply();
@@ -203,24 +240,37 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     const bump = () => setVersion((n) => n + 1);
     yCells.observe(bump);
     yStyles.observe(bump);
+    yCharts?.observe(bump);
+    yConds?.observe(bump);
     return () => {
       yCells.unobserve(bump);
       yStyles.unobserve(bump);
+      yCharts?.unobserve(bump);
+      yConds?.unobserve(bump);
     };
-  }, [yCells, yStyles]);
+  }, [yCells, yStyles, yCharts, yConds]);
 
-  /* Undo/redo over the shared maps. It tracks LOCAL edits only (the default null
-     origin), so Ctrl+Z never rewinds a collaborator's change out from under them.
-     Live sessions only — offline there is no CRDT history to walk. */
+  /* Undo/redo over the shared maps AND arrays. It tracks LOCAL edits only (the
+     default null origin), so Ctrl+Z never rewinds a collaborator's change out
+     from under them. Charts and conditional rules are in scope too, so inserting
+     a chart or a rule is undoable like any cell edit. Live sessions only —
+     offline there is no CRDT history to walk. */
   useEffect(() => {
     if (!yCells || !yStyles) return;
-    const mgr = new Y.UndoManager([yCells, yStyles], { captureTimeout: 350 });
+    /* Charts and rules share the session, so they exist together with the cell
+       and style maps or not at all; the ternary keeps the inferred element type
+       a clean union the UndoManager accepts. */
+    const scope =
+      yCharts && yConds
+        ? [yCells, yStyles, yCharts, yConds]
+        : [yCells, yStyles];
+    const mgr = new Y.UndoManager(scope, { captureTimeout: 350 });
     setUndoMgr(mgr);
     return () => {
       mgr.destroy();
       setUndoMgr(null);
     };
-  }, [yCells, yStyles]);
+  }, [yCells, yStyles, yCharts, yConds]);
 
   /** The authoritative raw cells: the CRDT when connected, local state otherwise. */
   const rawCells = useMemo(() => {
@@ -232,6 +282,16 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     if (yStyles) return Object.fromEntries(yStyles.entries());
     return sheet?.styles ?? {};
   }, [yStyles, sheet, version]);
+
+  const rawCharts = useMemo<ChartSpec[]>(() => {
+    if (yCharts) return yCharts.toArray();
+    return sheet?.charts ?? [];
+  }, [yCharts, sheet, version]);
+
+  const rawConds = useMemo<ConditionalRule[]>(() => {
+    if (yConds) return yConds.toArray();
+    return sheet?.conditionals ?? [];
+  }, [yConds, sheet, version]);
 
   /* Feed the engine SYNCHRONOUSLY — a memo during render, NOT an effect.
      **This is the "the total doesn't show until I touch something else" fix.** An
@@ -263,26 +323,64 @@ export function SheetGrid({ documentId }: { documentId: string }) {
 
   /* ── Save ──────────────────────────────────────────────────────────────── */
 
+  /* The actual write, run either after the debounce or immediately on a flush.
+     Cancels any pending timer so a queued save and a flush never race. */
+  const saveNow = useCallback(() => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (!sheet || readOnly) return;
+    void getRepository()
+      .saveDocumentBody(documentId, {
+        cells: writeSheet({
+          cells: rawCells,
+          styles: rawStyles,
+          rows: sheet.rows,
+          cols: sheet.cols,
+          charts: rawCharts,
+          conditionals: rawConds,
+        }),
+      })
+      .catch(() => setError("That could not be saved."));
+  }, [documentId, rawCells, rawStyles, rawCharts, rawConds, sheet, readOnly]);
+
+  /* Held in a ref so the flush listeners can stay registered once (a stable
+     effect) yet always call the latest closure over the current cells. */
+  const saveNowRef = useRef(saveNow);
+  useEffect(() => {
+    saveNowRef.current = saveNow;
+  }, [saveNow]);
+
+  /* The live read-only state, checked at flush time — so a role revoked in the
+     instant before a tab-hide can't let a stale closure write anyway. */
+  const readOnlyRef = useRef(readOnly);
+  useEffect(() => {
+    readOnlyRef.current = readOnly;
+  }, [readOnly]);
+
   const scheduleSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (!sheet) return;
-      void getRepository()
-        .saveDocumentBody(documentId, {
-          cells: writeSheet({
-            cells: rawCells,
-            styles: rawStyles,
-            rows: sheet.rows,
-            cols: sheet.cols,
-          }),
-        })
-        .catch(() => setError("That could not be saved."));
-    }, 1500);
-  }, [documentId, rawCells, rawStyles, sheet]);
+    saveTimer.current = setTimeout(() => saveNowRef.current(), 1500);
+  }, []);
 
+  /* Close the data-loss window: the 1.5s debounce means a tab closed or hidden
+     mid-edit would otherwise drop the pending write. Flush it when the tab is
+     hidden and once more on unmount — only if a save is actually pending, so we
+     never write on a sheet nobody touched. (Ports the DocumentEditor pattern.) */
   useEffect(() => {
+    const onHide = () => {
+      if (
+        document.visibilityState === "hidden" &&
+        saveTimer.current &&
+        !readOnlyRef.current
+      )
+        saveNowRef.current();
+    };
+    document.addEventListener("visibilitychange", onHide);
     return () => {
-      if (saveTimer.current) clearTimeout(saveTimer.current);
+      document.removeEventListener("visibilitychange", onHide);
+      if (saveTimer.current && !readOnlyRef.current) saveNowRef.current();
     };
   }, []);
 
@@ -482,6 +580,27 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     writeCells(refs.map((ref) => [ref, ""] as [string, string]));
   };
 
+  /* Strip formatting from the selection, leaving the values — Excel's "Clear
+     formats". Deletes the whole style entry rather than blanking keys, so the
+     document shrinks back. */
+  const clearFormats = () => {
+    if (readOnly) return;
+    const list = selRect ? rectRefs() : [active];
+    if (yStyles) {
+      collab.session?.doc.transact(() => {
+        for (const ref of list) yStyles.delete(ref);
+      });
+    } else {
+      setSheet((s) => {
+        if (!s) return s;
+        const styles = { ...s.styles };
+        for (const ref of list) delete styles[ref];
+        return { ...s, styles };
+      });
+    }
+    scheduleSave();
+  };
+
   /** The selection as a tab/newline table, so it pastes into Excel or back here. */
   const rangeToText = (): string => {
     if (!selRect) return rawCells[active] ?? "";
@@ -493,6 +612,24 @@ export function SheetGrid({ documentId }: { documentId: string }) {
       lines.push(row.join("\t"));
     }
     return lines.join("\n");
+  };
+
+  /* Drop a clipboard table into the grid from the active cell down-and-right.
+     Shared by the native paste event and the context menu's Paste, so both land
+     in exactly the same place with the same bounds-clipping. */
+  const pasteText = (text: string) => {
+    if (readOnly || !text || !sheet) return;
+    const at = parseRef(active);
+    if (!at) return;
+    const entries: [string, string][] = [];
+    parseClipboardTable(text).forEach((line, dr) =>
+      line.forEach((val, dc) => {
+        const r = at.row + dr;
+        const c = at.col + dc;
+        if (r < sheet.rows && c < sheet.cols) entries.push([cellRef(r, c), val]);
+      }),
+    );
+    writeCells(entries);
   };
 
   /* Fill down / right, with relative references adjusted the Excel way. A single
@@ -527,6 +664,342 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     }
     writeCells(entries);
   };
+
+  /* ── Charts (embedded objects) ─────────────────────────────────────────── */
+
+  const topChartZ = () => rawCharts.reduce((m, c) => Math.max(m, c.z ?? 1), 0);
+
+  const insertChart = (type: ChartType) => {
+    if (readOnly) return;
+    const range = selRect ? rangeLabel(selRect) : active;
+    /* Drop it into the current viewport, staggered so several don't stack. */
+    const stagger = (rawCharts.length % 6) * 24;
+    const spec: ChartSpec = {
+      id: newId(`chart-${rawCharts.length}-${range}`),
+      type,
+      range,
+      title: `Chart ${rawCharts.length + 1}`,
+      x: HEAD_W + 12 + stagger,
+      y: scrollTop + CELL_H + 12 + stagger,
+      w: CHART_DEFAULT_W,
+      h: CHART_DEFAULT_H,
+      z: topChartZ() + 1,
+    };
+    if (yCharts) yCharts.push([spec]);
+    else setSheet((s) => (s ? { ...s, charts: [...(s.charts ?? []), spec] } : s));
+    setCfOpen(false);
+    setSelectedChart(spec.id);
+    scheduleSave();
+  };
+
+  /* Patch one chart in place. A CRDT array has no set-at-index, so it is a
+     delete-then-insert at the same position, which keeps the paint order. */
+  const updateChart = (id: string, patch: Partial<ChartSpec>) => {
+    if (readOnly) return;
+    if (yCharts) {
+      const i = yCharts.toArray().findIndex((c) => c.id === id);
+      if (i >= 0) {
+        const cur = yCharts.get(i);
+        collab.session?.doc.transact(() => {
+          yCharts.delete(i, 1);
+          yCharts.insert(i, [{ ...cur, ...patch }]);
+        });
+      }
+    } else {
+      setSheet((s) =>
+        s
+          ? {
+              ...s,
+              charts: (s.charts ?? []).map((c) =>
+                c.id === id ? { ...c, ...patch } : c,
+              ),
+            }
+          : s,
+      );
+    }
+    scheduleSave();
+  };
+
+  const removeChart = (id: string) => {
+    if (readOnly) return;
+    if (yCharts) {
+      const i = yCharts.toArray().findIndex((c) => c.id === id);
+      if (i >= 0) yCharts.delete(i, 1);
+    } else {
+      setSheet((s) =>
+        s ? { ...s, charts: (s.charts ?? []).filter((c) => c.id !== id) } : s,
+      );
+    }
+    if (selectedChart === id) setSelectedChart(null);
+    scheduleSave();
+  };
+
+  const duplicateChart = (id: string) => {
+    if (readOnly) return;
+    const src = rawCharts.find((c) => c.id === id);
+    if (!src) return;
+    const copy: ChartSpec = {
+      ...src,
+      id: newId(`chart-${rawCharts.length}-copy`),
+      title: `${src.title} copy`,
+      x: (src.x ?? 24) + 24,
+      y: (src.y ?? 24) + 24,
+      z: topChartZ() + 1,
+    };
+    if (yCharts) yCharts.push([copy]);
+    else setSheet((s) => (s ? { ...s, charts: [...(s.charts ?? []), copy] } : s));
+    setSelectedChart(copy.id);
+    scheduleSave();
+  };
+
+  /* Bring forward / send backward. Rendering sorts by `z`, so it is enough to
+     push this chart just past the current top or bottom of the stack. */
+  const restackChart = (id: string, dir: 1 | -1) => {
+    if (readOnly || rawCharts.length < 2) return;
+    const zs = rawCharts.map((c) => c.z ?? 1);
+    updateChart(id, {
+      z: dir === 1 ? Math.max(...zs) + 1 : Math.min(...zs) - 1,
+    });
+  };
+
+  /* ── Conditional formatting ────────────────────────────────────────────── */
+
+  /* Sensible starting values so a fresh rule already does something visible and
+     the panel's inputs are populated rather than empty. */
+  const ruleDefaults = (kind: ConditionalKind): Partial<ConditionalRule> => {
+    switch (kind) {
+      case "greater":
+      case "greaterEqual":
+      case "less":
+      case "lessEqual":
+      case "equal":
+      case "notEqual":
+        return { value: 0 };
+      case "between":
+      case "notBetween":
+        return { value: 0, value2: 100 };
+      case "textContains":
+      case "textStarts":
+      case "textEnds":
+        return { text: "" };
+      case "top":
+      case "bottom":
+      case "topPercent":
+      case "bottomPercent":
+        return { value: 10 };
+      case "iconSet":
+        return { iconSet: "arrows" };
+      default:
+        return {};
+    }
+  };
+
+  const addRule = (kind: ConditionalKind) => {
+    if (readOnly) return;
+    const rule: ConditionalRule = {
+      id: newId(`cf-${rawConds.length}`),
+      range: selRect ? rangeLabel(selRect) : active,
+      kind,
+      ...ruleDefaults(kind),
+    };
+    if (yConds) yConds.push([rule]);
+    else
+      setSheet((s) =>
+        s ? { ...s, conditionals: [...(s.conditionals ?? []), rule] } : s,
+      );
+    setSelectedRule(rule.id);
+    scheduleSave();
+  };
+
+  /* Merge a patch and DROP any key set to undefined, so "clear this" (a removed
+     fill, an enabled toggle back to its default) shrinks the rule rather than
+     storing an undefined the CRDT would keep replicating. */
+  const mergeRule = (
+    cur: ConditionalRule,
+    patch: Partial<ConditionalRule>,
+  ): ConditionalRule => {
+    const merged = { ...cur, ...patch } as Record<string, unknown>;
+    for (const k of Object.keys(merged))
+      if (merged[k] === undefined) delete merged[k];
+    return merged as unknown as ConditionalRule;
+  };
+
+  const updateRule = (id: string, patch: Partial<ConditionalRule>) => {
+    if (readOnly) return;
+    if (yConds) {
+      const i = yConds.toArray().findIndex((r) => r.id === id);
+      if (i >= 0) {
+        const cur = yConds.get(i);
+        collab.session?.doc.transact(() => {
+          yConds.delete(i, 1);
+          yConds.insert(i, [mergeRule(cur, patch)]);
+        });
+      }
+    } else {
+      setSheet((s) =>
+        s
+          ? {
+              ...s,
+              conditionals: (s.conditionals ?? []).map((r) =>
+                r.id === id ? mergeRule(r, patch) : r,
+              ),
+            }
+          : s,
+      );
+    }
+    scheduleSave();
+  };
+
+  const removeRule = (id: string) => {
+    if (readOnly) return;
+    if (yConds) {
+      const i = yConds.toArray().findIndex((r) => r.id === id);
+      if (i >= 0) yConds.delete(i, 1);
+    } else {
+      setSheet((s) =>
+        s
+          ? { ...s, conditionals: (s.conditionals ?? []).filter((r) => r.id !== id) }
+          : s,
+      );
+    }
+    if (selectedRule === id) setSelectedRule(null);
+    scheduleSave();
+  };
+
+  const duplicateRule = (id: string) => {
+    if (readOnly) return;
+    const src = rawConds.find((r) => r.id === id);
+    if (!src) return;
+    const copy: ConditionalRule = { ...src, id: newId(`cf-${rawConds.length}`) };
+    if (yConds) yConds.push([copy]);
+    else
+      setSheet((s) =>
+        s ? { ...s, conditionals: [...(s.conditionals ?? []), copy] } : s,
+      );
+    setSelectedRule(copy.id);
+    scheduleSave();
+  };
+
+  /* Reorder by rebuilding the array — rules apply top-to-bottom, so priority IS
+     array position. One transaction, so a reorder is a single merge. */
+  const moveRule = (id: string, toIndex: number) => {
+    if (readOnly) return;
+    const arr = [...rawConds];
+    const from = arr.findIndex((r) => r.id === id);
+    if (from < 0) return;
+    const [rule] = arr.splice(from, 1);
+    arr.splice(Math.max(0, Math.min(arr.length, toIndex)), 0, rule);
+    if (yConds) {
+      collab.session?.doc.transact(() => {
+        yConds.delete(0, yConds.length);
+        yConds.insert(0, arr);
+      });
+    } else {
+      setSheet((s) => (s ? { ...s, conditionals: arr } : s));
+    }
+    scheduleSave();
+  };
+
+  /* The two right-side panels are mutually exclusive — opening one closes the
+     other, so the sheet never has two panels fighting for the edge. */
+  const openConditionalPanel = () => {
+    setSelectedChart(null);
+    setCfOpen(true);
+  };
+
+  /* ── Command seam ──────────────────────────────────────────────────────── */
+
+  /* The single, immutable snapshot every menu and panel reads instead of the
+     grid's scattered state. */
+  const selection: SelectionState = {
+    active,
+    anchor,
+    rect: selRect,
+    editing,
+    readOnly,
+    hasRange:
+      !!selRect &&
+      (selRect.top !== selRect.bottom || selRect.left !== selRect.right),
+  };
+
+  /* The grid's one front door. Every external surface (the context menu now, the
+     chart and conditional-formatting panels next) issues a plain command and
+     this routes it to the handler that already exists — it adds no behaviour,
+     it just gives those handlers a stable, testable entry point. Kept synchronous
+     and side-effect-only, so it never disturbs the during-render engine feed. */
+  const dispatch = (command: SheetCommand) => {
+    switch (command.type) {
+      case "undo":
+        undoMgr?.undo();
+        break;
+      case "redo":
+        undoMgr?.redo();
+        break;
+      case "copy":
+        void navigator.clipboard?.writeText(rangeToText()).catch(() => {});
+        break;
+      case "cut":
+        void navigator.clipboard?.writeText(rangeToText()).catch(() => {});
+        clearRange();
+        break;
+      case "paste":
+        void navigator.clipboard
+          ?.readText()
+          .then(pasteText)
+          .catch(() => {});
+        break;
+      case "clearContents":
+        clearRange();
+        break;
+      case "clearFormats":
+        clearFormats();
+        break;
+      case "fillDown":
+        fill("down");
+        break;
+      case "fillRight":
+        fill("right");
+        break;
+      case "style":
+        toggleStyle(command.patch);
+        break;
+      case "insertChart":
+        insertChart(command.chartType);
+        break;
+      case "selectRange": {
+        const rect = rangeToRect(command.range);
+        if (rect) {
+          setAnchor(cellRef(rect.top, rect.left));
+          setActive(cellRef(rect.bottom, rect.right));
+        }
+        break;
+      }
+      case "beginEdit":
+        beginEdit(command.ref, command.seed ?? "");
+        break;
+    }
+  };
+
+  /* The right-click menu's contents, derived from the current selection so items
+     that cannot apply read as disabled rather than silently doing nothing. */
+  const menuGroups = (): MenuAction[][] => [
+    [
+      { label: "Cut", shortcut: "⌘X", disabled: readOnly, onSelect: () => dispatch({ type: "cut" }) },
+      { label: "Copy", shortcut: "⌘C", onSelect: () => dispatch({ type: "copy" }) },
+      { label: "Paste", shortcut: "⌘V", disabled: readOnly, onSelect: () => dispatch({ type: "paste" }) },
+    ],
+    [
+      { label: "Clear contents", shortcut: "Del", disabled: readOnly, onSelect: () => dispatch({ type: "clearContents" }) },
+      { label: "Clear formatting", disabled: readOnly, onSelect: () => dispatch({ type: "clearFormats" }) },
+    ],
+    [
+      { label: "Fill down", shortcut: "⌘D", disabled: readOnly || !selection.hasRange, onSelect: () => dispatch({ type: "fillDown" }) },
+      { label: "Fill right", shortcut: "⌘R", disabled: readOnly || !selection.hasRange, onSelect: () => dispatch({ type: "fillRight" }) },
+    ],
+    [
+      { label: "Insert column chart", disabled: readOnly, onSelect: () => dispatch({ type: "insertChart", chartType: "column" }) },
+    ],
+  ];
 
   /* ── Autocomplete ──────────────────────────────────────────────────────── */
 
@@ -657,6 +1130,88 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     return raw !== "" && !Number.isNaN(Number(raw)) ? Number(raw) : null;
   };
 
+  /* A cell as a CHART reads it — the evaluated text and its number — so a chart
+     of `=A1*2` plots the result and labels come out as the shown strings. */
+  const chartCell = (
+    r: number,
+    c: number,
+  ): { text: string; number: number | null } => {
+    const raw = rawCells[cellRef(r, c)] ?? "";
+    const number = cellNumber(r, c);
+    let text = raw;
+    if (isFormula(raw)) {
+      try {
+        text = displayValue(
+          hf.engine.getCellValue({ sheet: hf.sheetId, row: r, col: c }),
+        );
+      } catch {
+        /* Matches the cell render's catch, so a rule's range stats key errors by
+           the same "#ERROR!" the cell compares — duplicate/error rules line up. */
+        text = "#ERROR!";
+      }
+    }
+    return { text, number };
+  };
+
+  /* Each rule's summary over its OWN range — min/max for scales & bars, mean for
+     above/below-average, the sorted values for top/bottom N, and per-value counts
+     for duplicate/unique. One capped pass per rule (few rules, and the cap keeps
+     a huge range from stalling the render), keyed by the SAME shown text the cell
+     loop compares, so duplicate detection lines up. */
+  const emptyStats: RuleStats = {
+    min: 0,
+    max: 0,
+    mean: 0,
+    count: 0,
+    sortedDesc: [],
+    textCounts: new Map(),
+  };
+  const ruleStats = new Map<string, RuleStats>();
+  for (const rule of rawConds) {
+    /* A disabled rule is never applied, so don't pay to measure its range. */
+    if (rule.enabled === false) {
+      ruleStats.set(rule.id, emptyStats);
+      continue;
+    }
+    const rect = rangeToRect(rule.range);
+    if (!rect) {
+      ruleStats.set(rule.id, emptyStats);
+      continue;
+    }
+    const nums: number[] = [];
+    const textCounts = new Map<string, number>();
+    let min = Infinity;
+    let max = -Infinity;
+    let sum = 0;
+    let scanned = 0;
+    for (let r = rect.top; r <= rect.bottom && scanned < 20000; r++)
+      for (let c = rect.left; c <= rect.right && scanned < 20000; c++) {
+        scanned++;
+        const { text, number } = chartCell(r, c);
+        if (number !== null) {
+          nums.push(number);
+          sum += number;
+          if (number < min) min = number;
+          if (number > max) max = number;
+        }
+        if (text !== "")
+          textCounts.set(text, (textCounts.get(text) ?? 0) + 1);
+      }
+    ruleStats.set(
+      rule.id,
+      nums.length
+        ? {
+            min,
+            max,
+            mean: sum / nums.length,
+            count: nums.length,
+            sortedDesc: [...nums].sort((a, b) => b - a),
+            textCounts,
+          }
+        : { ...emptyStats, textCounts },
+    );
+  }
+
   /* The status-bar figures for a real RANGE (a single cell shows nothing).
      Bounded so an enormous selection cannot stall a render. */
   const summary =
@@ -669,7 +1224,11 @@ export function SheetGrid({ documentId }: { documentId: string }) {
             r <= selRect.bottom && scanned < 20000;
             r++
           )
-            for (let c = selRect.left; c <= selRect.right; c++) {
+            for (
+              let c = selRect.left;
+              c <= selRect.right && scanned < 20000;
+              c++
+            ) {
               scanned++;
               const n = cellNumber(r, c);
               if (n !== null) nums.push(n);
@@ -677,6 +1236,12 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           return summarize(nums);
         })()
       : null;
+
+  /* Charts painted back-to-front by their `z`; the render index becomes the
+     actual z-index (kept under the sticky headers). */
+  const orderedCharts = [...rawCharts].sort((a, b) => (a.z ?? 1) - (b.z ?? 1));
+  const selectedChartSpec =
+    rawCharts.find((c) => c.id === selectedChart) ?? null;
 
   /* The row window. Fixed row height makes this arithmetic rather than a
      measurement, which is what keeps windowing itself cheap. */
@@ -810,15 +1375,46 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           <FmtBtn label="Underline (⌘U)" active={!!rawStyles[active]?.underline} onClick={() => toggleStyle({ underline: !rawStyles[active]?.underline })}>
             <span className="underline">U</span>
           </FmtBtn>
+          <FmtBtn label="Strikethrough" active={!!rawStyles[active]?.strike} onClick={() => toggleStyle({ strike: !rawStyles[active]?.strike })}>
+            <span className="line-through">S</span>
+          </FmtBtn>
           <ColorBtn label="Font colour" swatch={rawStyles[active]?.color} onPick={(v) => toggleStyle({ color: v })}>
             <span className="text-[11px] font-semibold leading-none">A</span>
           </ColorBtn>
           <ColorBtn label="Fill colour" swatch={rawStyles[active]?.bg} onPick={(v) => toggleStyle({ bg: v })}>
             <span className="text-[11px] leading-none">▦</span>
           </ColorBtn>
+          <ToolSelect
+            label="Borders"
+            value={rawStyles[active]?.border ?? "none"}
+            width="w-[4.75rem]"
+            options={[
+              ["none", "Borders"],
+              ["all", "All borders"],
+              ["bottom", "Bottom border"],
+            ]}
+            onChange={(v) =>
+              toggleStyle({
+                border: v === "none" ? undefined : (v as "all" | "bottom"),
+              })
+            }
+          />
           <Sep />
 
           {/* Alignment group */}
+          <ToolSelect
+            label="Vertical align"
+            value={rawStyles[active]?.valign ?? "middle"}
+            width="w-[4.75rem]"
+            options={[
+              ["top", "Top"],
+              ["middle", "Middle"],
+              ["bottom", "Bottom"],
+            ]}
+            onChange={(v) =>
+              toggleStyle({ valign: v as "top" | "middle" | "bottom" })
+            }
+          />
           {(["left", "center", "right"] as const).map((a) => (
             <FmtBtn key={a} label={`Align ${a}`} active={rawStyles[active]?.align === a} onClick={() => toggleStyle({ align: a })}>
               <span className="text-[10px]">{a[0].toUpperCase()}</span>
@@ -826,6 +1422,12 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           ))}
           <FmtBtn label="Wrap text" active={!!rawStyles[active]?.wrap} onClick={() => toggleStyle({ wrap: !rawStyles[active]?.wrap })}>
             <span className="text-[11px] leading-none">↩</span>
+          </FmtBtn>
+          <FmtBtn label="Decrease indent" onClick={() => toggleStyle({ indent: (Math.max(0, (rawStyles[active]?.indent ?? 0) - 1)) || undefined })}>
+            <span className="text-[11px] leading-none">⇤</span>
+          </FmtBtn>
+          <FmtBtn label="Increase indent" onClick={() => toggleStyle({ indent: Math.min(8, (rawStyles[active]?.indent ?? 0) + 1) })}>
+            <span className="text-[11px] leading-none">⇥</span>
           </FmtBtn>
           <Sep />
 
@@ -861,7 +1463,39 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           </FmtBtn>
           <Sep />
 
-          <FmtBtn label="Clear contents" onClick={clearRange}>
+          {/* Styles & insert */}
+          <FmtBtn
+            label="Conditional formatting"
+            active={cfOpen}
+            onClick={() => (cfOpen ? setCfOpen(false) : openConditionalPanel())}
+          >
+            <span className="text-[12px] leading-none">▦</span>
+          </FmtBtn>
+          <ToolSelect
+            label="Insert chart from selection"
+            value=""
+            width="w-[5.5rem]"
+            options={[
+              ["", "＋ Chart"],
+              ["column", "Column"],
+              ["bar", "Bar"],
+              ["line", "Line"],
+              ["area", "Area"],
+              ["pie", "Pie"],
+              ["doughnut", "Doughnut"],
+              ["scatter", "Scatter"],
+              ["combo", "Combo"],
+            ]}
+            onChange={(v) => {
+              if (v) insertChart(v as ChartType);
+            }}
+          />
+          <Sep />
+
+          <FmtBtn label="Clear formatting" onClick={clearFormats}>
+            <span className="text-[10px] font-semibold leading-none">A✕</span>
+          </FmtBtn>
+          <FmtBtn label="Clear contents (Del)" onClick={clearRange}>
             <Icon.close className="h-3.5 w-3.5" />
           </FmtBtn>
         </div>
@@ -873,15 +1507,33 @@ export function SheetGrid({ documentId }: { documentId: string }) {
         </div>
       )}
 
+      <div className="flex min-h-0 flex-1">
       <div
         ref={gridRef}
         tabIndex={0}
         role="grid"
         aria-label="Spreadsheet"
         onScroll={onScroll}
-        className="min-h-0 flex-1 overflow-auto bg-[var(--surface-sunken)] outline-none scroll-slim"
+        className="min-h-0 min-w-0 flex-1 overflow-auto bg-[var(--surface-sunken)] outline-none scroll-slim"
+        onContextMenu={(e) => {
+          /* While editing a cell, leave the browser's own menu for the input
+             (cut/copy/paste on selected text). Otherwise the grid's menu opens
+             at the cursor — the cell under it was already selected on mousedown. */
+          if (editing) return;
+          e.preventDefault();
+          setMenu({ x: e.clientX, y: e.clientY });
+        }}
         onKeyDown={(e) => {
           if (editing) return;
+          /* Escape clears a chart selection and collapses a range to its focus —
+             but if the context menu is open it owns Escape (closing itself), so
+             one keypress doesn't also deselect the chart underneath it. */
+          if (e.key === "Escape") {
+            if (menu) return;
+            if (selectedChart) setSelectedChart(null);
+            setAnchor(null);
+            return;
+          }
           /* The shortcuts every spreadsheet shares. Copy/cut/paste ride the
              native clipboard events above; these are the rest. */
           if ((e.metaKey || e.ctrlKey) && !e.altKey) {
@@ -1013,6 +1665,10 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           writeCells(entries);
         }}
       >
+        <div
+          className="relative"
+          style={{ width: HEAD_W + sheet.cols * CELL_W }}
+        >
         <table
           className="border-collapse"
           style={{ tableLayout: "fixed", width: HEAD_W + sheet.cols * CELL_W }}
@@ -1095,6 +1751,10 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                       }
                     }
                     const numeric = numberValue !== null;
+                    /* The evaluated text BEFORE number formatting — what the
+                       conditional rules (text/duplicate) compare, matching how the
+                       rule stats were keyed. */
+                    const cfText = shown;
                     /* A number format is a lens over the value applied at display:
                        the cell still stores `1234.5` but shows `₹1,234.50`. Text is
                        never reformatted. */
@@ -1107,6 +1767,40 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                         style.format,
                         style.decimals,
                       );
+                    /* Conditional formatting: rules apply top-to-bottom (array
+                       order is priority); each sets the properties it defines, a
+                       later rule overrides an earlier one, and a stop-if-true rule
+                       that fires ends the cascade for this cell. */
+                    let cfBg: string | undefined;
+                    let cfBar: { pct: number; color: string } | undefined;
+                    let cfTextColor: string | undefined;
+                    let cfBold = false;
+                    let cfItalic = false;
+                    let cfBorder = false;
+                    let cfIcon: { ch: string; color: string } | undefined;
+                    for (const rule of rawConds) {
+                      if (rule.enabled === false) continue;
+                      const rect = rangeToRect(rule.range);
+                      if (!rect || !inRect(r, c, rect)) continue;
+                      const res = evalConditional(
+                        rule,
+                        { value: numberValue, text: cfText },
+                        ruleStats.get(rule.id) ?? emptyStats,
+                      );
+                      if (!res) continue;
+                      if (res.bg) cfBg = res.bg;
+                      if (res.textColor) cfTextColor = res.textColor;
+                      if (res.bold) cfBold = true;
+                      if (res.italic) cfItalic = true;
+                      if (res.border) cfBorder = true;
+                      if (res.bar) cfBar = res.bar;
+                      if (res.icon) cfIcon = res.icon;
+                      if (rule.stopIfTrue) break;
+                    }
+                    /* A failed formula shows its code; the tooltip says what the
+                       code means, so the cell reads "#REF!" and hovering explains
+                       it. Only formula cells, so ordinary "#tag" text is left be. */
+                    const errorHint = isFormula(raw) ? explainError(shown) : null;
 
                     return (
                       <td
@@ -1116,6 +1810,18 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                           /* Clicking inside the cell you are editing is caret
                              placement — leave it to the input. */
                           if (editing === ref) return;
+                          /* Right-click selects the cell it lands on so the menu
+                             acts on it — unless it is already inside a multi-cell
+                             selection, which is kept so the menu can act on the
+                             whole range. Never starts a drag. */
+                          if (e.button === 2) {
+                            if (editing) commit();
+                            if (!selRect || !inRect(r, c, selRect)) {
+                              setEditing(null);
+                              selectTo(r, c, false);
+                            }
+                            return;
+                          }
                           /* Editing a formula that wants a reference? Point it in
                              rather than select, and keep the input focused —
                              preventDefault stops the click stealing focus. */
@@ -1136,6 +1842,7 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                           dragging.current = true;
                           selectTo(r, c, e.shiftKey);
                           setEditing(null);
+                          setSelectedChart(null);
                           gridRef.current?.focus();
                         }}
                         onMouseEnter={() => {
@@ -1161,14 +1868,24 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                           height: CELL_H,
                           color: style.color,
                           verticalAlign: style.valign,
-                          /* Fill overrides the selection tint on filled cells;
-                             the active-cell outline still reads over it. */
-                          ...(style.bg ? { backgroundColor: style.bg } : null),
-                          ...(style.border === "all"
+                          /* Conditional formatting wins over the cell's own fill,
+                             which wins over the selection tint; the active-cell
+                             outline still reads over all of them. */
+                          ...((cfBg ?? style.bg)
+                            ? { backgroundColor: cfBg ?? style.bg }
+                            : null),
+                          ...(cfBar
+                            ? {
+                                backgroundImage: `linear-gradient(to right, ${cfBar.color}66 ${Math.round(cfBar.pct * 100)}%, transparent ${Math.round(cfBar.pct * 100)}%)`,
+                              }
+                            : null),
+                          ...(cfBorder
                             ? { border: "1px solid var(--ink)" }
-                            : style.border === "bottom"
-                              ? { borderBottom: "1px solid var(--ink)" }
-                              : null),
+                            : style.border === "all"
+                              ? { border: "1px solid var(--ink)" }
+                              : style.border === "bottom"
+                                ? { borderBottom: "1px solid var(--ink)" }
+                                : null),
                           ...(inPoint
                             ? {
                                 boxShadow:
@@ -1198,9 +1915,12 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                           </>
                         ) : (
                           <span
+                            title={errorHint ?? undefined}
                             className={`block ${style.wrap ? "whitespace-normal break-words" : "truncate"} ${
-                              style.bold ? "font-semibold" : ""
-                            } ${style.italic ? "italic" : ""}`}
+                              style.bold || cfBold ? "font-semibold" : ""
+                            } ${style.italic || cfItalic ? "italic" : ""} ${
+                              errorHint ? "cursor-help" : ""
+                            }`}
                             style={{
                               textAlign:
                                 style.align ?? (numeric ? "right" : "left"),
@@ -1216,8 +1936,25 @@ export function SheetGrid({ documentId }: { documentId: string }) {
                               paddingInlineStart: style.indent
                                 ? style.indent * 10
                                 : undefined,
+                              /* Errors read in the overdue tone; otherwise a
+                                 conditional-format text colour wins over the cell's
+                                 own. */
+                              ...(errorHint
+                                ? { color: "var(--state-overdue-ink)" }
+                                : cfTextColor
+                                  ? { color: cfTextColor }
+                                  : null),
                             }}
                           >
+                            {cfIcon && (
+                              <span
+                                aria-hidden="true"
+                                className="mr-1"
+                                style={{ color: cfIcon.color }}
+                              >
+                                {cfIcon.ch}
+                              </span>
+                            )}
                             {shown}
                           </span>
                         )}
@@ -1241,6 +1978,59 @@ export function SheetGrid({ documentId }: { documentId: string }) {
             )}
           </tbody>
         </table>
+
+          {/* Embedded chart objects — an absolute layer over the same content
+              box as the table, so a chart floats over the cells and scrolls with
+              them. The layer ignores the pointer; each chart re-enables it. */}
+          {orderedCharts.length > 0 && (
+            <div className="pointer-events-none absolute inset-0">
+              {orderedCharts.map((chart, i) => (
+                <SheetChartObject
+                  key={chart.id}
+                  spec={chart}
+                  model={chartData(chart.range, chartCell, chart.orientation)}
+                  selected={selectedChart === chart.id}
+                  readOnly={readOnly}
+                  zIndex={Math.min(9, i + 1)}
+                  onSelect={() => {
+                    setCfOpen(false);
+                    setSelectedChart(chart.id);
+                  }}
+                  onChange={(patch) => updateChart(chart.id, patch)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+        {selectedChartSpec && (
+          <ChartPanel
+            spec={selectedChartSpec}
+            readOnly={readOnly}
+            onChange={(patch) => updateChart(selectedChartSpec.id, patch)}
+            onClose={() => setSelectedChart(null)}
+            onDelete={() => removeChart(selectedChartSpec.id)}
+            onDuplicate={() => duplicateChart(selectedChartSpec.id)}
+            onForward={() => restackChart(selectedChartSpec.id, 1)}
+            onBackward={() => restackChart(selectedChartSpec.id, -1)}
+          />
+        )}
+        {cfOpen && (
+          <ConditionalPanel
+            rules={rawConds}
+            selectedRule={selectedRule}
+            selectionRange={selRect ? rangeLabel(selRect) : null}
+            readOnly={readOnly}
+            onAdd={addRule}
+            onUpdate={updateRule}
+            onRemove={removeRule}
+            onDuplicate={duplicateRule}
+            onMove={moveRule}
+            onSelectRule={setSelectedRule}
+            onClose={() => setCfOpen(false)}
+          />
+        )}
       </div>
 
       <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-hairline px-4 py-2">
@@ -1284,6 +2074,15 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           </p>
         )}
       </footer>
+
+      {menu && (
+        <SheetContextMenu
+          x={menu.x}
+          y={menu.y}
+          groups={menuGroups()}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </div>
   );
 }

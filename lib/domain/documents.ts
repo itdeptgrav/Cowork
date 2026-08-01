@@ -47,6 +47,28 @@ export interface DocumentMember {
  */
 export type DocumentKind = "doc" | "sheet";
 
+/** Paper this document is laid out for. Print sizes, not screen sizes. */
+export type PaperSize = "letter" | "legal" | "tabloid" | "a4" | "a5";
+
+export type PageOrientation = "portrait" | "landscape";
+
+/**
+ * The page a document is written on.
+ *
+ * **Part of the document, not a per-reader preference.** The measure decides
+ * where every line breaks, so two people editing through different margins
+ * would see different pages of what is supposed to be one text. Zoom is the
+ * per-reader preference and is deliberately not here.
+ *
+ * Margins are in inches — the unit every word processor authors them in, and
+ * the one the ruler is marked in.
+ */
+export interface DocumentPageSetup {
+  paper: PaperSize;
+  orientation: PageOrientation;
+  margins: { top: number; right: number; bottom: number; left: number };
+}
+
 export interface CoworkDocument {
   /**
    * Owning tenant. Every read is scoped to it; every write stamps it.
@@ -117,6 +139,15 @@ export interface CoworkDocumentBody {
    * that can never merge.
    */
   ydocState: string | null;
+  /**
+   * The page this document is laid out for. Null on a document written before
+   * page setup existed, which opens at the default rather than at no page.
+   *
+   * It lives on the BODY rather than the record because it is a property of the
+   * text, and because a list that draws thirty rows has no use for thirty sets
+   * of margins.
+   */
+  pageSetup: DocumentPageSetup | null;
   updatedAt: string;
 }
 

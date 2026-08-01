@@ -160,10 +160,26 @@ export function getAssignmentActions(
    *
    * The same is true mid-negotiation on an ordinary task once the assignee has
    * countered: the assignor holds the turn, the figure is not agreed, and
-   * acceptance waits for it. `WAITING_FOR_ASSIGNEE` — the assignor's opening,
-   * the assignee's turn — is deliberately NOT gated: that is the standard
-   * "accept the terms" moment and accepting the assignment settles it. */
-  if (view.budgetNegotiation?.state === "WAITING_FOR_ASSIGNOR") return NOTHING;
+   * acceptance waits for it.
+   *
+   * **`WAITING_FOR_ASSIGNEE` is gated too, and that is a change.** It used to be
+   * allowed, on the reasoning that the assignor's opening figure is the standard
+   * "accept the terms" moment. On screen that put TWO cards in front of the
+   * assignee at once — "Accept task" above "Accept 00:10:00" — asking the same
+   * question twice, with no way to tell that pressing either leads to the same
+   * place. The budget card is the better of the two: it names the figure being
+   * agreed to, and its own copy already says accepting settles the budget and
+   * moves the task forward.
+   *
+   * So while a budget is unsettled in EITHER direction, the budget card owns the
+   * decision and this one shows the state without offering a duplicate control.
+   * A task with no budget in play (`none`, or a fixed deadline) is unaffected —
+   * there acceptance is the only step and this card is the only place to take
+   * it. */
+  const budget = view.budgetNegotiation?.state;
+  if (budget === "WAITING_FOR_ASSIGNOR" || budget === "WAITING_FOR_ASSIGNEE") {
+    return NOTHING;
+  }
 
   const pending = pendingAccepters(view);
   if (pending.length === 0) return NOTHING;

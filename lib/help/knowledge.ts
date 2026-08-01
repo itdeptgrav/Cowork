@@ -1499,6 +1499,70 @@ export const HELP_ARTICLES: HelpArticle[] = [
     source: "LensContext; docs/architecture/PRODUCT.md comparative visibility rule",
   },
   {
+    id: "general-documents",
+    category: "general",
+    title: "Writing a document",
+    keywords: [
+      "document",
+      "documents",
+      "write",
+      "editor",
+      "word processor",
+      "page setup",
+      "margins",
+      "print a document",
+      /* Phrases, not the bare words: "export" and "download" on their own
+         match questions about exporting data from anywhere in the product,
+         and this article only answers for documents. */
+      "export a document",
+      "download a document",
+      "font",
+      "outline",
+      "headings",
+      "find and replace",
+      "word count",
+      "zoom",
+    ],
+    examples: [
+      "Where do I write a document?",
+      "How do I change the margins?",
+      "How do I print a document?",
+      "Can I export a document?",
+      "How do I search inside a document?",
+    ],
+    answer:
+      "Workspace, then Documents. A document opens as a page: menus, a toolbar, a ruler, the outline of its own headings down the left, and word count and zoom along the bottom. Formatting is what you would expect — paragraph styles, fonts and sizes, colour and highlight, alignment, line spacing, indentation, lists and checklists, tables, links, images by address, quotes, code blocks, horizontal lines and page breaks. File then Page setup sets the paper, the orientation and the margins, and the ruler's two stops change the left and right margin directly; that page belongs to the document, so everybody who opens it sees the same measure and the same line breaks. Zoom is yours alone and is not saved. Find and replace is Ctrl F and highlights every match at once, with replace-all landing as a single undo step. Word count is Ctrl Shift C and counts the selection separately when there is one. Printing uses the document's own paper and margins, and prints on white with dark ink whichever theme you are in. File then Download gives a web page or plain text — there is no PDF export, so print to PDF for that. Images are added by address: there is no upload for documents yet, and a file from your machine cannot be added. There are no comments and no version history, so nothing in the menus offers them.",
+    related: ["general-document-access", "general-what-is-cowork"],
+    source:
+      "components/features/workspace/DocumentEditor.tsx; lib/rules/documents/pageSetup.ts, find.ts, outline.ts, textStats.ts",
+  },
+  {
+    id: "general-document-access",
+    category: "general",
+    title: "Who can open a document, and as what",
+    keywords: [
+      "share document",
+      "document access",
+      "view only",
+      "editor",
+      "owner",
+      "document permission",
+      "cannot edit document",
+      "live editing",
+    ],
+    examples: [
+      "Why does my document say View only?",
+      "How do I share a document?",
+      "Why can't I rename this document?",
+      "Can two people edit the same document?",
+    ],
+    answer:
+      "A document is reachable only by the people in it, and each of them is an owner, an editor or a viewer. The person who created it is the owner. Owners can edit, share, rename and delete; editors can edit; viewers can read, and their toolbar says “View only” with “You have view access to this document. Ask an owner for editing access.” at the foot of the page. A viewer can still search a document — the replace half of the panel is refused rather than hidden. There is no commenter role, because there is no comment layer to give it. The last owner cannot be demoted or removed, since a document with no owner is one nobody could ever share or delete again. Editing is live: everybody in a document sees each other's changes as they are typed, with a coloured caret carrying each person's name. If that connection is not available the document still opens and still saves — the line at the foot of the page says which of the two is actually happening, because two people editing offline would otherwise overwrite each other believing they were collaborating. Anyone can also switch themselves to Viewing from the toolbar to read without changing anything; that is a personal setting and takes nothing away from anybody else.",
+    related: ["general-documents", "general-what-is-cowork"],
+    source:
+      "lib/rules/documents/access.ts (roleOf, editRefusal, memberChangeRefusal); ShareMenu; useCollabSession",
+  },
+  {
     id: "general-missing-answer",
     category: "general",
     title: "When Cowork does not have an answer",

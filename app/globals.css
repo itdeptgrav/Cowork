@@ -950,3 +950,119 @@
   border-radius: 2px;
   padding-bottom: 1px;
 }
+
+
+/* ── The document page: headings 4 and 5, and the block attributes ────────────
+ *
+ * The page stylesheet above stops at h3 because that is all the editor offered.
+ * Six paragraph styles need five heading sizes, and a heading with no size of
+ * its own renders at body weight — which reads as a paragraph somebody has
+ * mysteriously made bold.
+ */
+.prose-cowork h4 { font-size: 1.05em; font-weight: 500; margin-top: 1em; }
+.prose-cowork h5 { font-size: 0.95em; font-weight: 600; margin-top: 1em; letter-spacing: 0.01em; }
+
+/* Highlighted text is pinned to a dark ink.
+ *
+ * A highlight sets the BACKGROUND, and every tint offered is light. In dark
+ * mode the page's own ink is light too, so without this the highlighted words
+ * would be the only ones on the page that cannot be read — and the person who
+ * highlighted them, on a light theme, would never see it. */
+.prose-cowork mark {
+  color: #101014;
+  border-radius: 2px;
+  padding: 0 0.1em;
+}
+
+/* An explicit page break. Visible on screen, because an invisible one is
+   deleted by accident and then cannot be found; a real break in print. */
+.prose-cowork .doc-page-break {
+  position: relative;
+  height: 0;
+  border-top: 1px dashed var(--doc-rule);
+  margin: 1.6em 0;
+}
+.prose-cowork .doc-page-break::after {
+  content: "Page break";
+  position: absolute;
+  inset-inline-end: 0;
+  top: -0.75em;
+  padding-inline: 0.4em;
+  background: var(--doc-page);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in srgb, var(--doc-page-ink) 35%, transparent);
+}
+.prose-cowork .ProseMirror-selectednode.doc-page-break {
+  border-top-color: var(--doc-page-ink);
+}
+
+/* Find results. Decorations, not marks — they are one reader's view and are
+   never part of the document. The active one is inverted rather than merely a
+   deeper tint, so it is findable at a glance among forty others. */
+.doc-find-match {
+  background: color-mix(in srgb, var(--color-field-gold) 55%, transparent);
+  border-radius: 2px;
+}
+.doc-find-match--active {
+  background: var(--color-field-gold);
+  outline: 1px solid color-mix(in srgb, var(--doc-page-ink) 45%, transparent);
+}
+
+/* ── Printing ────────────────────────────────────────────────────────────────
+ *
+ * Everything except the page is hidden, and the page is lifted out of the
+ * layout it was scaled and scrolled inside. `visibility` rather than `display`
+ * on the ancestors, because collapsing them would take the page — which is
+ * inside them — with it.
+ *
+ * Paper has no theme: the page prints white with dark ink whichever theme the
+ * screen was in, or a dark-mode document arrives as a black rectangle.
+ */
+@media print {
+  body.doc-printing * {
+    visibility: hidden !important;
+  }
+  body.doc-printing [data-doc-print],
+  body.doc-printing [data-doc-print] * {
+    visibility: visible !important;
+  }
+  body.doc-printing [data-doc-print] {
+    position: absolute !important;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    width: 100% !important;
+    min-height: 0 !important;
+    /* The margins are the `@page` rule's job — keeping them here as well would
+       indent the text by twice what was asked for. */
+    padding: 0 !important;
+    transform: none !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+  }
+  body.doc-printing [data-doc-print] .prose-cowork,
+  body.doc-printing [data-doc-print] .prose-cowork * {
+    color: #101014 !important;
+  }
+  body.doc-printing [data-doc-print] .doc-page-break {
+    break-after: page;
+    border: 0 !important;
+  }
+  body.doc-printing [data-doc-print] .doc-page-break::after {
+    content: "" !important;
+  }
+  /* Carets belong to the session, not to the paper. */
+  body.doc-printing .collab-caret,
+  body.doc-printing .collab-selection {
+    display: none !important;
+  }
+  /* A search highlight WRAPS the text it found, so it loses its background and
+     keeps its box. Hiding it would delete those words from the printout. */
+  body.doc-printing .doc-find-match {
+    background: transparent !important;
+    outline: 0 !important;
+  }
+}

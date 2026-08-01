@@ -19,9 +19,16 @@ import type { DocumentKind } from "@/lib/domain";
 /**
  * Documents — the list, and the one that is open.
  *
- * The same two-column shape as the mindmap beside it: a chooser on the left and
- * the thing you are working on to its right. Consistency between the two modes
- * is the point of putting them on one page rather than two.
+ * ## Two layouts, because they are two activities
+ *
+ * Choosing a document is browsing: a list with previews and dates, and room to
+ * read them. Working in one is not — it wants the whole surface, its own
+ * chrome and its own rail. So an open document takes the page and carries the
+ * list inside it, rather than sitting in a panel next to a chooser that is no
+ * longer being used.
+ *
+ * A sheet keeps the two-column shape: its grid is not a page, there is no
+ * outline to draw beside it, and the chooser costs it nothing.
  */
 export function DocumentsArea({ kind = "doc" }: { kind?: DocumentKind }) {
   /* One list for both, keyed on kind — sharing, roles, collaboration and
@@ -44,6 +51,42 @@ export function DocumentsArea({ kind = "doc" }: { kind?: DocumentKind }) {
   const list = docs.data ?? [];
   const open = list.find((d) => d.id === openId) ?? null;
 
+  const createAndOpen = async () => {
+    const r = await create();
+    if (!r.ok) return;
+    docs.refetch();
+    /* Opened straight away: a new document's first need is to be written in,
+       and its name is easier to choose once there is something in it. */
+    setOpenId(r.data.id);
+    if (kind === "sheet") {
+      setRenaming(r.data.id);
+      setDraftTitle(r.data.title);
+    }
+  };
+
+  /* An open document owns the whole surface, and carries the list in its own
+     rail. `min-h` rather than a fixed height so it still works on a short
+     window; the editor's own panes scroll inside it. */
+  if (kind === "doc" && open) {
+    return (
+      <div className="h-[clamp(520px,78vh,1000px)] overflow-hidden rounded-panel border border-hairline">
+        <DocumentEditor
+          /* Keyed so switching documents rebuilds the editor rather than
+             reusing one holding the previous document's history — an undo that
+             reached back into another document would be a data leak. */
+          key={open.id}
+          documentId={open.id}
+          documents={list}
+          onOpen={setOpenId}
+          onNew={() => void createAndOpen()}
+          onClose={() => setOpenId(null)}
+          onChanged={docs.refetch}
+          creating={createState.isPending}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="grid min-h-[clamp(420px,68vh,760px)] gap-3 deck:grid-cols-[300px_minmax(0,1fr)]">
       <Panel padded={false} label="Documents">
@@ -54,18 +97,7 @@ export function DocumentsArea({ kind = "doc" }: { kind?: DocumentKind }) {
           <Button
             size="sm"
             disabled={createState.isPending}
-            onClick={async () => {
-              const r = await create();
-              if (r.ok) {
-                docs.refetch();
-                /* Opened and put straight into rename: a new document's first
-                   need is a name, and making somebody find the row they just
-                   created to give it one is a step for nothing. */
-                setOpenId(r.data.id);
-                setRenaming(r.data.id);
-                setDraftTitle(r.data.title);
-              }
-            }}
+            onClick={() => void createAndOpen()}
           >
             {createState.isPending ? "…" : "New"}
           </Button>
@@ -178,18 +210,8 @@ export function DocumentsArea({ kind = "doc" }: { kind?: DocumentKind }) {
       </Panel>
 
       <Panel padded={false} label="Editor">
-        {open ? (
-          kind === "sheet" ? (
-            <SheetGrid key={open.id} documentId={open.id} />
-          ) : (
-          <DocumentEditor
-            /* Keyed so switching documents rebuilds the editor rather than
-               reusing one holding the previous document's history — an undo
-               that reached back into another document would be a data leak. */
-            key={open.id}
-            documentId={open.id}
-          />
-          )
+        {open && kind === "sheet" ? (
+          <SheetGrid key={open.id} documentId={open.id} />
         ) : (
           <div className="p-4">
             <EmptyState

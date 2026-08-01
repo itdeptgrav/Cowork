@@ -225,6 +225,7 @@ import {
 } from "@/lib/rules/tasks/deadlineCompensation";
 import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
 import { previewOfHtml } from "@/lib/rules/documents/preview";
+import { pageSetupRefusal } from "@/lib/rules/documents/pageSetup";
 import {
   canManage as canManageDocument,
   canView as canViewDocument,
@@ -236,6 +237,7 @@ import type {
   CoworkDocument,
   CoworkDocumentBody,
   DocumentKind,
+  DocumentPageSetup,
   DocumentRole,
   DocumentSummary,
 } from "@/lib/domain";
@@ -6225,6 +6227,7 @@ export class MockRepository implements CoworkRepository {
         html: "",
         cells: null,
         ydocState: null,
+        pageSetup: null,
         updatedAt: doc.updatedAt,
       },
     );
@@ -6272,6 +6275,7 @@ export class MockRepository implements CoworkRepository {
       html: "",
       cells: null,
       ydocState: null,
+      pageSetup: null,
       updatedAt: now,
     });
     persistStore();
@@ -6314,7 +6318,12 @@ export class MockRepository implements CoworkRepository {
 
   async saveDocumentBody(
     id: string,
-    body: { html?: string; cells?: string | null; ydocState?: string | null },
+    body: {
+      html?: string;
+      cells?: string | null;
+      ydocState?: string | null;
+      pageSetup?: DocumentPageSetup | null;
+    },
   ): Promise<ActionResult<CoworkDocumentBody>> {
     const g = guard();
     if (g) return g;
@@ -6328,7 +6337,14 @@ export class MockRepository implements CoworkRepository {
     const now = nowIso();
     let record = s.documentBodies.find((b) => b.documentId === id);
     if (!record) {
-      record = { documentId: id, html: "", cells: null, ydocState: null, updatedAt: now };
+      record = {
+        documentId: id,
+        html: "",
+        cells: null,
+        ydocState: null,
+        pageSetup: null,
+        updatedAt: now,
+      };
       s.documentBodies.push(record);
     }
     /* Each field only when given. A sheet save carries no html and must not
@@ -6338,6 +6354,14 @@ export class MockRepository implements CoworkRepository {
     /* Only overwritten when given. A phase-1 save carries no CRDT state and
        must not erase the state a collaborative session wrote. */
     if (body.ydocState !== undefined) record.ydocState = body.ydocState;
+    /* Validated at the write, not only in the dialog. Margins that leave no
+       measure would produce a page nobody can type on for everybody who opens
+       the document afterwards. */
+    if (body.pageSetup !== undefined) {
+      const refusal = body.pageSetup ? pageSetupRefusal(body.pageSetup) : null;
+      if (refusal) return fail("validation_failed", refusal);
+      record.pageSetup = body.pageSetup;
+    }
     record.updatedAt = now;
     doc.updatedAt = now;
     doc.lastEditedById = me;

@@ -68,7 +68,7 @@ import {
 import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -168,6 +168,8 @@ import {
   readDocument,
 } from "./documents.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
+import { pageSetupRefusal, readPageSetup } from "../../rules/documents/pageSetup.ts";
+import { absenceCreditMs } from "../../rules/presence/workingTime.ts";
 import {
   grantBreakCredit,
   readBreakLedger,
@@ -4027,7 +4029,32 @@ export class LegacyRepository {
        * `decideEmergencyRequest` applies it if and only if somebody approves.
        */
       const endedSpanMs = creditedBreakMs;
-      const returningMs = input.mode === "online" ? offlineToCreditMs : 0;
+
+      /**
+       * **An offline span is bounded to the working day.**
+       *
+       * `dutyTransition` returns the RAW wall-clock absence and its own comment
+       * says the caller bounds it — no caller did. So going offline at 18:00
+       * and returning at 10:00 credited sixteen hours and moved every deadline
+       * a full day. Overnight was free time.
+       *
+       * Only the minutes inside office hours count, which is also what makes a
+       * weekend contribute nothing without a special case for weekends.
+       */
+      let returningMs = input.mode === "online" ? offlineToCreditMs : 0;
+      if (returningMs > 0) {
+        const startedAtMs = now - returningMs;
+        const policy = await this.getOfficePolicy().catch(() => null);
+        if (!policy) {
+          /* Not silently zeroed — a missing schedule must not delete somebody's
+             credit, which is the quieter and worse failure. Logged instead. */
+          console.warn(
+            "[presence] no office policy; crediting the raw offline span",
+            { employeeId, minutes: Math.round(returningMs / 60000) },
+          );
+        }
+        returningMs = absenceCreditMs({ fromMs: startedAtMs, toMs: now, policy });
+      }
       const lostMs = endedSpanMs + returningMs;
       if (lostMs > 0) {
         const shifted = await this.#compensateActiveDeadlines(employeeId, lostMs);
@@ -5443,13 +5470,24 @@ export class LegacyRepository {
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id));
     if (!snap.exists())
-      return { documentId: id, html: "", cells: null, ydocState: null, updatedAt: record.updatedAt };
+      return {
+        documentId: id,
+        html: "",
+        cells: null,
+        ydocState: null,
+        pageSetup: null,
+        updatedAt: record.updatedAt,
+      };
     const raw = snap.data() as Record<string, unknown>;
     return {
       documentId: id,
       html: typeof raw.html === "string" ? raw.html : "",
       cells: typeof raw.cells === "string" ? raw.cells : null,
       ydocState: typeof raw.ydocState === "string" ? raw.ydocState : null,
+      /* Null rather than the default, so the editor can tell "laid out for
+         Letter" from "written before page setup existed". Both open the same
+         way; only one of them is a decision somebody made. */
+      pageSetup: raw.pageSetup ? readPageSetup(raw.pageSetup) : null,
       updatedAt:
         typeof raw.updatedAt === "string" ? raw.updatedAt : record.updatedAt,
     };
@@ -5560,7 +5598,12 @@ export class LegacyRepository {
 
   async saveDocumentBody(
     id: string,
-    body: { html?: string; cells?: string | null; ydocState?: string | null },
+    body: {
+      html?: string;
+      cells?: string | null;
+      ydocState?: string | null;
+      pageSetup?: DocumentPageSetup | null;
+    },
   ): Promise<ActionResult<CoworkDocumentBody>> {
     const me = String(this.#ctx.employeeId);
     const record = await this.getDocument(id);
@@ -5581,6 +5624,17 @@ export class LegacyRepository {
     if (body.html !== undefined) patch.html = body.html;
     if (body.cells !== undefined) patch.cells = body.cells;
     if (body.ydocState !== undefined) patch.ydocState = body.ydocState;
+    if (body.pageSetup !== undefined) {
+      /* Validated at the write, not only in the dialog: the dialog is one
+         caller, and margins that leave no measure produce a page nobody can
+         type on for everybody who opens it afterwards. */
+      if (body.pageSetup !== null) {
+        const refusal = pageSetupRefusal(body.pageSetup);
+        if (refusal)
+          return { ok: false, code: "validation_failed", message: refusal };
+      }
+      patch.pageSetup = body.pageSetup;
+    }
     await setDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id), patch, {
       merge: true,
     });
@@ -5595,6 +5649,7 @@ export class LegacyRepository {
         html: body.html ?? "",
         cells: body.cells ?? null,
         ydocState: body.ydocState ?? null,
+        pageSetup: body.pageSetup ?? null,
         updatedAt: now,
       },
     };

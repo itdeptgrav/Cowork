@@ -1,7 +1,7 @@
 # Cowork migration — handoff
 
-Last verify: **build exit 0, 1954 tests passing, tsc clean, lint clean,
-check-secrets clean.**
+Last verify: **build exit 0, 2141 tests passing, tsc clean.** Lint exits 1 on
+`MessagesArea.tsx:479` (pre-existing).
 Read this before touching anything; it will save you re-deriving what took three
 long sessions to establish.
 
@@ -14,6 +14,13 @@ contradicts a few things earlier sections imply.
 console. **Read §10.0 first — it found that `/admin` was unreachable in
 production for every real employee, including the CEO**, and it contradicts §9.7
 about what the admin surfaces could do.
+
+**Session 10 (2026-07-31 → 08-01) is §17, and you should read §17.0 and §17.7
+before anything else.** §17.0 corrects the backend PATH — `~/grav-cms-backend`
+is what runs; `~/Documents/cowork-old-backend` is a stale copy that looks
+editable and changes nothing. §17.4 corrects three live duty-time bugs, one of
+which was crediting **sixteen hours** of overnight to every deadline. §17.7 lists
+what is unverified — which is most of the browser behaviour.
 
 **Session 4 (2026-07-30) is §11.** It fixes the time-budget negotiation, and it
 **contradicts §9.4**: the budget record had no confirmation state, its approval
@@ -2413,3 +2420,353 @@ That last variable is the one I would look at first.
 - **No `prefers-reduced-transparency` media query.** `prefers-reduced-motion`
   already suggests low mode, and the transparency query has thin support; worth
   adding when it lands more widely.
+
+---
+
+# Session 10 — 2026-07-31 → 08-01 · backend, workspace, duty-time corrections
+
+**Last verify: build exit 0, 2141 tests passing, tsc clean.**
+Lint exits 1 on `components/features/messages/MessagesArea.tsx:479`
+(setState-in-effect) — pre-existing, not from this session.
+
+## 17.0 · The backend path changed. Read this first.
+
+`grav-cms-backend` and `cowork-old-backend` are the **same codebase**. They are
+not the same directory, and only one of them runs:
+
+| | |
+|---|---|
+| `~/grav-cms-backend` | git repo, branch `rishee`, **this is what serves :5050** |
+| `~/Documents/cowork-old-backend` | untracked stale copy — **do not edit** |
+
+Everything below was written to the first. Delete the second if you can; editing
+it looks like it works and changes nothing.
+
+It is the single Express backend for the whole GRAV platform (`grav-cms`,
+customer/vendor portals, mobile). Cowork owns `/cowork/**`. `npm run dev` →
+nodemon; `.env` sets `PORT=5050`. There is **no test framework** — `npm test`
+exits 1. `node --check` validates syntax only, **not references**: two of this
+session's bugs were `ReferenceError`s that passed `--check`, because
+`postSystemChatMessage` and `_getPrimaryManagerApprover` are defined in the
+ROUTE files, not the service.
+
+## 17.1 · What was added to the engine (all additive)
+
+`routes/task_routes/taskForward.js` · `services/taskForward.service.js`
+- `POST /cowork/task/:taskId/decline-assignment`
+- `POST /cowork/task/:taskId/set-budget` — replaces the `department-tl-set-hours`
+  path, which 400s on a running task (**T566 proves it; 34 of 58 tasks were in
+  that state**)
+- `POST /cowork/employee/:employeeId/priority-order` — transactional renumber
+  via `tx.getAll()`; the web SDK cannot query inside a transaction, `firebase-admin`
+  can
+
+`routes/task_routes/cowork.js` · `services/cowork.service.js`
+- `PATCH /schedule-meet/:meetId/status`, `GET .../events`, `POST .../presence`,
+  `GET /schedule-meet/for-task/:taskId`
+- **`/schedule-meet/for-task/:taskId` MUST stay above `/schedule-meet/:meetId`**
+  or Express matches it with `meetId = "for-task"`.
+- `scheduleCoworkMeet` now puts the organiser in `participants`. They were only
+  in `createdBy`, so an employee's own meeting was invisible on their meetings
+  page — `listCoworkMeets` reads `participants array-contains`.
+
+`services/documentCollab.service.js` (new) — Yjs over the existing Socket.IO.
+
+`server.js` — `allowedOrigins` now appends `EXTRA_ALLOWED_ORIGINS` (comma-
+separated, unset in production). Gates **both** CORS and the Socket.IO
+handshake.
+
+## 17.2 · Compatibility rule for `cowork_scheduled_meets`
+
+The live legacy app reads this collection and knows only `isCancelled`. `status`
+is written **alongside** it and the two are kept in step — never instead. A
+meeting cancelled from the new page must disappear from the old one, and legacy
+will never learn to read a status string. There is a test pinning that
+`isCancelled` wins on read.
+
+## 17.3 · Workspace — a new surface at `/workspace`
+
+Three modes: **Mindmap · Documents · Sheets**.
+
+- **Mindmap** — `localStorage` only, by design. Not shared, does not follow you
+  between machines. The seam is three functions in `lib/mindmap/store.ts`
+  (`load`/`save`/`subscribe`); moving it to the repository changes nothing in the
+  components. Layout is a pure function of the tree — positions are never stored.
+- **Documents & Sheets** — `cowork_documents` + `cowork_document_bodies`,
+  browser-to-Firestore. **A sheet is a document with `kind: "sheet"`.** That was
+  deliberate: sharing, roles, the Yjs room, the permission gate and persistence
+  are identical, so forking into a `cowork_sheets` collection would mean two
+  copies of every permission rule.
+
+### Collaboration (phase 2, done)
+
+Tiptap + Yjs over `y-socket.io` on the namespace `/yjs|<documentId>`.
+
+- **Auth is our own namespace middleware, NOT `YSocketIO`'s `authenticate`
+  option.** That callback receives only the handshake, which does not carry the
+  namespace — so it cannot learn which document is being joined. The first
+  version read `handshake.query.name` (never set), refused everything, and the
+  editor silently fell back to single-writer. The document id comes from
+  `socket.nsp.name`.
+- **Never pass `content` to `useEditor` while `Collaboration` is active.** Tiptap
+  inserts it into the shared Y.Doc *per client*, so two people produce two copies
+  and neither sees a coherent document. Phase-1 documents are migrated once, after
+  `provider.synced` and only when `editor.isEmpty`.
+- **Viewer read-only is enforced on the socket**, not the toolbar — a per-socket
+  middleware rejects `sync-update` from viewers. Awareness is left alone so their
+  caret still shows.
+- Roles: `owner | editor | viewer`. `members` (objects) **and** `memberIds`
+  (the `array-contains` index) are written together by `writeMembers` and never
+  separately. Documents predating roles read as **editors**, creator as owner.
+  The **last owner cannot be demoted or removed** — nothing could repair that.
+
+### Sheets
+
+HyperFormula (GPLv3, `licenseKey: "gpl-v3"`), ~400 functions.
+- **Engine and sheet id are built in one memo.** `addSheet` returns the sheet
+  *name*, not the id, and calling it in the render body double-runs under
+  StrictMode. When the two disagreed, `setSheetContent` threw and every formula
+  silently stopped.
+- **`TRUE`/`FALSE` are registered as named expressions**, or
+  `=VLOOKUP(...,FALSE)` returns `#NAME?`. HyperFormula parses bare booleans as
+  named expressions.
+- Cells stored **sparse and raw** — never the computed value.
+- 200 × 26 fixed. `@tanstack/react-virtual` is installed and unused; windowing is
+  the next thing.
+- **Missing:** range selection, fill handle, multi-cell paste, charts, .xlsx,
+  pivots (HyperFormula has none).
+
+## 17.4 · Duty time — three separate bugs, all corrected
+
+This is the most consequential part of the session. All three were live.
+
+| | Was | Now |
+|---|---|---|
+| **Break** | credited only when returning to `online` — and `derive()` says online is a live screen share and nothing else, so ending a break without sharing banked it and it **never reached a deadline** | credited when the break **ends**, whatever comes next |
+| **Emergency** | added to deadlines the moment the mode ended, **before any manager saw it** — approving and rejecting had identical effect | applied **only** in `decideEmergencyRequest` when `approve` is true |
+| **Offline** | **raw wall-clock**. 18:00 → 10:00 credited **16 hours** to every active deadline | bounded to office hours via `workingMsBetween` |
+
+`dutyTransition` names the spans with different verbs on purpose —
+`breakToCreditMs` is "credit NOW", `emergencyToRaiseMs` is "raise for approval
+NOW". **Summing them was the emergency bug.**
+
+Two comments in `duty.ts` claimed "the caller bounds it to office hours". **No
+caller did** — the bounding was described and never written. That is now
+`lib/rules/presence/workingTime.ts`, which is IST-aware (the schedule is authored
+in IST; comparing a local clock against it shifts everyone's day by 5½ hours),
+subtracts recurring breaks, and needs no special case for weekends.
+
+Break credit is capped by `maxBreakMinutesPerDay` (**Admin → Office policy →
+break time**) with a per-day ledger on the duty document. A cap with no ledger is
+not a cap — three 20-minute breaks each fit under 60. A span crossing the limit is
+granted **in part**. `0` means `0` and does not fall back to the default.
+
+**Not done:** a person who never came online has no `offlineStartedAtMs`, so
+arriving late still credits nothing. `workingMsBetween` is the primitive that
+fixes it — anchor from the later of shift open or task assignment. **One
+decision is needed first:** for a P1 landing at 11:00 when you come online at
+11:30, is that 30 minutes, or nothing because you were within your shift?
+
+## 17.5 · Other corrections
+
+- **Signature graph was `async getWorkloadFlow() { return null; }`** — a stub.
+  Empty in production for its whole life while perfect against the mock. Now
+  computed from `#taskDocuments` (the same read as `listTasks`, so the graph can
+  never show work the list would not). Live data: 61 created, 21 completed over
+  two weeks.
+- **Rework timestamps read `requestedAt`; the engine writes `sentBackAt`.** Every
+  entry read back null.
+- **Emergency-mode exit → Online did nothing.** `confirming` renders inside
+  `{open && …}` and `choose` closes the popover first, so the flag landed on an
+  unmounted panel. Fixed with `setOpen(true)`.
+- **Mail: CC/BCC.** `bcc` is redacted on read for everyone but the sender.
+  **This is a UI guarantee, not a security boundary** — reads are
+  browser-to-Firestore, so the raw document reaches the client. Documented in
+  `lib/rules/mail/blindCopy.ts`.
+- **Team surfaces now require reports.** `managesAnyone(viewer)` reads the
+  reporting closure, **never roles** (a TL with an empty team manages nobody).
+  Gated in `app/team/layout.tsx` so new team views inherit it.
+- **Assignment card no longer offers "Accept task" while a budget is unsettled**
+  — two cards were asking the same question. The budget card wins because it
+  names the figure.
+
+## 17.6 · Two-computer testing
+
+`docs/COLLAB_LAN_TESTING.md`. Both machines open **the host's LAN URL**, never
+`localhost`. **One backend process only** — two backends hold separate Yjs rooms,
+never exchange an edit, and both write snapshots to the same `ydocState`, so
+last-save-wins eats the other machine's work. It looks connected because both
+read the same Firestore list.
+
+## 17.7 · Not verified — read before trusting anything above
+
+I did **not** run any of this in a real browser with two signed-in accounts.
+Types, tests, builds and route probes are green; the following are unconfirmed
+and are where I would look first:
+
+1. **Two browsers editing one document / one sheet.** The Tiptap duplication fix
+   and the viewer read-only gate are both untested end-to-end.
+2. **The three duty-time fixes.** Take a 30-minute break, end it, check two tasks
+   both moved. Then an emergency: deadlines must **not** move until approved.
+3. **Sheets.** I shipped that component three times with basic faults
+   (double-input, dead keyboard, dead formulas). The engine is verified in Node;
+   the grid is not verified anywhere.
+4. **Emergency approval may still be refused for the CEO** —
+   `emergencyRequestRefusal` blocks when `managerId` is null, and the CEO has no
+   primary manager. Unresolved policy question: self-approve, named fallback, or
+   blocked? `workflowRouting` already models exactly this choice for budgets.
+5. **Overnight credit already happened.** Anyone who went offline overnight
+   before this fix had deadlines pushed a full day. The fix stops it recurring; it
+   does not retract what shifted.
+
+## 17.8 · Assertions changed on purpose
+
+Three tests asserted behaviour that was itself the bug. Each was rewritten with
+the reasoning recorded **in the test**, because a silently flipped expectation is
+what gets "restored" later by someone reading the old comment:
+
+- `duty.test.ts` — "leaving a break for online credits it; otherwise it is banked"
+- `assignmentAcceptance.test.ts` `1f` — "a standard opening is NOT gated"
+- `admin/access.test.ts` — nav literal, now asserts the conditional shape
+
+## 17.9 · Design kit
+
+`~/Documents/cowork-design-kit/` (+ `.zip`) — 179 tokens, 8 components, for
+sharing the design language outside this repo. `CLAUDE_CODE_PROMPT.md` inside is
+what the recipient pastes into Claude Code. Requires **Tailwind v4** — the tokens
+live in `@theme` inside the stylesheet, which v3 cannot read.
+
+---
+
+# Session 11 — 2026-08-01 · the document surface
+
+Verify at handoff: **tsc clean · 2183 tests, 0 failed · `next build` exit 0.**
+Lint exits 1 on `MessagesArea.tsx:485` and `SheetGrid.tsx:182/249/822` — all
+pre-existing, none from this session.
+
+## 18.0 · What changed
+
+`/workspace → Documents` was a rich-text box in a panel beside a chooser. It is
+now a document surface: title bar, menu bar, toolbar, ruler, outline rail, page,
+status bar. The reference was Google Docs' layout, and the shape is followed
+because each strip answers a different question — menus hold everything named,
+the toolbar holds what is used constantly, the ruler shows the measure on the
+page it governs, the outline is structure, the status bar is figures.
+
+**Sheets are untouched.** They keep the two-column chooser: a grid is not a
+page, there is no outline to draw beside it, and the chooser costs it nothing.
+
+## 18.1 · The one thing that is now stored, and why
+
+`CoworkDocumentBody.pageSetup` — paper, orientation, margins. **A property of
+the document, not of the reader.** The measure decides where every line breaks,
+so two people editing through different margins would see different pages of one
+text. Written through the same `saveDocumentBody` merge patch, validated at the
+repository as well as in the dialog (`pageSetupRefusal`), because the dialog is
+one caller.
+
+Zoom is the opposite and is deliberately NOT stored.
+
+Documents written before this read `pageSetup: null` and open at the default —
+`null` rather than the default value, so "laid out for Letter" stays
+distinguishable from "written before page setup existed".
+
+## 18.2 · Four pure rule modules, all tested
+
+| File | Answers |
+|---|---|
+| `rules/documents/pageSetup.ts` | paper sizes, landscape, margin refusals, zoom steps, fit-to-width |
+| `rules/documents/outline.ts` | headings → indented rows; which one the reader is in |
+| `rules/documents/find.ts` | match positions, whole-word, non-overlap, wrap, replace order |
+| `rules/documents/textStats.ts` | words, characters, paragraphs, reading time |
+
+Two rules worth not re-deriving:
+
+- **Outline depth is the ancestor stack, not the heading level.** A document
+  that goes H1 → H3 → H3 is a flat list under one title, and indenting by level
+  draws it as broken structure.
+- **Replace-all applies back to front, in one transaction.** Forward application
+  invalidates every later offset; forty transactions is a change nobody can undo.
+
+## 18.3 · Editor extensions written here, and why not the shipped ones
+
+- **`blockStyle.ts`** — line spacing and indent as BLOCK attributes. Tiptap's own
+  `LineHeight` sets a mark on `textStyle`, so it lands on a `<span>`: pressing
+  1.5 on an empty paragraph does nothing, and selecting half a paragraph gives
+  that half a different leading. Indent is stored in **steps**, rendered at 0.5in
+  each — storing inches would freeze today's step into every old document.
+- **`pageBreak.ts`** — an explicit break as a real node, visible on screen
+  (an invisible one is deleted by accident and cannot be found) and
+  `break-after: page` in print.
+- **`searchHighlight.ts`** — decorations, never marks. A mark would replicate to
+  everybody in the session and end up in the saved HTML.
+
+## 18.4 · The re-render trap `useEditor` sets, and it was already live
+
+**`useEditor`'s `shouldRerenderOnTransaction` defaults to FALSE in Tiptap v3.**
+The old `EditorToolbar` read `editor.isActive("bold")` during render and nothing
+subscribed it to transactions — so its pressed states were stale, and had been
+since the v3 upgrade. Not a regression introduced here; found while rebuilding.
+
+Fixed the way v3 intends: `useEditorState` with a selector returning a compact
+signature of exactly what each strip draws, compared deep-equal. Typing costs a
+render only when something on screen actually changes. `DocsToolbar`,
+`DocsMenuBar` and the outline/word-count derivation each have one.
+
+## 18.5 · Nothing here is a control that does not work
+
+Deliberately absent, and the reasons are the product's own rules:
+
+- **Comments** — no comment store. `DocumentRole` has no `commenter` for the
+  same reason, which predates this session.
+- **Version history** — no revision store.
+- **Extensions menu** — no add-on system.
+- **Image upload** — no file store wired to documents. Images are by address and
+  the dialog says so, matching §5's "hide the UI rather than ship broken
+  controls".
+- **Cut/copy/paste menu items** — the browser will not let a menu item touch the
+  clipboard. The keyboard shortcuts already work; three dead entries would not.
+
+## 18.6 · Print, and the one thing CSS cannot do
+
+`@page` cannot read a custom property, so the size and margins are injected as a
+`<style>` element at print time and removed on `afterprint`. Everything but the
+page is hidden with `visibility` (not `display` — collapsing the ancestors takes
+the page with them), and the sheet is forced to white with dark ink: **paper has
+no theme**, and a dark-mode document would otherwise print as a black rectangle.
+
+A search highlight WRAPS the text it found — hiding it in print would delete
+those words. It loses its background and keeps its box.
+
+## 18.7 · Help knowledge
+
+Two articles added, per CLAUDE.md: `general-documents` (the surface, page setup,
+find, print, export, and what is absent) and `general-document-access` (owner /
+editor / viewer, the last-owner rule, live vs offline).
+
+`context.test.ts`'s "a question the product genuinely does not cover is not
+answered" **caught a real keyword defect**: bare `export` and `download` made
+"how do I export my data to excel" resolve to the documents article. Narrowed to
+phrases. The guard works — leave it alone.
+
+## 18.8 · Not verified
+
+**None of this has been seen in a browser.** There was no authenticated session,
+`/workspace` is behind the middleware, and the repository swaps to legacy only
+inside `SessionProvider`. Green: tsc, 2183 tests, `next build`, and
+`/workspace` → 307 / `/signin` → 200 against a running dev server.
+
+Where I would look first, in order:
+
+1. **Zoom.** The sheet is scaled with a transform and its parent's height is set
+   from a `ResizeObserver` — if the bottom of a zoomed document is unreachable,
+   that is the pairing.
+2. **The ruler's margin stops** against a real drag, and the write that follows
+   release.
+3. **Print**, at each paper size, in dark mode.
+4. **Find and replace over formatted text** — `flattenDocument` maps a run per
+   text node, and `he**ll**o` is the case that proves the mapping.
+5. **Two browsers**, which §17.7 item 1 still asks for and this session did not
+   change: the Yjs path is untouched, but the schema is not — `blockStyle` and
+   `pageBreak` add attributes and a node, and every client must run the same
+   code for the CRDT to merge. An old tab open against a new one is the case.

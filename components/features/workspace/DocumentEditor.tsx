@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { EditorContent, useEditor } from "@tiptap/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
@@ -11,65 +11,165 @@ import Superscript from "@tiptap/extension-superscript";
 import TextAlign from "@tiptap/extension-text-align";
 import { TaskItem, TaskList } from "@tiptap/extension-list";
 import { TableKit } from "@tiptap/extension-table";
-import { Color, TextStyle } from "@tiptap/extension-text-style";
-import { Icon } from "@/components/ui/Icons";
+import {
+  Color,
+  FontFamily,
+  FontSize,
+  TextStyle,
+} from "@tiptap/extension-text-style";
+import Collaboration from "@tiptap/extension-collaboration";
+import CollaborationCaret from "@tiptap/extension-collaboration-caret";
 import { InlineError, SkeletonRows } from "@/components/ui/Primitives";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { getRepository } from "@/lib/repositories";
 import { formatStamp } from "@/lib/utils/format";
-import Collaboration from "@tiptap/extension-collaboration";
-import CollaborationCaret from "@tiptap/extension-collaboration-caret";
-import { EditorToolbar } from "./EditorToolbar";
+import { canManage, editRefusal, roleOf } from "@/lib/rules/documents/access";
+import { outlineRows, type OutlineHeading } from "@/lib/rules/documents/outline";
+import {
+  DEFAULT_PAGE_SETUP,
+  PX_PER_INCH,
+  clampZoom,
+  contentWidthIn,
+  fitZoom,
+  pageSizeIn,
+  stepZoom,
+} from "@/lib/rules/documents/pageSetup";
+import { readingMinutes, wordCount } from "@/lib/rules/documents/textStats";
+import { BlockStyle } from "@/lib/documents/extensions/blockStyle";
+import { PageBreak } from "@/lib/documents/extensions/pageBreak";
+import { SearchHighlight } from "@/lib/documents/extensions/searchHighlight";
+import { ShareMenu } from "./ShareMenu";
 import { useCollabSession } from "./useCollabSession";
 import { caretRender, caretSelection } from "./collabCaret";
-import { ShareMenu } from "./ShareMenu";
-import { canManage, editRefusal, roleOf } from "@/lib/rules/documents/access";
+import { DocIcon } from "./docs/DocsIcons";
+import { DocsMenuBar } from "./docs/DocsMenuBar";
+import { DocsToolbar } from "./docs/DocsToolbar";
+import { DocsRuler } from "./docs/DocsRuler";
+import { DocsSidebar } from "./docs/DocsSidebar";
+import { DocsFindReplace } from "./docs/DocsFindReplace";
+import {
+  AddressDialog,
+  PageSetupDialog,
+  ShortcutsDialog,
+  WordCountDialog,
+} from "./docs/DocsDialogs";
+import type { DocumentPageSetup, DocumentSummary } from "@/lib/domain";
 
 /**
- * The document editor.
+ * The document surface.
  *
- * **Phase 1: one writer.** Tiptap on ProseMirror, autosaving HTML. Phase 2 adds
- * Yjs over the engine's Socket.IO and makes the CRDT state the authority, with
- * HTML kept as its projection.
+ * ## The shape, and why it is this shape
  *
- * ## The page
+ * Title and menus, then a toolbar, then a ruler, then the page on a recessed
+ * ground, with the outline beside it and the counts underneath. That is the
+ * layout of every word processor since the eighties, and the reason to follow
+ * it is not familiarity for its own sake: each strip answers a different
+ * question, and putting them in a different order makes people hunt.
  *
- * A fixed-width sheet on a recessed ground, because that is what makes a
- * document read as a document: the measure stays at a readable ~80 characters
- * however wide the window is. A full-bleed editor is the single thing that most
- * makes a rich-text box feel like a form field rather than a page.
+ * - The **menus** hold everything, named, in groups that can be read.
+ * - The **toolbar** holds what is used constantly.
+ * - The **ruler** shows the measure and lets it be changed on the page it
+ *   governs.
+ * - The **outline** is the document's own structure, generated, never authored.
+ * - The **status bar** holds the figures — words, zoom, the page.
+ *
+ * ## The page is a page
+ *
+ * A fixed measure on a recessed ground is what makes a document read as a
+ * document rather than as a large form field. The width comes from the stored
+ * page setup, so the line breaks somebody sees are the line breaks that will
+ * print, and everybody in a shared document sees the same ones.
  *
  * The sheet is **not white in dark mode**. A white page on a dark deck is a
  * lamp, and nobody edits prose on one for an hour — `--doc-page` is tuned per
- * theme, like every other surface in this product.
+ * theme, like every other surface in this product. Print forces white and dark
+ * ink, because paper has no theme.
  *
- * ## Full screen
+ * ## Nothing here is a control that does not work
  *
- * Two mechanisms, because one is not reliable. `requestFullscreen` is the real
- * one; it is refused in some embeddings and by some browser settings, so the
- * component ALSO applies a fixed, top-layer maximised state. Either path alone
- * leaves a case where the button appears to do nothing.
+ * There is no comment button, no version history and no Extensions menu,
+ * because there is no comment store, no revision store and no add-on system.
+ * The repository's rule is that an unimplemented method throws rather than
+ * resolving empty; the same principle applies to chrome — a button that opens
+ * a panel saying "coming soon" was found by somebody who needed the feature.
  */
 
 const SAVE_DEBOUNCE_MS = 1200;
 
-export function DocumentEditor({ documentId }: { documentId: string }) {
+export function DocumentEditor({
+  documentId,
+  documents = [],
+  onOpen,
+  onNew,
+  onClose,
+  onChanged,
+  creating = false,
+}: {
+  documentId: string;
+  /** The other documents, for the rail. Empty is a perfectly good rail. */
+  documents?: DocumentSummary[];
+  onOpen?: (id: string) => void;
+  onNew?: () => void;
+  onClose?: () => void;
+  /** The list needs re-reading — a rename, a copy or a delete happened. */
+  onChanged?: () => void;
+  creating?: boolean;
+}) {
   const doc = useQuery((r) => r.getDocument(documentId), [documentId]);
   const body = useQuery((r) => r.getDocumentBody(documentId), [documentId]);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
   const collab = useCollabSession(documentId, me.data ?? null);
+
   const myRole = doc.data ? roleOf(doc.data, me.data?.id ?? null) : null;
-  const readOnly = doc.data ? editRefusal(doc.data, me.data?.id ?? null) !== null : false;
+  const refusal = doc.data ? editRefusal(doc.data, me.data?.id ?? null) : null;
+  const mayEdit = doc.data ? refusal === null : false;
+  const mayManage = doc.data ? canManage(doc.data, me.data?.id ?? null) : false;
+
+  /* View state. None of it is stored: zoom, the rail and the guides are this
+     reader's view of the document, not properties of it. Page setup is the
+     opposite and lives on the body — see `DocumentPageSetup`. */
+  const [mode, setMode] = useState<"editing" | "viewing">("editing");
+  const [zoom, setZoom] = useState(1);
+  const [showOutline, setShowOutline] = useState(true);
+  const [showRuler, setShowRuler] = useState(true);
+  const [showPageGuides, setShowPageGuides] = useState(false);
+  const [spellcheck, setSpellcheck] = useState(true);
+  const [full, setFull] = useState(false);
+
+  const [dialog, setDialog] = useState<
+    null | "page-setup" | "word-count" | "shortcuts" | "link" | "image"
+  >(null);
+  const [finding, setFinding] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
 
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [full, setFull] = useState(false);
+
+  /**
+   * The page.
+   *
+   * Derived from the stored body, with a local override so an applied change is
+   * on screen immediately rather than after the write and the re-read. Derived
+   * rather than copied into state by an effect: a copy has to be kept in step
+   * with the read, and the moment it is not, two people are laying out one
+   * document to different measures.
+   *
+   * A rejected write clears the override, which puts the stored page straight
+   * back — there is no third state to get stuck in.
+   */
+  const [pageOverride, setPageOverride] = useState<DocumentPageSetup | null>(null);
+  const pageSetup = pageOverride ?? body.data?.pageSetup ?? DEFAULT_PAGE_SETUP;
 
   const shell = useRef<HTMLDivElement | null>(null);
+  const scroller = useRef<HTMLDivElement | null>(null);
+  const page = useRef<HTMLDivElement | null>(null);
   const dirty = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestHtml = useRef("");
+
+  const readOnly = !mayEdit || mode === "viewing";
 
   const editor = useEditor(
     {
@@ -83,7 +183,11 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
         }),
         TextStyle,
         Color,
-        Highlight,
+        FontFamily,
+        FontSize,
+        /* Multicolour, or `setHighlight({ color })` silently applies the one
+           default tint and the whole highlight palette does nothing. */
+        Highlight.configure({ multicolor: true }),
         Subscript,
         Superscript,
         Image,
@@ -93,6 +197,9 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
         /* Headings too, or a centred title reverts to left the moment the
            caret enters it. */
         TextAlign.configure({ types: ["heading", "paragraph"] }),
+        BlockStyle,
+        PageBreak,
+        SearchHighlight,
         Placeholder.configure({ placeholder: "Start writing…" }),
         ...(collab.session
           ? [
@@ -138,6 +245,61 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
     },
     [documentId, collab.session, readOnly],
   );
+
+  /**
+   * The outline and the counts, recomputed only when the text changes.
+   *
+   * One subscription rather than two: both walk the document, and doing it
+   * twice per keystroke to fill two strips of chrome is work for nothing.
+   */
+  const derived = useEditorState({
+    editor,
+    selector: ({ editor: e }) => {
+      if (!e) return { headings: [] as OutlineHeading[], text: "", selection: "" };
+      const headings: OutlineHeading[] = [];
+      e.state.doc.descendants((node, pos) => {
+        if (node.type.name === "heading")
+          headings.push({
+            pos,
+            level: Number(node.attrs.level) || 1,
+            text: node.textContent,
+          });
+        return true;
+      });
+      const { from, to } = e.state.selection;
+      return {
+        headings,
+        text: e.state.doc.textBetween(0, e.state.doc.content.size, "\n", " "),
+        selection: from === to ? "" : e.state.doc.textBetween(from, to, "\n", " "),
+      };
+    },
+  }) ?? { headings: [] as OutlineHeading[], text: "", selection: "" };
+
+  const rows = useMemo(() => outlineRows(derived.headings), [derived.headings]);
+  const words = wordCount(derived.text);
+
+  /* Which heading the reader is in. Read from the scroll container rather than
+     from the caret, because the outline follows what is on SCREEN — somebody
+     scrolling to check a later section has not moved their cursor. */
+  const [activeHeadingPos, setActiveHeadingPos] = useState<number | null>(null);
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el || !editor) return;
+    const onScroll = () => {
+      let active: number | null = null;
+      for (const row of rows) {
+        const node = editor.view.nodeDOM(row.pos) as HTMLElement | null;
+        if (!node?.getBoundingClientRect) continue;
+        const top = node.getBoundingClientRect().top - el.getBoundingClientRect().top;
+        if (top - 8 <= 0) active = row.pos;
+        else break;
+      }
+      setActiveHeadingPos(active);
+    };
+    onScroll();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [editor, rows]);
 
   /* `useEditor` reads `content` only at creation, so a body that resolves later
      has to be set explicitly. Guarded on `dirty` so a slow read cannot
@@ -244,8 +406,8 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
       return;
     }
     setFull(true);
-    /* The CSS maximise above is what actually guarantees the change; this is
-       the upgrade to a real fullscreen surface where it is permitted. */
+    /* The CSS maximise is what actually guarantees the change; this is the
+       upgrade to a real fullscreen surface where it is permitted. */
     try {
       await shell.current?.requestFullscreen?.();
     } catch {
@@ -253,11 +415,172 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
     }
   };
 
+  /* ── Page geometry ──────────────────────────────────────────────────────
+   *
+   * The sheet is laid out at its true size in CSS pixels and then SCALED. Zoom
+   * cannot be a width, because a page at 150% has to keep its inch measure —
+   * widening the column instead would re-break every line and print
+   * differently from what is on screen.
+   */
+  const { widthIn, heightIn } = pageSizeIn(pageSetup);
+  const pageWidthPx = widthIn * PX_PER_INCH;
+  const pageHeightPx = heightIn * PX_PER_INCH;
+  const [naturalHeight, setNaturalHeight] = useState(pageHeightPx);
+
+  useEffect(() => {
+    const el = page.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    /* The scaled sheet is out of flow as far as its parent is concerned, so
+       the parent's height has to be set from the sheet's real height times the
+       zoom — otherwise the scroll area ends where the unscaled page ends and
+       the bottom of a zoomed document is unreachable. */
+    const observer = new ResizeObserver(() => setNaturalHeight(el.offsetHeight));
+    observer.observe(el);
+    setNaturalHeight(el.offsetHeight);
+    return () => observer.disconnect();
+  }, [pageSetup, editor]);
+
+  const fitToWidth = useCallback(() => {
+    const width = scroller.current?.clientWidth;
+    if (width) setZoom(fitZoom(pageSetup, width - 48));
+  }, [pageSetup]);
+
+  /* ── Actions ─────────────────────────────────────────────────────────── */
+
+  const applyPageSetup = async (next: DocumentPageSetup) => {
+    setPageOverride(next);
+    setDialog(null);
+    const result = await getRepository().saveDocumentBody(documentId, {
+      pageSetup: next,
+    });
+    if (result.ok) {
+      body.refetch();
+      return;
+    }
+    setError(result.message);
+    /* Back to what is actually stored. Leaving the rejected page on screen
+       would show a measure nobody else in the document has. */
+    setPageOverride(null);
+  };
+
+  const download = (kind: "html" | "text") => {
+    if (!editor || !doc.data) return;
+    const name = doc.data.title.replace(/[^\w\d -]+/g, "").trim() || "document";
+    const content =
+      kind === "text"
+        ? editor.getText()
+        : exportHtml(doc.data.title, editor.getHTML(), pageSetup);
+    const blob = new Blob([content], {
+      type: kind === "text" ? "text/plain;charset=utf-8" : "text/html;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${name}.${kind === "text" ? "txt" : "html"}`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  /**
+   * Print.
+   *
+   * The page size and margins are injected as an `@page` rule, because CSS
+   * cannot read a custom property there — and without it the browser prints at
+   * whatever its own default paper is, which is the one place a document's
+   * stated setup would silently stop applying.
+   */
+  const print = useCallback(() => {
+    const { widthIn: w, heightIn: h } = pageSizeIn(pageSetup);
+    const style = document.createElement("style");
+    style.id = "doc-print-page";
+    style.textContent = `@page { size: ${w}in ${h}in; margin: ${pageSetup.margins.top}in ${pageSetup.margins.right}in ${pageSetup.margins.bottom}in ${pageSetup.margins.left}in; }`;
+    document.head.appendChild(style);
+    document.body.classList.add("doc-printing");
+    const cleanup = () => {
+      document.body.classList.remove("doc-printing");
+      style.remove();
+    };
+    window.addEventListener("afterprint", cleanup, { once: true });
+    window.print();
+  }, [pageSetup]);
+
+  const duplicate = async () => {
+    if (!editor || !doc.data) return;
+    const created = await getRepository().createDocument({
+      title: `Copy of ${doc.data.title}`,
+      kind: "doc",
+    });
+    if (!created.ok) {
+      setError(created.message);
+      return;
+    }
+    const saved = await getRepository().saveDocumentBody(created.data.id, {
+      html: editor.getHTML(),
+      pageSetup,
+    });
+    if (!saved.ok) setError(saved.message);
+    onChanged?.();
+    onOpen?.(created.data.id);
+  };
+
+  const commitRename = async () => {
+    const next = titleDraft.trim();
+    setRenaming(false);
+    if (!next || next === doc.data?.title) return;
+    const result = await getRepository().renameDocument(documentId, next);
+    if (!result.ok) setError(result.message);
+    else {
+      doc.refetch();
+      onChanged?.();
+    }
+  };
+
+  const remove = async () => {
+    const result = await getRepository().deleteDocument(documentId);
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    onChanged?.();
+    onClose?.();
+  };
+
+  /* ── Keyboard ────────────────────────────────────────────────────────── */
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (!meta) return;
+      if (e.key === "f") {
+        e.preventDefault();
+        setFinding(true);
+      } else if (e.key === "p") {
+        e.preventDefault();
+        print();
+      } else if (e.key === "/") {
+        e.preventDefault();
+        setDialog("shortcuts");
+      } else if (e.shiftKey && (e.key === "C" || e.key === "c")) {
+        e.preventDefault();
+        setDialog("word-count");
+      } else if (e.key === "s") {
+        /* Saving is continuous, but Ctrl-S is muscle memory and the browser's
+           own "save this page" dialog is a confusing answer to it. */
+        e.preventDefault();
+        void flush();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [flush, print]);
+
   if (doc.isLoading || body.isLoading) return <SkeletonRows rows={8} />;
   if (!doc.data)
     return (
       <InlineError message="This document is not available. It may have been deleted, or you may not be in it." />
     );
+
+  const record = doc.data;
 
   return (
     <div
@@ -265,54 +588,126 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
       className={
         full
           ? "fixed inset-0 z-[90] flex flex-col bg-[var(--body-bg)]"
-          : "flex h-full min-h-0 flex-col"
+          : "flex h-full min-h-0 flex-col bg-[var(--body-bg)]"
       }
     >
-      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline px-4 py-2.5">
-        <span className="min-w-0 flex-1 truncate text-sm text-ink">
-          {doc.data.title}
+      {/* ── Title bar ───────────────────────────────────────────────────── */}
+      <header className="flex shrink-0 flex-wrap items-start gap-x-3 gap-y-1 border-b border-hairline bg-[var(--surface-raised)] px-3 pt-2 pb-1">
+        <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted">
+          <DocIcon.outline className="h-4 w-4" />
         </span>
-        {myRole && myRole !== "owner" && (
-          <span className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
-            {myRole === "viewer" ? "View only" : "Editor"}
-          </span>
-        )}
-        {doc.data && canManage(doc.data, me.data?.id ?? null) && (
-          <ShareMenu document={doc.data} onChanged={doc.refetch} />
-        )}
-        {collab.connected && (
-          <span
-            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted"
-            title="Live collaboration is on"
-          >
-            <span
-              aria-hidden="true"
-              className="h-1.5 w-1.5 rounded-full"
-              style={{ background: "var(--state-positive)" }}
-            />
-            {collab.peers > 0 ? (
-              <>
-                <span data-figure>{collab.peers + 1}</span> editing
-              </>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 items-center gap-2">
+            {renaming ? (
+              <input
+                autoFocus
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") void commitRename();
+                  if (e.key === "Escape") setRenaming(false);
+                }}
+                aria-label="Document name"
+                className="h-7 min-w-0 flex-1 rounded-inset border border-hairline bg-transparent px-1.5 text-[15px] text-ink"
+              />
             ) : (
-              "Live"
+              <button
+                type="button"
+                disabled={!mayManage}
+                title={mayManage ? "Rename" : "Only an owner can rename this document"}
+                onClick={() => {
+                  setTitleDraft(record.title);
+                  setRenaming(true);
+                }}
+                className="min-w-0 truncate rounded-inset px-1 text-left text-[15px] text-ink enabled:hover:bg-[var(--control)] disabled:cursor-default"
+              >
+                {record.title}
+              </button>
             )}
-          </span>
-        )}
-        <SaveState status={status} savedAt={savedAt} />
-        <button
-          type="button"
-          aria-label={full ? "Exit full screen" : "Full screen"}
-          aria-pressed={full}
-          title={full ? "Exit full screen (Esc)" : "Full screen"}
-          onClick={() => void toggleFull()}
-          className="grid h-7 w-7 place-items-center rounded-inset text-ink-muted hover:bg-[var(--control)] hover:text-ink"
-        >
-          <Icon.external className={`h-3.5 w-3.5 ${full ? "rotate-180" : ""}`} />
-        </button>
+
+            {myRole && myRole !== "owner" && (
+              <span className="shrink-0 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
+                {myRole === "viewer" ? "View only" : "Editor"}
+              </span>
+            )}
+            <SaveState status={status} savedAt={savedAt} />
+          </div>
+
+          <DocsMenuBar
+            editor={editor}
+            actions={{
+              onNewDocument: () => onNew?.(),
+              onDuplicate: () => void duplicate(),
+              onRename: () => {
+                setTitleDraft(record.title);
+                setRenaming(true);
+              },
+              onDownloadHtml: () => download("html"),
+              onDownloadText: () => download("text"),
+              onPrint: print,
+              onPageSetup: () => setDialog("page-setup"),
+              onDelete: () => void remove(),
+              canManage: mayManage,
+              onFind: () => setFinding(true),
+              onInsertLink: () => setDialog("link"),
+              onInsertImage: () => setDialog("image"),
+              onWordCount: () => setDialog("word-count"),
+              onShortcuts: () => setDialog("shortcuts"),
+              showOutline,
+              onShowOutline: setShowOutline,
+              showRuler,
+              onShowRuler: setShowRuler,
+              showPageGuides,
+              onShowPageGuides: setShowPageGuides,
+              fullScreen: full,
+              onFullScreen: () => void toggleFull(),
+              spellcheck,
+              onSpellcheck: setSpellcheck,
+              mode,
+              onMode: setMode,
+              canEdit: mayEdit,
+            }}
+          />
+        </div>
+
+        <div className="flex shrink-0 items-center gap-1.5 pt-1">
+          {collab.connected && <Presence peers={collab.peers} />}
+          {canManage(record, me.data?.id ?? null) && (
+            <ShareMenu document={record} onChanged={doc.refetch} />
+          )}
+          <button
+            type="button"
+            aria-label={full ? "Exit full screen" : "Full screen"}
+            aria-pressed={full}
+            title={full ? "Exit full screen (Esc)" : "Full screen"}
+            onClick={() => void toggleFull()}
+            className="grid h-7 w-7 place-items-center rounded-inset text-ink-muted hover:bg-[var(--control)] hover:text-ink"
+          >
+            <DocIcon.fullscreen className="h-4 w-4" />
+          </button>
+        </div>
       </header>
 
-      {editor && !readOnly && <EditorToolbar editor={editor} />}
+      {editor && (
+        <DocsToolbar
+          editor={editor}
+          actions={{
+            onFind: () => setFinding(true),
+            onPrint: print,
+            onInsertLink: () => setDialog("link"),
+            onInsertImage: () => setDialog("image"),
+            zoom,
+            onZoom: (z) => setZoom(clampZoom(z)),
+            spellcheck,
+            onSpellcheck: setSpellcheck,
+            mode,
+            onMode: setMode,
+            canEdit: mayEdit,
+          }}
+        />
+      )}
 
       {error && (
         <div className="px-4 pt-3">
@@ -320,39 +715,227 @@ export function DocumentEditor({ documentId }: { documentId: string }) {
         </div>
       )}
 
-      {/* The recessed ground the sheet sits on. */}
-      <div className="min-h-0 flex-1 overflow-y-auto bg-[var(--surface-sunken)] px-4 py-6 scroll-slim">
-        <div
-          className="mx-auto rounded-[3px] shadow-[var(--shadow-deck-seat)]"
-          style={{
-            /* 816px is US Letter at 96dpi, which is what makes the measure feel
-               like a page rather than an arbitrary column. */
-            maxWidth: 816,
-            background: "var(--doc-page)",
-            padding: "clamp(28px, 5vw, 72px)",
-            minHeight: full ? "auto" : 420,
-          }}
-        >
-          <EditorContent editor={editor} />
+      <div className="flex min-h-0 flex-1">
+        {showOutline && (
+          <DocsSidebar
+            documents={documents}
+            openId={documentId}
+            onOpen={(id) => onOpen?.(id)}
+            onNew={() => onNew?.()}
+            creating={creating}
+            rows={rows}
+            activePos={activeHeadingPos}
+            onGoToHeading={(pos) => {
+              if (!editor) return;
+              const node = editor.view.nodeDOM(pos) as HTMLElement | null;
+              node?.scrollIntoView({ behavior: "smooth", block: "start" });
+            }}
+            onClose={() => onClose?.()}
+          />
+        )}
+
+        <div className="relative flex min-w-0 flex-1 flex-col">
+          {showRuler && (
+            <DocsRuler
+              setup={pageSetup}
+              zoom={zoom}
+              onChange={(next) => void applyPageSetup(next)}
+              editable={mayEdit && mode === "editing"}
+            />
+          )}
+
+          {finding && editor && (
+            <DocsFindReplace
+              editor={editor}
+              canEdit={!readOnly}
+              onClose={() => setFinding(false)}
+            />
+          )}
+
+          {/* The recessed ground the sheet sits on. */}
+          <div
+            ref={scroller}
+            className="min-h-0 flex-1 overflow-auto bg-[var(--surface-sunken)] px-6 py-6 scroll-slim"
+          >
+            <div
+              className="mx-auto"
+              style={{ width: pageWidthPx * zoom, height: naturalHeight * zoom }}
+            >
+              <div
+                ref={page}
+                data-doc-print
+                spellCheck={spellcheck}
+                className="relative rounded-[3px] shadow-[var(--shadow-deck-seat)]"
+                style={{
+                  width: pageWidthPx,
+                  minHeight: pageHeightPx,
+                  background: "var(--doc-page)",
+                  paddingTop: `${pageSetup.margins.top}in`,
+                  paddingBottom: `${pageSetup.margins.bottom}in`,
+                  paddingLeft: `${pageSetup.margins.left}in`,
+                  paddingRight: `${pageSetup.margins.right}in`,
+                  transform: `scale(${zoom})`,
+                  transformOrigin: "top left",
+                }}
+              >
+                {showPageGuides && (
+                  /* Approximate, and the menu says so: the printer decides the
+                     real break from content height, and it will not split a
+                     heading away from its paragraph the way a flat rule here
+                     would suggest. */
+                  <span
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                      background: `repeating-linear-gradient(to bottom, transparent 0, transparent ${pageHeightPx - 1}px, var(--doc-rule) ${pageHeightPx - 1}px, var(--doc-rule) ${pageHeightPx}px)`,
+                    }}
+                  />
+                )}
+                <EditorContent editor={editor} />
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <footer className="shrink-0 border-t border-hairline px-4 py-2">
-        <p className="text-[10px] text-ink-faint">
+      {/* ── Status bar ──────────────────────────────────────────────────── */}
+      <footer className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-1 border-t border-hairline bg-[var(--surface-raised)] px-3 py-1.5 text-[11px] text-ink-faint">
+        <button
+          type="button"
+          onClick={() => setDialog("word-count")}
+          className="rounded-inset px-1 hover:bg-[var(--control)] hover:text-ink"
+          title="Word count (Ctrl Shift C)"
+        >
+          <span data-figure>{words}</span> {words === 1 ? "word" : "words"}
+          {words > 0 && <> · {readingMinutes(words)} min read</>}
+        </button>
+
+        <span>
+          {contentWidthIn(pageSetup).toFixed(2)}″ measure ·{" "}
+          {pageSetup.paper.toUpperCase()} {pageSetup.orientation}
+        </span>
+
+        <span className="ms-auto flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="Zoom out"
+            onClick={() => setZoom((z) => stepZoom(z, -1))}
+            className="grid h-6 w-6 place-items-center rounded-inset hover:bg-[var(--control)] hover:text-ink"
+          >
+            <DocIcon.minus className="h-3.5 w-3.5" />
+          </button>
+          <span className="w-10 text-center tabular-nums" data-figure>
+            {Math.round(zoom * 100)}%
+          </span>
+          <button
+            type="button"
+            aria-label="Zoom in"
+            onClick={() => setZoom((z) => stepZoom(z, 1))}
+            className="grid h-6 w-6 place-items-center rounded-inset hover:bg-[var(--control)] hover:text-ink"
+          >
+            <DocIcon.plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={fitToWidth}
+            className="rounded-inset px-1.5 py-0.5 hover:bg-[var(--control)] hover:text-ink"
+          >
+            Fit
+          </button>
+        </span>
+
+        <span className="w-full text-[10px] leading-snug text-ink-faint deck:w-auto">
           {/* Says which mode is ACTUALLY in force, rather than claiming the
               feature exists. A live session that quietly fell back to
               single-writer is the one failure people must not be left guessing
               about — two of them would overwrite each other believing they were
               collaborating. */}
-          {readOnly
-            ? "You have view access. Ask an owner if you need to edit this."
-            : collab.connected
-            ? "Edits are shared live. Everyone in this document sees them as you type."
-            : (collab.reason ??
-              "Working offline — edits are saved to this document, but nobody else sees them live.")}
-        </p>
+          {!mayEdit
+            ? (refusal ?? "You have view access.")
+            : mode === "viewing"
+              ? "Viewing. Switch to Editing in the toolbar to make changes."
+              : collab.connected
+                ? "Edits are shared live. Everyone in this document sees them as you type."
+                : (collab.reason ??
+                  "Working offline — edits are saved to this document, but nobody else sees them live.")}
+        </span>
       </footer>
+
+      {dialog === "page-setup" && (
+        <PageSetupDialog
+          value={pageSetup}
+          onApply={(next) => void applyPageSetup(next)}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "word-count" && (
+        <WordCountDialog
+          documentText={derived.text}
+          selectionText={derived.selection}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "shortcuts" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog === "link" && editor && (
+        <AddressDialog
+          kind="link"
+          initial={(editor.getAttributes("link").href as string) ?? ""}
+          onRemove={
+            editor.isActive("link")
+              ? () => {
+                  editor.chain().focus().unsetLink().run();
+                  setDialog(null);
+                }
+              : undefined
+          }
+          onSubmit={(value) => {
+            const safe = /^(https?:|mailto:)/i.test(value) ? value : `https://${value}`;
+            editor.chain().focus().setLink({ href: safe }).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "image" && editor && (
+        <AddressDialog
+          kind="image"
+          onSubmit={(value) => {
+            editor.chain().focus().setImage({ src: value }).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * How many people are in the document.
+ *
+ * The count and not the names: awareness carries a display name per caret and
+ * the carets already show them where the work is happening. A second list of
+ * the same names in the header is the same fact twice.
+ */
+function Presence({ peers }: { peers: number }) {
+  return (
+    <span
+      className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted"
+      title="Live collaboration is on"
+    >
+      <span
+        aria-hidden="true"
+        className="h-1.5 w-1.5 rounded-full"
+        style={{ background: "var(--state-positive)" }}
+      />
+      {peers > 0 ? (
+        <>
+          <span data-figure>{peers + 1}</span> editing
+        </>
+      ) : (
+        "Live"
+      )}
+    </span>
   );
 }
 
@@ -368,8 +951,44 @@ function SaveState({
   if (status === "saving")
     return <span className="text-[11px] text-ink-faint">Saving…</span>;
   if (status === "saved" && savedAt)
-    return (
-      <span className="text-[11px] text-ink-faint">Saved {formatStamp(savedAt)}</span>
-    );
+    return <span className="text-[11px] text-ink-faint">Saved {formatStamp(savedAt)}</span>;
   return null;
+}
+
+/**
+ * A standalone HTML file.
+ *
+ * The page setup travels with it as an `@page` rule and the prose styles are
+ * inlined, because a downloaded file opens in a browser with none of this
+ * application's stylesheet — and an export that arrives as unstyled markup is
+ * one people conclude was corrupted.
+ */
+function exportHtml(title: string, inner: string, setup: DocumentPageSetup): string {
+  const { widthIn, heightIn } = pageSizeIn(setup);
+  const escaped = title.replace(/[<>&]/g, (c) =>
+    c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;",
+  );
+  return `<!doctype html>
+<html><head><meta charset="utf-8"><title>${escaped}</title>
+<style>
+  @page { size: ${widthIn}in ${heightIn}in; margin: ${setup.margins.top}in ${setup.margins.right}in ${setup.margins.bottom}in ${setup.margins.left}in; }
+  body { margin: 0; background: #f4f4f6; color: #101014;
+         font: 16px/1.6 Geist, system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .page { max-width: ${widthIn - setup.margins.left - setup.margins.right}in; margin: 0 auto;
+          padding: ${setup.margins.top}in 0; background: #fff; }
+  h1 { font-size: 1.75em; font-weight: 400; }
+  h2 { font-size: 1.4em; font-weight: 400; }
+  h3 { font-size: 1.15em; font-weight: 500; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { border: 1px solid #d8d8de; padding: 0.45em 0.6em; vertical-align: top; }
+  th { background: #f2f2f5; text-align: start; }
+  blockquote { border-inline-start: 3px solid #d8d8de; padding-inline-start: 1em; color: #4a4a55; }
+  pre { background: #f2f2f5; padding: 0.85em 1em; overflow-x: auto; }
+  img { max-width: 100%; height: auto; }
+  ul[data-type="taskList"] { list-style: none; padding-inline-start: 0.25em; }
+  ul[data-type="taskList"] li { display: flex; gap: 0.55em; align-items: flex-start; }
+  [data-page-break] { break-after: page; border: 0; }
+  @media print { body { background: #fff; } .page { padding: 0; max-width: none; } }
+</style></head>
+<body><div class="page">${inner}</div></body></html>`;
 }

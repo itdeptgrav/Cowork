@@ -66,6 +66,7 @@ import type {
   CoworkDocument,
   CoworkDocumentBody,
   DocumentKind,
+  DocumentPageSetup,
   DocumentRole,
   DocumentSummary,
   MailAttachment,
@@ -1511,9 +1512,21 @@ export interface CoworkRepository {
   renameDocument(id: string, title: string): Promise<ActionResult<CoworkDocument>>;
   /** Soft. A deleted document is recoverable until something reaps it. */
   deleteDocument(id: string): Promise<ActionResult<void>>;
+  /**
+   * Write any part of a body. Each field only when given.
+   *
+   * `pageSetup` is here rather than on the record because it is a property of
+   * the text — the measure decides where every line breaks — and because a list
+   * drawing thirty rows has no use for thirty sets of margins.
+   */
   saveDocumentBody(
     id: string,
-    body: { html?: string; cells?: string | null; ydocState?: string | null },
+    body: {
+      html?: string;
+      cells?: string | null;
+      ydocState?: string | null;
+      pageSetup?: DocumentPageSetup | null;
+    },
   ): Promise<ActionResult<CoworkDocumentBody>>;
   /**
    * Add somebody, or change what they may do. Owners only.

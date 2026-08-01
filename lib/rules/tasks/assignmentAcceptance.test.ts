@@ -139,11 +139,38 @@ test("1e · once the manager settles it, the assignee can accept", () => {
   assert.equal(getAssignmentActions(UMUNG, t).canAccept, true);
 });
 
-test("1f · a standard opening (assignee's turn) is NOT gated — the normal accept", () => {
-  /* `WAITING_FOR_ASSIGNEE` is the assignor's opening figure on the assignee's
-     turn: accepting the assignment settles it, so it must stay offered. */
-  const t = view({ budgetState: "WAITING_FOR_ASSIGNEE" });
-  assert.equal(getAssignmentActions(UMUNG, t).canAccept, true);
+test("1f · an unsettled budget gates acceptance in BOTH directions", () => {
+  /* **This assertion changed deliberately.** It previously required
+     `WAITING_FOR_ASSIGNEE` to stay offered, on the reasoning that the
+     assignor's opening figure is the standard "accept the terms" moment.
+
+     On screen that put two cards in front of the assignee at once — "Accept
+     task" directly above "Accept 00:10:00" — asking the same question twice
+     with nothing to say that either leads to the same place. The budget card
+     wins: it names the figure being agreed to, and its own copy already states
+     that accepting settles the budget and moves the task forward.
+
+     So while a budget is unsettled either way, the budget card owns the
+     decision and this one shows the state without a duplicate control. */
+  for (const state of ["WAITING_FOR_ASSIGNEE", "WAITING_FOR_ASSIGNOR"] as const) {
+    const t = view({ budgetState: state });
+    const actions = getAssignmentActions(UMUNG, t);
+    assert.equal(actions.canAccept, false, `${state} still offers accept`);
+    assert.equal(actions.canRefuseTerms, false, `${state} still offers terms`);
+  }
+});
+
+test("1g · a task with no budget in play still offers acceptance", () => {
+  /* The gate must not swallow the ordinary case: a fixed-deadline task has no
+     budget card, so this card is the only place acceptance can happen. */
+  for (const state of ["AGREED", "NONE"] as const) {
+    const t = view({ budgetState: state });
+    assert.equal(
+      getAssignmentActions(UMUNG, t).canAccept,
+      true,
+      `${state} lost its accept`,
+    );
+  }
 });
 
 /* ── 2 · The creator does not ─────────────────────────────────────────────── */
