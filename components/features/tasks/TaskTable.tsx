@@ -1011,6 +1011,23 @@ function Row({
         </span>
         <span className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-faint">
           <span data-figure>{view.task.reference}</span>
+          {/* Which side of a breakdown this row is on. A subtask reads as an
+              ordinary task otherwise, and the two rows tell a reader nothing
+              about how they relate — which matters most in the list where both
+              appear, the one belonging to whoever broke the work out. The
+              parent's title is not here: resolving it costs a read per row, and
+              the task itself carries the link. */}
+          {view.task.parentTaskId ? (
+            <span>· Subtask</span>
+          ) : (
+            view.subtaskCount > 0 && (
+              <span>
+                ·{" "}
+                <span data-figure>{view.subtaskCount}</span>{" "}
+                {view.subtaskCount === 1 ? "subtask" : "subtasks"}
+              </span>
+            )
+          )}
           {!hideProject && view.project && (
             <span className="truncate">· {view.project.name}</span>
           )}

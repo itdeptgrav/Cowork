@@ -420,6 +420,11 @@ export async function respondToCounter(input: {
  * Legacy's own delegation route, and the one that replaced Forward when
  * forwarding was removed. The engine owns parent linkage and the approval gates
  * a subtask inherits, so nothing is computed here.
+ *
+ * `satisfiesRequirementIds` names the parent requirements the child closes. The
+ * engine stores the array and reads nothing in it — the meaning of an id is
+ * this application's, and keeping the interpretation on one side is what stops
+ * the two from disagreeing about what a subtask is for.
  */
 export async function createSubtask(input: {
   token: string;
@@ -427,6 +432,7 @@ export async function createSubtask(input: {
   title: string;
   assigneeIds: string[];
   description?: string;
+  satisfiesRequirementIds?: string[];
   dueDate?: string;
   windowSecs?: number;
 }): Promise<LegacyResult<unknown>> {
@@ -437,6 +443,7 @@ export async function createSubtask(input: {
       title: input.title,
       assigneeIds: input.assigneeIds,
       description: input.description ?? "",
+      satisfiesRequirementIds: input.satisfiesRequirementIds ?? [],
       dueDate: input.dueDate,
       windowSecs: input.windowSecs,
     },

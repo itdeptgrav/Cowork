@@ -374,6 +374,12 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "split a task",
       "folder",
       "folders",
+      "where is my subtask",
+      "subtask disappeared",
+      "subtask not showing",
+      "cannot find subtask",
+      "created a subtask and nothing happened",
+      "subtasks list",
     ],
     examples: [
       "How do I forward a task?",
@@ -381,12 +387,47 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I split a task between two people?",
       "Can I put tasks in a folder?",
       "Who is responsible once I delegate part of my task?",
+      "I created a subtask and cannot find it anywhere",
+      "Where do subtasks show up?",
     ],
     answer:
-      "There is no Forward button and no folders. Both were removed. To give part of a task to somebody else, open the task and use Break out a subtask. The difference matters: forwarding handed over a slice of your time budget and left nothing saying what the work was for, whereas a subtask has to claim at least one of the parent task's completion requirements — the dialog will not let you create one otherwise, and the message is “Choose at least one completion requirement this subtask will satisfy.” So you have to add completion requirements to a task before you can break it down; until you do, the dialog says “Add completion requirements to this task before breaking it down — a subtask has to contribute to one.” You stay responsible for the parent task. The person doing the subtask sees which requirement they are answerable for, and that requirement is satisfied when their subtask completes — you cannot tick it off yourself once it is delegated. Your task cannot complete until every requirement is satisfied. Subtasks go one level deep: a subtask cannot itself be broken down. For grouping work without any of this, use a project.",
-    related: ["task-create", "task-lifecycle", "task-who-can-assign"],
+      "There is no Forward button and no folders. Both were removed. To give part of a task to somebody else, open the task and use Break out a subtask. The difference matters: forwarding handed over a slice of your time budget and left nothing saying what the work was for, whereas a subtask has to claim at least one of the parent task's completion requirements — the dialog will not let you create one otherwise, and the message is “Choose at least one completion requirement this subtask will satisfy.” So you have to add completion requirements to a task before you can break it down; until you do, the dialog says “Add completion requirements to this task before breaking it down — a subtask has to contribute to one.” Once created, a subtask appears in three places: a Subtasks section on the parent task, headed with how many have been broken out; under the requirement it claims, which now reads “Delegated” with the subtask named beneath it; and in your own task list and the assignee's, where the row is marked “Subtask” and the parent's row says how many it holds. You stay responsible for the parent task. The person doing the subtask sees which requirement they are answerable for, and that requirement is satisfied when their subtask completes — you cannot tick it off yourself once it is delegated. Your task cannot complete until every requirement is satisfied. Subtasks go one level deep: a subtask cannot itself be broken down. For grouping work without any of this, use a project.",
+    related: [
+      "task-create",
+      "task-lifecycle",
+      "task-who-can-assign",
+      "task-projects",
+    ],
     source:
-      "lib/tasks/completion.ts — subtaskRefusal() and completionState(); createSubtask in lib/repositories/mock/index.ts. Forwarding and folders removed 2026-07-27",
+      "lib/tasks/completion.ts — subtaskRefusal() and completionState(); createSubtask in lib/repositories/mock/index.ts and lib/repositories/legacy/index.ts; ProjectPanel.tsx renders the Subtasks section. Forwarding and folders removed 2026-07-27",
+  },
+  {
+    id: "task-projects",
+    category: "tasks",
+    title: "Projects, and what they read from your tasks",
+    keywords: [
+      "project",
+      "new project",
+      "create a project",
+      "project members",
+      "project owner",
+      "project start date",
+      "project target date",
+      "connect tasks",
+      "group tasks",
+    ],
+    examples: [
+      "How do I create a project?",
+      "Why can't I choose who is in a project?",
+      "Where did the project owner dropdown go?",
+      "Why is the project's target date filled in already?",
+      "What is the difference between a project and breaking a task down?",
+    ],
+    answer:
+      "A project is a name for a set of tasks, and almost everything it reports is read from them rather than typed in. The new project form asks for a name, a description, and which unconnected tasks to connect — connecting is a link, so nothing is moved or copied. From those tasks it fills in the rest: the start date is the earliest connected task's creation, the target date is the last one to finish, and the members are whoever carries the connected work. You own a project you create; there is no owner picker and no list of people to tick, because a membership chosen by hand would disagree with the project's own tasks. Both dates stay in step as you connect and disconnect tasks, and you can still type over either one — the field then says “Set by hand”, and “Follow the connected tasks again” puts it back. Progress is derived the same way and cannot be set at all. A project is for grouping work that already stands on its own; breaking a task into subtasks is for splitting one piece of work whose parts have to come back together. Projects carry no score — the tasks and goals inside them are the scoring units.",
+    related: ["task-break-down", "task-create", "scoring-components"],
+    source:
+      "components/features/projects/NewProjectForm.tsx and lib/rules/projects/derivedDates.ts — owner is the viewer, members and dates derive from initialTaskIds; ProjectProgress is counted from the links",
   },
   {
     id: "task-priority",

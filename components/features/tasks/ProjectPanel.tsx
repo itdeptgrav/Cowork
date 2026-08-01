@@ -66,9 +66,17 @@ export function ProjectPanel({
     ),
   );
 
+  /* Whether there is anything below this task at all.
+     `c.isProject` is the derived answer and the one every other rule reads —
+     but it is derived from the children the READ supplied, and `subtasks` is
+     the list the same page fetched. Where they disagree the concrete list
+     wins, because a subtask on screen is a fact and a false `isProject` is
+     what hid it. */
+  const hasSubtasks = c.isProject || subtasks.length > 0;
+
   /* Nothing to show, and nothing offered: a task with no requirements that
      nobody may break down is an ordinary task and should look like one. */
-  if (c.total === 0 && !c.isProject && !mayDelegate) return null;
+  if (c.total === 0 && !hasSubtasks && !mayDelegate) return null;
 
   return (
     <>
@@ -301,9 +309,26 @@ export function ProjectPanel({
         )}
       </Panel>
 
-      {c.isProject && (
+      {hasSubtasks && (
         <Panel padded={false} label="Subtasks" className="mt-4">
-          <PanelHead title="Subtasks" className="mb-0 px-5 pt-4 pb-3" />
+          <PanelHead
+            title="Subtasks"
+            /* The count is stated because this list is the ONLY place a
+               subtask surfaces on the project, and a section that silently
+               renders nothing is indistinguishable from one that failed. */
+            aside={`${subtasks.length} broken out`}
+            className="mb-0 px-5 pt-4 pb-3"
+          />
+          {subtasks.length === 0 && (
+            /* Reachable when the task's own read found children and this
+               page's fetch has not returned them — a failed or in-flight
+               `getSubtasks`. Saying so beats an empty panel that reads as
+               "there are none". */
+            <p className="px-5 pb-4 text-sm text-ink-faint">
+              This task has been broken down, but its subtasks could not be
+              loaded. Reload the page to try again.
+            </p>
+          )}
           <ul className="divide-y divide-hairline">
             {subtasks.map((s) => {
               const meta = statusMeta(s);
@@ -324,11 +349,15 @@ export function ProjectPanel({
                       <span className="block truncate text-sm text-ink">
                         {s.task.title}
                       </span>
-                      {claims.length > 0 && (
-                        <span className="mt-1 block truncate text-[11px] text-ink-faint">
-                          Satisfies {claims.join(" · ")}
-                        </span>
-                      )}
+                      {/* What this child is answerable for — or that it is
+                          answerable for nothing, which is a real state on
+                          anything broken out before the claim was recorded
+                          and must not read as a rendering failure. */}
+                      <span className="mt-1 block truncate text-[11px] text-ink-faint">
+                        {claims.length > 0
+                          ? `Satisfies ${claims.join(" · ")}`
+                          : "Satisfies no requirement on this task"}
+                      </span>
                     </span>
                     {s.assignees[0] && (
                       <Avatar

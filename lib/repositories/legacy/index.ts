@@ -65,7 +65,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView, UploadedMedia } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
 import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
@@ -269,7 +269,12 @@ import {
   type LegacyC1Response,
   type LegacyC2Response,
 } from "./scoreMap.ts";
-import { readDueAtMs, readInstant, readTask } from "../../legacy/tasks.ts";
+import {
+  readDueAtMs,
+  readInstant,
+  readTask,
+  type LegacyTask,
+} from "../../legacy/tasks.ts";
 import { firstNumber } from "../../legacy/wire.ts";
 import * as meetHttp from "../../legacy/meetings.ts";
 import {
@@ -962,6 +967,21 @@ export class LegacyRepository {
     if (q.scope !== "submitted") {
       legacyTasks = legacyTasks.filter((t) => {
         if (!t.parentTaskId) return true;
+        /*
+         * **Work you hold or raised is never rolled up into its parent.**
+         *
+         * The two clauses below are legacy's, and they belong to legacy's
+         * TREE: the old list rendered a parent row you could expand, so
+         * collapsing a child into it lost nothing. This list has no tree, so
+         * every subtask those clauses dropped simply ceased to exist on
+         * screen — and the role clause dropped them UNCONDITIONALLY, so a TL
+         * or CEO assigned a subtask never saw it in any tab. Somebody breaks
+         * work out, the confirmation succeeds, and the task is nowhere.
+         *
+         * A parent is still a legitimate stand-in for children that are
+         * somebody else's business. It is never a stand-in for your own.
+         */
+        if (assignedOrPendingToMe(t) || t.createdById === viewerId) return true;
         if (isCeo || String(this.#ctx.legacyRole ?? "") === "tl") return false;
         return t.isForwardedTask || !byId.has(t.parentTaskId);
       });
@@ -1273,35 +1293,107 @@ export class LegacyRepository {
   }
 
   /**
-   * A task's children.
+   * A task's children, as documents.
    *
-   * From `subtaskIds` on the parent, which the engine maintains with
-   * `arrayUnion` as subtasks are created — rather than a `where("parentTaskId",
-   * "==", id)` query, which would need another composite index and could
-   * disagree with the array the rest of the engine reads.
+   * **Two sources, unioned, and the redundancy is the point.** `subtaskIds` is
+   * the array the engine maintains with `arrayUnion`, and it is what the rest
+   * of the engine reads — but it lives on a DIFFERENT document from the child,
+   * written by a second `update()` after the child's `set()`. A subtask whose
+   * parent update failed, a parent moved between folders, a document imported
+   * without the array: in every one of those the child exists, names its
+   * parent, and is missing from the list. That is a task nobody can see.
    *
-   * Missing children are skipped rather than throwing: `subtaskIds` can name a
-   * task that has since been deleted, and one stale id must not empty the
-   * whole list.
+   * So the array is unioned with `where("parentTaskId", "==", id)`. The earlier
+   * note here said that query "would need another composite index" — it does
+   * not: it is a single-field equality filter, which Firestore indexes
+   * automatically. Nothing had to be given up to close the gap.
+   *
+   * Deleted children are dropped, and a failure of either source leaves the
+   * other's answer standing rather than emptying the list.
    */
-  async getSubtasks(id: TaskId): Promise<TaskView[]> {
-    /* The raw document, because `subtaskIds` is a wire field the `TaskView`
-       does not carry — the view is what a screen renders, not the hierarchy
-       bookkeeping. */
+  async #childDocs(parentId: string, knownIds: string[]): Promise<LegacyTask[]> {
+    const { collection, doc, getDoc, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const db = legacyDb();
+    const byId = new Map<string, LegacyTask>();
+
+    const keep = (data: Record<string, unknown>, id: string) => {
+      const t = readTask({ ...data, id } as never);
+      /* A cancelled child still counts — `completionState` filters those
+         itself, and dropping them here would hide the record of work that was
+         called off. Only a DELETED document is gone. */
+      if (t && !t.isDeleted) byId.set(t.id, t);
+    };
+
+    const [snaps, found] = await Promise.all([
+      Promise.all(
+        knownIds.map((childId) =>
+          getDoc(doc(db, "cowork_tasks", childId)).catch(() => null),
+        ),
+      ),
+      getDocs(
+        query(
+          collection(db, "cowork_tasks"),
+          where("parentTaskId", "==", parentId),
+        ),
+      ).catch((e: unknown) => {
+        console.error(`[childDocs] ${parentId}: parentTaskId query:`, e);
+        return null;
+      }),
+    ]);
+
+    for (const snap of snaps) {
+      if (snap?.exists()) keep(snap.data() as Record<string, unknown>, snap.id);
+    }
+    for (const d of found?.docs ?? []) {
+      keep(d.data() as Record<string, unknown>, d.id);
+    }
+
+    /* Creation order, so the Subtasks list does not reshuffle between reads —
+       the two sources arrive in different orders and a set has none of its
+       own. Id is the tie-break for documents with no timestamp. */
+    return [...byId.values()].sort(
+      (a, b) =>
+        (a.createdAtMs ?? 0) - (b.createdAtMs ?? 0) || a.id.localeCompare(b.id),
+    );
+  }
+
+  /** One raw task document, or null. Used where a `TaskView` is too much. */
+  async #taskDoc(taskId: string): Promise<LegacyTask | null> {
     const { doc, getDoc } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
-    const snap = await getDoc(doc(legacyDb(), "cowork_tasks", String(id)));
-    if (!snap.exists()) return [];
-    const raw = snap.data() as { subtaskIds?: unknown };
-    const ids = Array.isArray(raw.subtaskIds)
-      ? raw.subtaskIds.filter(
-          (v): v is string => typeof v === "string" && v !== "",
-        )
-      : [];
-    if (ids.length === 0) return [];
+    const snap = await getDoc(doc(legacyDb(), "cowork_tasks", taskId));
+    if (!snap.exists()) return null;
+    return readTask({
+      ...(snap.data() as Record<string, unknown>),
+      id: snap.id,
+    } as never);
+  }
+
+  /**
+   * A task's children, as views.
+   *
+   * The parent and the sibling set are read ONCE and handed to every child, so
+   * a project with five subtasks does not read its own document six times to
+   * answer the same question about each of them.
+   */
+  async getSubtasks(id: TaskId): Promise<TaskView[]> {
+    const parentId = String(id);
+    const parent = await this.#taskDoc(parentId);
+    if (!parent) return [];
+
+    const children = await this.#childDocs(parentId, parent.subtaskIds);
+    if (children.length === 0) return [];
 
     const views = await Promise.all(
-      ids.map((childId) => this.#readTaskView(childId).catch(() => null)),
+      children.map((child) =>
+        this.#readTaskView(child.id, {
+          parent,
+          parentSubtasks: children,
+        }).catch(() => null),
+      ),
     );
     return views.filter((v): v is TaskView => v !== null);
   }
@@ -1438,18 +1530,57 @@ export class LegacyRepository {
     }
   }
 
-  /** One task, read back through the same mapper the list uses. */
-  async #readTaskView(taskId: string): Promise<TaskView | null> {
-    const { doc, getDoc } = await import("firebase/firestore");
-    const { legacyDb } = await import("../../legacy/firebase.ts");
-    const snap = await getDoc(doc(legacyDb(), "cowork_tasks", taskId));
-    if (!snap.exists()) return null;
-    const legacy = readTask({
-      ...(snap.data() as Record<string, unknown>),
-      id: snap.id,
-    } as never);
+  /**
+   * One task, read back through the same mapper the list uses.
+   *
+   * `preloaded` lets a caller that has already read this task's family supply
+   * it — `getSubtasks` reads the parent and the sibling set once for the whole
+   * list rather than once per child.
+   */
+  async #readTaskView(
+    taskId: string,
+    preloaded?: { parent?: LegacyTask | null; parentSubtasks?: LegacyTask[] },
+  ): Promise<TaskView | null> {
+    const legacy = await this.#taskDoc(taskId);
     if (!legacy) return null;
     const viewerId = String(this.#ctx.employeeId);
+
+    /*
+     * The family, because a task cannot describe its own place in it.
+     *
+     * Read HERE and not in the mapper, which is pure and shared with the list
+     * path — fifty rows must not become fifty more round trips. The detail page
+     * is one task, so it can afford to ask.
+     *
+     * Its absence is the whole of the vanishing-subtask fault: with no children
+     * `completionState` reports `isProject: false` and `ProjectPanel` renders
+     * no Subtasks section, and with no parent the child shows no
+     * `ResponsibilityPanel`. The work was in Firestore the entire time.
+     */
+    const subtasks = await this.#childDocs(
+      legacy.id,
+      legacy.subtaskIds,
+    ).catch((e: unknown) => {
+      /* A failed hierarchy read must not fail the task. The task renders as a
+         plain one, which is what it did before this existed. */
+      console.error(`[readTaskView] ${taskId}: children could not be read:`, e);
+      return [] as LegacyTask[];
+    });
+
+    let parent: LegacyTask | null = preloaded?.parent ?? null;
+    let parentSubtasks: LegacyTask[] = preloaded?.parentSubtasks ?? [];
+    if (legacy.parentTaskId && !parent) {
+      try {
+        parent = await this.#taskDoc(legacy.parentTaskId);
+        if (parent) {
+          parentSubtasks = await this.#childDocs(parent.id, parent.subtaskIds);
+        }
+      } catch (e) {
+        console.error(`[readTaskView] ${taskId}: parent could not be read:`, e);
+        parent = null;
+        parentSubtasks = [];
+      }
+    }
 
     /*
      * The detail page derives a position too, from the SUBJECT's whole queue.
@@ -1594,6 +1725,9 @@ export class LegacyRepository {
       viewerLegacyRole: this.#ctx.legacyRole,
       budgetOwner,
       loggedSecs,
+      subtasks,
+      parent,
+      parentSubtasks,
     });
   }
 
@@ -2133,15 +2267,26 @@ export class LegacyRepository {
    * that replaced Forward when forwarding was removed. The engine owns parent
    * linkage and the approval gates a subtask inherits.
    *
-   * `satisfiesRequirementIds` is dropped rather than sent: requirements are a
-   * new-product concept with no legacy field, and inventing one on the engine's
-   * document would create a second source for what a subtask is for.
+   * **`satisfiesRequirementIds` is SENT.** It used to be dropped, on the
+   * reasoning that requirements are a new-product concept with no legacy field
+   * and inventing one would create a second source of truth. The first half was
+   * true and the conclusion did not follow: the engine stores the array
+   * verbatim without interpreting it, so there is exactly one source — the
+   * subtask's own document — and dropping it meant every subtask arrived
+   * claiming nothing. A subtask that claims nothing leaves its parent's
+   * requirements undelegated, and an undelegated project is not a project, so
+   * the Subtasks section never rendered and the child was invisible.
+   *
+   * A build talking to an engine that predates the field is unharmed: the
+   * engine ignores what it does not read, and the claims come back empty —
+   * exactly the state the dropped version produced.
    */
   async createSubtask(input: {
     parentTaskId: TaskId;
     title: string;
     description?: string | null;
     assigneeIds: EmployeeId[];
+    satisfiesRequirementIds?: string[];
     estimatedEffortSecs?: number | null;
     fixedDueAt?: string | null;
     senderWindowSecs?: number | null;
@@ -2155,13 +2300,27 @@ export class LegacyRepository {
           title: input.title,
           assigneeIds: input.assigneeIds.map(String),
           description: input.description ?? "",
+          satisfiesRequirementIds: [
+            ...new Set(input.satisfiesRequirementIds ?? []),
+          ],
           dueDate: input.fixedDueAt ?? undefined,
           windowSecs:
             input.senderWindowSecs ?? input.estimatedEffortSecs ?? undefined,
         }),
       (data) => {
-        const d = data as { taskId?: unknown; task?: { taskId?: unknown } };
-        const id = d?.taskId ?? d?.task?.taskId;
+        /* **The route answers `{ success, subtask }`** — `taskForward.js:1490`
+           — and this looked for `taskId` and `task.taskId`, neither of which it
+           sends. So every create fell through to the parent id and the caller
+           was handed the PROJECT as its own new subtask. `NewSubtaskDialog`
+           only refetches, so it survived; anything navigating to the result
+           would have landed on the wrong task. The other two names are kept for
+           an engine that answers either. */
+        const d = data as {
+          taskId?: unknown;
+          task?: { taskId?: unknown };
+          subtask?: { taskId?: unknown };
+        };
+        const id = d?.subtask?.taskId ?? d?.taskId ?? d?.task?.taskId;
         return typeof id === "string" ? id : parentId;
       },
     );
@@ -8739,30 +8898,26 @@ export class LegacyRepository {
   }
 
   /**
-   * Upload one file for a message, returning the attachment to hand to
-   * `sendMessage`. Images and voice go to Cloudinary, a PDF to Drive — the same
-   * routes and the same Firebase-token auth the old app used, so nothing new is
-   * needed on the backend. A Drive PDF keeps its `fileId` so the reader streams
-   * it through the media proxy that actually loads.
+   * Upload one file to shared media storage — Google Drive.
+   *
+   * **The browser sends the bytes to Google, not to us.** This used to POST a
+   * multipart form at `/cowork/upload/pdf`, which streams the whole file through
+   * the Express process into memory before forwarding it: fine for a screenshot,
+   * and the reason the backend grew a resumable route in the first place — its
+   * own comment names "500MB files hammering backend RAM/bandwidth" as the
+   * problem it was written to solve. The old application has used the resumable
+   * path for every image and document since; this is that path, and there is no
+   * longer a second, worse one for the same job.
+   *
+   * Cloudinary is not in this file and should not return to it. The backend's
+   * `/upload/image` and `/upload/voice` routes answer "Must supply api_key" —
+   * the account is not configured — and a Drive `fileId` is what every renderer
+   * here actually wants.
    */
-  async uploadMessageAttachment(
+  async uploadDriveFile(
     file: File,
-  ): Promise<ActionResult<MessageAttachment>> {
-    const base = process.env.NEXT_PUBLIC_LEGACY_API_URL;
-    if (!base)
-      return {
-        ok: false,
-        code: "offline",
-        message: "File uploads are not configured.",
-      };
-    const mime = file.type || "";
-    const kind: MessageAttachment["kind"] = mime.startsWith("image/")
-      ? "image"
-      : mime.startsWith("audio/")
-        ? "voice"
-        : mime === "application/pdf"
-          ? "pdf"
-          : "file";
+    onProgress?: (fraction: number) => void,
+  ): Promise<ActionResult<UploadedMedia>> {
     try {
       const { idToken } = await import("../../legacy/firebase.ts");
       const token = await idToken();
@@ -8772,71 +8927,80 @@ export class LegacyRepository {
           code: "permission_denied",
           message: "Sign in to attach a file.",
         };
-      const form = new FormData();
-      form.append("file", file);
-      /* **Everything goes to Google Drive, not Cloudinary.** The backend's
-         Cloudinary routes (`/upload/image`, `/upload/voice`) fail with "Must
-         supply api_key" — it is not configured — whereas Drive is, and a Drive
-         `fileId` is exactly what the media proxy needs to display the file. The
-         route is named for PDFs but uploads ANY file, keeping its real name and
-         mime type, so an image or a voice note round-trips just the same. */
-      const res = await fetch(`${base}/cowork/upload/pdf`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      if (!res.ok) {
-        /* Surface the backend's own reason — a misconfigured store or a rejected
-           file is diagnosable only if the actual message reaches the screen. */
-        const detail = (await res.json().catch(() => ({}))) as {
-          error?: unknown;
-        };
+
+      const { uploadToDrive } = await import("../../legacy/driveUpload.ts");
+      const r = await uploadToDrive({ token, file, onProgress });
+      if (!r.ok) {
         return {
           ok: false,
-          code: "offline",
-          message:
-            typeof detail.error === "string" && detail.error
-              ? `Upload failed: ${detail.error}`
-              : `The upload failed (${res.status}). Please try again.`,
+          code:
+            r.error.kind === "auth" || r.error.kind === "permission"
+              ? "permission_denied"
+              : "offline",
+          message: r.error.message,
         };
       }
-      const data = (await res.json().catch(() => ({}))) as Record<
-        string,
-        unknown
-      >;
-      const url =
-        (typeof data.publicUrl === "string" && data.publicUrl) ||
-        (typeof data.secure_url === "string" && data.secure_url) ||
-        (typeof data.cloudinary_url === "string" && data.cloudinary_url) ||
-        (typeof data.url === "string" && data.url) ||
-        "";
-      if (!url)
-        return {
-          ok: false,
-          code: "offline",
-          message: "The upload returned no file.",
-        };
-      const fileId =
-        typeof data.fileId === "string" ? data.fileId : driveFileId(url);
       return {
         ok: true,
         data: {
-          url,
-          kind,
-          name: file.name || null,
-          sizeBytes: Number.isFinite(file.size) ? file.size : null,
-          durationSecs: null,
-          fileId,
+          fileId: r.data.fileId,
+          url: r.data.url,
+          name: r.data.fileName,
+          mimeType: r.data.mimeType,
+          sizeBytes: r.data.sizeBytes,
         },
       };
     } catch (e) {
-      console.error("[uploadMessageAttachment]", e);
+      console.error("[uploadDriveFile]", e);
       return {
         ok: false,
         code: "offline",
-        message: "The upload failed. Please try again.",
+        message:
+          e instanceof Error && e.message
+            ? e.message
+            : "The upload failed. Please try again.",
       };
     }
+  }
+
+  /**
+   * Upload one file for a message, returning the attachment to hand to
+   * `sendMessage`.
+   *
+   * The kind is decided from the mime type and the storage is `uploadDriveFile`,
+   * so a chat image, a voice note and a PDF all take the same route and differ
+   * only in how the thread draws them. A Drive `fileId` is kept on the
+   * attachment because that — not the URL — is what makes the file renderable:
+   * see `lib/rules/media/driveUrls.ts`.
+   */
+  async uploadMessageAttachment(
+    file: File,
+  ): Promise<ActionResult<MessageAttachment>> {
+    const mime = file.type || "";
+    const kind: MessageAttachment["kind"] = mime.startsWith("image/")
+      ? "image"
+      : mime.startsWith("audio/")
+        ? "voice"
+        : mime === "application/pdf"
+          ? "pdf"
+          : "file";
+
+    const r = await this.uploadDriveFile(file);
+    if (!r.ok) return r;
+
+    return {
+      ok: true,
+      data: {
+        url: r.data.url,
+        kind,
+        name: r.data.name || file.name || null,
+        sizeBytes: Number.isFinite(r.data.sizeBytes)
+          ? r.data.sizeBytes
+          : (file.size ?? null),
+        durationSecs: null,
+        fileId: r.data.fileId ?? driveFileId(r.data.url),
+      },
+    };
   }
 
   async editMessage(

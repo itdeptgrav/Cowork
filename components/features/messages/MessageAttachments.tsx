@@ -11,34 +11,29 @@
  * audio stream through that proxy, and a Cloudinary asset serves from its own URL.
  */
 
-import { useState } from "react";
 import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
+import { DriveImage } from "@/components/ui/DriveImage";
+import { driveImageSrc, driveProxySrc } from "@/lib/rules/media/driveUrls";
 
 export const MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
 
 /** Where to actually fetch an attachment. Drive-hosted media (`fileId` set)
  *  streams through the backend proxy that loads; Cloudinary serves its own URL. */
 export function mediaUrl(a: MessageAttachment): string {
-  return a.fileId && MEDIA_BASE
-    ? `${MEDIA_BASE}/cowork/media/view/${a.fileId}`
-    : a.url;
+  return (a.fileId && driveProxySrc(MEDIA_BASE, a.fileId)) || a.url;
 }
 
 /**
  * Where an IMAGE is drawn from: Google's own image CDN for a Drive file.
  *
- * Drive's view/download URLs do not render inline in an `<img>`, but
- * `lh3.googleusercontent.com/d/<fileId>` — the CDN Google Photos serves from —
- * streams a PUBLIC Drive file directly and does. Ours are made public on upload,
- * so this is the primary source; `=w1600` caps the delivered size sensibly. A
- * non-Drive image (no `fileId`) keeps its own URL. Freshly-uploaded files can lag
- * on the CDN for a moment, so `AttachmentImage` falls back to the media proxy.
+ * The rule and its reasoning moved to `lib/rules/media/driveUrls.ts`, so the
+ * mind map and the document editor draw a Drive image the same way this does.
+ * Kept here as a named export because it is the vocabulary this feature reads
+ * in, and because the tests for the thread assert against it.
  */
 export function driveImageUrl(a: MessageAttachment): string {
-  return a.fileId
-    ? `https://lh3.googleusercontent.com/d/${a.fileId}=w1600`
-    : a.url;
+  return a.fileId ? driveImageSrc(a.fileId) : a.url;
 }
 
 /** A file size in the shortest honest unit. */
@@ -69,11 +64,9 @@ export function filesFromClipboard(data: DataTransfer | null): File[] {
 /**
  * A Drive-hosted image, drawn through the CDN with a guaranteed fallback.
  *
- * `lh3.googleusercontent.com` renders a public Drive image inline where Drive's
- * own URL will not. But a file just uploaded can 404 there until Google indexes
- * it, so a failure falls back ONCE to the backend media proxy, which streams the
- * bytes straight from Drive and always resolves. The guard stops the swap
- * looping when the proxy itself is the source (a non-Drive image).
+ * The walk — CDN, then byte proxy, then the stored URL — is `DriveImage`, shared
+ * with every other surface that draws Drive media. This wrapper exists only to
+ * turn a `MessageAttachment` into its arguments.
  */
 function AttachmentImage({
   a,
@@ -82,17 +75,13 @@ function AttachmentImage({
   a: MessageAttachment;
   className?: string;
 }) {
-  const [src, setSrc] = useState(() => driveImageUrl(a));
   return (
-    /* eslint-disable-next-line @next/next/no-img-element */
-    <img
-      src={src}
+    <DriveImage
+      fileId={a.fileId}
+      url={a.url}
       alt={a.name ?? "Image"}
       className={className}
-      onError={() => {
-        const proxy = mediaUrl(a);
-        if (src !== proxy) setSrc(proxy);
-      }}
+      apiBase={MEDIA_BASE}
     />
   );
 }
