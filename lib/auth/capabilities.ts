@@ -30,6 +30,7 @@ export const ALL_CAPABILITIES: Capability[] = [
   "score.adjust",
   "conduct.apply",
   "conduct.review_dispute",
+  "attendance.record",
   "people.view",
   "people.create",
   "people.deactivate",

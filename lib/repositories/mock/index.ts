@@ -48,6 +48,7 @@ import type {
   CreateRoleInput,
   TaskScope,
   TaskView,
+  TimerSopStatus,
   UpdateRoleInput,
 } from "../types";
 import type {
@@ -55,6 +56,11 @@ import type {
   ApprovalWorkflow,
   Capability,
   AttendanceDay,
+  AttendanceStatus,
+  MrfRequest,
+  MrfChatMessage,
+  MrfStatus,
+  RawItemHit,
   Department,
   BlockedDate,
   ChannelId,
@@ -207,6 +213,22 @@ import { searchHelp } from "@/lib/help/search";
 import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
+import { validateAttendanceRecord } from "@/lib/rules/attendance/record";
+import {
+  DEFAULT_TIMER_SOP_CONFIG,
+  computeTodayTarget,
+  evaluateTimerSop,
+  type TimerSopConfig,
+} from "@/lib/rules/scoring/timerSop";
+import { bucketWorkByDay, todayWindow } from "@/lib/rules/scoring/workTime";
+import {
+  canCancelMrf,
+  canDecideMrf,
+  mrfApprovalStats,
+  mrfStats,
+  validateNewMrf,
+  type NewMrfInput,
+} from "@/lib/rules/mrf/lifecycle";
 import { closureOf, hasManager, unattachedEmployees } from "@/lib/auth/hierarchy";
 import { runDurationSecs } from "@/lib/rules/tasks/timer";
 import {
@@ -394,6 +416,7 @@ function guard() {
   return null;
 }
 
+/** A small store catalogue, so search returns real hits in the demo. */
 export class MockRepository implements CoworkRepository {
   /* ── Identity ───────────────────────────────────────────────────────────── */
 
@@ -3524,6 +3547,55 @@ export class MockRepository implements CoworkRepository {
     });
   }
 
+  /* Timer SOP Point Engine. Config lives beside the office policy (as legacy
+     kept it in its own `cowork_sop_settings` doc), and starts PAUSED so no
+     points move until an administrator switches it on. */
+  #timerSopConfig: TimerSopConfig = { ...DEFAULT_TIMER_SOP_CONFIG };
+
+  async getTimerSopConfig(): Promise<TimerSopConfig> {
+    return delay({ ...this.#timerSopConfig });
+  }
+
+  async setTimerSopConfig(
+    config: TimerSopConfig,
+  ): Promise<ActionResult<TimerSopConfig>> {
+    const g = guard();
+    if (g) return g;
+    const denied = this.#deny("score.configure");
+    if (denied) return denied;
+    if (config.deficitThresholdHours < 0 || config.overtimeThresholdHours < 0)
+      return fail("validation_failed", "Thresholds cannot be negative.");
+    if (config.deficitPoints < 0 || config.overtimePoints < 0)
+      return fail("validation_failed", "Point values cannot be negative.");
+    tick();
+    this.#timerSopConfig = { ...config };
+    return delay(ok({ ...this.#timerSopConfig }));
+  }
+
+  async getTimerSopStatus(
+    employeeId?: EmployeeId,
+  ): Promise<TimerSopStatus> {
+    const subject = employeeId ?? actingId();
+    const policy = await this.getOfficePolicy();
+    const commits = getStore().workCommits.filter(
+      (c) => c.employeeId === subject,
+    );
+    const days = bucketWorkByDay(commits, policy);
+    const result = evaluateTimerSop(days, this.#timerSopConfig);
+    const today = this.#timerSopConfig.enabled
+      ? computeTodayTarget(
+          todayWindow(commits, policy, nowIso().slice(0, 10)),
+          this.#timerSopConfig,
+        )
+      : null;
+    return delay({
+      employeeId: subject,
+      config: { ...this.#timerSopConfig },
+      result,
+      today,
+    });
+  }
+
   #taskRules: TaskRules | null = null;
   #workflowRouting: WorkflowRouting | null = null;
   #scoringSettings: ScoringSettings | null = null;
@@ -5970,6 +6042,305 @@ export class MockRepository implements CoworkRepository {
           (d) => d.employeeId === employeeId && d.date >= from && d.date <= to,
         )
         .sort((a, b) => b.date.localeCompare(a.date)),
+    );
+  }
+
+  async recordAttendance(input: {
+    employeeId: EmployeeId;
+    date: string;
+    status: AttendanceStatus;
+    lateMinutes?: number;
+    earlyDepartureMinutes?: number;
+    scheduledStart?: string | null;
+    scheduledEnd?: string | null;
+    actualStart?: string | null;
+    actualEnd?: string | null;
+    isExpectedWorkingDay?: boolean;
+  }): Promise<ActionResult<AttendanceDay>> {
+    const g = guard();
+    if (g) return g;
+    // Scope is enforced against the SUBJECT: a manager only their reports,
+    // People Ops and admins anyone, nobody their own (nobody reports to
+    // themselves, so `direct_reports` excludes it).
+    const denied = this.#deny("attendance.record", input.employeeId);
+    if (denied) return denied;
+
+    const s = getStore();
+    if (!s.employees.some((e) => e.id === input.employeeId))
+      return fail("not_found", "That person is not in this workspace.", "employeeId");
+
+    const valid = validateAttendanceRecord(input);
+    if (!valid.ok) return fail("validation_failed", valid.message, valid.field);
+    const v = valid.value;
+
+    tick();
+    const existing = s.attendance.find(
+      (d) => d.employeeId === v.employeeId && d.date === v.date,
+    );
+    if (existing) {
+      // Correcting a day rewrites it in place; the score reprojects from state.
+      existing.status = v.status;
+      existing.isExpectedWorkingDay = v.isExpectedWorkingDay;
+      existing.lateMinutes = v.lateMinutes;
+      existing.earlyDepartureMinutes = v.earlyDepartureMinutes;
+      existing.scheduledStart = v.scheduledStart;
+      existing.scheduledEnd = v.scheduledEnd;
+      existing.actualStart = v.actualStart;
+      existing.actualEnd = v.actualEnd;
+      return delay(ok(existing));
+    }
+
+    const record: AttendanceDay = {
+      organisationId: actingOrganisationId(),
+      id: nextId("att"),
+      employeeId: v.employeeId,
+      date: v.date,
+      isExpectedWorkingDay: v.isExpectedWorkingDay,
+      scheduledStart: v.scheduledStart,
+      scheduledEnd: v.scheduledEnd,
+      actualStart: v.actualStart,
+      actualEnd: v.actualEnd,
+      lateMinutes: v.lateMinutes,
+      earlyDepartureMinutes: v.earlyDepartureMinutes,
+      status: v.status,
+    };
+    s.attendance.push(record);
+    return delay(ok(record));
+  }
+
+  /* ── Material Request Forms ─────────────────────────────────────────────── */
+
+  async listMyMrfs(): Promise<{ requests: MrfRequest[]; stats: ReturnType<typeof mrfStats> }> {
+    const meId = actingId();
+    const requests = getStore()
+      .mrfs.filter((m) => m.requesterId === meId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return delay({ requests, stats: mrfStats(requests) });
+  }
+
+  async listMrfApprovals(
+    status: MrfStatus | "all" = "pending",
+  ): Promise<{ requests: MrfRequest[]; stats: ReturnType<typeof mrfApprovalStats> }> {
+    const meId = actingId();
+    const mine = getStore().mrfs.filter((m) => m.approverId === meId);
+    const requests = mine
+      .filter((m) => status === "all" || m.status === status)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    return delay({ requests, stats: mrfApprovalStats(mine) });
+  }
+
+  async getMrf(id: string): Promise<MrfRequest | null> {
+    const meId = actingId();
+    const m = getStore().mrfs.find((x) => x.id === id);
+    if (!m || (m.requesterId !== meId && m.approverId !== meId)) return delay(null);
+    return delay(m);
+  }
+
+  async createMrf(input: NewMrfInput): Promise<ActionResult<MrfRequest>> {
+    const g = guard();
+    if (g) return g;
+    const v = validateNewMrf(input);
+    if (!v.ok) return fail("validation_failed", v.message, v.field);
+
+    const s = getStore();
+    const meId = actingId();
+    const me = s.employees.find((e) => e.id === meId);
+    if (!me) return fail("not_found", "Your record could not be found.");
+
+    /* The approver is the requester's active reporting manager. With none, the
+       request skips approval and goes straight to the store. */
+    const edge = s.reporting.find((r) => r.employeeId === meId && !r.effectiveTo);
+    const mgr = edge ? s.employees.find((e) => e.id === edge.managerId) : null;
+    const approverActive = !!mgr && !mgr.exitedAt;
+    const approverId = approverActive ? mgr!.id : null;
+    const autoForwarded = !approverId;
+    const dept = s.departments.find((d) => d.id === me.departmentId);
+
+    tick();
+    const now = nowIso();
+    const ym = now.slice(2, 4) + now.slice(5, 7);
+    const req: MrfRequest = {
+      organisationId: actingOrganisationId(),
+      id: nextId("mrf"),
+      mrfNumber: `MRF-${ym}-${String(s.mrfs.length + 1).padStart(4, "0")}`,
+      requesterId: meId,
+      requesterName: me.displayName,
+      requesterDepartment: dept?.name ?? null,
+      requestType: input.requestType,
+      priority: input.priority ?? "normal",
+      reason: input.reason.trim(),
+      neededBy: input.neededBy ?? null,
+      deadline:
+        input.requestType === "time_based" ? input.deadline ?? null : null,
+      status: autoForwarded ? "approved" : "pending",
+      approverId,
+      approverName: approverId ? mgr!.displayName : null,
+      autoForwarded,
+      rejectionNote: null,
+      items: input.items.map((it) => ({
+        id: nextId("mrfi"),
+        name: it.name.trim(),
+        sku: it.sku ?? null,
+        isUnmatched: it.isUnmatched ?? !it.rawItemId,
+        requestedQty: it.requestedQty,
+        unit: it.unit.trim(),
+        description: it.description ?? null,
+        status: autoForwarded ? "approved" : "pending",
+        rawItemId: it.rawItemId ?? null,
+        variantId: it.variantId ?? null,
+        variantCombination: it.variantCombination ?? [],
+      })),
+      history: [
+        {
+          at: now,
+          action: autoForwarded ? "auto_forwarded" : "created",
+          actorName: me.displayName,
+          detail: autoForwarded
+            ? "No manager resolved — sent straight to the store."
+            : null,
+        },
+      ],
+      createdAt: now,
+      updatedAt: now,
+    };
+    s.mrfs.push(req);
+    return delay(ok(req));
+  }
+
+  async cancelMrf(
+    id: string,
+    note?: string,
+  ): Promise<ActionResult<MrfRequest>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.mrfs.find((x) => x.id === id);
+    if (!m) return fail("not_found", "That request no longer exists.");
+    if (!canCancelMrf(m, actingId()))
+      return fail(
+        "permission_denied",
+        "Only the requester can withdraw this, and only before the store acts.",
+      );
+    tick();
+    m.status = "cancelled";
+    m.updatedAt = nowIso();
+    m.history.push({
+      at: m.updatedAt,
+      action: "cancelled",
+      actorName: this.#nameOf(actingId()),
+      detail: note?.trim() || null,
+    });
+    return delay(ok(m));
+  }
+
+  async decideMrf(
+    id: string,
+    decision: {
+      approve: boolean;
+      note?: string;
+      itemDecisions?: Record<string, "approved" | "rejected">;
+    },
+  ): Promise<ActionResult<MrfRequest>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.mrfs.find((x) => x.id === id);
+    if (!m) return fail("not_found", "That request no longer exists.");
+    if (!canDecideMrf(m, actingId()))
+      return fail(
+        "permission_denied",
+        "Only the assigned approver can decide, and only while it is pending.",
+      );
+    if (!decision.approve && !decision.note?.trim())
+      return fail("validation_failed", "Give a reason when you reject.", "note");
+
+    tick();
+    const now = nowIso();
+    const actor = this.#nameOf(actingId());
+
+    if (decision.approve) {
+      m.items = m.items.map((it) => ({
+        ...it,
+        status:
+          decision.itemDecisions?.[it.id] === "rejected" ? "rejected" : "approved",
+      }));
+      const anyApproved = m.items.some((it) => it.status === "approved");
+      m.status = anyApproved ? "approved" : "rejected";
+      m.rejectionNote = anyApproved ? null : "No items were approved.";
+      m.history.push({
+        at: now,
+        action: anyApproved ? "approved" : "rejected",
+        actorName: actor,
+        detail: decision.note?.trim() || null,
+      });
+    } else {
+      m.items = m.items.map((it) => ({ ...it, status: "rejected" as const }));
+      m.status = "rejected";
+      m.rejectionNote = decision.note!.trim();
+      m.history.push({
+        at: now,
+        action: "rejected",
+        actorName: actor,
+        detail: decision.note!.trim(),
+      });
+    }
+    m.updatedAt = now;
+    return delay(ok(m));
+  }
+
+  async listMrfChat(id: string): Promise<MrfChatMessage[]> {
+    const meId = actingId();
+    const m = getStore().mrfs.find((x) => x.id === id);
+    if (!m || (m.requesterId !== meId && m.approverId !== meId)) return delay([]);
+    return delay(
+      getStore()
+        .mrfChat.filter((c) => c.mrfId === id)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
+    );
+  }
+
+  async sendMrfChat(
+    id: string,
+    body: string,
+  ): Promise<ActionResult<MrfChatMessage>> {
+    const g = guard();
+    if (g) return g;
+    if (!body.trim()) return fail("validation_failed", "Type a message.");
+    const s = getStore();
+    const meId = actingId();
+    const m = s.mrfs.find((x) => x.id === id);
+    if (!m) return fail("not_found", "That request no longer exists.");
+    if (m.requesterId !== meId && m.approverId !== meId)
+      return fail(
+        "permission_denied",
+        "Only the requester, approver or store can post here.",
+      );
+    tick();
+    const msg: MrfChatMessage = {
+      id: nextId("mc"),
+      mrfId: id,
+      senderId: meId,
+      senderName: this.#nameOf(meId),
+      senderRole: m.approverId === meId ? "tl" : "employee",
+      body: body.trim(),
+      isSystem: false,
+      createdAt: nowIso(),
+    };
+    s.mrfChat.push(msg);
+    return delay(ok(msg));
+  }
+
+  async searchMrfItems(query: string): Promise<RawItemHit[]> {
+    const q = query.trim().toLowerCase();
+    if (!q) return delay([]);
+    return delay(
+      getStore()
+        .mrfCatalogue.filter(
+          (it) =>
+            it.name.toLowerCase().includes(q) ||
+            (it.sku ?? "").toLowerCase().includes(q),
+        )
+        .slice(0, 8),
     );
   }
 

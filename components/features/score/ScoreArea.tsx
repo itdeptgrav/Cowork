@@ -26,6 +26,7 @@ import {
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { ComponentBand } from "@/components/ui/ComponentBand";
+import { TimerSopCounters } from "@/components/features/attendance/TimerSopCounters";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { formatPoints } from "@/lib/utils/format";
@@ -105,6 +106,11 @@ export function ScoreOverviewPage({
         }
         tabs={<IconTabs items={TABS} active="overview" />}
       />
+
+      {/* Today's Work — the Timer SOP deficit/overtime counters, driven by real
+          tracked work time. Sits above the channels because it is a live daily
+          figure, not part of the C1–C4 composite. */}
+      <TimerSopCounters />
 
       <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
         <div className="deck:col-span-8">

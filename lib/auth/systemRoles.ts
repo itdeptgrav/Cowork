@@ -128,6 +128,10 @@ export function systemRoles(organisationId: string): Role[] {
         },
         { id: "m16", capability: "project.link_tasks", scope: "direct_reports" },
         { id: "m17", capability: "group.manage", scope: "direct_reports" },
+        /* A manager records attendance for their own reports only — never their
+           own day, which the scope naturally forbids since nobody reports to
+           themselves. */
+        { id: "m18", capability: "attendance.record", scope: "direct_reports" },
       ],
     },
     {
@@ -170,6 +174,7 @@ export function systemRoles(organisationId: string): Role[] {
         { id: "o7", capability: "conduct.apply", scope: "organisation" },
         { id: "o8", capability: "conduct.review_dispute", scope: "organisation" },
         { id: "o9", capability: "people.reset_password", scope: "organisation" },
+        { id: "o10", capability: "attendance.record", scope: "organisation" },
       ],
     },
     {
@@ -221,6 +226,7 @@ export function systemRoles(organisationId: string): Role[] {
         { id: "a3", capability: "people.delete", scope: "organisation" },
         { id: "a4", capability: "integration.configure", scope: "organisation" },
         { id: "a5", capability: "notification.broadcast", scope: "organisation" },
+        { id: "a26", capability: "attendance.record", scope: "organisation" },
       ],
     },
   ];

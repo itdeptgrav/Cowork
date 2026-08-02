@@ -1,4 +1,6 @@
-import type { Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
+import { mrfApprovalStats, mrfStats, type NewMrfInput } from "@/lib/rules/mrf/lifecycle";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
 import { presenceIdentityFor } from "../../integrations/livekit/identity.ts";
 import {
@@ -65,7 +67,9 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView, TimerSopStatus } from "../types";
+import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
+import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
 import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
@@ -8837,6 +8841,579 @@ export class LegacyRepository {
   async listActivityEvents() { return []; }
   async listObservations() { return []; }
   async listAttendance() { return []; }
+  async recordAttendance(): Promise<ActionResult<AttendanceDay>> {
+    /* The legacy backend has no attendance-write endpoint — attendance was
+       ingested from HR only. Recording is a new-model action; the mock backend
+       carries it. */
+    return {
+      ok: false,
+      code: "offline",
+      message: "Recording attendance is not available on the legacy backend.",
+    };
+  }
+  /**
+   * The Timer SOP engine already exists on the legacy backend — its config is
+   * the Firestore document `cowork_sop_settings/task_events` (the same one the
+   * old SOP settings page writes) and its accumulators come from
+   * `GET /cowork/timer-sop/accum/:employeeId`. These map the new UI onto them.
+   */
+  async getTimerSopConfig(): Promise<TimerSopConfig> {
+    try {
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const { doc, getDoc } = await import("firebase/firestore");
+      const snap = await getDoc(doc(legacyDb(), "cowork_sop_settings", "task_events"));
+      const d = (snap.exists() ? snap.data() : {}) as Record<string, unknown>;
+      const num = (v: unknown, fallback: number) => {
+        const n = parseFloat(String(v));
+        return Number.isFinite(n) ? n : fallback;
+      };
+      return {
+        enabled: d.timerSopEnabled === true,
+        dailyMinHours: num(d.timerMinDailyHrs, DEFAULT_TIMER_SOP_CONFIG.dailyMinHours),
+        dailyMinPercent: num(d.timerMinDailyPct, DEFAULT_TIMER_SOP_CONFIG.dailyMinPercent),
+        deficitThresholdHours: num(
+          d.timerDeficitThresholdHrs,
+          DEFAULT_TIMER_SOP_CONFIG.deficitThresholdHours,
+        ),
+        deficitPoints: num(d.timerDeficitPoints, DEFAULT_TIMER_SOP_CONFIG.deficitPoints),
+        overtimeThresholdHours: num(
+          d.timerOvertimeThresholdHrs,
+          DEFAULT_TIMER_SOP_CONFIG.overtimeThresholdHours,
+        ),
+        overtimePoints: num(
+          d.timerOvertimePoints,
+          DEFAULT_TIMER_SOP_CONFIG.overtimePoints,
+        ),
+      };
+    } catch {
+      return { ...DEFAULT_TIMER_SOP_CONFIG };
+    }
+  }
+
+  async setTimerSopConfig(
+    config: TimerSopConfig,
+  ): Promise<ActionResult<TimerSopConfig>> {
+    try {
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const ref = doc(legacyDb(), "cowork_sop_settings", "task_events");
+      /* The engine stamps `timerSopEnabledAt` when it is switched on and uses it
+         for its off-period amnesty. Keep an existing stamp; set a new one only on
+         the transition into enabled. */
+      let enabledAt: unknown = undefined;
+      if (config.enabled) {
+        const snap = await getDoc(ref);
+        const prev = (snap.exists() ? snap.data() : {}) as Record<string, unknown>;
+        enabledAt =
+          prev.timerSopEnabled === true && prev.timerSopEnabledAt
+            ? prev.timerSopEnabledAt
+            : new Date();
+      }
+      await setDoc(
+        ref,
+        {
+          timerSopEnabled: config.enabled,
+          ...(config.enabled ? { timerSopEnabledAt: enabledAt } : {}),
+          timerMinDailyHrs: config.dailyMinHours,
+          timerMinDailyPct: config.dailyMinPercent,
+          timerDeficitThresholdHrs: config.deficitThresholdHours,
+          timerDeficitPoints: config.deficitPoints,
+          timerOvertimeThresholdHrs: config.overtimeThresholdHours,
+          timerOvertimePoints: config.overtimePoints,
+        },
+        { merge: true },
+      );
+      return { ok: true, data: { ...config } };
+    } catch (e) {
+      return {
+        ok: false,
+        code: "offline",
+        message:
+          e instanceof Error
+            ? e.message
+            : "The engine settings could not be saved.",
+      };
+    }
+  }
+
+  async getTimerSopStatus(employeeId?: EmployeeId): Promise<TimerSopStatus> {
+    const config = await this.getTimerSopConfig();
+    const subject = employeeId || this.#ctx.employeeId;
+    if (!config.enabled) {
+      return {
+        employeeId: subject,
+        config,
+        result: evaluateTimerSop([], config),
+        today: null,
+      };
+    }
+    /* Today's live target — computed from the office schedule and today's
+       reconstructed work segments. Best-effort: if the work log cannot be read
+       the card still shows the target with nothing worked yet. */
+    let today = null as TimerSopStatus["today"];
+    try {
+      const policy = await this.getOfficePolicy();
+      const istDate = new Date(Date.now() + 5.5 * 3_600_000)
+        .toISOString()
+        .slice(0, 10);
+      let commits: WorkCommit[] = [];
+      try {
+        commits = await this.#timerCommitsForDay(subject, istDate);
+      } catch {
+        commits = [];
+      }
+      today = computeTodayTarget(todayWindow(commits, policy, istDate), config);
+    } catch {
+      today = null;
+    }
+    try {
+      const token = await this.#token();
+      /* Freshen the caller's own accumulators first — the engine evaluates the
+         token's identity, so this only refreshes the signed-in person. */
+      if (subject === this.#ctx.employeeId) {
+        await legacyFetch({
+          path: "/cowork/timer-sop/evaluate",
+          method: "POST",
+          token,
+          body: { wait: true },
+        });
+      }
+      const r = await legacyFetch<{
+        timerDeficitAccumHrs?: number;
+        timerOvertimeAccumHrs?: number;
+      }>({
+        path: `/cowork/timer-sop/accum/${encodeURIComponent(subject)}`,
+        token,
+      });
+      const deficit = r.ok ? Number(r.data?.timerDeficitAccumHrs) || 0 : 0;
+      const overtime = r.ok ? Number(r.data?.timerOvertimeAccumHrs) || 0 : 0;
+      return {
+        employeeId: subject,
+        config,
+        result: {
+          paused: false,
+          deficitAccumHours: deficit,
+          overtimeAccumHours: overtime,
+          /* The accumulator endpoint returns the running hours only; the
+             cumulative points and trigger counts live in the score ledger and
+             are not exposed here, so the counter shows the hours it can prove. */
+          deficitTriggers: 0,
+          overtimeTriggers: 0,
+          pointsDeducted: 0,
+          pointsAdded: 0,
+          netPoints: 0,
+          days: [],
+        },
+        today,
+      };
+    } catch {
+      return {
+        employeeId: subject,
+        config,
+        result: evaluateTimerSop([], config),
+        today,
+      };
+    }
+  }
+
+  /**
+   * Today's work segments, reconstructed from the legacy per-task cumulative
+   * commit log into the new per-segment shape. Timestamps are shifted to IST so
+   * they line up with the IST office schedule, matching the legacy engine.
+   */
+  async #timerCommitsForDay(
+    employeeId: string,
+    istDate: string,
+  ): Promise<WorkCommit[]> {
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const { collection, getDocs } = await import("firebase/firestore");
+    const snap = await getDocs(
+      collection(legacyDb(), "cowork_work_commits", employeeId, "logs"),
+    );
+
+    const toMillis = (v: unknown): number | null => {
+      if (!v) return null;
+      const o = v as { toMillis?: () => number; seconds?: number; _seconds?: number };
+      if (typeof o.toMillis === "function") return o.toMillis();
+      if (typeof o._seconds === "number") return o._seconds * 1000;
+      if (typeof o.seconds === "number") return o.seconds * 1000;
+      const t = new Date(v as string).getTime();
+      return Number.isNaN(t) ? null : t;
+    };
+
+    const parsed: { taskId: string; stoppedMs: number; cumulative: number }[] = [];
+    snap.forEach((d) => {
+      const data = d.data() as Record<string, unknown>;
+      const ms = toMillis(data.stoppedAt);
+      const cum = Number(data.secondsWorked) || 0;
+      if (ms === null || cum <= 0) return;
+      parsed.push({ taskId: String(data.taskId ?? "_"), stoppedMs: ms, cumulative: cum });
+    });
+
+    const byTask = new Map<string, typeof parsed>();
+    for (const p of parsed) {
+      const arr = byTask.get(p.taskId) ?? [];
+      arr.push(p);
+      byTask.set(p.taskId, arr);
+    }
+
+    const IST = 5.5 * 3_600_000;
+    const out: WorkCommit[] = [];
+    for (const entries of byTask.values()) {
+      entries.sort((a, b) => a.stoppedMs - b.stoppedMs);
+      let prev = 0;
+      for (const e of entries) {
+        const secs =
+          e.cumulative > prev
+            ? e.cumulative - prev
+            : e.cumulative < prev
+              ? e.cumulative
+              : 0;
+        prev = e.cumulative;
+        if (secs <= 0) continue;
+        const endIso = new Date(e.stoppedMs + IST).toISOString();
+        const startIso = new Date(e.stoppedMs - secs * 1000 + IST).toISOString();
+        if (endIso.slice(0, 10) !== istDate && startIso.slice(0, 10) !== istDate)
+          continue;
+        out.push({
+          organisationId: "",
+          id: "",
+          taskId: e.taskId,
+          employeeId,
+          startedAt: startIso,
+          endedAt: endIso,
+          durationSecs: secs,
+          message: null,
+          attachmentIds: [],
+          pauseReason: "manual",
+        });
+      }
+    }
+    return out;
+  }
+  /* ── Material Request Forms ─────────────────────────────────────────────── */
+
+  /** Legacy MRF (UPPERCASE enums, richer store lifecycle) → the cowork model. */
+  #readMrf(raw: Record<string, unknown>): MrfRequest | null {
+    const id = raw._id ?? raw.id;
+    if (!id) return null;
+    const up = (v: unknown) => String(v ?? "").toUpperCase();
+    const status = ((): MrfStatus => {
+      const u = up(raw.status);
+      if (u === "PENDING") return "pending";
+      if (u === "REJECTED" || u === "UNFULFILLED") return "rejected";
+      if (u === "CANCELLED") return "cancelled";
+      return "approved"; // approved and anything downstream at the store
+    })();
+    const itemStatus = (v: unknown): MrfItemStatus => {
+      switch (up(v)) {
+        case "PENDING": return "pending";
+        case "APPROVED": return "approved";
+        case "REJECTED": return "rejected";
+        case "PARTIALLY_ISSUED": return "partially_issued";
+        case "ISSUED": return "issued";
+        case "PARTIALLY_RETURNED": return "partially_returned";
+        case "RETURNED": return "returned";
+        case "OVERDUE": return "overdue";
+        case "UNFULFILLED": return "unfulfilled";
+        default: return "approved";
+      }
+    };
+    const availability = (v: unknown): MrfAvailability => {
+      switch (up(v)) {
+        case "AVAILABLE": return "available";
+        case "PARTIAL": return "partial";
+        case "NOT_AVAILABLE": return "not_available";
+        case "ALTERNATIVE": return "alternative";
+        default: return "unreviewed";
+      }
+    };
+    const priority = ((): MrfRequest["priority"] => {
+      const u = up(raw.priority);
+      return u === "LOW" || u === "HIGH" || u === "URGENT"
+        ? (u.toLowerCase() as MrfRequest["priority"])
+        : "normal";
+    })();
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    const history = Array.isArray(raw.statusHistory) ? raw.statusHistory : [];
+    const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    return {
+      organisationId: "legacy",
+      id: String(id),
+      mrfNumber: String(raw.mrfNumber ?? id),
+      requesterId: String(raw.requestedForId ?? raw.requesterCoworkId ?? ""),
+      requesterName: String(raw.requestedForName ?? "Unknown"),
+      requesterDepartment: s(raw.requestedForDept),
+      requestType: up(raw.requestType) === "TIME_BASED" ? "time_based" : "uses_based",
+      priority,
+      reason: String(raw.reason ?? ""),
+      neededBy: s(raw.neededBy),
+      deadline: s(raw.deadline),
+      status,
+      approverId: s(raw.approverBiometricId),
+      approverName: s(raw.approverName),
+      autoForwarded: raw.autoForwarded === true,
+      rejectionNote: s(raw.tlRejectionNote) ?? s(raw.rejectionNote),
+      storeNote: s(raw.storeNotes),
+      items: (items as Record<string, unknown>[]).map((it) => ({
+        id: String(it._id ?? it.id ?? ""),
+        name: String(it.rawItemName ?? it.itemName ?? "Item"),
+        sku: s(it.rawItemSku),
+        isUnmatched: !it.rawItem,
+        requestedQty: Number(it.requestedQty) || 0,
+        unit: String(it.unit ?? ""),
+        description: s(it.description),
+        status: itemStatus(it.itemStatus),
+        issuedQty: Number(it.issuedQty) || 0,
+        returnedQty: Number(it.returnedQty) || 0,
+        availability: availability(it.availability),
+        availableQty: it.availableQty == null ? null : Number(it.availableQty),
+        availabilityNote: s(it.availabilityNote),
+        rawItemId: it.rawItem ? String(it.rawItem) : null,
+        variantId: it.variantId ? String(it.variantId) : null,
+        variantCombination: Array.isArray(it.variantCombination)
+          ? (it.variantCombination as unknown[]).map((x) => String(x))
+          : [],
+        images: (Array.isArray(it.images) ? it.images : [])
+          .map((im) => {
+            const o = (im ?? {}) as Record<string, unknown>;
+            return typeof o.url === "string"
+              ? { url: o.url, name: typeof o.name === "string" ? o.name : null }
+              : null;
+          })
+          .filter((x): x is { url: string; name: string | null } => x !== null),
+      })),
+      history: (history as Record<string, unknown>[]).map((h) => ({
+        at: String(h.at ?? ""),
+        action: String(h.action ?? "").toLowerCase(),
+        actorName: String(h.actorName ?? "System"),
+        detail: s(h.detail),
+      })),
+      createdAt: String(raw.createdAt ?? ""),
+      updatedAt: String(raw.updatedAt ?? raw.createdAt ?? ""),
+    };
+  }
+
+  async listMyMrfs() {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mrfs?: Record<string, unknown>[] }>({
+      path: "/api/cowork/mrf/",
+      token,
+    });
+    const requests = r.ok
+      ? (r.data.mrfs ?? [])
+          .map((m) => this.#readMrf(m))
+          .filter((m): m is MrfRequest => m !== null)
+      : [];
+    return { requests, stats: mrfStats(requests) };
+  }
+
+  async listMrfApprovals(status: MrfStatus | "all" = "pending") {
+    const token = await this.#token();
+    const legacyStatus =
+      status === "all"
+        ? "ALL"
+        : status === "pending"
+          ? "PENDING"
+          : status.toUpperCase();
+    const r = await legacyFetch<{ mrfs?: Record<string, unknown>[] }>({
+      path: "/api/cowork/mrf/approvals",
+      query: { status: legacyStatus },
+      token,
+    });
+    const requests = r.ok
+      ? (r.data.mrfs ?? [])
+          .map((m) => this.#readMrf(m))
+          .filter((m): m is MrfRequest => m !== null)
+      : [];
+    return { requests, stats: mrfApprovalStats(requests) };
+  }
+
+  async getMrf(id: string): Promise<MrfRequest | null> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mrf?: Record<string, unknown> }>({
+      path: `/api/cowork/mrf/${encodeURIComponent(id)}`,
+      token,
+    });
+    return r.ok && r.data.mrf ? this.#readMrf(r.data.mrf) : null;
+  }
+
+  async createMrf(input: NewMrfInput): Promise<ActionResult<MrfRequest>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mrf?: Record<string, unknown> }>({
+      path: "/api/cowork/mrf/",
+      method: "POST",
+      token,
+      body: {
+        requestType: input.requestType.toUpperCase(),
+        priority: (input.priority ?? "normal").toUpperCase(),
+        reason: input.reason,
+        neededBy: input.neededBy ?? null,
+        deadline: input.deadline ?? null,
+        items: input.items.map((it) =>
+          it.rawItemId
+            ? {
+                rawItemId: it.rawItemId,
+                variantId: it.variantId ?? null,
+                variantCombination: it.variantCombination ?? [],
+                requestedQty: it.requestedQty,
+                unit: it.unit,
+                description: it.description ?? "",
+              }
+            : {
+                itemName: it.name,
+                unit: it.unit,
+                requestedQty: it.requestedQty,
+                notes: it.description ?? "",
+              },
+        ),
+      },
+    });
+    if (!r.ok)
+      return { ok: false, code: "offline", message: r.error.message };
+    const mrf = r.data.mrf ? this.#readMrf(r.data.mrf) : null;
+    return mrf
+      ? { ok: true, data: mrf }
+      : { ok: false, code: "offline", message: "The request was not returned." };
+  }
+
+  async cancelMrf(id: string, note?: string): Promise<ActionResult<MrfRequest>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mrf?: Record<string, unknown> }>({
+      path: `/api/cowork/mrf/${encodeURIComponent(id)}/cancel`,
+      method: "PATCH",
+      token,
+      body: { cancellationNote: note ?? "" },
+    });
+    if (!r.ok) return { ok: false, code: "offline", message: r.error.message };
+    const mrf = r.data.mrf ? this.#readMrf(r.data.mrf) : await this.getMrf(id);
+    return mrf
+      ? { ok: true, data: mrf }
+      : { ok: false, code: "not_found", message: "Request not found after cancel." };
+  }
+
+  async decideMrf(
+    id: string,
+    decision: {
+      approve: boolean;
+      note?: string;
+      itemDecisions?: Record<string, "approved" | "rejected">;
+    },
+  ): Promise<ActionResult<MrfRequest>> {
+    const token = await this.#token();
+    const path = decision.approve
+      ? `/api/cowork/mrf/${encodeURIComponent(id)}/tl-approve`
+      : `/api/cowork/mrf/${encodeURIComponent(id)}/tl-reject`;
+    const itemDecisions: Record<string, string> = {};
+    for (const [k, v] of Object.entries(decision.itemDecisions ?? {}))
+      itemDecisions[k] = v.toUpperCase();
+    const r = await legacyFetch<{ mrf?: Record<string, unknown> }>({
+      path,
+      method: "PATCH",
+      token,
+      body: decision.approve
+        ? { itemDecisions, note: decision.note ?? "" }
+        : { note: decision.note ?? "" },
+    });
+    if (!r.ok) return { ok: false, code: "offline", message: r.error.message };
+    const mrf = r.data.mrf ? this.#readMrf(r.data.mrf) : await this.getMrf(id);
+    return mrf
+      ? { ok: true, data: mrf }
+      : { ok: false, code: "not_found", message: "Request not found after decision." };
+  }
+
+  #readMrfMsg(raw: Record<string, unknown>, mrfId: string): MrfChatMessage {
+    const role = String(raw.senderRole ?? "").toLowerCase();
+    return {
+      id: String(raw._id ?? raw.id ?? ""),
+      mrfId,
+      senderId:
+        typeof raw.senderBiometricId === "string" ? raw.senderBiometricId : null,
+      senderName: String(raw.senderName ?? "Unknown"),
+      senderRole:
+        role === "tl" || role === "ceo"
+          ? "tl"
+          : role === "store"
+            ? "store"
+            : role === "system" || raw.isSystem === true
+              ? "system"
+              : "employee",
+      body: String(raw.body ?? ""),
+      isSystem: raw.isSystem === true,
+      createdAt: String(raw.createdAt ?? ""),
+    };
+  }
+
+  async listMrfChat(id: string): Promise<MrfChatMessage[]> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ messages?: Record<string, unknown>[] }>({
+      path: `/api/cowork/mrf/${encodeURIComponent(id)}/chat`,
+      token,
+    });
+    return r.ok
+      ? (r.data.messages ?? []).map((m) => this.#readMrfMsg(m, id))
+      : [];
+  }
+
+  async sendMrfChat(
+    id: string,
+    body: string,
+  ): Promise<ActionResult<MrfChatMessage>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ message?: Record<string, unknown> }>({
+      path: `/api/cowork/mrf/${encodeURIComponent(id)}/chat`,
+      method: "POST",
+      token,
+      body: { body },
+    });
+    if (!r.ok) return { ok: false, code: "offline", message: r.error.message };
+    return r.data.message
+      ? { ok: true, data: this.#readMrfMsg(r.data.message, id) }
+      : { ok: false, code: "offline", message: "The message was not returned." };
+  }
+
+  async searchMrfItems(query: string): Promise<RawItemHit[]> {
+    if (!query.trim()) return [];
+    const token = await this.#token();
+    const r = await legacyFetch<{ rawItems?: Record<string, unknown>[] }>({
+      path: "/api/cowork/mrf/data/raw-items",
+      query: { search: query },
+      token,
+    });
+    if (!r.ok) return [];
+    return (r.data.rawItems ?? []).map((it) => {
+      const baseUnit = String(it.baseUnit ?? "unit");
+      const conversions = Array.isArray(it.conversions) ? it.conversions : [];
+      const units = [
+        baseUnit,
+        ...conversions
+          .map((c) =>
+            c && typeof c === "object" && typeof (c as { name?: unknown }).name === "string"
+              ? (c as { name: string }).name
+              : null,
+          )
+          .filter((n): n is string => !!n),
+      ];
+      const variants = Array.isArray(it.variants) ? it.variants : [];
+      return {
+        id: String(it._id ?? it.id ?? ""),
+        name: String(it.name ?? ""),
+        sku: typeof it.sku === "string" ? it.sku : null,
+        baseUnit,
+        quantity: Number(it.quantity) || 0,
+        units,
+        variants: (variants as Record<string, unknown>[]).map((v) => ({
+          id: String(v._id ?? v.id ?? ""),
+          combination: Array.isArray(v.combination)
+            ? (v.combination as unknown[]).map((x) => String(x))
+            : [],
+          quantity: Number(v.quantity) || 0,
+          sku: typeof v.sku === "string" && v.sku ? v.sku : null,
+        })),
+      };
+    });
+  }
+
   async listGoals() { return []; }
 
   /* ── Shell-mounted reads ────────────────────────────────────────────────── */

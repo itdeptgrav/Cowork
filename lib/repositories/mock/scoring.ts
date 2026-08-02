@@ -20,6 +20,7 @@ import {
   periodKeyFor,
 } from "@/lib/rules/scoring/engine";
 import { PROVISIONAL_RULES } from "@/lib/config/provisional";
+import { overtimeCreditFor } from "@/lib/rules/attendance/credit";
 import type { Store } from "./store";
 
 interface Projection {
@@ -429,6 +430,49 @@ export function projectScores(store: Store, employeeId: string): Projection {
       );
     };
 
+    // Overtime is an OFFSET, never a bonus (O5). Only the amount that actually
+    // fits under the day's 1.0 maximum is credited — staying late can cancel a
+    // same-day lateness deduction, but a day can never exceed full and the
+    // component still caps at 100%.
+    const credit = (rawAmount: number, reason: string) => {
+      const before = running;
+      const applied = clampPoints(
+        Math.min(rawAmount, UNIT_MAXIMUM - before),
+        UNIT_MAXIMUM,
+      );
+      if (applied <= 0) return;
+      running = clampPoints(before + applied, UNIT_MAXIMUM);
+      ledger.push(
+        makeLedgerEntry(
+          id("le"),
+          {
+            organisationId: actingOrganisationId(),
+            employeeId,
+            component: "c4",
+            sourceType: "attendance_day",
+            sourceId: d.id,
+            sourceLabel: "Attendance",
+            scoreUnitId: unitId,
+            eventType: "overtime_credit",
+            maximumPoints: UNIT_MAXIMUM,
+            pointsBefore: before,
+            deduction: 0,
+            credit: applied,
+            reason,
+            actorId: "system",
+            actorLabel: "Attendance engine",
+            effectiveDate: d.date,
+            periodKey,
+            ruleId: r4.id,
+            ruleVersion: r4.version.version,
+            configSnapshot: r4.version.parameters,
+            isProvisional: true,
+          },
+          d.date,
+        ),
+      );
+    };
+
     if (d.status === "absent") {
       add("absence", deductionFor("absence").amount, "Absent");
     } else if (d.status === "half_day") {
@@ -454,6 +498,15 @@ export function projectScores(store: Store, employeeId: string): Projection {
           dd.amount,
           `${d.earlyDepartureMinutes} min early`,
         );
+      }
+    }
+
+    // Overtime offset — applied last so it can only cancel the day's own
+    // deductions. On a clean day (already at 1.0) it credits nothing.
+    if (d.status === "present" || d.status === "half_day") {
+      const oc = overtimeCreditFor(d.scheduledEnd, d.actualEnd);
+      if (oc.points > 0) {
+        credit(oc.points, `${oc.chargeableMinutes} min overtime, offsetting the day`);
       }
     }
 

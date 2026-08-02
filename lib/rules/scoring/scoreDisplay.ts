@@ -245,6 +245,7 @@ const EVENT_LABEL: Record<string, string> = {
   late_arrival: "Late arrival",
   early_departure: "Early departure",
   absence: "Absence",
+  overtime_credit: "Overtime offset",
   manual_adjustment: "Manual adjustment",
   reversal: "Entry reversed",
 };

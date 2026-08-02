@@ -23,6 +23,7 @@ import {
 } from "@/lib/legacy/officePolicy";
 import { SettingsShell } from "../SettingsShell";
 import { SettingsSaveBar } from "../SettingsSaveBar";
+import { type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 
 /**
  * Office policy — working days, hours, breaks and the action gap.
@@ -136,6 +137,7 @@ export function OfficePolicySection() {
         <WorkingHoursCard draft={draft} canEdit={canEdit} onChange={setDay} />
         <BreaksCard draft={draft} canEdit={canEdit} onChange={patch} />
         <SchedulingCard draft={draft} canEdit={canEdit} onChange={patch} />
+        <TimerSopCard canEdit={canEdit} />
       </div>
 
       {canEdit && (
@@ -390,6 +392,193 @@ function SchedulingCard({
           />
         </Field>
       </div>
+    </Panel>
+  );
+}
+
+/* ── Timer SOP Point Engine ───────────────────────────────────────────────── */
+
+/**
+ * Auto-deduct or reward points from tracked WORK TIME — the legacy Timer SOP
+ * engine, ported. Each working day's shortfall against a daily target builds a
+ * deficit; time worked after office close builds overtime. Every threshold
+ * crossing moves points, and the remainder carries forward.
+ *
+ * It starts PAUSED, and while paused nothing is cut or added. Every rate and
+ * threshold is unconfirmed (O5), so the counters it drives are shown as
+ * provisional wherever they appear.
+ */
+function TimerSopCard({ canEdit }: { canEdit: boolean }) {
+  const stored = useQuery((r) => r.getTimerSopConfig(), []);
+  const [edits, setEdits] = useState<TimerSopConfig | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [save, saveState] = useAction((r, next: TimerSopConfig) =>
+    r.setTimerSopConfig(next),
+  );
+
+  const draft = edits ?? stored.data ?? null;
+  if (!draft) {
+    return (
+      <Panel>
+        <SkeletonRows rows={6} />
+      </Panel>
+    );
+  }
+
+  const patch = (next: Partial<TimerSopConfig>) => {
+    setSaved(false);
+    setEdits({ ...draft, ...next });
+  };
+  const dirty =
+    edits !== null && JSON.stringify(draft) !== JSON.stringify(stored.data);
+  const num = (v: string) => {
+    const n = Number(v.replace(/[^\d.]/g, ""));
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  return (
+    <Panel padded={false}>
+      <div className="flex items-start gap-3 border-b border-hairline px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-medium text-ink">
+            Timer SOP Point Engine
+          </h2>
+          <p className="mt-0.5 text-xs text-ink-muted">
+            Auto-deduct or reward points based on accumulated work time.
+          </p>
+        </div>
+        <label className="flex shrink-0 items-center gap-2 text-xs text-ink-muted">
+          <input
+            type="checkbox"
+            checked={draft.enabled}
+            disabled={!canEdit}
+            onChange={(e) => patch({ enabled: e.target.checked })}
+          />
+          {draft.enabled ? "On" : "Off"}
+        </label>
+      </div>
+
+      {!draft.enabled && (
+        <p className="mx-4 mt-3 rounded-inset bg-[var(--state-rework-surface,var(--surface-sunken))] px-3 py-2 text-xs text-ink-muted">
+          Paused — no points are cut or added for any employee until this is
+          switched back on.
+        </p>
+      )}
+
+      <div className="grid gap-4 px-4 py-4 deck:grid-cols-2">
+        <Field
+          label="Daily minimum required hours"
+          hint="Fallback only — ignored while the percentage below is above 0."
+        >
+          <Input
+            value={String(draft.dailyMinHours)}
+            inputMode="decimal"
+            disabled={!canEdit}
+            onChange={(e) => patch({ dailyMinHours: num(e.target.value) })}
+          />
+        </Field>
+        <Field
+          label="Daily minimum — % of expected hours"
+          hint="Above 0, this replaces the hours field: required hours become this % of each day's scheduled span, minus breaks. Leave at 0 to keep flat hours."
+        >
+          <Input
+            value={String(draft.dailyMinPercent)}
+            inputMode="decimal"
+            disabled={!canEdit}
+            onChange={(e) => patch({ dailyMinPercent: num(e.target.value) })}
+          />
+        </Field>
+      </div>
+
+      <div className="grid gap-4 px-4 pb-4 deck:grid-cols-2">
+        <div className="rounded-inset border border-hairline p-3">
+          <p className="text-[11px] font-medium tracking-[0.08em] text-[var(--state-rework-ink)] uppercase">
+            Deficit penalty rule
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Field label="Penalty threshold (hrs)">
+              <Input
+                value={String(draft.deficitThresholdHours)}
+                inputMode="decimal"
+                disabled={!canEdit}
+                onChange={(e) =>
+                  patch({ deficitThresholdHours: num(e.target.value) })
+                }
+              />
+            </Field>
+            <Field label="Points deducted">
+              <Input
+                value={String(draft.deficitPoints)}
+                inputMode="decimal"
+                disabled={!canEdit}
+                onChange={(e) => patch({ deficitPoints: num(e.target.value) })}
+              />
+            </Field>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+            Miss 20 min/day × 3 days = 1h deficit → cut the points → the
+            accumulator drops by the threshold, remainder carries forward.
+          </p>
+        </div>
+
+        <div className="rounded-inset border border-hairline p-3">
+          <p className="text-[11px] font-medium tracking-[0.08em] text-[var(--state-positive-ink)] uppercase">
+            Overtime reward rule
+          </p>
+          <div className="mt-2 grid grid-cols-2 gap-2">
+            <Field label="Reward threshold (hrs)">
+              <Input
+                value={String(draft.overtimeThresholdHours)}
+                inputMode="decimal"
+                disabled={!canEdit}
+                onChange={(e) =>
+                  patch({ overtimeThresholdHours: num(e.target.value) })
+                }
+              />
+            </Field>
+            <Field label="Points added">
+              <Input
+                value={String(draft.overtimePoints)}
+                inputMode="decimal"
+                disabled={!canEdit}
+                onChange={(e) => patch({ overtimePoints: num(e.target.value) })}
+              />
+            </Field>
+          </div>
+          <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+            Work 30 min extra/day × 2 days = 1h overtime → add the points →
+            accumulator drops by the threshold, remainder carries forward.
+          </p>
+        </div>
+      </div>
+
+      {canEdit && (
+        <div className="flex items-center gap-3 border-t border-hairline px-4 py-3">
+          <Button
+            tone="primary"
+            size="sm"
+            disabled={!dirty || saveState.isPending}
+            onClick={async () => {
+              const res = await save(draft);
+              if (res.ok) {
+                setEdits(null);
+                setSaved(true);
+                stored.refetch();
+              }
+            }}
+          >
+            {saveState.isPending ? "Saving…" : "Save engine settings"}
+          </Button>
+          {saved && !dirty && (
+            <span className="text-xs text-ink-muted">Saved.</span>
+          )}
+          {saveState.error && (
+            <span className="text-xs text-[var(--state-rework-ink)]">
+              {saveState.error}
+            </span>
+          )}
+        </div>
+      )}
     </Panel>
   );
 }
