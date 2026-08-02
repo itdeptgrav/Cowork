@@ -180,7 +180,28 @@ export const config = {
    * being signed in. Other `/api` routes are NOT excluded — they carry data and
    * are gated like any page.
    */
+  /**
+   * The push and install assets are excluded, and they have to be.
+   *
+   * Without it the gate matched `firebase-messaging-sw.js`, found no session on
+   * the request and answered **307 to `/signin`** — verified against the running
+   * dev server. `navigator.serviceWorker.register` treats a redirect as a
+   * failure, so push registration could never have succeeded, and the symptom
+   * is silent: the app works, the bell works, and only the phone stays quiet.
+   *
+   * `manifest.json` and the icons are here for the same reason and one more.
+   * **iOS delivers web push only to a site installed to the Home Screen**, and
+   * Safari will not offer the install unless it can fetch a valid manifest —
+   * which it requests WITHOUT credentials, so a redirect to the sign-in page is
+   * exactly what it would get. Gating them makes push unreachable on every
+   * iPhone by a route nobody would think to look at.
+   *
+   * Excluding them opens nothing. They are static files of routing constants,
+   * icons, and the project's own public Firebase config; none reads a session,
+   * and the worker receives only what the sender already addressed to that
+   * device's token.
+   */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/auth|uireferences).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|apple-icon.png).*)",
   ],
 };

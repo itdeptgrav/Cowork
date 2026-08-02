@@ -10,6 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { getRepository, setRepository } from "@/lib/repositories";
+import { useFCMToken } from "@/lib/hooks/useFCMToken";
 import { LegacyRepository, toCoworkRepository } from "@/lib/repositories/legacy";
 import { startTaskWatch } from "@/lib/repositories/legacy/taskWatch";
 import { PROFILE_STORAGE_KEY } from "@/lib/config/profileSwitcher";
@@ -566,6 +567,14 @@ export function SessionProvider({
        memory for the next person at this desk. */
     window.location.href = "/signin";
   }, []);
+
+  /* **Push registration, once the identity is known.**
+     Deliberately here rather than in the shell: this is the one place that
+     knows who the session belongs to, and a token has to be filed against an
+     employee to be reachable. It is a no-op until `employeeId` resolves, and a
+     no-op forever if the browser has no Push API or the person has refused —
+     none of which affects the in-app bell, which reads Firestore directly. */
+  useFCMToken(state.employeeId);
 
   return (
     <Ctx.Provider value={{ ...state, refresh: retry, signOut }}>

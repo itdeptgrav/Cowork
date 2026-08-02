@@ -61,6 +61,9 @@ function view(over: Record<string, unknown>) {
     agreedWindowSecs: null,
     startedAtMs: null,
     dueAtMs: null,
+    /* `readLegacyTask` normalises this to `[]`, so `toTaskView` reads its
+       `.length` unguarded and is right to. The fixture skips that reader. */
+    subtaskIds: [],
     ...over,
   };
   return toTaskView({

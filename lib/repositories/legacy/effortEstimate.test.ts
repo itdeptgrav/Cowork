@@ -86,6 +86,11 @@ function view(input: {
     agreedWindowSecs: null,
     startedAtMs: null,
     dueAtMs: null,
+    /* `toTaskView` reads `.length` off this unguarded, and it is right to:
+       `readLegacyTask` normalises an absent `subtaskIds` to `[]`, so the real
+       path can never hand it undefined. This fixture bypasses that reader and
+       casts `as never`, which is what stopped the type checker saying so. */
+    subtaskIds: [],
   };
   return toTaskView({
     legacy: legacy as never,

@@ -1,9 +1,17 @@
 "use client";
 
-import { Panel, ProvisionalBadge } from "@/components/ui/Primitives";
+import { Meter, Panel, ProvisionalBadge } from "@/components/ui/Primitives";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
-import type { TodayTarget } from "@/lib/rules/scoring/timerSop";
+import { useNow } from "@/lib/hooks/useNow";
+import { useTicker } from "@/components/features/tasks/TimerControl";
+import { liveRunSecsForDay } from "@/lib/rules/scoring/workTime";
+import { timerDisplayState } from "@/lib/rules/tasks/timer";
+import {
+  targetProgressPercent,
+  withLiveRun,
+  type TodayTarget,
+} from "@/lib/rules/scoring/timerSop";
 
 /**
  * "Today's Work" — the user-facing face of the Timer SOP Point Engine, ported
@@ -20,9 +28,45 @@ export function TimerSopCounters({ employeeId }: { employeeId?: string }) {
     [subject],
   );
 
+  /* **The clock that is running right now.**
+     `getActiveTimer` reads the ACTING employee's sessions, so it can only ever
+     answer for the viewer. On a manager looking at somebody else's card it is
+     not asked — showing the manager's own running timer inside a report's
+     figures would be worse than showing none. */
+  const isSelf = !employeeId || employeeId === viewerId;
+  const active = useQuery(
+    (r) => (isSelf ? r.getActiveTimer() : Promise.resolve(null)),
+    [isSelf],
+  );
+  /* Minute granularity, and all it decides is staleness — the per-second
+     figure comes from the ticker, so nothing calls `Date.now()` in render. */
+  const nowMs = (useNow() ?? new Date(0)).getTime();
+  const session = active.data;
+  const running =
+    timerDisplayState(session, session?.accumulatedSecs ?? 0, nowMs) ===
+    "running";
+  const ticked = useTicker(running ? (session?.startedAtRealMs ?? null) : null);
+
   if (isLoading || !data) return null;
 
-  const { config, result, today } = data;
+  const { config, result } = data;
+
+  /* `now` reconstructed from the ticker rather than read fresh: the interval
+     is what drives the repaint, and deriving the instant from it is what keeps
+     the figure and the redraw describing the same moment. */
+  const startedAtRealMs = session?.startedAtRealMs ?? null;
+  const nowRealMs =
+    running && startedAtRealMs !== null ? startedAtRealMs + ticked * 1000 : nowMs;
+  const liveSecs = data.today
+    ? liveRunSecsForDay({
+        startedAtRealMs,
+        isRunning: running,
+        nowRealMs,
+        date: data.today.date,
+      })
+    : 0;
+  /* One fold, at the top. Everything below reads the same numbers. */
+  const today = data.today ? withLiveRun(data.today, liveSecs) : null;
 
   if (result.paused && !today) {
     return (
@@ -57,6 +101,9 @@ export function TimerSopCounters({ employeeId }: { employeeId?: string }) {
             Today&rsquo;s target
           </p>
           <p className="mt-2 text-xs text-ink-muted">{targetLine(today, config)}</p>
+
+          <TimeWorked today={today} liveSecs={liveSecs} />
+
           <p
             className={`mt-3 rounded-inset px-3 py-2 text-xs ${
               today.isOff || today.met
@@ -113,6 +160,60 @@ export function TimerSopCounters({ employeeId }: { employeeId?: string }) {
         </ul>
       </details>
     </Panel>
+  );
+}
+
+/**
+ * Time actually put on the clock today, against the target.
+ *
+ * This is the only place the card shows what task timers have RUN, and it was
+ * missing: the target line and the remainder are both derived from this
+ * figure, so a card without it asked people to subtract in their heads to
+ * learn whether any work had been tracked at all.
+ *
+ * It counts banked timer segments plus whatever the clock running right now
+ * has added since it started. Time on a task and nothing else — not time at a
+ * desk, and not time signed in.
+ *
+ * The bar is neutral ink rather than a state colour: saturated colour in
+ * Cowork means "score component", and this is progress, not a channel. The
+ * two counters below it are state-coloured because a full counter genuinely
+ * moves points.
+ */
+function TimeWorked({
+  today,
+  liveSecs,
+}: {
+  today: TodayTarget;
+  liveSecs: number;
+}) {
+  const pct = targetProgressPercent(today);
+
+  return (
+    <div className="mt-3">
+      <p className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span data-figure className="text-2xl font-light tracking-tight text-ink">
+          {hoursLabel(today.workedHours)}
+        </span>
+        <span className="text-xs text-ink-faint">
+          {today.isOff
+            ? "tracked on task timers today"
+            : `tracked on task timers / ${hoursLabel(today.targetHours)} target`}
+        </span>
+      </p>
+      {!today.isOff && (
+        <Meter
+          value={pct}
+          label={`${hoursLabel(today.workedHours)} of today's ${hoursLabel(
+            today.targetHours,
+          )} target`}
+          className="mt-2"
+        />
+      )}
+      <p className="mt-1.5 text-[11px] text-ink-faint">
+        {workedNote(today, pct, liveSecs)}
+      </p>
+    </div>
   );
 }
 
@@ -213,9 +314,54 @@ function targetLine(
   const login = today.loginMinute !== null ? clock(today.loginMinute) : "office open";
   const close = clock(today.closeMinute);
   if (today.usesPercent) {
-    return `${today.percent}% of your window today — ${login} login to ${close} close (${today.windowHours}h) = ${today.windowHours}h × ${today.percent}% = ${today.targetHours}h`;
+    return `${today.percent}% of your window today — ${login} login to ${close} close (${hoursLabel(today.spanHours)})${deductions(today)} = ${hoursLabel(today.windowHours)} × ${today.percent}% = ${hoursLabel(today.targetHours)}`;
   }
   return `A fixed daily minimum of ${config.dailyMinHours}h (your window today is ${login} to ${close}).`;
+}
+
+/**
+ * The break time taken off the span, named so the sum on screen adds up.
+ *
+ * Without this the line read "login to close (16.83h)" while login to close
+ * was plainly 18h 20m, and the missing 90 minutes had no explanation anywhere
+ * on the card. A person checking our arithmetic against their own clock has to
+ * be able to finish the sum.
+ */
+function deductions(today: TodayTarget): string {
+  const parts: string[] = [];
+  if (today.breakHours > 0) parts.push(`${hoursLabel(today.breakHours)} of breaks`);
+  if (today.allowanceHours > 0)
+    parts.push(`your ${hoursLabel(today.allowanceHours)} break allowance`);
+  return parts.length ? ` less ${parts.join(" and ")}` : "";
+}
+
+/**
+ * What the worked figure counts — the one thing no other line on the card says.
+ *
+ * Deliberately not a restatement of the banner's remainder. Two things people
+ * get wrong about this number, and each is answered in the case that raises it:
+ *
+ * - **Zero when they have been at work all morning.** Only time on a task
+ *   counts. Being signed in, in a meeting, or reading is not tracked work, and
+ *   `0m` is the honest figure rather than a fault.
+ * - **Whether the clock ticking on the task row is in it.** It is, and how much
+ *   of the total it is, is named — because that part is not banked yet and will
+ *   read differently the moment the timer stops.
+ */
+function workedNote(
+  today: TodayTarget,
+  pct: number,
+  liveSecs: number,
+): string {
+  const live =
+    liveSecs > 0
+      ? ` Counting up — ${hoursLabel(liveSecs / 3600)} of this is a timer still running.`
+      : "";
+  if (today.workedHours <= 0)
+    return "No task timer has run today yet. Only time on a task counts, not time signed in.";
+  if (today.isOff)
+    return `Today is a day off, so all of it counts toward overtime.${live}`;
+  return `${pct}% of today's target.${live}`;
 }
 
 function bannerLine(today: TodayTarget): string {

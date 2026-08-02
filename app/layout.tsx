@@ -19,6 +19,25 @@ export const metadata: Metadata = {
   title: "Cowork — Workspace",
   description:
     "One workspace for tasks, projects, meetings, communication, documents and team workflows — where the work gets done and where it gets measured.",
+  /*
+   * The manifest is what makes push possible on iPhone, not a nicety.
+   *
+   * iOS and iPadOS deliver web push ONLY to a site the person has added to the
+   * Home Screen, and Safari does not offer that unless it can fetch a valid
+   * manifest. Without this link the Add to Home Screen route is missing, the
+   * install never happens, and `PushManager.subscribe` is unreachable on every
+   * Apple device however correct the rest of the chain is.
+   */
+  manifest: "/manifest.json",
+  appleWebApp: {
+    capable: true,
+    title: "Cowork",
+    statusBarStyle: "black-translucent",
+  },
+  icons: {
+    icon: "/icon-192.png",
+    apple: "/apple-icon.png",
+  },
 };
 
 export const viewport: Viewport = {

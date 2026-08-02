@@ -20,6 +20,10 @@ import {
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { formatDate, formatDateTime, formatPoints } from "@/lib/utils/format";
+import {
+  notificationHref,
+  notificationTarget,
+} from "@/lib/rules/notifications/target";
 
 /* ── Goals ────────────────────────────────────────────────────────────────── */
 
@@ -460,68 +464,82 @@ export function NotificationsPage() {
       ) : (
         <Panel padded={false}>
           <div className="divide-y divide-hairline">
-            {list.map((n) => (
-              <div
-                key={n.id}
-                className={`flex items-start gap-3 px-5 py-3 ${n.readAt ? "" : "bg-[var(--surface-sunken)]"}`}
-              >
-                {!n.readAt && (
-                  <span
-                    aria-hidden="true"
-                    className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-ink"
-                  />
-                )}
+            {list.map((n) => {
+              /* One resolution for every type, replacing three hard-coded
+                 branches that between them covered two of the forty-odd types
+                 the engine sends — and, with `sourceType` always null, rendered
+                 for none of them. */
+              const href = notificationHref(
+                notificationTarget(n.type, n.data),
+              );
+              const open = async () => {
+                /* Marked read on the way out, so opening the thing you were
+                   told about is the same gesture as acknowledging it. Awaited
+                   before navigating rather than fired alongside: a route change
+                   can unmount this list mid-request. */
+                if (!n.readAt) {
+                  await markRead(n.id);
+                  refetch();
+                }
+              };
+
+              return (
                 <div
-                  className={`min-w-0 flex-1 ${n.readAt ? "pl-[18px]" : ""}`}
+                  key={n.id}
+                  className={`flex items-start gap-3 px-5 py-3 ${n.readAt ? "" : "bg-[var(--surface-sunken)]"}`}
                 >
-                  <p className="text-sm text-ink">{n.title}</p>
-                  <p className="mt-0.5 text-xs text-ink-muted">{n.body}</p>
-                  <p className="mt-1 text-[11px] text-ink-faint">
-                    {formatDateTime(n.createdAt)} · {n.channels.join(", ")}
-                  </p>
+                  {!n.readAt && (
+                    <span
+                      aria-hidden="true"
+                      className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-ink"
+                    />
+                  )}
+                  <div
+                    className={`min-w-0 flex-1 ${n.readAt ? "pl-[18px]" : ""}`}
+                  >
+                    {/* The whole text block is the target when there is one.
+                        A person who has just read a notification reaches for
+                        the thing they read, not for a four-letter word at the
+                        far right of the row. */}
+                    {href ? (
+                      <Link
+                        href={href}
+                        onClick={open}
+                        className="block rounded-inset outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
+                      >
+                        <p className="text-sm text-ink hover:underline">
+                          {n.title}
+                        </p>
+                        <p className="mt-0.5 text-xs text-ink-muted">{n.body}</p>
+                      </Link>
+                    ) : (
+                      <>
+                        <p className="text-sm text-ink">{n.title}</p>
+                        <p className="mt-0.5 text-xs text-ink-muted">{n.body}</p>
+                      </>
+                    )}
+                    <p className="mt-1 text-[11px] text-ink-faint">
+                      {formatDateTime(n.createdAt)} · {n.channels.join(", ")}
+                    </p>
+                  </div>
+                  {/* Kept alongside the link, not replaced by it: dismissing
+                      something you do NOT want to open is the commoner of the
+                      two actions on a busy list. */}
+                  {!n.readAt && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        await markRead(n.id);
+                        refetch();
+                      }}
+                      className="shrink-0 text-xs text-ink-faint hover:text-ink"
+                    >
+                      Mark read
+                    </button>
+                  )}
                 </div>
-                {n.sourceType === "task" && n.sourceId && (
-                  <Link
-                    href={`/tasks/${n.sourceId}`}
-                    className="shrink-0 text-xs text-ink-muted hover:text-ink"
-                  >
-                    Open
-                  </Link>
-                )}
-                {/* An emergency request is not a task and has no page of its
-                    own — it is decided from the action inbox, so that is where
-                    the notification points. Without this the manager is told
-                    something needs them and given nowhere to go. */}
-                {n.sourceType === "meeting" && n.sourceId && (
-                  <Link
-                    href={`/meetings/${n.sourceId}`}
-                    className="shrink-0 text-xs text-ink-muted hover:text-ink"
-                  >
-                    Open
-                  </Link>
-                )}
-                {n.sourceType === "emergency" && (
-                  <Link
-                    href="/tasks?view=approvals"
-                    className="shrink-0 text-xs text-ink-muted hover:text-ink"
-                  >
-                    Open
-                  </Link>
-                )}
-                {!n.readAt && (
-                  <button
-                    type="button"
-                    onClick={async () => {
-                      await markRead(n.id);
-                      refetch();
-                    }}
-                    className="shrink-0 text-xs text-ink-faint hover:text-ink"
-                  >
-                    Mark read
-                  </button>
-                )}
-              </div>
-            ))}
+              );
+            })}
           </div>
         </Panel>
       )}
