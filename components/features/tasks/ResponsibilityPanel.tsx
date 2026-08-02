@@ -48,7 +48,7 @@ export function ResponsibilityPanel({ view }: { view: TaskView }) {
       </div>
 
       {claims.length === 0 ? (
-        /* Unreachable for anything created through `NewSubtaskDialog`, which
+        /* Unreachable for anything created through the subtask form, which
            requires at least one claim. Kept for records that predate that rule
            — a persisted store or a legacy import — because an empty heading
            reads as data that failed to load rather than as a task with no

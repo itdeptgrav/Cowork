@@ -170,5 +170,8 @@ test("a failed calendar read costs the derived date, not the queue", () => {
   /* An empty map, never a throw: the caller then shows the committed date
      alone rather than losing the queue. */
   assert.match(fn, /return dueDates;/);
-  assert.match(src, /return \{ order, dueDates \};/);
+  /* Widened to allow the sibling `provisionalPositions` field the queue now
+     also returns — the fact this pins is that `order` and `dueDates` are
+     still both there, not that nothing else ever joins them. */
+  assert.match(src, /return \{ order, dueDates(, provisionalPositions)? \};/);
 });

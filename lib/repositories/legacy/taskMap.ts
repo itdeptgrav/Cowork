@@ -442,6 +442,12 @@ export function toTaskView(input: {
   queue?: {
     ownerId: string;
     positions: ReadonlyMap<string, number>;
+    /**
+     * The SAME owner's position among work not yet accepted or budget-settled
+     * — a separate, independently gap-free sequence. See
+     * `TaskAssignment.provisionalPosition`.
+     */
+    provisionalPositions?: ReadonlyMap<string, number>;
     /* Chained operational dates for that same queue, keyed by task id. */
     dueDates?: ReadonlyMap<string, string>;
   };
@@ -587,6 +593,12 @@ export function toTaskView(input: {
         input.queue && input.queue.ownerId === employeeId
           ? (input.queue.positions.get(legacy.id) ?? null)
           : null,
+      /* Same owner check as `queuePosition` — read from the SAME queue fetch,
+         just the other of its two maps. */
+      provisionalPosition:
+        input.queue && input.queue.ownerId === employeeId
+          ? (input.queue.provisionalPositions?.get(legacy.id) ?? null)
+          : null,
       assignedAt: "",
       confirmedAt: legacy.confirmedByIds.includes(employeeId) ? "" : null,
       startedAt: legacy.startedAtMs
@@ -649,6 +661,10 @@ export function toTaskView(input: {
           queuePosition:
             input.queue && input.queue.ownerId === input.viewerId
               ? (input.queue.positions.get(legacy.id) ?? null)
+              : null,
+          provisionalPosition:
+            input.queue && input.queue.ownerId === input.viewerId
+              ? (input.queue.provisionalPositions?.get(legacy.id) ?? null)
               : null,
           viewerId: input.viewerId,
         }).rank ?? null),

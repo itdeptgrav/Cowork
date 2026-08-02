@@ -74,6 +74,12 @@ export { MIN_RANK, MAX_RANK, UNRANKED, isRealRank };
 export type PriorityScale =
   /** A position among live work, derived per read. Renumbers itself. */
   | "queue_position"
+  /**
+   * A position among work not yet accepted or budget-settled — its OWN
+   * gap-free 1..N, independent of `queue_position`'s. Renumbers itself the
+   * same way, over its own set.
+   */
+  | "provisional_position"
   /** The 1–10 figure a manager set. Survives completion. */
   | "stored_rank"
   /** Nothing usable was ever written. */
@@ -130,6 +136,12 @@ export function getPersonPriority(input: {
   subjectId: string;
   /** Their derived position, where the caller fetched their queue. */
   queuePosition?: number | null;
+  /**
+   * Their position among work not yet accepted or budget-settled — its OWN
+   * gap-free sequence, read only where `queuePosition` has nothing, because a
+   * task is in exactly one of the two.
+   */
+  provisionalPosition?: number | null;
   /** Who is looking. Only decides `isMine`, never the number. */
   viewerId?: string | null;
 }): TaskPriority {
@@ -157,6 +169,22 @@ export function getPersonPriority(input: {
     return {
       rank: input.queuePosition,
       scale: "queue_position",
+      subjectId: input.subjectId,
+      isMine,
+      isHistoric: false,
+      storedRank,
+    };
+  }
+
+  /* Not yet accepted or settled, but real — and gap-free among its own kind
+     rather than the raw stored figure. This is the tier that used to be
+     missing entirely: a task fell straight from "queue position" to "whatever
+     number the document happens to hold", and a container sitting between two
+     pending siblings showed up as a missing number rather than as nothing. */
+  if (input.provisionalPosition != null && input.provisionalPosition > 0) {
+    return {
+      rank: input.provisionalPosition,
+      scale: "provisional_position",
       subjectId: input.subjectId,
       isMine,
       isHistoric: false,
@@ -239,13 +267,15 @@ export function displayPriority(input: {
   myRank?: number | null;
   /** The viewer's stored rank, whatever the status. Null if they hold nothing. */
   myStoredRank?: number | null;
-  /** One entry per holder, with the two facts kept apart. */
+  /** One entry per holder, with the facts kept apart. */
   holders: {
     employeeId: string;
     /** The stored 1–10 rank. */
     rank: number | null;
     /** The derived position, present only where THIS person's queue was read. */
     queuePosition?: number | null;
+    /** Their position among not-yet-accepted work. Its own sequence — see above. */
+    provisionalPosition?: number | null;
   }[];
 }): TaskPriority {
   const { status, viewerId, holders } = input;
@@ -300,6 +330,30 @@ export function displayPriority(input: {
       isMine: false,
       isHistoric: false,
       storedRank: isRealRank(withPosition.rank) ? withPosition.rank : null,
+    };
+  }
+
+  /* The same preference, one tier down: nobody's live position was read, but
+     somebody's PROVISIONAL one was — a holder whose queue was fetched while
+     still awaiting acceptance or a settled budget. Gap-free among its own
+     kind rather than the raw stored figure, for the reason `getPersonPriority`
+     documents. */
+  const withProvisional = historic
+    ? undefined
+    : holders.find(
+        (h) => h.provisionalPosition != null && h.provisionalPosition > 0,
+      );
+
+  if (withProvisional) {
+    return {
+      rank: withProvisional.provisionalPosition as number,
+      scale: "provisional_position",
+      subjectId: withProvisional.employeeId,
+      isMine: false,
+      isHistoric: false,
+      storedRank: isRealRank(withProvisional.rank)
+        ? withProvisional.rank
+        : null,
     };
   }
 
@@ -365,6 +419,9 @@ export function describePriority(
   }
   if (priority.scale === "queue_position") {
     return `Position ${priority.rank} in ${whose} live queue, counting only work still in play. Closing something above it moves this up with no change to what anybody set.`;
+  }
+  if (priority.scale === "provisional_position") {
+    return `Position ${priority.rank} among ${whose === "this task’s" ? "this task’s" : `${whose}`} work not yet accepted or budget-settled — a separate count from the live queue. It takes its place there the moment it is accepted.`;
   }
   return `${whose === "this task’s" ? "The task’s" : `${whose}`} stored priority, on a scale of 1 to 10 where 1 is highest. A live queue position was not available for this read.`;
 }

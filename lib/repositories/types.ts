@@ -187,6 +187,21 @@ export interface TaskQuery {
   assigneeId?: EmployeeId;
   projectId?: ProjectId | null;
   parentTaskId?: TaskId | null;
+  /**
+   * Return subtasks alongside their parents, for a caller that renders a TREE.
+   *
+   * Off by default, and the default is not laziness. Without a tree there is
+   * nowhere to put a child, so the list rolls other people's subtasks up into
+   * the parent row and reports one row for one piece of work — which is what
+   * every count, tab badge and dashboard total in the product is computed
+   * from. Turning this on for those callers would silently inflate all of
+   * them; the old app kept the same separation, counting only roots
+   * (`page.js:4114-4118`) while its tree showed everything.
+   *
+   * So this is set by the one surface that can nest — the task table — and by
+   * nothing else.
+   */
+  includeSubtasks?: boolean;
   search?: string;
   overdueOnly?: boolean;
   blockedOnly?: boolean;

@@ -65,10 +65,10 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, UploadedMedia } from "../types";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -107,9 +107,13 @@ import {
 import { fetchDashboard } from "../../legacy/scoring.ts";
 import { fetchLedger } from "../../legacy/sop.ts";
 import { legacyFetch } from "../../legacy/http.ts";
-import { LEGACY_ORGANISATION_ID, toEmployee, toScoreHistory, toScoreOverview, toViewer } from "./map.ts";
+import { LEGACY_ORGANISATION_ID, hueFor, initialsOf, toEmployee, toScoreHistory, toScoreOverview, toViewer } from "./map.ts";
+import { computeProgress } from "../mock/progress.ts";
 import { toTaskStatus, toTaskView } from "./taskMap.ts";
-import { activeQueuePositions } from "../../rules/tasks/activeQueue.ts";
+import {
+  activeQueuePositions,
+  provisionalQueuePositions,
+} from "../../rules/tasks/activeQueue.ts";
 import {
   holdersOf,
   resolveTaskPriority,
@@ -345,7 +349,45 @@ export class NotConnectedError extends Error {
   }
 }
 
-const emptyPage = <T,>(): Page<T> => ({ items: [], nextCursor: null, total: 0 });
+/**
+ * A person the directory could not resolve, rendered as their id.
+ *
+ * For the handful of places the domain requires a non-null `Employee` and the
+ * engine can only supply an id — a task raised by somebody since removed from
+ * `cowork_employees`, most often. The id is shown as the name because that is
+ * what `lib/legacy/employees.ts` does everywhere else a person cannot be
+ * resolved: a visible identifier can be looked up, and a blank card cannot.
+ *
+ * Deliberately not a lookup with a silent fallback baked in — callers that CAN
+ * resolve somebody should, and this is what they reach for when they cannot.
+ */
+function unknownEmployee(id: string): Employee {
+  return {
+    organisationId: LEGACY_ORGANISATION_ID,
+    id,
+    userId: id,
+    employeeCode: id,
+    firstName: id,
+    lastName: "",
+    displayName: id,
+    initials: initialsOf(id, "", id),
+    hue: hueFor(id),
+    profilePictureUrl: null,
+    email: null,
+    /* Empty, not a guess. `departmentsDiffer` treats an unknown department as
+       raising no boundary, so an invented one here would make the
+       cross-department gate fire against somebody who does not exist. */
+    departmentId: "",
+    departmentName: "",
+    designation: "",
+    roleIds: [],
+    timezone: "Asia/Kolkata",
+    workCalendarId: "",
+    joinedAt: "",
+    exitedAt: null,
+    isFounder: false,
+  };
+}
 
 /**
  * A Firestore failure, rewritten when it is a missing composite index.
@@ -920,40 +962,47 @@ export class LegacyRepository {
      * renumbers nothing on disk, so there is no write to race and every viewer
      * computes the same positions from the same stored ranks.
      */
-    const myQueue = activeQueuePositions(
-      legacyTasks
-        /* `holdersOf`, not `assigneeIds`: a cross-department task waiting at
-           the gate keeps its person in `pendingAssigneeId` with an EMPTY
-           `assigneeIds`, so it was missing from its own assignee's queue. */
-        .filter((t) =>
-          holdersOf({
-            assigneeIds: t.assigneeIds,
-            pendingAssigneeIds: t.pendingAssigneeId ? [t.pendingAssigneeId] : [],
-          }).includes(viewerId),
-        )
-        .map((t) => ({
-          taskId: t.id,
-          /* The DOMAIN status, via the same mapper the view uses. The raw field
-             is legacy's vocabulary — `done`, `open`, `pending_tl_approval` —
-             and legacy leaves `status` at `open` through an entire review
-             cycle while `completionStatus` moves. Testing the raw string would
-             have kept approved work in the queue for ever, which is the bug
-             this is here to fix. */
-          status: toTaskStatus(t),
-          /* The shared resolver, not a fifth copy of legacy's expression —
-             the list must sort by exactly the number the screen shows. */
-          storedRank: resolveTaskPriority(t, viewerId),
-          order: t.order,
-          createdAtMs: t.createdAtMs,
-          /* Out of the queue until the hours are agreed — a task can be
-             `assigned` while its budget is still being negotiated. */
-          budgetState: t.budgetNegotiation?.state ?? null,
-          /* And out of it until the assignee has accepted. Unaccepted work is
-             not yet workload, and letting it hold a slot ranks accepted work
-             behind something that may never be accepted. */
-          accepted: t.confirmedByIds.includes(viewerId),
-        })),
-    );
+    const myQueueEntries = legacyTasks
+      /* `holdersOf`, not `assigneeIds`: a cross-department task waiting at
+         the gate keeps its person in `pendingAssigneeId` with an EMPTY
+         `assigneeIds`, so it was missing from its own assignee's queue. */
+      .filter((t) =>
+        holdersOf({
+          assigneeIds: t.assigneeIds,
+          pendingAssigneeIds: t.pendingAssigneeId ? [t.pendingAssigneeId] : [],
+        }).includes(viewerId),
+      )
+      .map((t) => ({
+        taskId: t.id,
+        /* The DOMAIN status, via the same mapper the view uses. The raw field
+           is legacy's vocabulary — `done`, `open`, `pending_tl_approval` —
+           and legacy leaves `status` at `open` through an entire review
+           cycle while `completionStatus` moves. Testing the raw string would
+           have kept approved work in the queue for ever, which is the bug
+           this is here to fix. */
+        status: toTaskStatus(t),
+        /* The shared resolver, not a fifth copy of legacy's expression —
+           the list must sort by exactly the number the screen shows. */
+        storedRank: resolveTaskPriority(t, viewerId),
+        order: t.order,
+        createdAtMs: t.createdAtMs,
+        /* Out of the queue until the hours are agreed — a task can be
+           `assigned` while its budget is still being negotiated. */
+        budgetState: t.budgetNegotiation?.state ?? null,
+        /* And out of it until the assignee has accepted. Unaccepted work is
+           not yet workload, and letting it hold a slot ranks accepted work
+           behind something that may never be accepted. */
+        accepted: t.confirmedByIds.includes(viewerId),
+        /* A broken-down task is a project, not workload — see
+           `#activeQueueOf`, which excludes it for the identical reason. */
+        isContainer: t.subtaskIds.length > 0,
+      }));
+    const myQueue = activeQueuePositions(myQueueEntries);
+    /* The viewer's own SEPARATE sequence for work not yet accepted or
+       budget-settled — see `provisionalQueuePositions`. Computed from the
+       SAME entries so the two sequences can never disagree about which task
+       is a container or what its stored rank is. */
+    const myProvisionalQueue = provisionalQueuePositions(myQueueEntries);
 
     /* Chained once for the whole list, not per row. The order is the derived
        queue, so the dates agree with the positions shown beside them. */
@@ -964,7 +1013,7 @@ export class LegacyRepository {
     );
 
     const byId = new Map(legacyTasks.map((t) => [t.id, t]));
-    if (q.scope !== "submitted") {
+    if (q.scope !== "submitted" && !q.includeSubtasks) {
       legacyTasks = legacyTasks.filter((t) => {
         if (!t.parentTaskId) return true;
         /*
@@ -972,14 +1021,19 @@ export class LegacyRepository {
          *
          * The two clauses below are legacy's, and they belong to legacy's
          * TREE: the old list rendered a parent row you could expand, so
-         * collapsing a child into it lost nothing. This list has no tree, so
-         * every subtask those clauses dropped simply ceased to exist on
-         * screen — and the role clause dropped them UNCONDITIONALLY, so a TL
-         * or CEO assigned a subtask never saw it in any tab. Somebody breaks
-         * work out, the confirmation succeeds, and the task is nowhere.
+         * collapsing a child into it lost nothing. A caller with no tree has
+         * nowhere to put a child, so every subtask those clauses dropped
+         * simply ceased to exist on screen — and the role clause dropped them
+         * UNCONDITIONALLY, so a TL or CEO assigned a subtask never saw it in
+         * any tab. Somebody breaks work out, the confirmation succeeds, and
+         * the task is nowhere.
          *
          * A parent is still a legitimate stand-in for children that are
          * somebody else's business. It is never a stand-in for your own.
+         *
+         * A caller that CAN nest asks for `includeSubtasks` and skips this
+         * block entirely — see `TaskQuery.includeSubtasks` for why that is not
+         * simply the default.
          */
         if (assignedOrPendingToMe(t) || t.createdById === viewerId) return true;
         if (isCeo || String(this.#ctx.legacyRole ?? "") === "tl") return false;
@@ -1143,10 +1197,19 @@ export class LegacyRepository {
       {
         ownerId: string;
         positions: Map<string, number>;
+        provisionalPositions: Map<string, number>;
         dueDates: Map<string, string>;
       }
     >([
-      [viewerId, { ownerId: viewerId, positions: myQueue, dueDates: myDueDates }],
+      [
+        viewerId,
+        {
+          ownerId: viewerId,
+          positions: myQueue,
+          provisionalPositions: myProvisionalQueue,
+          dueDates: myDueDates,
+        },
+      ],
     ]);
     const otherSubjects = [
       ...new Set(
@@ -1162,6 +1225,7 @@ export class LegacyRepository {
           queuesBySubject.set(subjectId, {
             ownerId: subjectId,
             positions: new Map(q.order.map((id, i) => [id, i + 1])),
+            provisionalPositions: q.provisionalPositions,
             dueDates: q.dueDates,
           });
         } catch {
@@ -1197,6 +1261,29 @@ export class LegacyRepository {
       views = views.filter((v) =>
         v.assignees.some((a) => a.id === wanted) ||
         v.task.createdById === wanted,
+      );
+    }
+    /*
+     * **This never existed, and every project's task table showed the whole
+     * scope regardless of which project the reader opened.** `TaskTable`
+     * passes `projectId` straight through expecting it to narrow the list;
+     * nothing here ever read it, so it silently did nothing.
+     *
+     * A project IS a broken-down task (`#projectFromContainer`), so its id is
+     * that task's id, and "this project's tasks" is exactly the set
+     * `#projectFromContainer` already builds `taskLinks` from: the container's
+     * own subtasks. Filtering on `parentTaskId` is what keeps this in
+     * lock-step with `taskLinks` and with `pr.totalTasks` — three readings of
+     * one relationship, not three.
+     *
+     * The container's OWN row is excluded on purpose. The reader is already on
+     * that task's page; repeating it as a row inside its own task list would
+     * say nothing a heading does not already say.
+     */
+    if (q.projectId) {
+      const wanted = String(q.projectId);
+      views = views.filter(
+        (v) => String(v.task.parentTaskId ?? "") === wanted,
       );
     }
     if (q.overdueOnly) views = views.filter((v) => v.isOverdue);
@@ -1614,6 +1701,7 @@ export class LegacyRepository {
       | {
           ownerId: string;
           positions: Map<string, number>;
+          provisionalPositions: Map<string, number>;
           dueDates: Map<string, string>;
         }
       | undefined;
@@ -1623,6 +1711,7 @@ export class LegacyRepository {
         queue = {
           ownerId: subjectId,
           positions: new Map(q.order.map((id, i) => [id, i + 1])),
+          provisionalPositions: q.provisionalPositions,
           dueDates: q.dueDates,
         };
       } catch {
@@ -2292,6 +2381,11 @@ export class LegacyRepository {
     senderWindowSecs?: number | null;
   }): Promise<ActionResult<Task>> {
     const parentId = String(input.parentTaskId);
+    /* A fixed date is chosen by SUPPLYING one, exactly as `createTask` decides
+       it — there is no separate mode flag on this input, and inferring the
+       timer from a missing window instead would put a task with no estimate
+       yet onto a date nobody picked. */
+    const onFixedDate = !!input.fixedDueAt;
     return this.#write(
       (token) =>
         createSubtaskRequest({
@@ -2303,17 +2397,21 @@ export class LegacyRepository {
           satisfiesRequirementIds: [
             ...new Set(input.satisfiesRequirementIds ?? []),
           ],
-          dueDate: input.fixedDueAt ?? undefined,
-          windowSecs:
-            input.senderWindowSecs ?? input.estimatedEffortSecs ?? undefined,
+          hasTimer: !onFixedDate,
+          /* `estimatedEffortSecs` is the fallback rather than an equal: the
+             sender's window is what the engine binds the child to, and an
+             estimate is only a stand-in where no window was stated. */
+          senderTimerWindowSecs:
+            input.senderWindowSecs ?? input.estimatedEffortSecs ?? 0,
+          fixedDeadline: input.fixedDueAt ?? null,
         }),
       (data) => {
         /* **The route answers `{ success, subtask }`** — `taskForward.js:1490`
            — and this looked for `taskId` and `task.taskId`, neither of which it
            sends. So every create fell through to the parent id and the caller
-           was handed the PROJECT as its own new subtask. `NewSubtaskDialog`
-           only refetches, so it survived; anything navigating to the result
-           would have landed on the wrong task. The other two names are kept for
+           was handed the PROJECT as its own new subtask. The dialog of the day
+           only refetched, so it survived; the form that replaced it navigates
+           to the result and would have landed on the wrong task. The other two names are kept for
            an engine that answers either. */
         const d = data as {
           taskId?: unknown;
@@ -4780,21 +4878,98 @@ export class LegacyRepository {
   }
 
   /**
-   * Subtask requirements.
+   * Completion requirements — what has to be true before a task is done.
    *
-   * The requirement checklist is a new-product concept with no legacy field. A
-   * subtask still works — `createSubtask` is connected — but what it satisfies
-   * is not something the engine can be told.
+   * **This method refused outright, and that refusal is what broke subtasks.**
+   * The stated reason was that the checklist is a new-product concept with no
+   * legacy field. It is not: `cowork_tasks` carries `requirements` as an array
+   * of strings, `createTask` has always sent it (`taskForward.js:386`),
+   * `edit-details` has always accepted it (`:1682`), and `toTask` has always
+   * read it back. The field was there the whole time.
+   *
+   * What the refusal cost was the entire delegation flow, because every gate
+   * downstream counts requirements:
+   *
+   * ```
+   * addRequirements refuses  →  task.requirements stays []
+   *                          →  ProjectPanel renders no "Break this down"
+   *                             button (it needs `c.total > 0`)
+   *                          →  subtaskRefusal refuses anyway
+   *                             ("Add completion requirements … first")
+   * ```
+   *
+   * So a task created without requirements could never gain any, and a task
+   * with no requirements can never be broken down. Every task the legacy app
+   * ever created is in that state. Subtasks were reachable only for a task
+   * created through `NewTaskForm` with its checklist filled in up front —
+   * which is why this read as "subtasks do not work" rather than as a
+   * refusal somebody could act on.
+   *
+   * **Read, then append — never send the caller's list alone.** `edit-details`
+   * REPLACES `requirements` with whatever it is given, so passing only the new
+   * texts silently deletes every existing one. Deleting them is worse than it
+   * sounds: requirement ids are POSITIONAL (`compositeId(taskId, "req-" + i)`),
+   * subtasks store those ids in `satisfiesRequirementIds`, and shifting the
+   * array repoints every claim at the wrong requirement or at nothing. Append
+   * is the only mutation that leaves existing indices where they are, which is
+   * also why this adds and never removes or reorders.
+   *
+   * The engine's own gate stands (`taskForward.js:1660-1676`): before the task
+   * passes draft only CEO or TL may edit it, and after it has passed only the
+   * sender who assigned it. Its refusal is surfaced verbatim rather than
+   * pre-empted here — `lib/legacy/permissions.ts` is the module that mirrors
+   * the engine, and duplicating the rule in a second place is how the two come
+   * to disagree.
    */
-  async addRequirements(): Promise<ActionResult<never>> {
-    return {
-      ok: false,
-      code: "invalid_state",
-      message:
-        "Requirements are not part of the Cowork engine's task model, so they cannot be saved. Break the work out as a subtask instead.",
-    } as unknown as ActionResult<never>;
+  async addRequirements(
+    taskId: TaskId,
+    texts: string[],
+  ): Promise<ActionResult<Task>> {
+    const id = String(taskId);
+
+    const clean = texts.map((t) => t.trim()).filter(Boolean);
+    if (clean.length === 0) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        field: "texts",
+        message: "Write at least one requirement.",
+      };
+    }
+
+    /* The document, not the `TaskView` — this needs the raw string array in the
+       order the engine holds it, and a view would have already turned it into
+       domain requirements with minted ids that cannot be sent back. */
+    const current = await this.#taskDoc(id);
+    if (!current) {
+      return {
+        ok: false,
+        code: "not_found",
+        message: "Task not found.",
+      };
+    }
+
+    return this.#write(
+      (token) =>
+        editTaskDetails({
+          token,
+          taskId: id,
+          requirements: [...current.requirements, ...clean],
+        }),
+      () => id,
+    );
   }
 
+  /**
+   * Tick a requirement off directly.
+   *
+   * Genuinely absent from the engine — unlike the requirement text itself,
+   * there is no per-item state on the document to record a tick against. It
+   * has no caller: `ProjectPanel` renders requirements read-only, because
+   * acceptance criteria are the reviewer's reference during review rather than
+   * a checklist the submitter ticks to unlock submission. The refusal stays so
+   * that a future caller is told why rather than silently doing nothing.
+   */
   async setRequirementSatisfied(): Promise<ActionResult<never>> {
     return {
       ok: false,
@@ -6261,7 +6436,291 @@ export class LegacyRepository {
    * screen cannot appear to succeed at something that never reached the engine.
    * Both are deliberate, and neither is mock data.
    */
-  async listProjects() { return emptyPage(); }
+  /**
+   * Projects — the tasks that have been broken down.
+   *
+   * **This returned an empty page, so the Projects tab was blank forever.** The
+   * stub was honest at the time: a `Project` in `lib/domain/projects.ts` is a
+   * managed initiative with members, milestones and its own status, and the
+   * Cowork engine has no collection for one. Nothing could be listed because
+   * nothing was stored.
+   *
+   * What the stub missed is that the product already has projects and stores
+   * them in `cowork_tasks`. Breaking a task down converts it into a container:
+   * it stops holding a timer, a deadline, a submission and a review, and starts
+   * holding a title, a brief, completion requirements and the work items that
+   * answer them. That is a project in everything but the name, and the task
+   * detail has always called it one — `ProjectPanel` renders the heading
+   * "Project" the moment `isProject` turns true.
+   *
+   * So a project here is DERIVED, not stored, and the consequences are worth
+   * being explicit about:
+   *
+   *  · Nothing has to be created. A project appears the moment somebody breaks
+   *    work out, and disappears if the last subtask is deleted — which is the
+   *    behaviour people expect from a container and the reason the old app's
+   *    folders needed no separate lifecycle.
+   *  · Milestones are empty and members are derived from who holds the
+   *    subtasks. Neither has anywhere to be stored, and inventing a second
+   *    store for them would put project membership out of step with the
+   *    assignees that actually determine it.
+   *  · `createProject` and `updateProject` stay unimplemented. There is nothing
+   *    to write to, and a form that appeared to save would be the worse
+   *    failure.
+   *
+   * Progress comes from `computeProgress`, the same function the mock uses, so
+   * the health band and the percentage cannot drift between the two.
+   */
+  async listProjects(q: ProjectQuery): Promise<Page<ProjectView>> {
+    /* Scope "all", because a project is a thing you look at rather than a thing
+       assigned to you: a manager's own queue would exclude the very containers
+       whose subtasks they handed out. `includeSubtasks` is what makes the
+       children available to group under them — see `TaskQuery`. */
+    const page = await this.listTasks({ scope: "all", includeSubtasks: true });
+    const views = page.items;
+
+    const childrenOf = new Map<string, TaskView[]>();
+    for (const v of views) {
+      const parentId = v.task.parentTaskId ? String(v.task.parentTaskId) : null;
+      if (!parentId) continue;
+      const bucket = childrenOf.get(parentId);
+      if (bucket) bucket.push(v);
+      else childrenOf.set(parentId, [v]);
+    }
+
+    let projects = views
+      .filter((v) => !v.task.parentTaskId && childrenOf.has(v.task.id))
+      .map((v) => this.#projectFromContainer(v, childrenOf.get(v.task.id) ?? []));
+
+    if (q.status?.length) {
+      const wanted = new Set(q.status);
+      projects = projects.filter((p) => wanted.has(p.project.status));
+    }
+    if (q.ownerId) {
+      const wanted = String(q.ownerId);
+      projects = projects.filter((p) => p.project.ownerId === wanted);
+    }
+    if (q.memberId) {
+      const wanted = String(q.memberId);
+      projects = projects.filter((p) =>
+        p.members.some((m) => m.employeeId === wanted),
+      );
+    }
+    if (q.search) {
+      const needle = q.search.toLowerCase();
+      projects = projects.filter(
+        (p) =>
+          p.project.name.toLowerCase().includes(needle) ||
+          p.project.reference.toLowerCase().includes(needle),
+      );
+    }
+
+    projects.sort((a, b) => {
+      switch (q.sort) {
+        case "progress":
+          return b.progress.progressPercent - a.progress.progressPercent;
+        case "target":
+          /* Undated last rather than first — a project with no target date is
+             not the most urgent one. */
+          return (a.project.targetDate ?? "9999").localeCompare(
+            b.project.targetDate ?? "9999",
+          );
+        case "health": {
+          const order: Record<string, number> = {
+            off_track: 0,
+            at_risk: 1,
+            unknown: 2,
+            on_track: 3,
+          };
+          return order[a.progress.health] - order[b.progress.health];
+        }
+        default:
+          return a.project.name.localeCompare(b.project.name);
+      }
+    });
+
+    const total = projects.length;
+    return {
+      items: projects.slice(0, q.limit ?? total),
+      nextCursor: null,
+      total,
+    };
+  }
+
+  /**
+   * One project, by the id of the task it is.
+   *
+   * Reads the container and its children directly rather than filtering the
+   * list — a project page should not cost a whole-organisation task read.
+   */
+  async getProject(id: ProjectId): Promise<ProjectView | null> {
+    const taskId = String(id);
+    const container = await this.#readTaskView(taskId);
+    if (!container || container.task.parentTaskId) return null;
+    const children = await this.getSubtasks(taskId);
+    if (children.length === 0) return null;
+    return this.#projectFromContainer(container, children);
+  }
+
+  /**
+   * A broken-down task, as a project.
+   *
+   * Everything is read off the task and its children; nothing is invented and
+   * nothing is stored. Where the domain requires a field the engine has no
+   * answer for — milestones, tags, project priority — it is empty rather than
+   * guessed, so a reader is never shown a value nobody set.
+   */
+  #projectFromContainer(
+    container: TaskView,
+    children: TaskView[],
+  ): ProjectView {
+    const t = container.task;
+    const live = children.filter((c) => c.task.status !== "cancelled");
+
+    /* The task's own lifecycle IS the project's. A container completes when its
+       requirements are satisfied, which happens when its subtasks complete, so
+       there is no second status to keep in step. */
+    const status: ProjectStatus =
+      t.status === "completed"
+        ? "completed"
+        : t.status === "cancelled" || t.status === "assignment_rejected"
+          ? "archived"
+          : "active";
+
+    /* The last commitment anybody made underneath. A container has no deadline
+       of its own — that is the whole point — so the date it is judged on is the
+       latest one its children are actually held to. */
+    const targetDate =
+      live
+        .map((c) => c.task.deadline.officialDueAt ?? c.task.deadline.dueAt)
+        .filter((d): d is string => Boolean(d))
+        .sort()
+        .at(-1) ?? null;
+
+    const project: Project = {
+      organisationId: LEGACY_ORGANISATION_ID,
+      id: t.id,
+      reference: t.reference,
+      name: t.title,
+      description: t.description || null,
+      ownerId: t.createdById,
+      status,
+      startDate: t.createdAt,
+      targetDate,
+      completedAt: status === "completed" ? t.updatedAt : null,
+      tags: [],
+      priority: null,
+      isRestricted: false,
+      createdById: t.createdById,
+      createdAt: t.createdAt,
+      updatedAt: t.updatedAt,
+      archivedAt: status === "archived" ? t.updatedAt : null,
+    };
+
+    /* Whoever holds a subtask is a member, and the person who broke the work
+       out owns it. Derived every read rather than stored, so somebody
+       reassigning a subtask cannot leave a stale member behind. */
+    const seen = new Set<string>();
+    const members: ProjectView["members"] = [];
+    for (const child of children) {
+      for (const employee of child.assignees) {
+        if (seen.has(employee.id)) continue;
+        seen.add(employee.id);
+        members.push({
+          id: `${t.id}#member-${employee.id}`,
+          projectId: t.id,
+          employeeId: employee.id,
+          role: employee.id === t.createdById ? "owner" : "member",
+          addedAt: child.task.createdAt,
+          addedById: t.createdById,
+          employee,
+        });
+      }
+    }
+
+    return {
+      project,
+      /* `ProjectView.owner` is not nullable, and a task whose creator has left
+         the directory still has to render. The stand-in carries the id as the
+         name, which is what `employees.ts` does everywhere else a person cannot
+         be resolved — a visible id beats a blank card. */
+      owner: container.owner ?? unknownEmployee(t.createdById),
+      members,
+      progress: computeProgress(
+        project,
+        live.map((c) => c.task),
+        [],
+        [],
+        new Date(),
+      ),
+      milestones: [],
+      taskLinks: children.map((c) => ({
+        id: `${t.id}#link-${c.task.id}`,
+        projectId: t.id,
+        taskId: c.task.id,
+        linkedAt: c.task.createdAt,
+        linkedById: t.createdById,
+        milestoneId: null,
+      })),
+    };
+  }
+
+  /**
+   * Project membership is not editable, because it is not stored.
+   *
+   * A project's tasks ARE its subtasks — `#projectFromContainer` derives the
+   * links from them every read. So there is no link table to add a row to, and
+   * "connect this existing task" has no meaning: a task belongs to a project by
+   * being broken out of it, and leaves by being deleted.
+   *
+   * These refuse rather than being absent. An unimplemented method throws
+   * `NotConnectedError`, which the screen renders as a generic failure the
+   * reader can only read as a bug; a refusal can say what to do instead. Same
+   * treatment, and the same reasoning, as `setRequirementSatisfied`.
+   */
+  async linkTask(): Promise<ActionResult<never>> {
+    return {
+      ok: false,
+      code: "invalid_state",
+      message:
+        "A project's tasks are its subtasks, so a task cannot be connected to one. Open the project and use Add a subtask to break out more work.",
+    } as unknown as ActionResult<never>;
+  }
+
+  async unlinkTask(): Promise<ActionResult<never>> {
+    return {
+      ok: false,
+      code: "invalid_state",
+      message:
+        "A project's tasks are its subtasks, so they cannot be disconnected. Cancel or delete the subtask itself to take it out of the project.",
+    } as unknown as ActionResult<never>;
+  }
+
+  /**
+   * A project's own fields are the task's, so they are edited on the task.
+   *
+   * Its name is the task title, its description the brief, its dates and status
+   * derived. Accepting a patch here would write to a project record that does
+   * not exist, and the change would vanish on the next read.
+   */
+  async updateProject(): Promise<ActionResult<never>> {
+    return {
+      ok: false,
+      code: "invalid_state",
+      message:
+        "A project is a task that has been broken down, so its name, description and dates are the task's. Edit the task itself — the project follows it.",
+    } as unknown as ActionResult<never>;
+  }
+
+  async createProject(): Promise<ActionResult<never>> {
+    return {
+      ok: false,
+      code: "invalid_state",
+      message:
+        "Projects are not created directly. Create a task, give it completion requirements, and break out a subtask — the task becomes a project at that moment.",
+    } as unknown as ActionResult<never>;
+  }
+
   async listReviewQueue() { return []; }
   /* ── Priority ───────────────────────────────────────────────────────────
    *
@@ -6460,6 +6919,10 @@ export class LegacyRepository {
   async #activeQueueOf(employeeId: string): Promise<{
     order: string[];
     dueDates: Map<string, string>;
+    /* This same person's position among work not yet accepted or
+       budget-settled — its own independent sequence. See
+       `TaskAssignment.provisionalPosition`. */
+    provisionalPositions: Map<string, number>;
   }> {
     const { collection, getDocs, query, where } = await import(
       "firebase/firestore"
@@ -6508,6 +6971,12 @@ export class LegacyRepository {
          engine's own record — `confirmTaskReceipt` does `arrayUnion(employeeId)`
          — so this is the same fact the acceptance card reads. */
       accepted: t.confirmedByIds.includes(employeeId),
+      /* A broken-down task holds no slot in this queue at all — see
+         `QueueEntry.isContainer`. Without this, a project's leftover stored
+         rank kept competing for a place the way a completed task's used to,
+         which is why a queue of five could read P1, P3, P5 with nothing at P2
+         or P4: two of the five documents had become containers. */
+      isContainer: t.subtaskIds.length > 0,
     }));
 
     /* The same ordering the screen derives, so a reorder starts from what the
@@ -6518,9 +6987,16 @@ export class LegacyRepository {
       .sort((a, b) => a[1] - b[1])
       .map(([id]) => id);
 
+    /* The SEPARATE sequence for work still awaiting acceptance or a settled
+       budget — never merged into `order`, which stays accepted-only because
+       `#chainQueue` below reads it to compute committed dates: chaining
+       unaccepted work into it would push an accepted deadline out for
+       something that may never be accepted at all. */
+    const provisionalPositions = provisionalQueuePositions(entries);
+
     const dueDates = await this.#chainQueue(employeeId, order, tasks);
 
-    return { order, dueDates };
+    return { order, dueDates, provisionalPositions };
   }
 
   /**
@@ -6626,6 +7102,9 @@ export class LegacyRepository {
         senderTimerWindowSecs: resolveTimeBudget(t),
         loggedSecs: logged.get(t.id) ?? 0,
         parentTaskId: t.parentTaskId,
+        /* A broken-down task holds no place in this preview — see
+           `FeasibilityTask.isContainer`. */
+        isContainer: t.subtaskIds.length > 0,
         committedDueAt: t.dueAtMs === null ? null : new Date(t.dueAtMs).toISOString(),
       }));
 
@@ -7283,6 +7762,7 @@ export class LegacyRepository {
           storedRank,
           budgetState: t.budgetNegotiation?.state ?? null,
           accepted: t.confirmedByIds.includes(employeeId),
+          isContainer: t.subtaskIds.length > 0,
         })
       )
         continue;
@@ -7498,6 +7978,7 @@ export class LegacyRepository {
             storedRank,
             budgetState: t.budgetNegotiation?.state ?? null,
             accepted: t.confirmedByIds.includes(id),
+            isContainer: t.subtaskIds.length > 0,
           })
         )
           continue;

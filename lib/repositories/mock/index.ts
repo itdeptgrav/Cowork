@@ -1221,8 +1221,11 @@ export class MockRepository implements CoworkRepository {
         taskId: id,
         employeeId: empId,
         rank: Math.min(open + 1, maxRank),
-        /* Derived per read from the whole queue, never stored. */
+        /* Derived per read from the whole queue, never stored. The mock does
+           not compute a live or provisional queue at all — see the LegacyRepository
+           equivalents in activeQueue.ts for the real derivation. */
         queuePosition: null,
+        provisionalPosition: null,
         assignedAt: nowIso(),
         confirmedAt: null,
         startedAt: null,
@@ -1804,8 +1807,11 @@ export class MockRepository implements CoworkRepository {
         taskId: t.id,
         employeeId: empId,
         rank: Math.min(open + 1, maxRank),
-        /* Derived per read from the whole queue, never stored. */
+        /* Derived per read from the whole queue, never stored. The mock does
+           not compute a live or provisional queue at all — see the LegacyRepository
+           equivalents in activeQueue.ts for the real derivation. */
         queuePosition: null,
+        provisionalPosition: null,
         assignedAt: nowIso(),
         confirmedAt: null,
         startedAt: null,
@@ -1984,8 +1990,11 @@ export class MockRepository implements CoworkRepository {
             taskId: task.id,
             employeeId: empId,
             rank: Math.min(open + 1, maxRank),
-            /* Derived per read from the whole queue, never stored. */
+            /* Derived per read from the whole queue, never stored. The mock does
+               not compute a live or provisional queue at all — see the LegacyRepository
+               equivalents in activeQueue.ts for the real derivation. */
             queuePosition: null,
+            provisionalPosition: null,
             assignedAt: nowIso(),
             confirmedAt: null,
             startedAt: null,

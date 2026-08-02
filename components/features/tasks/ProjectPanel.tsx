@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
@@ -14,8 +15,8 @@ import {
 } from "@/components/ui/Primitives";
 import { useAction } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import { statusMeta } from "./statusMeta";
-import { NewSubtaskDialog } from "./NewSubtaskDialog";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -43,7 +44,7 @@ export function ProjectPanel({
   onChange: () => void;
 }) {
   const me = useViewerId();
-  const [adding, setAdding] = useState(false);
+  const router = useRouter();
   const [drafting, setDrafting] = useState(false);
   const [draft, setDraft] = useState("");
 
@@ -66,13 +67,15 @@ export function ProjectPanel({
     ),
   );
 
-  /* Whether there is anything below this task at all.
-     `c.isProject` is the derived answer and the one every other rule reads —
-     but it is derived from the children the READ supplied, and `subtasks` is
-     the list the same page fetched. Where they disagree the concrete list
-     wins, because a subtask on screen is a fact and a false `isProject` is
-     what hid it. */
-  const hasSubtasks = c.isProject || subtasks.length > 0;
+  /* Whether there is anything below this task at all — the same predicate
+     `TaskDetail` uses to decide the task has no timer and no deadline of its
+     own, from the shared module so the two cannot answer differently. A panel
+     that listed subtasks beside a running timer would be showing a container
+     and a piece of work at once. */
+  const hasSubtasks = isProjectContainer({
+    isProject: c.isProject,
+    loadedSubtasks: subtasks.length,
+  });
 
   /* Nothing to show, and nothing offered: a task with no requirements that
      nobody may break down is an ordinary task and should look like one. */
@@ -293,7 +296,20 @@ export function ProjectPanel({
         {c.total > 0 && mayDelegate && (
           <div className="flex flex-wrap items-center gap-2 border-t border-hairline px-5 py-3">
             {!isSubtask && (
-              <Button size="sm" onClick={() => setAdding(true)}>
+              /* The full task form, not a cut-down dialog. A subtask needs
+                 every field a task needs — acceptance criteria, attachments,
+                 department scoping, the budget model derived from who it is
+                 for — and the dialog that used to open here asked for four of
+                 them. The old app made the same call: one `CreateTaskModal`,
+                 opened with a `parentTask`. */
+              <Button
+                size="sm"
+                onClick={() =>
+                  router.push(
+                    `/tasks/new?parent=${encodeURIComponent(view.task.id)}`,
+                  )
+                }
+              >
                 <Icon.plus className="h-3.5 w-3.5" />
                 {c.isProject ? "Add a subtask" : "Break this down into subtasks"}
               </Button>
@@ -377,16 +393,6 @@ export function ProjectPanel({
         </Panel>
       )}
 
-      {adding && (
-        <NewSubtaskDialog
-          parent={view}
-          onClose={() => setAdding(false)}
-          onCreated={() => {
-            setAdding(false);
-            onChange();
-          }}
-        />
-      )}
     </>
   );
 }

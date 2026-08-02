@@ -291,8 +291,15 @@ test("every tie-break is a stored field, so nothing depends on the session", () 
   const src = readFileSync("lib/rules/tasks/priorityQueue.ts", "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/[^\n]*/g, "");
+  /* **Anchored on the comparator itself, not on `calculatePriorityOrder`.**
+     The tie-break used to be inline in that function; it is now
+     `compareQueueCandidates`, shared with `calculateProvisionalOrder` so a
+     pending task's queue is ordered by the identical rule rather than a second
+     copy that could drift. `calculatePriorityOrder`'s own body is now just
+     `.sort(compareQueueCandidates)` — the fields this test checks for moved
+     with the sort, not away from it. */
   const sort = src.slice(
-    src.indexOf("export function calculatePriorityOrder("),
+    src.indexOf("function compareQueueCandidates("),
     src.indexOf("export function assignPriorityRanks("),
   );
   for (const volatile of ["Date.now", "Math.random", "indexOf", "index"]) {

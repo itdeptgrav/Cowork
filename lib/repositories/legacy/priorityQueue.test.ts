@@ -139,8 +139,13 @@ test("the queue is built from the DOMAIN status, not legacy's raw field", () => 
      `completionStatus` moves — testing the raw string would keep approved work
      in the queue for ever, which is the bug this all exists to fix. */
   const src = code(REPO);
-  const block = src.slice(src.indexOf("const myQueue = activeQueuePositions("));
-  assert.match(block.slice(0, 900), /status: toTaskStatus\(t\)/);
+  /* Anchored on the ENTRIES, not on `activeQueuePositions(` itself: the
+     provisional-position addition made the viewer's queue and their
+     not-yet-accepted work two separate derivations over one shared list, so the
+     list is now built once, named, and fed to both — `activeQueuePositions(
+     myQueueEntries)` no longer has the mapping inline after it. */
+  const block = src.slice(src.indexOf("const myQueueEntries = legacyTasks"));
+  assert.match(block.slice(0, 1200), /status: toTaskStatus\(t\)/);
 });
 
 /* ── The budget gate reaches every queue builder ──────────────────────────── */
@@ -156,7 +161,7 @@ test("both queue builders pass the budget state", () => {
   assert.ok(
     (src.match(/budgetState: t\.budgetNegotiation\?\.state \?\? null/g) ?? []).length >= 2,
   );
-  for (const marker of ["const myQueue = activeQueuePositions(", "async #activeQueueOf("]) {
+  for (const marker of ["const myQueueEntries = legacyTasks", "async #activeQueueOf("]) {
     const at = src.indexOf(marker);
     assert.ok(at > 0, `missing ${marker}`);
     /* Widened: `#activeQueueOf` also chains operational due dates now, so the
