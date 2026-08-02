@@ -114,7 +114,9 @@ export function AttentionCard() {
           />
         </div>
       ) : signals.length === 0 ? (
-        <div className="px-5">
+        /* Centred for the same reason as NowCard's: in a stretch band this is
+           usually the shortest card, so it is the one holding the slack. */
+        <div className="m-auto w-full px-5">
           <EmptyState
             compact
             title={team ? "Nothing needs you" : "You are clear"}
@@ -138,7 +140,7 @@ export function AttentionCard() {
                right-hand column past the composition it sits in. */
             <Link
               href="/tasks?view=tasks"
-              className="block border-t border-hairline px-5 py-2.5 text-[11px] text-ink-faint transition-colors hover:bg-[var(--row-hover)] hover:text-ink"
+              className="mt-auto block border-t border-hairline px-5 py-2.5 text-[11px] text-ink-faint transition-colors hover:bg-[var(--row-hover)] hover:text-ink"
             >
               <span data-figure>{signals.length - 4}</span> more waiting — open
               the task list
