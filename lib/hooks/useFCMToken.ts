@@ -162,6 +162,99 @@ async function saveToken(employeeId: string, token: string): Promise<void> {
   );
 }
 
+/**
+ * Drop this device's push registration. Call on sign-out, before Firebase's.
+ *
+ * ## Two defects, one cause
+ *
+ * Signing out left the token where it was, filed under the person who had just
+ * left.
+ *
+ * **The privacy one.** A token identifies a BROWSER, not an account. Left in
+ * the previous person's array, every notification addressed to them kept
+ * ringing on that machine — a shared desk where the next person signs in is
+ * shown somebody else's task assignments, deadline decisions and score
+ * deductions. Nothing in the app would ever reveal why.
+ *
+ * **The one that looks like a bug in saving.** FCM mints one token per browser
+ * and returns the SAME value on every later `getToken`. So after a
+ * sign-out/sign-in the token was already in the array, `arrayUnion` was a
+ * no-op, and the document did not change — which reads exactly like "the token
+ * was not stored", because from outside there is no way to tell a write that
+ * was skipped from one that never happened.
+ *
+ * Deleting it at FCM as well as in Firestore is what makes the difference:
+ * `deleteToken` invalidates the value, so the next sign-in mints a genuinely
+ * new one and the write is real.
+ *
+ * **Order matters.** This must run BEFORE `firebaseSignOut()` — the Firestore
+ * write is authorised by the session it is cleaning up, and after sign-out it
+ * is refused.
+ *
+ * Never throws. A sign-out that fails because a token could not be tidied
+ * would leave somebody signed in on a machine they are walking away from.
+ */
+export async function unregisterFCMToken(
+  employeeId: string | null,
+): Promise<void> {
+  if (!employeeId) return;
+  if (typeof window === "undefined") return;
+  if (!("serviceWorker" in navigator)) return;
+
+  try {
+    const registration =
+      await navigator.serviceWorker.getRegistration("/firebase-messaging-sw.js");
+    if (!registration) return;
+
+    /* Whichever path registered this device, read back the same value it
+       stored so the right entry is removed. */
+    let stored: string | null = null;
+    try {
+      const { getMessaging, getToken, deleteToken, isSupported } = await import(
+        "firebase/messaging"
+      );
+      if (VAPID_KEY && (await isSupported().catch(() => false))) {
+        const { legacyFirebase } = await import("../legacy/firebase.ts");
+        const messaging = getMessaging(legacyFirebase().app);
+        stored = await getToken(messaging, {
+          vapidKey: VAPID_KEY,
+          serviceWorkerRegistration: registration,
+        }).catch(() => null);
+        /* Invalidate at FCM too. Without this the same value comes back on the
+           next sign-in and the re-registration writes nothing. */
+        if (stored) await deleteToken(messaging).catch(() => {});
+      }
+    } catch {
+      /* Not an FCM browser. The Web Push branch below still applies. */
+    }
+
+    if (!stored) {
+      const subscription = await registration.pushManager
+        .getSubscription()
+        .catch(() => null);
+      if (subscription) {
+        stored = JSON.stringify(subscription.toJSON());
+        await subscription.unsubscribe().catch(() => {});
+      }
+    }
+
+    if (!stored) return;
+
+    const { arrayRemove, deleteField, doc, updateDoc } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../legacy/firebase.ts");
+    await updateDoc(doc(legacyDb(), "cowork_fcm_tokens", employeeId), {
+      tokens: arrayRemove(stored),
+      /* The per-device field as well. Leaving it would keep a dead token
+         pointing at this machine under the previous person's record. */
+      [deviceKey()]: deleteField(),
+    });
+  } catch {
+    /* Signing out must complete regardless. */
+  }
+}
+
 export function useFCMToken(employeeId: string | null): void {
   useEffect(() => {
     if (!employeeId) return;

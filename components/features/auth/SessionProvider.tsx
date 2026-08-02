@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from "react";
 import { getRepository, setRepository } from "@/lib/repositories";
-import { useFCMToken } from "@/lib/hooks/useFCMToken";
+import { unregisterFCMToken, useFCMToken } from "@/lib/hooks/useFCMToken";
 import { LegacyRepository, toCoworkRepository } from "@/lib/repositories/legacy";
 import { startTaskWatch } from "@/lib/repositories/legacy/taskWatch";
 import { PROFILE_STORAGE_KEY } from "@/lib/config/profileSwitcher";
@@ -544,6 +544,13 @@ export function SessionProvider({
        Firestore, and it would still be holding the previous person's employee
        id at a shared desk. */
     await stopTaskWatch();
+    /* **Before the credential goes.** The token is filed under the person
+       signing out and the Firestore write that removes it is authorised by the
+       session being ended — after `firebaseSignOut` it is simply refused, and
+       the entry stays. A token identifies a BROWSER, so one left behind keeps
+       delivering this person's notifications to whoever signs in next at the
+       same desk. */
+    await unregisterFCMToken(state.employeeId);
     await firebaseSignOut().catch(() => {});
     clearFirebaseCookie();
 
