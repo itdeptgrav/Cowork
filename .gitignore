@@ -12,3 +12,8 @@
 node_modules/
 .next/
 out/
+
+# Agent worktrees — each is its own git repo; committing one accidentally
+# records it as a gitlink with no .gitmodules entry, which is what "Failed to
+# fetch one or more git submodules" during a Vercel clone was coming from.
+.claude/worktrees/
