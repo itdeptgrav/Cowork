@@ -57,6 +57,7 @@ import {
 import { ChartPanel } from "./ChartPanel";
 import { ConditionalPanel } from "./ConditionalPanel";
 import { SheetsAssistant } from "./ai/SheetsAssistant";
+import { parseCellDirective, resolveAutosum } from "@/lib/rules/sheets/cellDirectives";
 import { SheetContextMenu, type MenuAction } from "./SheetContextMenu";
 import type { SelectionState, SheetCommand } from "./sheetCommands";
 
@@ -170,6 +171,16 @@ export function SheetGrid({
   /* The conditional-formatting panel, and which rule's editor is expanded. */
   const [cfOpen, setCfOpen] = useState(false);
   const [showAssistant, setShowAssistant] = useState(false);
+  /**
+   * An `=ai …` typed into a cell, waiting to be handed to the panel.
+   *
+   * Held here rather than passed straight down because the panel may not be
+   * mounted at the moment the cell commits — opening it and delivering the
+   * request are two steps, and the request has to survive the gap. Cleared
+   * by the panel once it has taken it, so re-opening the panel later does
+   * not re-ask a question from ten minutes ago.
+   */
+  const [cellPrompt, setCellPrompt] = useState<{ ref: string; text: string } | null>(null);
   const [selectedRule, setSelectedRule] = useState<string | null>(null);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -544,7 +555,35 @@ export function SheetGrid({
   };
 
   const commit = () => {
-    if (editing) setCell(editing, draft);
+    if (editing) {
+      /**
+       * Two things you can type into a cell that aren't formulas.
+       *
+       * `=autosum` resolves HERE, deterministically — no model, no network,
+       * no proposal to approve, because it is arithmetic over the cells
+       * adjacent to this one rather than a guess about intent. It becomes a
+       * real `=SUM(range)` and lands like any other formula, so undo, the
+       * formula bar and the engine all treat it as exactly what it is. With
+       * nothing adjacent to total, what was typed is left alone rather than
+       * writing a `=SUM()` over nothing.
+       *
+       * `=ai …` is the opposite and stays the opposite: it opens the
+       * assistant with the request, and whatever comes back is a proposal
+       * with a preview and an Apply button, never a direct write. The cell
+       * keeps whatever it held before.
+       */
+      const directive = parseCellDirective(draft);
+      if (directive?.kind === "autosum") {
+        const formula = resolveAutosum(sheet, editing);
+        setCell(editing, formula ?? draft);
+        if (!formula) setError("There's nothing next to that cell to total.");
+      } else if (directive?.kind === "ask") {
+        setCellPrompt({ ref: editing, text: directive.text });
+        setShowAssistant(true);
+      } else {
+        setCell(editing, draft);
+      }
+    }
     setEditing(null);
     setAcHidden(false);
     resetPointing();
@@ -2157,7 +2196,14 @@ export function SheetGrid({
             </div>
           )}
         </div>
+      </div>
 
+        {/* A sibling of the SCROLL container, never a child of it. Nested
+            inside, an `absolute` panel is clipped by the grid's own
+            `overflow-auto` box and drifts sideways with the sheet's
+            horizontal scroll — which is what made its input unreachable. It
+            belongs exactly where the chart and conditional panels already
+            sit: a direct child of the content row. */}
         {showAssistant && (
           <SheetsAssistant
             documentId={documentId}
@@ -2165,11 +2211,12 @@ export function SheetGrid({
             sheet={sheet}
             selection={selection}
             dispatch={dispatch}
+            pendingPrompt={cellPrompt}
+            onPromptTaken={() => setCellPrompt(null)}
             onRenamed={() => doc.refetch()}
             onClose={() => setShowAssistant(false)}
           />
         )}
-      </div>
 
         {selectedChartSpec && (
           <ChartPanel

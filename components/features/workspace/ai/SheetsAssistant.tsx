@@ -40,9 +40,9 @@ import type { SelectionState, SheetDispatch } from "../sheetCommands";
  */
 
 const SUGGESTED_ACTIONS = [
+  { label: "Sum this", instruction: "Write a formula that sums the selected range into the cell just below it." },
   { label: "Explain this formula", instruction: "Explain what the formula in the selected cell does." },
   { label: "Fix this formula", instruction: "The formula in the selected cell isn't working. Find and fix the problem." },
-  { label: "Sum this column", instruction: "Write a formula that sums the selected range into the cell just below it." },
   { label: "Remove duplicates", instruction: "Identify duplicate rows in the selected range." },
   { label: "Clean this data", instruction: "Clean and standardize the selected data — trim whitespace and fix inconsistent capitalization." },
   { label: "Sort this range", instruction: "Sort the selected range by its first column, ascending, treating the top row as a header." },
@@ -58,6 +58,8 @@ export function SheetsAssistant({
   sheet,
   selection,
   dispatch,
+  pendingPrompt,
+  onPromptTaken,
   onRenamed,
   onClose,
 }: {
@@ -66,6 +68,9 @@ export function SheetsAssistant({
   sheet: SheetData;
   selection: SelectionState;
   dispatch: SheetDispatch;
+  /** An `=ai …` typed into a cell — see `SheetGrid`'s `commit`. */
+  pendingPrompt?: { ref: string; text: string } | null;
+  onPromptTaken?: () => void;
   onRenamed: () => void;
   onClose: () => void;
 }) {
@@ -263,6 +268,13 @@ export function SheetsAssistant({
       placeholder="e.g. 'sum this column', 'sort by name', 'add a chart'…"
       suggestedActions={SUGGESTED_ACTIONS}
       contextLabel={contextLabel}
+      /* An `=ai …` typed into a cell arrives here already aimed at that
+         cell, so the model is told which one rather than having to infer it
+         from a selection that has since moved on. */
+      pendingInstruction={
+        pendingPrompt ? `In cell ${pendingPrompt.ref}: ${pendingPrompt.text}` : null
+      }
+      onPendingTaken={onPromptTaken}
       getContextSummary={(instruction) =>
         buildSheetsContext({ sheet, selection: selection.rect, wholeSheet: requestsWholeSheet(instruction) })
       }

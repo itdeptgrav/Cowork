@@ -63,6 +63,14 @@ export interface AssistantPanelProps<A> {
   /** Shown in the empty input — one concrete example, in the surface's own vocabulary. */
   placeholder: string;
   /**
+   * An instruction raised from somewhere else in the surface — today, an
+   * `=ai …` typed into a cell. Sent as soon as the panel sees it, then
+   * handed back via {@link onPendingTaken} so re-opening the panel later
+   * does not re-ask a question from ten minutes ago.
+   */
+  pendingInstruction?: string | null;
+  onPendingTaken?: () => void;
+  /**
    * Called at send time with the instruction the person just typed — builds
    * the actual context payload sent to Gemini. Takes the instruction so the
    * caller can decide whether "the whole document/sheet" was explicitly
@@ -103,6 +111,8 @@ export function AssistantPanel<A>({
   suggestedActions,
   contextLabel,
   placeholder,
+  pendingInstruction,
+  onPendingTaken,
   getContextSummary,
   validate,
   apply,
@@ -198,6 +208,23 @@ export function AssistantPanel<A>({
     );
   }
 
+  /**
+   * Take an instruction raised from elsewhere in the surface — an `=ai …`
+   * typed into a cell — and send it once.
+   *
+   * `onPendingTaken` fires FIRST, before the await inside `submit`, so the
+   * parent clears it immediately and a re-render mid-flight cannot deliver
+   * the same question twice.
+   */
+  const pendingRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pendingInstruction || pendingRef.current === pendingInstruction) return;
+    pendingRef.current = pendingInstruction;
+    onPendingTaken?.();
+    void submit(pendingInstruction);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingInstruction]);
+
   const unconfigured = !statusLoading && status && !status.configured;
 
   return (
@@ -232,17 +259,20 @@ export function AssistantPanel<A>({
       <div ref={logRef} id={panelId} className="min-h-0 flex-1 overflow-y-auto px-3.5 py-3 scroll-slim">
         {turns.length === 0 ? (
           <>
-            <p className="text-[13px] leading-relaxed text-ink-muted">
-              Ask for a rewrite, a summary, a table — or pick one to start.
+            <p className="text-[12.5px] leading-relaxed text-ink-muted">
+              Describe what you want, or start with one of these.
             </p>
-            <ul className="mt-3 flex flex-col gap-1.5">
+            {/* Wrapping pills rather than a stack of full-width bars: eleven
+                of these down a 340px column is a wall, and their labels are
+                two or three words — the width was never carrying meaning. */}
+            <ul className="mt-2.5 flex flex-wrap gap-1.5">
               {suggestedActions.map((s) => (
                 <li key={s.label}>
                   <button
                     type="button"
                     disabled={!!unconfigured}
                     onClick={() => void submit(s.instruction)}
-                    className="w-full rounded-inset bg-[var(--control)] px-3 py-2 text-left text-[12.5px] text-ink transition-colors hover:bg-[var(--control-hover)] disabled:opacity-40"
+                    className="rounded-full bg-[var(--control)] px-2.5 py-1 text-[12px] text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink disabled:opacity-40"
                   >
                     {s.label}
                   </button>
