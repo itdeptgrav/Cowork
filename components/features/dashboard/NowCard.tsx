@@ -16,7 +16,6 @@ import { Icon } from "@/components/ui/Icons";
 import { useQuery } from "@/lib/hooks/useRepository";
 import {
   formatDate,
-  formatTimer,
   formatDurationTimer,
 } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
@@ -148,6 +147,8 @@ function Hero({
   const viewerId = useViewerId();
   const action = nextAction(view, viewerId ?? "");
   const running = startedAtRealMs !== null;
+  /* Used only for progress-bar percentage; the live elapsed figure comes
+     from TimerControl so there is never a stale vs. live disagreement. */
   const ticked = useTicker(startedAtRealMs);
   const logged = view.loggedSecs + ticked;
   const estimate = view.task.estimatedEffortSecs;
@@ -156,18 +157,6 @@ function Hero({
   return (
     <div className="px-5 pt-1">
       <div className="flex flex-wrap items-center gap-2">
-        {running && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] tracking-[0.09em] text-ink-muted uppercase">
-            <span
-              aria-hidden="true"
-              className="relative flex h-1.5 w-1.5 text-ink"
-            >
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
-            </span>
-            Running
-          </span>
-        )}
         <Chip tone={meta.tone}>{meta.label}</Chip>
         {view.myRank && (
           <span
@@ -177,9 +166,15 @@ function Hero({
             P{view.myRank}
           </span>
         )}
-        <span data-figure className="ml-auto text-lg leading-none text-ink">
-          {formatTimer(logged)}
-        </span>
+        {running && (
+          <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] tracking-[0.05em] text-ink-muted uppercase">
+            <span aria-hidden="true" className="relative flex h-1.5 w-1.5 text-ink">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
+            </span>
+            Running
+          </span>
+        )}
       </div>
 
       <Link

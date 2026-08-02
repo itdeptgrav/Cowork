@@ -359,9 +359,33 @@ export const HELP_ARTICLES: HelpArticle[] = [
     ],
     answer:
       "Anyone can raise work for anyone. Cowork does not stop you asking — it decides who has to agree before the work actually starts. Assigning to someone in your own reporting line starts immediately. Assigning to someone senior to you creates the task and holds it until that person accepts it, so nobody can quietly put work on their manager's list. Assigning across a department holds it until both department heads agree. In every case the task is created and you can see it waiting, with the name of whoever it is waiting on. If an administrator has narrowed your role so that it reaches fewer people, the assignee list shows only who you can reach and says so above the list.",
-    related: ["task-create", "task-cross-department", "roles-scopes"],
+    related: ["task-create", "task-cross-department", "roles-scopes", "task-new-assignment-notice"],
     source:
       "lib/auth/assignment.ts — upward and cross-department gates; legacy taskForward.js:135 restricted assignment to nobody",
+  },
+  {
+    id: "task-new-assignment-notice",
+    category: "tasks",
+    title: "The notice about new work when you open Cowork",
+    keywords: [
+      "new task popup",
+      "popup when i open cowork",
+      "you have new tasks",
+      "new work notice",
+      "stop the popup",
+      "assigned to me",
+    ],
+    examples: [
+      "What is the popup about new tasks?",
+      "Why did I see 'you have new tasks'?",
+      "Why did that popup appear again on my laptop?",
+      "How do I get rid of the new task popup?",
+    ],
+    answer:
+      "When somebody assigns you work, the next time you open Cowork you get a notice listing what arrived — its priority, its deadline if it has one yet, and who assigned it. It is a notice, not a gate: Later closes it, Escape closes it, clicking outside closes it, and the work is on your task list either way. Clicking a task in the list opens it so you can confirm it or discuss the deadline. It lists at most five and says how many more there are, so coming back from leave to twenty new tasks does not produce a modal you have to scroll. What it shows is work that is still waiting for you to confirm it — once you confirm a task it stops counting as new, and confirming is the thing that actually moves it into your queue. Cowork remembers that it has shown you a notice in the browser you are using, not on your account, so signing in on a second machine can show you the same one once more. That is deliberate: the alternative is a device you no longer use marking work as seen and you never hearing about it. Being assigned the same task again later counts as new again, because it is.",
+    related: ["task-who-can-assign", "task-priority", "task-budget-vs-deadline-rights"],
+    source:
+      "components/features/tasks/NewAssignmentGate.tsx; lib/rules/tasks/newAssignments.ts; TaskStatus 'assigned' is the server-side record of not-yet-confirmed",
   },
   {
     id: "task-break-down",

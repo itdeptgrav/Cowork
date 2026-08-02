@@ -5,6 +5,7 @@ import { AssistantPanel } from "./AssistantPanel";
 import { DiffPreview } from "./DiffPreview";
 import { buildDocsContext, requestsWholeDocument } from "@/lib/rules/documents/aiContext";
 import { docsActionRequiresConfirmation, validateDocsToolCall, type DocsAiAction } from "@/lib/rules/documents/aiTools";
+import { parseInline } from "@/lib/rules/documents/richText";
 
 /**
  * The Docs executor.
@@ -71,21 +72,9 @@ export function DocsAssistant({
         return (
           <div className="flex flex-col gap-1.5">
             {action.blocks.map((b, i) => {
-              if (b.type === "heading")
-                return (
-                  <p
-                    key={i}
-                    className={`font-medium text-ink ${b.level === 1 ? "text-[14px]" : "text-[12.5px]"}`}
-                  >
-                    {b.text}
-                  </p>
-                );
-              if (b.type === "paragraph")
-                return (
-                  <p key={i} className="text-[12px] leading-relaxed text-ink-muted">
-                    {b.text}
-                  </p>
-                );
+              if (b.type === "divider")
+                return <hr key={i} className="my-1 border-0 border-t border-hairline" />;
+
               if (b.type === "bullets" || b.type === "numbered")
                 return (
                   <ul
@@ -95,33 +84,83 @@ export function DocsAssistant({
                     }`}
                   >
                     {b.items.map((item, j) => (
-                      <li key={j}>{item}</li>
+                      <li key={j}>
+                        <Marked text={item} />
+                      </li>
                     ))}
                   </ul>
                 );
-              return (
-                <table key={i} className="w-full border-collapse text-[11px]">
-                  <thead>
-                    <tr>
-                      {b.headers.map((h, j) => (
-                        <th key={j} className="border border-hairline px-1.5 py-1 text-left font-medium text-ink">
-                          {h}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {b.rows.map((row, j) => (
-                      <tr key={j}>
-                        {row.map((cell, k) => (
-                          <td key={k} className="border border-hairline px-1.5 py-1 text-ink-muted">
-                            {cell}
-                          </td>
+
+              if (b.type === "table")
+                return (
+                  <table key={i} className="w-full border-collapse text-[11px]">
+                    <thead>
+                      <tr>
+                        {b.headers.map((h, j) => (
+                          <th key={j} className="border border-hairline px-1.5 py-1 text-left font-medium text-ink">
+                            <Marked text={h} />
+                          </th>
                         ))}
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
+                    </thead>
+                    <tbody>
+                      {b.rows.map((row, j) => (
+                        <tr key={j}>
+                          {row.map((cell, k) => (
+                            <td key={k} className="border border-hairline px-1.5 py-1 text-ink-muted">
+                              <Marked text={cell} />
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                );
+
+              /* The preview carries the same alignment, colour and size the
+                 document will — a preview that showed everything flush-left
+                 in default ink would be approving one thing and applying
+                 another. */
+              const style: React.CSSProperties = {
+                textAlign: b.align,
+                color: b.color,
+                fontSize: b.size ? `${Math.min(b.size, 20)}px` : undefined,
+              };
+
+              if (b.type === "heading")
+                return (
+                  <p
+                    key={i}
+                    style={style}
+                    className={`font-medium ${b.color ? "" : "text-ink"} ${
+                      b.level === 1 ? "text-[14px]" : "text-[12.5px]"
+                    }`}
+                  >
+                    <Marked text={b.text} />
+                  </p>
+                );
+
+              if (b.type === "quote")
+                return (
+                  <p
+                    key={i}
+                    style={style}
+                    className={`border-s-2 border-hairline ps-2 text-[12px] leading-relaxed italic ${
+                      b.color ? "" : "text-ink-muted"
+                    }`}
+                  >
+                    <Marked text={b.text} />
+                  </p>
+                );
+
+              return (
+                <p
+                  key={i}
+                  style={style}
+                  className={`text-[12px] leading-relaxed ${b.color ? "" : "text-ink-muted"}`}
+                >
+                  <Marked text={b.text} />
+                </p>
               );
             })}
           </div>
@@ -226,6 +265,57 @@ export function DocsAssistant({
   );
 }
 
+/** The preview's half of {@link inlineNodes} — same parse, different renderer. */
+function Marked({ text }: { text: string }) {
+  return (
+    <>
+      {parseInline(text).map((span, i) => (
+        <span
+          key={i}
+          className={[
+            span.bold ? "font-semibold text-ink" : "",
+            span.italic ? "italic" : "",
+            span.underline ? "underline" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+        >
+          {span.text}
+        </span>
+      ))}
+    </>
+  );
+}
+
+/**
+ * One block's text as Tiptap text nodes, with its emphasis and any block
+ * colour/size carried as marks.
+ *
+ * `textStyle` holds colour and size together — that is one mark with two
+ * attrs in this editor's configuration (`Color` and `FontSize` both extend
+ * it), not two marks, and splitting them drops whichever is applied second.
+ */
+function inlineNodes(
+  text: string,
+  style?: { color?: string; size?: number },
+): { type: "text"; text: string; marks?: { type: string; attrs?: Record<string, unknown> }[] }[] {
+  const textStyle: Record<string, unknown> = {};
+  if (style?.color) textStyle.color = style.color;
+  if (style?.size) textStyle.fontSize = `${style.size}pt`;
+  const hasTextStyle = Object.keys(textStyle).length > 0;
+
+  return parseInline(text).map((span) => {
+    const marks: { type: string; attrs?: Record<string, unknown> }[] = [];
+    if (span.bold) marks.push({ type: "bold" });
+    if (span.italic) marks.push({ type: "italic" });
+    if (span.underline) marks.push({ type: "underline" });
+    if (hasTextStyle) marks.push({ type: "textStyle", attrs: textStyle });
+    return marks.length
+      ? { type: "text" as const, text: span.text, marks }
+      : { type: "text" as const, text: span.text };
+  });
+}
+
 function applyDocsAction(
   editor: Editor,
   action: DocsAiAction,
@@ -239,41 +329,51 @@ function applyDocsAction(
          arrives as a SINGLE undo step — inserting block by block would make
          Ctrl-Z peel a twelve-block letter off one paragraph at a time. */
       const content = action.blocks.map((b) => {
-        if (b.type === "heading")
-          return {
-            type: "heading",
-            attrs: { level: b.level },
-            content: b.text ? [{ type: "text", text: b.text }] : [],
-          };
-        if (b.type === "paragraph")
-          return { type: "paragraph", content: b.text ? [{ type: "text", text: b.text }] : [] };
+        if (b.type === "divider") return { type: "horizontalRule" };
+
         if (b.type === "bullets" || b.type === "numbered")
           return {
             type: b.type === "bullets" ? "bulletList" : "orderedList",
             content: b.items.map((item) => ({
               type: "listItem",
-              content: [{ type: "paragraph", content: [{ type: "text", text: item }] }],
+              content: [{ type: "paragraph", content: inlineNodes(item) }],
             })),
           };
-        return {
-          type: "table",
-          content: [
-            {
-              type: "tableRow",
-              content: b.headers.map((h) => ({
-                type: "tableHeader",
-                content: [{ type: "paragraph", content: h ? [{ type: "text", text: h }] : [] }],
+
+        if (b.type === "table")
+          return {
+            type: "table",
+            content: [
+              {
+                type: "tableRow",
+                content: b.headers.map((h) => ({
+                  type: "tableHeader",
+                  content: [{ type: "paragraph", content: inlineNodes(h) }],
+                })),
+              },
+              ...b.rows.map((row) => ({
+                type: "tableRow",
+                content: row.map((cell) => ({
+                  type: "tableCell",
+                  content: [{ type: "paragraph", content: inlineNodes(cell) }],
+                })),
               })),
-            },
-            ...b.rows.map((row) => ({
-              type: "tableRow",
-              content: row.map((cell) => ({
-                type: "tableCell",
-                content: [{ type: "paragraph", content: cell ? [{ type: "text", text: cell }] : [] }],
-              })),
-            })),
-          ],
-        };
+            ],
+          };
+
+        /* Heading, paragraph, quote — the three that carry block styling. */
+        const attrs: Record<string, unknown> = {};
+        if (b.align) attrs.textAlign = b.align;
+        const nodes = inlineNodes(b.text, { color: b.color, size: b.size });
+
+        if (b.type === "heading")
+          return { type: "heading", attrs: { ...attrs, level: b.level }, content: nodes };
+        if (b.type === "quote")
+          return {
+            type: "blockquote",
+            content: [{ type: "paragraph", attrs, content: nodes }],
+          };
+        return { type: "paragraph", attrs, content: nodes };
       });
       chain.insertContentAt(selection.to, content).run();
       return;

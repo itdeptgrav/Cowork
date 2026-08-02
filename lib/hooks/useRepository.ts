@@ -30,6 +30,106 @@ import {
 } from "@/lib/repositories/events";
 import type { ActionResult, CoworkRepository } from "@/lib/repositories";
 
+/**
+ * Module-level in-flight request deduplication.
+ *
+ * Without this, multiple components calling the same query simultaneously each
+ * fire an independent Firestore round-trip. With it, the first call starts the
+ * fetch and stores the Promise; subsequent calls for the same query+deps at the
+ * same version attach to that Promise and get the same result — one read, many
+ * subscribers. The entry is deleted when the Promise settles, so the next
+ * version bump (any mutation) starts fresh.
+ *
+ * Key = fetcher source text + serialized deps + version. Function source text is
+ * stable at runtime (same code → same string), so `r => r.getViewer()` and
+ * `r => r.listEmployees()` are distinct even after minification renames `r`.
+ */
+const inflightCache = new Map<string, Promise<unknown>>();
+
+/**
+ * Short-TTL result cache for expensive queries that opt in via `staleTime`.
+ *
+ * Key = fetcher source + deps (WITHOUT version), so a result fetched at version
+ * N is reused at version N+1 if it is still fresh. This prevents a timer
+ * heartbeat or an unrelated task mutation from re-running a 3-second Firestore
+ * aggregate just to redraw a weekly graph that has not changed.
+ *
+ * Only populated for queries that pass `staleTime > 0` (explicitly or via the
+ * method-default table below).
+ */
+interface StaleRecord {
+  data?: unknown;
+  error?: string;
+  unavailable?: boolean;
+  resolvedAt: number;
+}
+const staleResultCache = new Map<string, StaleRecord>();
+
+/**
+ * One-shot preload cache for optimistic navigation.
+ *
+ * Mutations that already read back the full entity (e.g. `#write → #readTaskView`)
+ * can pre-populate this cache so the detail page loads instantly rather than
+ * firing a redundant round-trip. Key = methodName + JSON.stringify(deps).
+ *
+ * Checked FIRST in the effect, before staleResultCache and inflight dedup.
+ * Served once then deleted — it is a hand-off from the mutation, not a cache.
+ */
+const preloadCache = new Map<string, StaleRecord>();
+
+/**
+ * Pre-populate the query cache for a specific repository method call.
+ *
+ * Call this immediately after a mutation that returns fresh entity data and
+ * before navigating to the entity's detail page.
+ *
+ *   preloadQuery("getTask", [newTaskId], taskData);
+ *   router.push(`/tasks/${newTaskId}`);
+ *
+ * The detail page's `useQuery(r => r.getTask(taskId), [taskId])` will serve
+ * the preloaded data without a Firestore round-trip.
+ */
+export function preloadQuery(
+  methodName: string,
+  deps: unknown[],
+  data: unknown,
+): void {
+  preloadCache.set(methodName + JSON.stringify(deps), {
+    data,
+    resolvedAt: Date.now(),
+  });
+}
+
+/**
+ * Default stale times for repository methods whose data changes rarely
+ * compared to how often mutations fire.
+ *
+ * These are derived from the fetcher's source text (which method it calls),
+ * so every call site benefits without any per-call change. Methods not listed
+ * here get `staleTime: 0` — always re-fetch on version bump — which is the
+ * safe default for task lists, timers, notifications, etc. that DO change on
+ * common mutations.
+ *
+ * Why method names survive minification: property accesses (`r.listEmployees`)
+ * are never renamed by terser/swc — only local variable names are. The regex
+ * anchors to `=>` so it only matches the repository call, not `.then()` chains.
+ */
+const METHOD_STALE_DEFAULTS: Record<string, number> = {
+  getViewer: 120_000,        // viewer identity / permissions rarely change
+  getCurrentEmployee: 120_000,
+  listEmployees: 60_000,     // employee list changes only on HR action
+  listRoles: 300_000,        // roles almost never change
+  listDepartments: 300_000,
+  listAssignableEmployees: 60_000,
+  listMeetings: 20_000,      // meetings list doesn't change on task mutations
+  listProjects: 20_000,
+  listGoals: 30_000,
+  listDocuments: 30_000,
+  listConversations: 30_000,
+  listTimers: 10_000,
+  getWorkloadFlow: 30_000,   // weekly graph — won't change in 30 s
+};
+
 export function useRepo(): CoworkRepository {
   return getRepository();
 }
@@ -91,6 +191,7 @@ function isNotConnected(e: unknown): boolean {
 export function useQuery<T>(
   fetcher: (repo: CoworkRepository) => Promise<T>,
   deps: unknown[] = [],
+  { staleTime = 0 }: { staleTime?: number } = {},
 ): QueryResult<T> {
   const [nonce, setNonce] = useState(0);
   // Any mutation anywhere bumps this, so a timer started in a table row is
@@ -102,13 +203,25 @@ export function useQuery<T>(
     () => 0,
   );
   const key = JSON.stringify(deps) + `#${nonce}#${version}`;
+
+  // Derive the repository method name from the fetcher's source so we can look
+  // up a default staleTime without needing every call site to pass one.
+  // Property names survive minification; only the parameter variable is renamed.
+  const methodName =
+    fetcher.toString().match(/=>\s*[\w$]+\.([\w]+)\s*\(/)?.[1] ?? "";
+  const effectiveStaleTime = staleTime || METHOD_STALE_DEFAULTS[methodName] || 0;
   const [settled, setSettled] = useState<Settled<T> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    /* The fetcher is captured in this closure rather than held in a ref, so a
-       deps change is the only thing that re-runs it.
+    /* Two-level caching strategy:
+       1. `staleTime` TTL cache — for expensive queries (e.g. workload graphs)
+          that should not re-run on every unrelated mutation. Key is fetcher +
+          deps without version, so a fresh result survives version bumps until
+          its TTL expires. Call sites opt in with `{ staleTime: 30_000 }`.
+       2. Inflight dedup — for all queries. Concurrent components calling the
+          same query at the same version share one Promise → one network read.
 
        Wrapped in `Promise.resolve().then(...)` so a fetcher that throws
        SYNCHRONOUSLY becomes a rejection like any other. It matters: an
@@ -116,19 +229,68 @@ export function useQuery<T>(
        promise exists — so the `.catch` below would never attach and the throw
        would escape the effect into React's error overlay, taking the whole
        shell down because one status pill is not connected yet. */
-    Promise.resolve()
-      .then(() => fetcher(getRepository()))
-      .then((data) => {
-        if (!cancelled) setSettled({ key, data, error: null });
-      })
-      .catch((e: unknown) => {
-        if (!cancelled)
+    const fetcherKey = fetcher.toString() + JSON.stringify(deps);
+    const dedupKey = fetcherKey + `#${version}`;
+
+    // Preload check: a mutation may have hand-off fresh data here so the next
+    // render of this query doesn't need a round-trip. Served once then deleted.
+    if (methodName) {
+      const preloaded = preloadCache.get(methodName + JSON.stringify(deps));
+      if (preloaded && Date.now() - preloaded.resolvedAt < 30_000) {
+        preloadCache.delete(methodName + JSON.stringify(deps));
+        if (!cancelled) setSettled({ key, data: preloaded.data as T, error: null });
+        return () => {
+          cancelled = true;
+        };
+      }
+    }
+
+    // TTL check: if a recent resolved result exists for this fetcher+deps,
+    // serve it immediately and skip the network round-trip.
+    if (effectiveStaleTime > 0) {
+      const stale = staleResultCache.get(fetcherKey);
+      if (stale && Date.now() - stale.resolvedAt < effectiveStaleTime) {
+        if (stale.error === undefined) {
+          setSettled({ key, data: stale.data as T, error: null });
+        } else {
           setSettled({
             key,
             data: null,
-            error: e instanceof Error ? e.message : "Something went wrong.",
-            unavailable: isNotConnected(e),
+            error: stale.error,
+            unavailable: stale.unavailable,
           });
+        }
+        return () => {
+          cancelled = true;
+        };
+      }
+    }
+
+    // Inflight dedup: if another component already started this fetch, join it.
+    if (!inflightCache.has(dedupKey)) {
+      const p = Promise.resolve().then(() => fetcher(getRepository()));
+      inflightCache.set(dedupKey, p);
+      p.finally(() => inflightCache.delete(dedupKey));
+    }
+
+    (inflightCache.get(dedupKey) as Promise<T>)
+      .then((data) => {
+        if (!cancelled) {
+          setSettled({ key, data, error: null });
+          if (effectiveStaleTime > 0) {
+            staleResultCache.set(fetcherKey, { data, resolvedAt: Date.now() });
+          }
+        }
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          const error = e instanceof Error ? e.message : "Something went wrong.";
+          const unavailable = isNotConnected(e);
+          setSettled({ key, data: null, error, unavailable });
+          if (effectiveStaleTime > 0) {
+            staleResultCache.set(fetcherKey, { error, unavailable, resolvedAt: Date.now() });
+          }
+        }
       });
 
     return () => {

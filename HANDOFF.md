@@ -3594,3 +3594,109 @@ touched. The 28 suite failures and 7 tsc errors currently in the tree are all
 in `lib/repositories/legacy/*` and `components/features/meetings/*` — the
 concurrent session's work, confirmed by the fact that no file this feature
 owns appears in either list.
+
+## 22.11 · Styling, so a generated document is laid out rather than typed out
+
+`insert_blocks` produced correct structure and no formatting — a wall of
+default-ink paragraphs. Three additions, all validated:
+
+**Inline emphasis.** `lib/rules/documents/richText.ts` parses `**bold**`,
+`*italic*`, `__underline__` out of a block's text. Markers rather than a
+structured `spans` array on purpose: models write this notation fluently and
+unprompted, and — the deciding property — a marker that fails to pair
+degrades to a literal asterisk, where a malformed array costs the whole
+document. Bold is matched before italic because `**` starts with `*`;
+reversing the alternation reads `**x**` as an italic empty string. Pinned in
+a test.
+
+**Block attributes.** `align`, `color`, `size` on headings, paragraphs and
+quotes. Each is *parsed, never trusted*: a non-hex colour, an unknown
+alignment or an illegible point size is dropped and the block keeps the
+document's defaults, rather than the page being refused over a cosmetic
+field. Hex-only is a real guard, not fussiness — the value lands in a `style`
+attribute, and `red; background: url(…)` is what accepting arbitrary CSS from
+a model response buys you. Tested with that exact string.
+
+**Two new block types**: `quote` (a real blockquote) and `divider` (a
+horizontal rule). The divider carries no text, so the empty-block filter had
+to learn not to eat it — also tested.
+
+**One parse, two renderers.** `parseInline` returns plain data; the panel's
+preview maps it to `<span>`s and the executor maps it to Tiptap text nodes.
+The preview now also carries the block's real alignment, colour and size —
+previously it showed everything flush-left in default ink, which meant
+approving one thing and applying another. `textStyle` holds colour and size
+together as one mark with two attrs, because `Color` and `FontSize` both
+extend that single mark in this editor's configuration and emitting two marks
+drops whichever applies second.
+
+**The model is told to use this with restraint** — at most one accent colour,
+on the title or section headings only, never on body text, and "if in doubt,
+leave the styling off: clean and unstyled beats decorated."
+
+Verified live on the same prompt: 16 blocks — H1, H2, a centred 11pt
+reference line, a divider, bolded names inline, three section headings, a
+bulleted list of milestones, a status table, and a sign-off.
+
+103 AI-feature tests pass (16 new). tsc and lint clean on every file this
+touched.
+
+## 22.12 · "You have new work", once, on opening Cowork
+
+A notice listing tasks assigned to you since you last looked — priority,
+deadline if it has one yet, who assigned it — shown on opening Cowork, from
+anywhere in the app (`ShellFrame`, beside `PriorityAckGate`).
+
+**No new persistence was needed to know what is outstanding.** `TaskStatus`
+already has `assigned` — the state between somebody assigning work and the
+assignee confirming it — which IS the product's server-side record of "not
+acted on yet". So the source is `listTasks({scope:"mine", status:["assigned"]})`
+and there is no `seenAt` column, no migration, and no second source of truth
+that could drift from the task list.
+
+**What IS stored per-browser is only whether the notice has been shown.**
+Those are different questions and conflating them would either nag on every
+page load until the task is confirmed, or demand a server field for what is
+really a UI courtesy. The cost, stated in the help article rather than left
+to be discovered: signing in on a second machine shows the notice once more.
+That is the right direction to fail — the alternative is a device you no
+longer use marking work as seen and you never hearing about it. Keyed on
+`taskId:assignedAt`, so being re-assigned to the same task later announces
+itself again.
+
+**Dismissable, unlike `PriorityAckGate`.** That gate cannot be dismissed
+because commitments somebody already agreed to changed underneath them. New
+work arriving is not that: it is not a change to anything agreed, the task is
+on their list regardless, and `confirmTask` is the real acceptance step. A
+blocking modal would also be worst exactly where it needs to be gentlest —
+somebody back from leave meeting a wall they cannot pass. Escape, the
+backdrop and "Later" all close it. Mounted after the priority gate so when
+both are due, the undismissable one is on top.
+
+**Read once per mount, not polled.** "When they open Cowork" is the
+requirement and a page load is that moment; polling would turn a welcome
+notice into an interruption over whatever somebody is mid-way through, and
+anything arriving mid-session is already the notification bell's job.
+
+Capped at five with an honest overflow count, and dismissing marks the
+overflow seen too — they were counted on screen, so re-announcing them would
+be a notice about work already reported.
+
+**One bug caught before it shipped:** the first draft linked
+`/tasks?task=<id>`, which looks right and silently lands on the overview —
+`TasksArea` reads `?view=` and nothing else. The real detail route is
+`/tasks/[taskId]`. Also caught: `related: ["task-deadline-negotiation"]` in
+the new help article named an id that does not exist; the corpus's own
+orphan-link guard would have failed the build, and it is now
+`task-budget-vs-deadline-rights`.
+
+`lib/rules/tasks/newAssignments.ts` is pure and tested (8 tests). Help article
+`task-new-assignment-notice` added per the standing rule, and the coverage
+guard passes.
+
+**Not verified in a browser** — same constraint as everything else this
+session. Specifically unexercised: what the notice looks like with a real
+assignment, and whether `listTasks` with `status:["assigned"]` returns
+assignment rows carrying `assignedAt` on the production repository (the
+fallback to `task.createdAt` exists for when it does not, but which branch
+actually runs has not been observed).

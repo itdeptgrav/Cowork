@@ -16,7 +16,7 @@ import {
   Select,
   Textarea,
 } from "@/components/ui/Primitives";
-import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { preloadQuery, useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import {
   assignmentGate,
@@ -951,6 +951,10 @@ export function NewTaskForm({
               onClick={async () => {
                 const r = await create();
                 if (!r.ok) return;
+                // Pre-seed the task detail query so it loads without a
+                // redundant Firestore read — the mutation already fetched
+                // the fresh view via #readTaskView.
+                preloadQuery("getTask", [r.data.id], r.data);
                 /*
                  * Files go up AFTER the task exists.
                  *

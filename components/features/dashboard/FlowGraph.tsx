@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { memo, useMemo, useState } from "react";
 import type { FlowChannelId, WorkloadFlow } from "@/lib/domain";
 
 /**
@@ -54,7 +54,7 @@ function smoothPath(pts: { x: number; y: number }[]): string {
   return d;
 }
 
-export function FlowGraph({
+export const FlowGraph = memo(function FlowGraph({
   flow,
   loading,
   onSelectWeek,
@@ -475,4 +475,4 @@ export function FlowGraph({
       </table>
     </div>
   );
-}
+});
