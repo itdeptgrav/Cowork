@@ -4,16 +4,24 @@
  * Inline attachment rendering, shared by the message thread and the task chat.
  *
  * One tidy, width-capped column so a message never sprawls: images lead — a
- * single one shown WHOLE at a readable size (click to open full), several as a
- * square grid — and documents/audio follow as consistent full-width cards.
+ * single one shown WHOLE at a small, readable thumbnail (click to zoom), several
+ * as a square grid — and documents/audio follow as consistent full-width cards.
  * Drive-hosted IMAGES render from Google's `lh3` image CDN (Drive's own URLs do
  * not load in an `<img>`), falling back to the backend media proxy; documents and
  * audio stream through that proxy, and a Cloudinary asset serves from its own URL.
+ *
+ * A thumbnail is never the full-size image, which is what made the old
+ * behaviour — an inline `<img>` up to 360px tall, at full render resolution —
+ * dominate the thread instead of sitting in it. Clicking one opens
+ * `ImageLightbox` at full size, and both the thumbnail and the lightbox carry
+ * their own one-click download so seeing it small is never the only option.
  */
 
+import { useState } from "react";
 import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
 import { DriveImage } from "@/components/ui/DriveImage";
+import { ImageLightbox, downloadFile } from "@/components/ui/ImageLightbox";
 import { driveImageSrc, driveProxySrc } from "@/lib/rules/media/driveUrls";
 
 export const MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
@@ -86,6 +94,46 @@ function AttachmentImage({
   );
 }
 
+/**
+ * One small thumbnail: click the image to zoom, click the corner button to
+ * save it — two different gestures on the same card, so the download never
+ * has to go through the zoom first.
+ */
+function Thumbnail({
+  a,
+  className,
+  onZoom,
+}: {
+  a: MessageAttachment;
+  className: string;
+  onZoom: () => void;
+}) {
+  const name = a.name ?? "image.jpg";
+  return (
+    <span className="group relative block overflow-hidden rounded-[10px]">
+      <button
+        type="button"
+        onClick={onZoom}
+        aria-label={`Open ${name}`}
+        className="block w-full cursor-zoom-in"
+      >
+        <AttachmentImage a={a} className={className} />
+      </button>
+      <button
+        type="button"
+        aria-label={`Download ${name}`}
+        onClick={(e) => {
+          e.stopPropagation();
+          void downloadFile(mediaUrl(a), name);
+        }}
+        className="absolute right-1.5 bottom-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/55 text-white opacity-90 transition-opacity hover:bg-black/70 hover:opacity-100"
+      >
+        <Icon.download className="h-3 w-3" />
+      </button>
+    </span>
+  );
+}
+
 export function MessageAttachments({
   items,
   mine,
@@ -93,33 +141,39 @@ export function MessageAttachments({
   items: MessageAttachment[];
   mine: boolean;
 }) {
+  /* The one image currently at full size — null the rest of the time, since
+     only one lightbox can be open regardless of how many threads or bubbles
+     are on screen. */
+  const [zoomed, setZoomed] = useState<MessageAttachment | null>(null);
   const images = items.filter((a) => a.kind === "image");
   const rest = items.filter((a) => a.kind !== "image");
   const grid = images.length > 1;
   return (
-    <span className="flex w-[min(260px,100%)] flex-col gap-1.5">
+    /* A definite pixel width, not a percentage. The bubble around this has no
+       width of its own — it sizes to fit its content — and a percentage width
+       here left that calculation with nothing definite to resolve against, so
+       browsers fell back to each `<img>`'s own NATURAL size (a multi-megapixel
+       photo can be 1000px+ wide) as this column's preferred width. The result
+       was a bubble that inflated to fit a photo's raw dimensions while the
+       photo inside it rendered small — a wide black box around a tiny
+       thumbnail. `max-w-full` is what still lets it shrink on a screen
+       narrower than 200px. */
+    <span className="flex w-[200px] max-w-full flex-col gap-1.5">
       {images.length > 0 && (
         <span className={grid ? "grid w-full grid-cols-2 gap-1" : "block"}>
           {images.map((a, i) => (
             /* Keyed by identity, not index, so the image's own fallback state is
-               not handed to a different attachment on a re-render. Opening it
-               goes through the proxy, which serves the full original. */
-            <a
+               not handed to a different attachment on a re-render. */
+            <Thumbnail
               key={a.fileId ?? a.url ?? i}
-              href={mediaUrl(a)}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="block overflow-hidden rounded-[10px]"
-            >
-              <AttachmentImage
-                a={a}
-                className={
-                  grid
-                    ? "aspect-square w-full rounded-[8px] object-cover"
-                    : "max-h-[360px] w-full rounded-[10px] object-cover"
-                }
-              />
-            </a>
+              a={a}
+              onZoom={() => setZoomed(a)}
+              className={
+                grid
+                  ? "aspect-square w-full rounded-[8px] object-cover"
+                  : "max-h-[220px] w-full rounded-[10px] object-cover"
+              }
+            />
           ))}
         </span>
       )}
@@ -167,6 +221,18 @@ export function MessageAttachments({
           </a>
         );
       })}
+
+      {zoomed && (
+        <ImageLightbox
+          fileId={zoomed.fileId}
+          url={zoomed.url}
+          apiBase={MEDIA_BASE}
+          alt={zoomed.name ?? "Image"}
+          downloadUrl={mediaUrl(zoomed)}
+          downloadName={zoomed.name ?? "image.jpg"}
+          onClose={() => setZoomed(null)}
+        />
+      )}
     </span>
   );
 }

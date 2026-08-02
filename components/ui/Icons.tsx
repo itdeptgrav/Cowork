@@ -302,6 +302,12 @@ export const Icon = {
       <path d="M11.6 7.2l-4.3 4.3a2.4 2.4 0 0 1-3.4-3.4l5-5a1.7 1.7 0 0 1 2.4 2.4l-5 5" />
     </S>
   ),
+  download: (p: P) => (
+    <S {...p}>
+      <path d="M8 2.4v7.6M5 7.2l3 3 3-3" />
+      <path d="M2.6 11.4v1a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-1" />
+    </S>
+  ),
 };
 
 export type IconName = keyof typeof Icon;
