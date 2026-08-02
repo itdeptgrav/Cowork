@@ -1,4 +1,4 @@
-import type { AttendanceDay, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import { mrfApprovalStats, mrfStats, type NewMrfInput } from "@/lib/rules/mrf/lifecycle";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
@@ -71,8 +71,9 @@ import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepositor
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
+import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -113,6 +114,9 @@ import { fetchLedger } from "../../legacy/sop.ts";
 import { legacyFetch } from "../../legacy/http.ts";
 import { LEGACY_ORGANISATION_ID, hueFor, initialsOf, toEmployee, toScoreHistory, toScoreOverview, toViewer } from "./map.ts";
 import { computeProgress } from "../mock/progress.ts";
+/* Playlists are browser-local personal state with no engine counterpart — see
+   the music block below for why these are wired rather than stubbed out. */
+import { musicStore } from "../mock/musicStore.ts";
 import { toTaskStatus, toTaskView } from "./taskMap.ts";
 import {
   activeQueuePositions,
@@ -298,6 +302,31 @@ import {
   toWorkloadRows,
   type LegacyWorkloadRow,
 } from "./workMap.ts";
+
+/**
+ * A readable name for a file we only have a URL for.
+ *
+ * Legacy stores a report's files as bare URLs, so the name was never recorded.
+ * Rendering the URL as the label is what the reports tab did, and a Drive URL
+ * says nothing about what the file is. The last path segment is a guess, but it
+ * is a guess in the right shape, and "Attachment" is the honest fallback when
+ * even that yields nothing.
+ */
+function nameFromUrl(url: string): string {
+  try {
+    const path = new URL(url, "https://x.invalid").pathname;
+    const last = path.split("/").filter(Boolean).pop() ?? "";
+    return decodeURIComponent(last) || "Attachment";
+  } catch {
+    return "Attachment";
+  }
+}
+
+/* `istDayKey` used to be defined here as well as in `lib/rules/tasks/
+   dailyReport.ts`, which is now imported above. Two identical copies of the
+   rule that decides which day a report is filed against is exactly the
+   disagreement that module's own comment warns about, so the local one is
+   gone rather than kept in sync by hand. */
 
 /**
  * The Cowork repository, backed by the legacy engine.
@@ -3653,7 +3682,7 @@ export class LegacyRepository {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
     console.info("[timerdbg] ⏸ pauseTimer invoked", { id, reason });
-    const { getDoc, setDoc } = await import("firebase/firestore");
+    const { addDoc, collection, getDoc, serverTimestamp, setDoc } = await import("firebase/firestore");
 
     const ref = await this.#timerSession(employeeId, id);
     const snap = await getDoc(ref);
@@ -3707,6 +3736,27 @@ export class LegacyRepository {
       },
       { merge: true },
     );
+    /* Record the committed segment so listDayCommits can surface it in the
+       daily report modal. Each pause produces one document; the modal sums
+       all documents for the same taskId to get total time today. */
+    if (elapsed > 0) {
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const nowMs = Date.now();
+      try {
+        await addDoc(collection(legacyDb(), "cowork_work_commits"), {
+          organisationId: LEGACY_ORGANISATION_ID,
+          employeeId,
+          taskId: id,
+          taskTitle: data.taskTitle ?? id,
+          startedAt: new Date(nowMs - elapsed * 1000).toISOString(),
+          endedAt: new Date(nowMs).toISOString(),
+          durationSecs: elapsed,
+          createdAt: serverTimestamp(),
+        });
+      } catch {
+        /* Non-fatal — the timer session itself is already saved. */
+      }
+    }
     await this.#logTimerEvent(
       employeeId,
       "pause",
@@ -5453,6 +5503,24 @@ export class LegacyRepository {
     return snap.docs.map((d) => {
       const r = d.data() as Record<string, unknown>;
       const created = readInstant(r.createdAt);
+      const urls = [
+        ...(Array.isArray(r.imageUrls) ? r.imageUrls : []),
+        ...(Array.isArray(r.pdfAttachments) ? r.pdfAttachments : []),
+      ].filter((u): u is string => typeof u === "string");
+      const attachments: ReportAttachment[] = (
+        Array.isArray(r.attachments) ? r.attachments : []
+      )
+        .map((a) => {
+          const o = (a ?? {}) as Record<string, unknown>;
+          const url = typeof o.url === "string" ? o.url : "";
+          if (!url) return null;
+          return {
+            url,
+            name: typeof o.name === "string" && o.name ? o.name : nameFromUrl(url),
+            mimeType: typeof o.mimeType === "string" ? o.mimeType : "",
+          };
+        })
+        .filter((a): a is ReportAttachment => a !== null);
       return {
         id: d.id,
         taskId: id as TaskId,
@@ -5460,13 +5528,143 @@ export class LegacyRepository {
         reportDate: typeof r.reportDate === "string" ? r.reportDate : "",
         message: typeof r.message === "string" ? r.message : "",
         progressPercent: Number(r.progressPercent) || 0,
-        attachmentIds: [
-          ...(Array.isArray(r.imageUrls) ? r.imageUrls : []),
-          ...(Array.isArray(r.pdfAttachments) ? r.pdfAttachments : []),
-        ].filter((u): u is string => typeof u === "string"),
+        attachmentIds: urls.length ? urls : attachments.map((a) => a.url),
+        /* `attachments` is what this application writes; the flat URL arrays
+           are what legacy wrote and still writes. A report from either era
+           resolves to the same list — one with real names, one with names
+           recovered from the URL. */
+        attachments: attachments.length
+          ? attachments
+          : urls.map((url) => ({
+              url,
+              name: nameFromUrl(url),
+              mimeType: "",
+            })),
+        documentId: typeof r.documentId === "string" ? r.documentId : null,
+        documentTitle:
+          typeof r.documentTitle === "string" ? r.documentTitle : null,
         createdAt: created ? new Date(created).toISOString() : "",
       };
     });
+  }
+
+  /**
+   * File a daily report against a task.
+   *
+   * **This did not exist.** The interface declared it, the modal called it and
+   * the mock implemented it — so every report written since the end-of-day flow
+   * shipped hit the throwing proxy at the bottom of this file and was lost. The
+   * caller used `Promise.allSettled`, so nothing surfaced: a person wrote their
+   * day up, pressed submit, went offline, and the Reports tab stayed empty.
+   *
+   * Writes to `cowork_tasks/{taskId}/dailyReports`, the subcollection
+   * `listDailyReports` already reads, and in the shape it already parses —
+   * `imageUrls` and `pdfAttachments` are populated as well as `attachments` so
+   * a report filed here is readable by the old application too.
+   */
+  async submitDailyReport(input: {
+    taskId: TaskId;
+    message: string;
+    progressPercent: number;
+    attachmentIds: string[];
+    attachments?: ReportAttachment[];
+    documentId?: string | null;
+    documentTitle?: string | null;
+  }): Promise<ActionResult<DailyReport>> {
+    const employeeId = String(this.#ctx.employeeId);
+    if (!employeeId)
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Sign in to file a report.",
+      };
+
+    const message = input.message.trim();
+    const documentId = input.documentId ?? null;
+    /* A report has to say something. A document counts as saying it — the text
+       box is the short form, not the only form. */
+    if (!message && !documentId)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Write what you did, or attach a document.",
+        field: "message",
+      };
+
+    const taskId = String(input.taskId);
+    const attachments =
+      input.attachments ??
+      input.attachmentIds.map((url) => ({
+        url,
+        name: nameFromUrl(url),
+        mimeType: "",
+      }));
+
+    /* Split by type so the old application, which reads two typed arrays and
+       knows nothing about `attachments`, still shows the files. */
+    const imageUrls = attachments
+      .filter((a) => a.mimeType.startsWith("image/"))
+      .map((a) => a.url);
+    const pdfAttachments = attachments
+      .filter((a) => !a.mimeType.startsWith("image/"))
+      .map((a) => a.url);
+
+    const { addDoc, collection, serverTimestamp } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+
+    const reportDate = istDayKey(Date.now());
+    const createdAt = new Date().toISOString();
+
+    try {
+      const ref = await addDoc(
+        collection(legacyDb(), "cowork_tasks", taskId, "dailyReports"),
+        {
+          organisationId: LEGACY_ORGANISATION_ID,
+          employeeId,
+          taskId,
+          reportDate,
+          message,
+          progressPercent: Math.max(
+            0,
+            Math.min(100, Math.round(input.progressPercent)),
+          ),
+          attachments,
+          imageUrls,
+          pdfAttachments,
+          documentId,
+          documentTitle: input.documentTitle ?? null,
+          createdAt: serverTimestamp(),
+        },
+      );
+      notifyRepositoryChanged();
+      return {
+        ok: true,
+        data: {
+          id: ref.id,
+          taskId: taskId as TaskId,
+          employeeId: employeeId as EmployeeId,
+          reportDate,
+          message,
+          progressPercent: input.progressPercent,
+          attachmentIds: attachments.map((a) => a.url),
+          attachments,
+          documentId,
+          documentTitle: input.documentTitle ?? null,
+          createdAt,
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        code: "conflict",
+        message:
+          error instanceof Error
+            ? error.message
+            : "That report could not be saved.",
+      };
+    }
   }
 
   /**
@@ -5974,7 +6172,77 @@ export class LegacyRepository {
           null,
       });
     }
+    out.push(...(await this.#dailyReportActionable(viewerId, out)));
     return out;
+  }
+
+  /**
+   * Unfiled daily reports, as inbox items.
+   *
+   * Separate from the loop above on purpose: `actionableFor` decides from the
+   * task's OWN state, and whether today's timer activity has been reported on
+   * is not part of that — it lives in `cowork_work_commits` /
+   * `cowork_task_timers`, keyed by employee and day, not on the task. Scoped
+   * to tasks actually WORKED today (`workedToday`), which is a handful of
+   * rows, rather than the full visible task list — the same distinction
+   * `listDayCommits` makes.
+   *
+   * Best-effort: a failure here must not take the whole inbox down with it.
+   */
+  async #dailyReportActionable(
+    viewerId: string,
+    already: ActionableItem[],
+  ): Promise<ActionableItem[]> {
+    try {
+      const today = istDayKey(Date.now());
+      const [commits, timers] = await Promise.all([
+        this.listDayCommits(today),
+        this.listTimers(),
+      ]);
+      console.info("[actionable:dr] today=%s commits=%d timers=%d", today, commits.length, (timers as unknown[]).length);
+      const worked = workedToday(
+        commits,
+        timers as Parameters<typeof workedToday>[1],
+        Date.now(),
+      );
+      console.info("[actionable:dr] worked=%o", worked);
+      if (worked.length === 0) return [];
+
+      const seen = new Set(already.map((i) => i.view.task.id));
+      const out: ActionableItem[] = [];
+      for (const w of worked) {
+        /* A task already carrying another obligation (an approval, a review,
+           a blocker) keeps that one — a second row for the same task would
+           double-count it against the tab's own badge. */
+        if (seen.has(w.taskId as TaskId)) continue;
+        const reports = await this.listDailyReports(w.taskId as TaskId);
+        if (
+          !isReportPending({
+            reports,
+            worked,
+            taskId: w.taskId,
+            employeeId: viewerId,
+            date: today,
+          })
+        )
+          continue;
+        const view = await this.#readTaskView(w.taskId);
+        if (!view) continue;
+        const mins = Math.max(1, Math.round(w.totalSecs / 60));
+        out.push({
+          view,
+          reason: "daily_report",
+          label: "File report",
+          href: `/tasks/${w.taskId}/reports`,
+          subtitle: `${mins}m logged today — no report filed yet`,
+          approvalKind: null,
+        });
+      }
+      return out;
+    } catch (err) {
+      console.error("[actionable:dr] error:", err);
+      return [];
+    }
   }
 
   /** Every session this employee holds, running or not. */
@@ -9467,17 +9735,70 @@ export class LegacyRepository {
    * rather than through `useQuery`, so a throw from any of them is a blank
    * application rather than a missing widget.
    *
-   * Empty and inert, which is what "this build has no music library" honestly
-   * looks like.
+   * Music answers from the BROWSER, not from the engine, and not with empties.
+   *
+   * It used to answer `[]` to the reads and `undefined` to the writes, on the
+   * reasoning that an empty list is what "this build has no music library"
+   * honestly looks like. Three methods were simply missing from that list —
+   * `recordMusicPlayed`, `getMusicQueue`, `getMusicPreferences` — so the proxy
+   * threw for them, and `recordMusicPlayed` is called from inside `playNow`
+   * and `next` BEFORE the play intent is set. The throw took the intent with
+   * it: the track changed, nothing started, and the next track never followed
+   * the one that ended. That is not an honest empty state, it is a dead
+   * button, and it is the shape of failure this whole file exists to avoid.
+   *
+   * The domain already says what music is: a personal utility, private to one
+   * person, never read by scoring or by a manager. There is nothing in the
+   * engine to connect it to and nothing gained by pretending to be a service,
+   * so it is kept where it belongs — the browser it was played in, which is
+   * also where the prototype has always kept it.
    */
-  async listMusicFavourites() { return []; }
-  async listMusicPlayed() { return []; }
-  async listMusicSearches() { return []; }
-  async recordMusicSearch() { return undefined; }
-  async clearMusicSearches() { return undefined; }
-  async toggleMusicFavourite() { return undefined; }
-  async saveMusicQueue() { return undefined; }
-  async saveMusicPreferences() { return undefined; }
+  async listMusicFavourites() { return musicStore.favourites(); }
+  async listMusicPlayed() { return musicStore.played(); }
+  async listMusicSearches() { return musicStore.searches(); }
+  async getMusicQueue() { return musicStore.queue(); }
+  async getMusicPreferences() { return musicStore.preferences(); }
+  async listMusicPlaylists() { return musicStore.playlists(); }
+  async createMusicPlaylist(name: string) {
+    return { ok: true as const, data: musicStore.createPlaylist(name) };
+  }
+  async renameMusicPlaylist(id: string, name: string) {
+    return { ok: true as const, data: musicStore.renamePlaylist(id, name) };
+  }
+  async deleteMusicPlaylist(id: string) {
+    return { ok: true as const, data: musicStore.deletePlaylist(id) };
+  }
+  async addToMusicPlaylist(id: string, item: MusicResult) {
+    return { ok: true as const, data: musicStore.addToPlaylist(id, item) };
+  }
+  async removeFromMusicPlaylist(id: string, trackId: string) {
+    return { ok: true as const, data: musicStore.removeFromPlaylist(id, trackId) };
+  }
+  async moveMusicPlaylistTrack(id: string, from: number, to: number) {
+    return { ok: true as const, data: musicStore.movePlaylistTrack(id, from, to) };
+  }
+  async recordMusicPlayed(item: MusicResult) {
+    musicStore.recordPlayed(item);
+    return { ok: true as const, data: undefined };
+  }
+  async recordMusicSearch(query: string) {
+    musicStore.recordSearch(query);
+    return { ok: true as const, data: undefined };
+  }
+  async clearMusicSearches() {
+    musicStore.clearSearches();
+    return { ok: true as const, data: undefined };
+  }
+  async toggleMusicFavourite(item: MusicResult) {
+    return { ok: true as const, data: musicStore.toggleFavourite(item) };
+  }
+  async saveMusicQueue(queue: MusicQueue) {
+    musicStore.saveQueue(queue);
+    return { ok: true as const, data: undefined };
+  }
+  async saveMusicPreferences(patch: Partial<MusicPreferences>) {
+    return { ok: true as const, data: musicStore.savePreferences(patch) };
+  }
   async resetDemoData() { return undefined; }
   setSimulatedFailure() { /* Prototype-only switch. Nothing to simulate. */ }
 

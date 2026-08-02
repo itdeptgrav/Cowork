@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bankableRunSecs, elapsedSecs, runDurationSecs } from "./timer.ts";
+import {
+  bankableRunSecs,
+  elapsedSecs,
+  rebaseSecs,
+  runDurationSecs,
+} from "./timer.ts";
 
 const GRACE = 120_000; // STALE_AFTER_MS
 
@@ -212,5 +217,66 @@ test("display and commit agree for the same run", () => {
       Math.max(1, shown),
       `pausing at ${ms}ms would change the displayed figure`,
     );
+  }
+});
+
+/* ── The origin moving under a held figure ────────────────────────────────── */
+
+/**
+ * The reported bug, pinned: "the timer goes back and then suddenly jumps
+ * numbers forward".
+ *
+ * The display holds one number and re-derives it on an interval. Every time the
+ * run's origin moved — a resume, or an optimistic start handing over to the
+ * engine's own timestamp — the held number stayed put for a whole tick while
+ * belonging to an origin that no longer existed. `rebaseSecs` shifts it onto
+ * the new origin on the render that notices.
+ */
+
+test("resuming after a run starts from zero, not from the last run's figure", () => {
+  /* Five minutes worked, paused, resumed. The held 300 belongs to an origin
+     five minutes old; the new origin is now. Carrying it forward showed the
+     banked total PLUS another five minutes for a tick, then dropped back. */
+  assert.equal(rebaseSecs({ originMs: T0, secs: 300 }, T0 + 300_000), 0);
+});
+
+test("the optimistic start hands over without the clock stepping back a tick", () => {
+  /* The press stamps its own origin; the engine's start lands a round trip
+     later. The figure moves by exactly that round trip and nothing else. */
+  assert.equal(rebaseSecs({ originMs: T0, secs: 12 }, T0 + 900), 11);
+  assert.equal(rebaseSecs({ originMs: T0, secs: 12 }, T0 + 200), 12);
+});
+
+test("an origin that moves EARLIER reports more elapsed, not less", () => {
+  /* The same wall-clock instant, measured from further back. */
+  assert.equal(rebaseSecs({ originMs: T0, secs: 12 }, T0 - 5_000), 17);
+});
+
+test("rebasing never produces negative work", () => {
+  assert.equal(rebaseSecs({ originMs: T0, secs: 3 }, T0 + 600_000), 0);
+});
+
+test("nothing was running, so there is no elapsed to carry", () => {
+  assert.equal(rebaseSecs({ originMs: null, secs: 0 }, T0), 0);
+});
+
+test("an unmoved origin is left exactly as it was", () => {
+  /* The common case by far: one tick to the next inside one run. */
+  assert.equal(rebaseSecs({ originMs: T0, secs: 41 }, T0), 41);
+});
+
+test("rebasing agrees with a fresh clock read", () => {
+  /* The rebase is an approximation of the derivation the next tick performs.
+     They must not disagree, or the correcting tick would itself be a visible
+     step. */
+  for (const runMs of [0, 7_000, 61_000, 3_600_000]) {
+    for (const moveMs of [0, 400, 1_000, 45_000]) {
+      const held = elapsedSecs(T0, T0 + runMs);
+      assert.equal(
+        rebaseSecs({ originMs: T0, secs: held }, T0 + moveMs),
+        elapsedSecs(T0 + moveMs, T0 + runMs),
+        `held ${held}s, origin moved ${moveMs}ms`,
+      );
+    }
   }
 });

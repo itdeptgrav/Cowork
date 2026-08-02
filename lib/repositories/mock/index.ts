@@ -69,6 +69,7 @@ import type {
   Conversation,
   ConductSeverity,
   DailyReport,
+  ReportAttachment,
   DeadlineCounter,
   DeadlineChangeRequest,
   Attachment,
@@ -213,6 +214,11 @@ import { searchHelp } from "@/lib/help/search";
 import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
+import {
+  istDayKey,
+  isReportPending,
+  workedToday,
+} from "@/lib/rules/tasks/dailyReport";
 import { validateAttendanceRecord } from "@/lib/rules/attendance/record";
 import {
   DEFAULT_TIMER_SOP_CONFIG,
@@ -4633,7 +4639,14 @@ export class MockRepository implements CoworkRepository {
     const s = getStore();
     return delay(
       s.workCommits
-        .filter((w) => w.startedAt.slice(0, 10) === date)
+        /* Scoped to the acting employee, matching the legacy repository's own
+           `where("employeeId", "==", employeeId)` — this was unscoped, which
+           handed the daily-report flow (end-of-day modal, Reports tab,
+           Actionable inbox) every employee's commits as if they were the
+           viewer's own. */
+        .filter(
+          (w) => w.startedAt.slice(0, 10) === date && w.employeeId === actingId(),
+        )
         .map((w) => ({
           ...w,
           employee: s.employees.find((e) => e.id === w.employeeId)!,
@@ -4752,12 +4765,24 @@ export class MockRepository implements CoworkRepository {
     message: string;
     progressPercent: number;
     attachmentIds: string[];
+    attachments?: ReportAttachment[];
+    documentId?: string | null;
+    documentTitle?: string | null;
   }): Promise<ActionResult<DailyReport>> {
     const g = guard();
     if (g) return g;
-    if (!input.message.trim())
-      return fail("validation_failed", "Write what you did.", "message");
+    /* A document is a report too — the text box is the short form, not the
+       only form. Matches the legacy repository's rule exactly. */
+    if (!input.message.trim() && !input.documentId)
+      return fail(
+        "validation_failed",
+        "Write what you did, or attach a document.",
+        "message",
+      );
     tick();
+    const attachments =
+      input.attachments ??
+      input.attachmentIds.map((url) => ({ url, name: url, mimeType: "" }));
     const r: DailyReport = {
       id: nextId("dr"),
       taskId: input.taskId,
@@ -4765,7 +4790,10 @@ export class MockRepository implements CoworkRepository {
       reportDate: nowIso().slice(0, 10),
       message: input.message.trim(),
       progressPercent: input.progressPercent,
-      attachmentIds: input.attachmentIds,
+      attachmentIds: attachments.map((a) => a.url),
+      attachments,
+      documentId: input.documentId ?? null,
+      documentTitle: input.documentTitle ?? null,
       createdAt: nowIso(),
     };
     getStore().dailyReports.push(r);
@@ -5232,7 +5260,60 @@ export class MockRepository implements CoworkRepository {
       });
     }
 
+    items.push(...(await this.#dailyReportActionable(meId, items)));
     return delay(items);
+  }
+
+  /**
+   * Unfiled daily reports, as inbox items. See the legacy repository's
+   * `#dailyReportActionable` for why this is separate from the loop above:
+   * whether today's timer activity has been reported on lives in the
+   * work-commit/timer store, keyed by employee and day, not on the task
+   * itself, so `actionableFor` (which only ever sees a `TaskView`) cannot
+   * decide it.
+   */
+  async #dailyReportActionable(
+    meId: string,
+    already: ActionableItem[],
+  ): Promise<ActionableItem[]> {
+    const today = istDayKey(Date.now());
+    const commits = await this.listDayCommits(today);
+    const timers = await this.listTimers();
+    const worked = workedToday(
+      commits,
+      timers as Parameters<typeof workedToday>[1],
+      Date.now(),
+    );
+    if (worked.length === 0) return [];
+
+    const seen = new Set(already.map((i) => i.view.task.id));
+    const out: ActionableItem[] = [];
+    for (const w of worked) {
+      if (seen.has(w.taskId as TaskId)) continue;
+      const reports = await this.listDailyReports(w.taskId as TaskId);
+      if (
+        !isReportPending({
+          reports,
+          worked,
+          taskId: w.taskId,
+          employeeId: meId,
+          date: today,
+        })
+      )
+        continue;
+      const view = await this.getTask(w.taskId as TaskId);
+      if (!view) continue;
+      const mins = Math.max(1, Math.round(w.totalSecs / 60));
+      out.push({
+        view,
+        reason: "daily_report",
+        label: "File report",
+        href: `/tasks/${w.taskId}/reports`,
+        subtitle: `${mins}m logged today — no report filed yet`,
+        approvalKind: null,
+      });
+    }
+    return out;
   }
 
   async listReviewDetail() {
@@ -7651,6 +7732,27 @@ export class MockRepository implements CoworkRepository {
   }
   async saveMusicPreferences(patch: Partial<MusicPreferences>) {
     return delay(ok(musicStore.savePreferences(patch)));
+  }
+  async listMusicPlaylists() {
+    return delay(musicStore.playlists());
+  }
+  async createMusicPlaylist(name: string) {
+    return delay(ok(musicStore.createPlaylist(name)));
+  }
+  async renameMusicPlaylist(id: string, name: string) {
+    return delay(ok(musicStore.renamePlaylist(id, name)));
+  }
+  async deleteMusicPlaylist(id: string) {
+    return delay(ok(musicStore.deletePlaylist(id)));
+  }
+  async addToMusicPlaylist(id: string, item: MusicResult) {
+    return delay(ok(musicStore.addToPlaylist(id, item)));
+  }
+  async removeFromMusicPlaylist(id: string, trackId: string) {
+    return delay(ok(musicStore.removeFromPlaylist(id, trackId)));
+  }
+  async moveMusicPlaylistTrack(id: string, from: number, to: number) {
+    return delay(ok(musicStore.movePlaylistTrack(id, from, to)));
   }
 
   /* ── Live monitoring ────────────────────────────────────────────────────── */

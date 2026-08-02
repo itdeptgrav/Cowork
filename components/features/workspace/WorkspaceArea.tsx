@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import {
   Button,
@@ -46,10 +47,31 @@ import { useMindMap } from "./useMindMap";
 export function WorkspaceArea() {
   const { map, hydrated, saveError } = useMindMap();
   const [selectedId, setSelectedId] = useState<MindNodeId | null>(null);
+
+  /**
+   * The deep link a daily report's "Open in Docs" button arrives with —
+   * `?mode=docs&doc=<id>&reportTaskId=<taskId>&reportTaskTitle=<title>&progress=<n>`.
+   * Read once, at mount: this only needs to seed the initial state, and a
+   * `useSearchParams()` value re-read on every render would fight anyone who
+   * then navigates elsewhere inside the workspace on the same page load.
+   */
+  const params = useSearchParams();
+  const [deepLink] = useState(() => ({
+    mode: params.get("mode"),
+    doc: params.get("doc"),
+    reportTaskId: params.get("reportTaskId"),
+    reportTaskTitle: params.get("reportTaskTitle"),
+    progress: params.get("progress"),
+  }));
+
   /* Two modes, one page — the mindmap for shape and documents for prose. Kept
      as a mode rather than two routes because they are the same activity: this
      is where thinking is written down before it becomes tasks. */
-  const [mode, setMode] = useState<"map" | "docs" | "sheets">("map");
+  const [mode, setMode] = useState<"map" | "docs" | "sheets">(
+    deepLink.mode === "docs" || deepLink.mode === "sheets"
+      ? deepLink.mode
+      : "map",
+  );
 
   const selected = map.nodes.find((n) => n.id === selectedId) ?? null;
   const root = rootOf(map);
@@ -167,7 +189,17 @@ export function WorkspaceArea() {
       {mode === "sheets" ? (
         <DocumentsArea kind="sheet" mode={mode} onMode={setMode} />
       ) : mode === "docs" ? (
-        <DocumentsArea kind="doc" mode={mode} onMode={setMode} />
+        <DocumentsArea
+          kind="doc"
+          mode={mode}
+          onMode={setMode}
+          initialOpenId={deepLink.doc}
+          reportTaskId={deepLink.reportTaskId}
+          reportTaskTitle={deepLink.reportTaskTitle}
+          reportProgress={
+            deepLink.progress !== null ? Number(deepLink.progress) : null
+          }
+        />
       ) : !root ? (
         <Panel>
           <EmptyState

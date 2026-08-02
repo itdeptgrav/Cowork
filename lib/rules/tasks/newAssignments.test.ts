@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  committedEffort,
   MAX_REMEMBERED,
   noticeKey,
   rememberSeen,
@@ -17,6 +18,13 @@ function notice(over: Partial<AssignmentNotice> = {}): AssignmentNotice {
     assignedByName: "Ray",
     dueAt: null,
     rank: 3,
+    description: null,
+    requirementCount: 0,
+    effortSecs: null,
+    deadlineMode: "fixed",
+    projectName: null,
+    isSubtask: false,
+    action: null,
     ...over,
   };
 }
@@ -73,4 +81,20 @@ test("the remembered set is bounded, dropping the oldest keys first", () => {
 
 test("nothing outstanding means nothing to show", () => {
   assert.deepEqual(unseenNotices([], ["T1:x"]), []);
+});
+
+test("committed effort totals only the tasks that actually carry an estimate", () => {
+  /* Reported as a pair so a caller can say "4h across 2 of 3" — a bare total
+     over a partially-estimated set reads as the whole commitment and is not. */
+  const summary = committedEffort([
+    notice({ taskId: "A", effortSecs: 3600 }),
+    notice({ taskId: "B", effortSecs: 10_800 }),
+    notice({ taskId: "C", effortSecs: null }),
+  ]);
+  assert.deepEqual(summary, { totalSecs: 14_400, withEstimate: 2, total: 3 });
+});
+
+test("committed effort over nothing estimated is zero, not a false total", () => {
+  const summary = committedEffort([notice({ effortSecs: null })]);
+  assert.deepEqual(summary, { totalSecs: 0, withEstimate: 0, total: 1 });
 });

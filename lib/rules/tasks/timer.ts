@@ -38,6 +38,35 @@ export function elapsedSecs(
 }
 
 /**
+ * The same instant, measured from a DIFFERENT origin — without a clock read.
+ *
+ * A running display holds one number and the origin it was measured against.
+ * When the origin moves — a resume gives the run a new start, and an optimistic
+ * start hands over from the press timestamp to the engine's own — the held
+ * number belongs to the previous origin and is wrong for the new one. Showing
+ * it until the next tick is what put a previous run's minutes on a clock that
+ * had just restarted at zero, and then dropped them again a second later.
+ *
+ * Shifting by the distance between the two origins keeps the figure anchored to
+ * the same wall-clock instant it was taken at, so nothing has to read the clock
+ * during a render to correct itself. A resume — new origin about `secs` later
+ * than the old one — lands on 0, which is exactly where a fresh run starts.
+ *
+ * A previous origin of `null` is "nothing was running", which carries no
+ * elapsed to rebase: the answer is 0.
+ */
+export function rebaseSecs(
+  previous: { originMs: number | null; secs: number },
+  originMs: number,
+): number {
+  if (previous.originMs === null) return 0;
+  return Math.max(
+    0,
+    previous.secs - Math.round((originMs - previous.originMs) / 1000),
+  );
+}
+
+/**
  * The duration to commit for one run, in seconds.
  *
  * `fallbackSimElapsedMs` covers a session recorded before real starts were

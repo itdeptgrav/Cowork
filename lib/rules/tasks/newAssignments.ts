@@ -39,6 +39,68 @@ export interface AssignmentNotice {
   dueAt: string | null;
   /** The stored priority, 1–10, as the assignor set it. */
   rank: number | null;
+
+  /* ── What the work actually is ─────────────────────────────────────────
+   *
+   * A notice that gives only a title asks somebody to open every task
+   * before they can tell which one matters. These are the fields that let
+   * that judgement happen in the notice itself.
+   */
+
+  /** The task's own description, for a one- or two-line snippet. */
+  description: string | null;
+  /** How many acceptance criteria have to be satisfied. 0 where none were set. */
+  requirementCount: number;
+  /**
+   * The time this is expected to take — the assignor's proposed window on a
+   * budget task, otherwise the effort estimate. Null where neither is set.
+   */
+  effortSecs: number | null;
+  /**
+   * `timer` is a time BUDGET whose deadline is derived once accepted;
+   * `fixed` is a date somebody set. The distinction decides what the next
+   * step even is, so the notice states it rather than showing a date and
+   * leaving the reader to infer the model.
+   */
+  deadlineMode: "timer" | "fixed";
+  /** The project this belongs to, where it belongs to one. */
+  projectName: string | null;
+  /** True when this is part of a larger task rather than standalone. */
+  isSubtask: boolean;
+
+  /**
+   * The one thing to do about it next, in the product's own words, with the
+   * screen that does it.
+   *
+   * Resolved by `actionableFor` — the same resolver the action inbox uses —
+   * rather than assumed here. A newly assigned task is not always "confirm
+   * receipt": a budget task with a window on offer is "Accept or discuss the
+   * time", and one with no deadline yet is "Propose a deadline". Guessing
+   * would send people to the wrong screen.
+   */
+  action: { label: string; href: string } | null;
+}
+
+/**
+ * The total time these assignments commit, and how much of it is known.
+ *
+ * Reported as a pair rather than one number on purpose: "12h" over five
+ * tasks when only two carry an estimate is a figure that reads as the whole
+ * commitment and is not. The caller can say "12h across 2 of 5" and be
+ * honest, which is the difference between a useful total and a misleading
+ * one.
+ */
+export function committedEffort(notices: readonly AssignmentNotice[]): {
+  totalSecs: number;
+  withEstimate: number;
+  total: number;
+} {
+  const withEstimate = notices.filter((n) => (n.effortSecs ?? 0) > 0);
+  return {
+    totalSecs: withEstimate.reduce((sum, n) => sum + (n.effortSecs ?? 0), 0),
+    withEstimate: withEstimate.length,
+    total: notices.length,
+  };
 }
 
 /** Stable identity for one assignment event. */

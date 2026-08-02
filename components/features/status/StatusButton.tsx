@@ -18,6 +18,7 @@ import {
 } from "@/lib/integrations/livekit/screenShare";
 import { fetchRoomCredentials } from "@/lib/integrations/livekit/credentials";
 import { EmergencyEndDialog } from "./EmergencyEndDialog";
+import { DailyReportModal } from "./DailyReportModal";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useMyDutyMode } from "@/lib/hooks/useDutyMode";
 import { breakBudgetWarning } from "@/lib/rules/tasks/breakMode";
@@ -148,6 +149,17 @@ export function StatusButton() {
      to `setDutyMode`, which performs them from the stored document as part of
      the transition — see `choose`. Two callers for one consequence is how the
      same minutes get credited twice. */
+  /**
+   * The daily-report screen, and WHY it is open.
+   *
+   * `offline` means it is standing in front of a presence change — completing
+   * it goes offline. `standalone` means somebody asked for it from the menu,
+   * and completing it just closes. Null is closed. A boolean could not tell
+   * the two apart, and the difference is the whole behaviour of the button.
+   */
+  const [reportOpen, setReportOpen] = useState<"offline" | "standalone" | null>(
+    null,
+  );
   const [open, setOpen] = useState(false);
   /* The requirement step. Separate from `open` so dismissing the menu also
      abandons a half-started attempt rather than remembering it. */
@@ -245,7 +257,16 @@ export function StatusButton() {
     }
     if (id === "break") startBreak();
     if (id === "emergency") declareEmergency();
-    if (id === "offline") goOffline();
+    /* Offline is gated on the day being written up. The transition is NOT
+       performed here — the modal's completion callback performs it, so
+       dismissing the modal leaves the person online rather than dropping them
+       out with the account still owed. */
+    if (id === "offline") {
+      setOpen(false);
+      setConfirming(false);
+      setReportOpen("offline");
+      return;
+    }
     setOpen(false);
     setConfirming(false);
   }
@@ -490,6 +511,33 @@ export function StatusButton() {
                 );
               })}
 
+              {/* The report is not the property of the going-offline flow.
+                  Somebody who wants to write their day up at four o'clock and
+                  keep working should not have to go offline to do it. */}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  setConfirming(false);
+                  setReportOpen("standalone");
+                }}
+                className="mt-0.5 flex w-full items-center gap-2.5 rounded-inset px-2.5 py-2 text-left transition-colors hover:bg-[var(--control)]"
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-2 w-2 shrink-0 rounded-full bg-[var(--ink-faint)]"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-medium text-ink">
+                    Daily report
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-ink-faint">
+                    Write up today&rsquo;s work without going offline
+                  </span>
+                </span>
+              </button>
+
               {manual !== null && (
                 <button
                   type="button"
@@ -568,6 +616,17 @@ export function StatusButton() {
           the ONLY way to leave — `onRaised` then performs the held transition.
           Dismissing keeps the person in the emergency, because the exit was never
           applied; `pendingExit` is dropped and the status is unchanged. */}
+      {reportOpen && (
+        <DailyReportModal
+          mode={reportOpen}
+          onComplete={() => {
+            const wasOffline = reportOpen === "offline";
+            setReportOpen(null);
+            if (wasOffline) goOffline();
+          }}
+        />
+      )}
+
       {endedEmergency && (
         <EmergencyEndDialog
           startedAt={endedEmergency.startedAt}

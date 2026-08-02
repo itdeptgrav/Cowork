@@ -199,4 +199,4 @@ export function DeviceModeProvider({ children }: { children: ReactNode }) {
  */
 export const DEVICE_MODE_BOOT_SCRIPT = `(function(){try{var m=localStorage.getItem(${JSON.stringify(
   DEVICE_MODE_KEY,
-)});document.documentElement.dataset.perf=(m==="high"||m==="low"||m==="balanced")?m:"balanced";}catch(e){document.documentElement.dataset.perf="balanced";}})();`;
+)});document.documentElement.dataset.perf=(m==="high"||m==="low"||m==="lite"||m==="balanced")?m:"balanced";}catch(e){document.documentElement.dataset.perf="balanced";}})();`;

@@ -14,6 +14,7 @@ import { formatTimer } from "@/lib/utils/format";
 import {
   displaySecs,
   elapsedSecs,
+  rebaseSecs,
   timerDisplayState,
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
@@ -51,14 +52,41 @@ export function useTicker(startedAtRealMs: number | null): number {
   /* Seeded from the real start on the FIRST render, which is the case that
      needs it: mounting into a session that is already running — a reload, a new
      tab, or navigating back. Counting up from zero instead is what made a
-     running session's elapsed disappear on every remount. Later renders are
-     driven by the interval below; a fresh start is genuinely at zero, so
-     nothing needs reseeding. */
+     running session's elapsed disappear on every remount.
+
+     **The origin is stored WITH the figure.** It used to be a bare number, and
+     the comment here claimed a fresh start needed no reseeding "because it is
+     genuinely at zero" — which is true of the run and false of the state. The
+     held number survives a pause: press resume after a five-minute run and the
+     display read five minutes on top of the banked total for one whole tick,
+     then fell back to zero-plus-banked when the interval next fired. That is
+     the jump forward and the drop back, and it happened on every resume, on
+     every optimistic start handing over to the engine's own timestamp, and on
+     the shell pill whenever the active task changed under it. Keyed like this,
+     a figure belonging to a previous origin is rebased on the render that
+     notices, not a tick later. */
   const { timerTickMs } = usePerformanceProfile();
-  const [secs, setSecs] = useState(() => elapsedSecs(startedAtRealMs, Date.now()));
+  const [tick, setTick] = useState(() => ({
+    originMs: startedAtRealMs,
+    secs: elapsedSecs(startedAtRealMs, Date.now()),
+  }));
 
   useEffect(() => {
     if (startedAtRealMs === null) return;
+    /* Stamped with the origin it was measured against, and left alone when
+       neither has moved — a slow tab must not re-render for an unchanged
+       second. */
+    const setSecs = (secs: number) =>
+      setTick((prev) =>
+        prev.originMs === startedAtRealMs && prev.secs === secs
+          ? prev
+          : { originMs: startedAtRealMs, secs },
+      );
+    /* Re-anchored the moment the origin moves rather than at the next tick.
+       The render below has already rebased the held figure, so this only
+       settles the state onto the real clock — but without it a low-power
+       profile would carry a rebased approximation for a couple of seconds. */
+    setSecs(elapsedSecs(startedAtRealMs, Date.now()));
     /* **The redraw rate, not the count.** `elapsedSecs` derives the figure from
        `startedAtRealMs` and the wall clock on every tick, so a slower interval
        shows a coarser number and never a wrong one. That property is what makes
@@ -71,7 +99,13 @@ export function useTicker(startedAtRealMs: number | null): number {
     return () => clearInterval(id);
   }, [startedAtRealMs, timerTickMs]);
 
-  return startedAtRealMs === null ? 0 : secs;
+  if (startedAtRealMs === null) return 0;
+  /* A figure taken against a previous origin is shifted onto this one rather
+     than shown as-is or blanked to zero — both of which are visible jumps in a
+     number that may only ever count up. */
+  return tick.originMs === startedAtRealMs
+    ? tick.secs
+    : rebaseSecs(tick, startedAtRealMs);
 }
 
 
@@ -229,16 +263,39 @@ export function TimerControl({
    * landing, and from that instant the engine is authoritative again.
    *
    * Expiring on "differs from the press" rather than on "matches what I asked
-   * for" is deliberate. Matching would leave a spent override in state, and a
-   * later change in the other direction — the session paused from another tab,
-   * or by the presence gate — would find it still sitting there and re-assert a
-   * clock that had genuinely stopped.
+   * for" is deliberate: matching would go on holding the override open through
+   * every value that is not the one requested. It is only half the guarantee
+   * though — a comparison against a value that can come back is not an expiry
+   * at all, which is what the effect below exists to finish.
    *
    * A refused write never reaches here: `toggle` clears the press itself on
    * `!ok`, because a refusal moves nothing on the server and there is therefore
    * no change for this to expire on.
    */
   const optimistic = pressed && serverRunning === pressed.fromServer ? pressed : null;
+  /**
+   * And once expired it is THROWN AWAY, not merely ignored.
+   *
+   * Expiry above is a comparison against a value that can come back. A press
+   * to start expires when `serverRunning` goes true — and the session is later
+   * paused by the presence gate, by another tab, or by a stale heartbeat, at
+   * which point `serverRunning` is false again and matches `fromServer` once
+   * more. The spent override then springs back to life and re-asserts a run
+   * whose origin is the ORIGINAL press, so the clock jumps forward by
+   * everything that has happened since — minutes or hours in one frame — and
+   * falls back the moment anything flips again.
+   *
+   * Dropping the record at the instant it expires is what makes the override
+   * live exactly once. The derivation above is kept as well: it is what the
+   * render actually reads, so this cannot flicker whatever order the two run
+   * in.
+   *
+   * Adjusted during the render rather than from an effect, which is React's
+   * own answer for state that must reset when a prop changes: the re-render is
+   * discarded before it is committed, so nothing paints and nothing cascades.
+   * `setPressed(null)` makes the condition false, so it settles at once.
+   */
+  if (pressed && serverRunning !== pressed.fromServer) setPressed(null);
   /* Away still wins outright: presence stopping the clock is a rule, not a
      pending request, so an optimistic "running" must not survive it. */
   const running = away
@@ -255,14 +312,18 @@ export function TimerControl({
     : state;
   /* While the optimistic run is unconfirmed the origin is the press itself;
      once the engine confirms, `optimistic` is cleared and this becomes the real
-     `startedAtRealMs`. */
-  const ticked = useTicker(
-    running
-      ? optimistic?.kind === "running"
-        ? optimistic.atMs
-        : (session?.startedAtRealMs ?? null)
-      : null,
-  );
+     `startedAtRealMs`.
+     Read off the ENGINE's state rather than off `running`, so the figure keeps
+     being derived per second while `away` holds the display — see `elapsed`.
+     Null whenever no run is in flight, which is what makes the ticker return 0
+     between sessions. */
+  const runOrigin =
+    optimistic?.kind === "running"
+      ? optimistic.atMs
+      : state === "running"
+        ? (session?.startedAtRealMs ?? null)
+        : null;
+  const ticked = useTicker(runOrigin);
 
   /* `ticked` only re-renders; the FIGURE comes from the rule, so a throttled
      tab or a stale run cannot make the two disagree.
@@ -277,18 +338,21 @@ export function TimerControl({
    * case the current run is added. A stale run contributes nothing, which is
    * the whole point of the guard.
    */
-  /* Away freezes the figure at the seconds worked up to the moment they left,
-     rather than letting `displaySecs` keep counting off a session document that
-     is still marked active until the pause below lands. */
+  /* Away holds the figure at the work done up to the moment they left — the
+     auto-pause below lands within a round trip and `banked` then carries the
+     run, so this branch is only ever a fraction of a second long.
+     It reads the SECOND-resolution ticker rather than recomputing against
+     `nowMs`. `useNow` is quantised down to the minute, so a run that had been
+     going for 40 seconds measured 0 against it: stepping away made the clock
+     drop by up to a minute, and banking the real elapsed a moment later threw
+     it forward again. That pair — backwards, then a jump — is the same bug
+     `useLiveNow` was written for elsewhere. */
   /* The optimistic pause branch holds the figure it was pressed at. Falling
      through to `displaySecs` would keep counting — the engine's session still
      says running until the write lands — and falling back to `banked` would
      drop the run that is being closed. Neither is what the person just did. */
   const elapsed = away
-    ? banked +
-      (state === "running"
-        ? elapsedSecs(session?.startedAtRealMs ?? null, nowMs)
-        : 0)
+    ? banked + ticked
     : optimistic?.kind === "paused"
       ? optimistic.heldSecs
       : running

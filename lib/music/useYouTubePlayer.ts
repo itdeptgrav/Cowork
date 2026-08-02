@@ -1,6 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  IDLE_TRANSPORT,
+  advance,
+  canDeclareBlocked,
+  type TransportEvent,
+} from "./transport.ts";
 
 /**
  * The YouTube IFrame Player API, wrapped.
@@ -160,12 +166,21 @@ export function useYouTubePlayer({
      frame that is cued afterwards: an id-less embed is a configuration YouTube
      does not always recover from. */
   const loadedIdRef = useRef<string | null>(null);
-  /* A play request that arrives before the player exists. Creating the player
-     is asynchronous, so the very first "play this" — the click that started
-     the whole session — lands before there is anything to play it with. It is
-     remembered and honoured on ready rather than dropped. */
-  const pendingPlayRef = useRef(false);
+  /* An outstanding play request, and whether a track switch is in flight.
+     See `lib/music/transport.ts` — a request is held until playback actually
+     starts, because the two moments somebody asks for it are exactly the two
+     moments the player cannot yet take it: before it has been created, and
+     while it is still swapping to the track they asked for. */
+  const transportRef = useRef(IDLE_TRANSPORT);
   const playRef = useRef<() => void>(() => {});
+
+  /* Applies an event to the transport state and honours any request it frees
+     up. Called from the API callbacks, so it reads and writes refs only. */
+  const observe = useCallback((event: TransportEvent) => {
+    const { state, reissue } = advance(transportRef.current, event);
+    transportRef.current = state;
+    if (reissue) playRef.current();
+  }, []);
   const videoIdRef = useRef<string | null>(videoId);
   useEffect(() => {
     videoIdRef.current = videoId;
@@ -222,10 +237,7 @@ export function useYouTubePlayer({
             onReady: () => {
               readyRef.current = true;
               setPhase("ready");
-              if (pendingPlayRef.current) {
-                pendingPlayRef.current = false;
-                playRef.current();
-              }
+              observe("player_ready");
             },
             onStateChange: (e: { data: number }) => {
               const S = YT.PlayerState;
@@ -237,14 +249,23 @@ export function useYouTubePlayer({
                   setPhase("playing");
                   setMessage(null);
                   playingRef.current?.(true);
+                  observe("playing");
                   break;
                 case S.PAUSED:
                   setPhase("paused");
                   playingRef.current?.(false);
+                  observe("paused");
+                  break;
+                /* The switch finished. If somebody asked for playback while it
+                   was in flight, this is the first moment the player can take
+                   it — and the moment the old code threw the request away. */
+                case S.CUED:
+                  observe("video_cued");
                   break;
                 case S.ENDED:
                   setPhase("ended");
                   playingRef.current?.(false);
+                  observe("ended");
                   endedRef.current();
                   break;
                 default:
@@ -253,6 +274,7 @@ export function useYouTubePlayer({
             },
             onError: (e: { data: number }) => {
               playingRef.current?.(false);
+              observe("failed");
               // Documented IFrame API error codes.
               switch (e.data) {
                 case 101:
@@ -297,7 +319,7 @@ export function useYouTubePlayer({
       playerRef.current = null;
       readyRef.current = false;
     };
-  }, [container]);
+  }, [container, observe]);
 
   /* ── Cue whatever track is current ───────────────────────────────────────
      CUE, not load: `loadVideoById` starts playing immediately, which would
@@ -309,6 +331,13 @@ export function useYouTubePlayer({
     if (!readyRef.current || !playerRef.current || !videoId) return;
     if (loadedIdRef.current === videoId) return;
     loadedIdRef.current = videoId;
+    /* Declared BEFORE the call, because the play intent that accompanies a
+       track change is committed in the same pass and lands immediately after
+       this — it has to find a switch already in flight. */
+    transportRef.current = advance(
+      transportRef.current,
+      "track_changed",
+    ).state;
     try {
       playerRef.current.cueVideoById(videoId);
     } catch {
@@ -435,11 +464,15 @@ export function useYouTubePlayer({
      say so and point at the one control the browser will always honour, which
      is the play button inside YouTube's own visible player. */
   const play = useCallback(() => {
+    /* Recorded first and cleared only when playback actually starts, so a
+       request made before the player exists — or mid-switch — is honoured on
+       ready or on cued rather than dropped. */
+    transportRef.current = advance(
+      transportRef.current,
+      "play_requested",
+    ).state;
     const p = playerRef.current;
-    if (!p || !readyRef.current) {
-      pendingPlayRef.current = true;
-      return;
-    }
+    if (!p || !readyRef.current) return;
     try {
       p.playVideo();
     } catch {
@@ -447,8 +480,15 @@ export function useYouTubePlayer({
     }
     if (blockTimer.current) clearTimeout(blockTimer.current);
     blockTimer.current = setTimeout(() => {
+      /* A switch still in flight is not a refusal — the cued event will
+         re-issue this request, and that call restarts this timer. */
+      if (!canDeclareBlocked(transportRef.current)) return;
       const now = phaseRef.current;
       if (now !== "playing" && now !== "buffering") {
+        transportRef.current = advance(
+          transportRef.current,
+          "declared_blocked",
+        ).state;
         setPhase("autoplay_blocked");
         setMessage(
           "Your browser would not start audio from this button. Press play on the video above to begin.",
@@ -458,7 +498,10 @@ export function useYouTubePlayer({
   }, []);
 
   const pause = useCallback(() => {
-    pendingPlayRef.current = false;
+    transportRef.current = advance(
+      transportRef.current,
+      "pause_requested",
+    ).state;
     try {
       playerRef.current?.pauseVideo();
     } catch {

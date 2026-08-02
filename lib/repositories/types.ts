@@ -58,6 +58,7 @@ import type {
   ConductSeverity,
   Conversation,
   DailyReport,
+  ReportAttachment,
   DailySummary,
   DeadlineCounter,
   DeadlineExtension,
@@ -137,6 +138,7 @@ import type {
   TeamAnalytics,
   TeamMonitoringRow,
   TimerSession,
+  MusicPlaylist,
   MusicPreferences,
   MusicQueue,
   MusicResult,
@@ -1228,6 +1230,11 @@ export interface CoworkRepository {
     message: string;
     progressPercent: number;
     attachmentIds: string[];
+    /** Files, with their names. Preferred over `attachmentIds`. */
+    attachments?: ReportAttachment[];
+    /** A Cowork document written as the long form of this report. */
+    documentId?: string | null;
+    documentTitle?: string | null;
   }): Promise<ActionResult<DailyReport>>;
   listDailyReports(taskId: TaskId): Promise<DailyReport[]>;
 
@@ -1726,6 +1733,31 @@ export interface CoworkRepository {
   saveMusicPreferences(
     patch: Partial<MusicPreferences>,
   ): Promise<ActionResult<MusicPreferences>>;
+  /* Playlists. Named lists a person builds for themselves — never shared,
+     never visible to anyone else, and subject to the same rule as the rest of
+     this block: nothing here is readable by any manager surface. */
+  listMusicPlaylists(): Promise<MusicPlaylist[]>;
+  /** Null when the name was empty, too long, taken, or the ceiling was hit. */
+  createMusicPlaylist(name: string): Promise<ActionResult<MusicPlaylist | null>>;
+  renameMusicPlaylist(
+    id: string,
+    name: string,
+  ): Promise<ActionResult<MusicPlaylist[]>>;
+  deleteMusicPlaylist(id: string): Promise<ActionResult<MusicPlaylist[]>>;
+  /** False when the track was already in that playlist. */
+  addToMusicPlaylist(
+    id: string,
+    item: MusicResult,
+  ): Promise<ActionResult<boolean>>;
+  removeFromMusicPlaylist(
+    id: string,
+    trackId: string,
+  ): Promise<ActionResult<MusicPlaylist[]>>;
+  moveMusicPlaylistTrack(
+    id: string,
+    from: number,
+    to: number,
+  ): Promise<ActionResult<MusicPlaylist[]>>;
 
   /* Live monitoring — the manager's view of one person's working day.
      Six separate reads on purpose: they come from six different providers

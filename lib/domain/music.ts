@@ -66,6 +66,29 @@ export interface MusicQueue {
   currentIndex: number;
 }
 
+/**
+ * A list somebody built themselves.
+ *
+ * Distinct from favourites, which is one flat set with no order and no name:
+ * a playlist says "these, in this order, for this" — the difference between
+ * liking a track and choosing what a morning sounds like.
+ *
+ * It holds whole `MusicResult`s rather than ids because there is no library to
+ * resolve an id against; a stored id with no way to render a title would be a
+ * playlist of blank rows the moment the search cache expired.
+ *
+ * Like everything else in this module it is PERSONAL. A playlist is never
+ * shared, never visible to a manager and never read by scoring.
+ */
+export interface MusicPlaylist {
+  id: string;
+  name: string;
+  items: MusicResult[];
+  createdAt: string;
+  /** Bumped by every edit, so the list can be shown most-recently-touched. */
+  updatedAt: string;
+}
+
 export interface MusicPreferences {
   volume: number;
   muted: boolean;

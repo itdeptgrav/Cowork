@@ -30,7 +30,7 @@ const code = (p: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/\/\/[^\n]*/g, "");
 
-const ALL: DeviceMode[] = ["high", "balanced", "low"];
+const ALL: DeviceMode[] = ["high", "balanced", "lite", "low"];
 
 const signals = (over: Partial<DeviceSignals> = {}): DeviceSignals => ({
   cores: null,
@@ -128,12 +128,92 @@ test("high mode changes nothing", () => {
 
 test("an unknown stored value falls back to balanced, never to low", () => {
   /* Corrupt storage must not silently downgrade somebody's interface. */
-  for (const raw of ["", "fast", "LOW", null, "undefined"]) {
+  for (const raw of ["", "fast", "LOW", null, "undefined", "light"]) {
     assert.equal(readStoredMode(raw), null, `${String(raw)} was accepted`);
   }
-  for (const raw of ["high", "balanced", "low"]) {
+  for (const raw of ["high", "balanced", "lite", "low"]) {
     assert.equal(readStoredMode(raw), raw);
   }
+});
+
+/* ── Lightweight: the picture of balanced, none of the per-frame work ─────── */
+
+test("lightweight mode keeps everything that makes balanced LOOK like balanced", () => {
+  /* The whole claim of this mode is that a reader cannot tell. If any of these
+     drifts from balanced, the mode has quietly become a second low mode and its
+     copy — "looks like Balanced" — is a false promise on the settings screen. */
+  const lite = performanceProfile("lite");
+  const balanced = performanceProfile("balanced");
+  for (const key of [
+    "animations",
+    "decorativeShadows",
+    "richCharts",
+    "timerTickMs",
+    "uiPollMs",
+    "listChunkSize",
+    "livePreview",
+  ] as const) {
+    assert.deepEqual(
+      lite[key],
+      balanced[key],
+      `lite.${key} differs from balanced — the mode is no longer the same picture`,
+    );
+  }
+});
+
+test("what lightweight mode actually removes is the per-frame work", () => {
+  const lite = performanceProfile("lite");
+  /* The real filter goes... */
+  assert.equal(lite.blur, false, "backdrop-filter survives lightweight mode");
+  /* ...and something that looks like it stays. A mode that dropped the frost
+     without the stand-in would be low mode with extra steps. */
+  assert.equal(lite.paintedFrost, true);
+  assert.equal(lite.backdropField, "painted");
+});
+
+test("the painted stand-ins exist wherever the real effect is claimed", () => {
+  /* Only lightweight mode paints. High and balanced run the real thing; low
+     shows neither, which is why it is honestly flat. A mode claiming painted
+     frost with no field behind it would be frost over nothing. */
+  for (const mode of ALL) {
+    const p = performanceProfile(mode);
+    if (p.paintedFrost) {
+      assert.equal(
+        p.backdropField,
+        "painted",
+        `${mode} paints frost with no field behind it`,
+      );
+    }
+    if (p.blur) {
+      assert.equal(
+        p.paintedFrost,
+        false,
+        `${mode} runs the real blur AND its stand-in`,
+      );
+      assert.equal(p.backdropField, "animated");
+    }
+  }
+});
+
+test("the modes are ordered by cost, with lightweight between the two", () => {
+  /* A mode that is cheaper than the one below it is a mode nobody should pick.
+     Every figure moves in one direction across the four. */
+  const [high, balanced, lite, low] = ALL.map(performanceProfile);
+  for (const p of [high, balanced, lite, low]) assert.ok(p);
+  /* Lightweight costs no more than balanced anywhere... */
+  assert.ok(lite.timerTickMs >= balanced.timerTickMs);
+  assert.ok(lite.uiPollMs >= balanced.uiPollMs);
+  assert.ok(lite.listChunkSize <= balanced.listChunkSize);
+  assert.ok(lite.previewFps <= balanced.previewFps);
+  /* ...and no less than low anywhere. */
+  assert.ok(lite.timerTickMs <= low.timerTickMs);
+  assert.ok(lite.uiPollMs <= low.uiPollMs);
+  assert.ok(lite.listChunkSize >= low.listChunkSize);
+  assert.ok(lite.previewFps >= low.previewFps);
+  /* And it sits strictly between them on the one thing it exists to change. */
+  assert.equal(balanced.backdropField, "animated");
+  assert.equal(lite.backdropField, "painted");
+  assert.equal(low.backdropField, "none");
 });
 
 /* ── Detection suggests; it never imposes ────────────────────────────────── */
@@ -216,6 +296,67 @@ test("the field is not rendered at all in low mode, not merely hidden", () => {
   assert.match(src, /return null/);
 });
 
+test("lightweight mode keeps the frost translucent instead of dropping it", () => {
+  /* The distinction between this mode and low mode, expressed where it actually
+     lives. Low mode makes the surfaces OPAQUE — `rgb(...)`, no alpha — because
+     with no field behind them there is nothing to show through. Lightweight
+     keeps the alpha, because the painted field IS behind them, and that
+     showing-through is the whole illusion. */
+  const css = readFileSync("app/globals.css", "utf8");
+  const lite = css.slice(css.indexOf(':root[data-perf="lite"]'));
+  assert.ok(lite.length > 0, "no lightweight-mode stylesheet layer");
+  assert.match(lite, /--frost-bar: rgba\(/, "lightweight frost lost its alpha");
+  assert.match(lite, /--frost-panel: rgba\(/);
+  /* And the filter itself is gone — the saving is real, not just the look. */
+  assert.match(css, /:root\[data-perf="lite"\] \*/);
+});
+
+test("the painted field costs one layer and no per-frame work", () => {
+  /* Every property this asserts the ABSENCE of is one that would put the cost
+     straight back: a blur filter repaints on every frame it moves, and a second
+     animated property is a second thing the compositor cannot cache. Only a
+     transform may animate here. */
+  const css = readFileSync("app/globals.css", "utf8");
+  const start = css.indexOf("  .field-painted {");
+  assert.ok(start > 0, "no painted field");
+  const painted = css.slice(start, css.indexOf("}", css.indexOf("@keyframes field-painted-drift")));
+  assert.equal(
+    /filter:\s*blur/.test(painted),
+    false,
+    "the painted field runs a blur filter — that is the cost it exists to avoid",
+  );
+  assert.equal(
+    /backdrop-filter/.test(painted),
+    false,
+    "the painted field runs a backdrop filter",
+  );
+  /* The drift is transform-only. Anything else — opacity, background-position,
+     filter — repaints the whole viewport on a machine that cannot afford it. */
+  const frames = css.slice(css.indexOf("@keyframes field-painted-drift"));
+  const body = frames.slice(0, frames.indexOf("\n  }\n"));
+  assert.match(body, /transform: translate3d/);
+  assert.equal(
+    /(background-position|opacity|filter|width|height):/.test(body),
+    false,
+    "the painted field animates something the compositor cannot carry for free",
+  );
+});
+
+test("the painted field is one element, not the ten hidden", () => {
+  /* The saving is the LAYERS, not the pixels. Rendering ten nodes and styling
+     them cheaply would keep every compositing layer and save nothing. */
+  const src = code("components/ui/IridescentField.tsx");
+  assert.match(src, /backdropField === "painted"/);
+  assert.match(src, /field field-painted/);
+  /* The painted branch returns before the blob list is ever mapped. */
+  const paintedAt = src.indexOf('backdropField === "painted"');
+  const mapAt = src.indexOf("blobs.map(");
+  assert.ok(
+    paintedAt > 0 && mapAt > paintedAt,
+    "the painted branch does not short-circuit the blob layers",
+  );
+});
+
 test("the mode is applied before first paint", () => {
   /* Otherwise a weak machine paints one frosted, animated frame and drops it —
      the most expensive frame in the session, and the one the mode exists to
@@ -255,10 +396,11 @@ test("no mode disables a feature the product depends on", () => {
   }
 });
 
-test("the three modes are offered with what each one costs", () => {
+test("the four modes are offered with what each one costs", () => {
+  /* In cost order, so the list itself says which way the trade runs. */
   assert.deepEqual(
     DEVICE_MODES.map((m) => m.id),
-    ["high", "balanced", "low"],
+    ["high", "balanced", "lite", "low"],
   );
   for (const m of DEVICE_MODES) {
     assert.ok(m.label.length > 0);

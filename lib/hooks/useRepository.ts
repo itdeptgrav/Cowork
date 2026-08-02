@@ -270,7 +270,10 @@ export function useQuery<T>(
     if (!inflightCache.has(dedupKey)) {
       const p = Promise.resolve().then(() => fetcher(getRepository()));
       inflightCache.set(dedupKey, p);
-      p.finally(() => inflightCache.delete(dedupKey));
+      // .catch() suppresses the unhandled-rejection the browser fires when `p`
+      // rejects and `p.finally(...)` produces a new rejected Promise with no
+      // handler. Subscribers still see the rejection through their own chains.
+      p.finally(() => inflightCache.delete(dedupKey)).catch(() => {});
     }
 
     (inflightCache.get(dedupKey) as Promise<T>)

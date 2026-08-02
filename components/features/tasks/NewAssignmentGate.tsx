@@ -5,8 +5,10 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import { getRepository } from "@/lib/repositories";
 import { Button, Chip } from "@/components/ui/Primitives";
-import { formatDateTime } from "@/lib/utils/format";
+import { formatDateTime, formatDuration } from "@/lib/utils/format";
+import { actionableFor } from "@/lib/rules/tasks/actionable";
 import {
+  committedEffort,
   MAX_SHOWN,
   rememberSeen,
   unseenNotices,
@@ -93,6 +95,9 @@ export function NewAssignmentGate() {
 
         const all: AssignmentNotice[] = page.items.map((view) => {
           const mine = view.assignments.find((a) => a.employeeId === viewer.employeeId);
+          /* The same resolver the action inbox uses, so the notice and the
+             inbox can never name different next steps for one task. */
+          const action = actionableFor(view, viewer.employeeId);
           return {
             taskId: view.task.id,
             title: view.task.title,
@@ -104,6 +109,18 @@ export function NewAssignmentGate() {
             assignedByName: view.owner?.displayName ?? null,
             dueAt: view.task.deadline.dueAt,
             rank: view.myStoredRank ?? mine?.rank ?? null,
+            description: view.task.description,
+            requirementCount: view.task.requirements.length,
+            /* The proposed window on a budget task, the estimate otherwise —
+               whichever one is the real answer to "how long is this". */
+            effortSecs:
+              view.task.deadline.mode === "timer"
+                ? (view.task.deadline.currentWindowSecs ?? view.task.estimatedEffortSecs)
+                : view.task.estimatedEffortSecs,
+            deadlineMode: view.task.deadline.mode,
+            projectName: view.project?.name ?? null,
+            isSubtask: view.task.parentTaskId !== null,
+            action: action ? { label: action.label, href: action.href } : null,
           };
         });
 
@@ -125,6 +142,9 @@ export function NewAssignmentGate() {
 
   const shown = notices.slice(0, MAX_SHOWN);
   const overflow = notices.length - shown.length;
+  /* Across everything new, not just the five on screen — the sentence says
+     "these were assigned to you", and that is all of them. */
+  const effort = committedEffort(notices);
 
   function dismiss() {
     /* Everything unseen is marked seen, including the overflow — they were
@@ -165,14 +185,36 @@ export function NewAssignmentGate() {
         </h2>
         <p className="mt-2 text-sm text-ink-muted">
           {notices.length === 1
-            ? "This was assigned to you and is waiting for you to confirm it."
-            : "These were assigned to you and are waiting for you to confirm them."}{" "}
-          Opening one lets you accept it or discuss the deadline.
+            ? "This was assigned to you and is waiting on you."
+            : "These were assigned to you and are waiting on you."}{" "}
+          {effort.totalSecs > 0 && (
+            <>
+              They commit{" "}
+              <span data-figure className="text-ink">
+                {formatDuration(effort.totalSecs)}
+              </span>{" "}
+              of your time
+              {/* Said explicitly when only some carry a figure: a bare total
+                  over a partly-estimated set reads as the whole commitment
+                  and is not. */}
+              {effort.withEstimate < effort.total && (
+                <>
+                  {" "}
+                  across{" "}
+                  <span data-figure>
+                    {effort.withEstimate} of {effort.total}
+                  </span>{" "}
+                  — the rest have no time set yet
+                </>
+              )}
+              .
+            </>
+          )}
         </p>
 
         <ul className="mt-4 divide-y divide-hairline">
           {shown.map((n) => (
-            <li key={`${n.taskId}:${n.assignedAt}`} className="py-2.5">
+            <li key={`${n.taskId}:${n.assignedAt}`} className="py-3">
               <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1">
                 {n.rank !== null && (
                   <span data-figure className="w-7 shrink-0 text-[11px] text-ink">
@@ -189,20 +231,77 @@ export function NewAssignmentGate() {
                 >
                   {n.title}
                 </Link>
-                {n.dueAt ? (
-                  <span className="text-[11px] text-ink-faint">{formatDateTime(n.dueAt)}</span>
-                ) : (
-                  /* A budget task genuinely has no date until the window is
-                     accepted — saying "no date" states that rather than
-                     leaving a gap that reads as missing data. */
-                  <Chip tone="neutral">No date yet</Chip>
-                )}
+                <span data-figure className="shrink-0 text-[10px] text-ink-faint">
+                  {n.reference}
+                </span>
               </div>
-              {n.assignedByName && (
-                <p className="mt-0.5 text-[11px] text-ink-faint">
-                  Assigned by {n.assignedByName}
+
+              {n.description && (
+                <p className="mt-1 line-clamp-2 text-[11.5px] leading-relaxed text-ink-muted">
+                  {n.description}
                 </p>
               )}
+
+              {/* One line of facts, in the order somebody triages by: how long
+                  is it, when is it wanted, what is it part of. */}
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-ink-faint">
+                {n.effortSecs !== null && n.effortSecs > 0 && (
+                  <span>
+                    {/* A budget is time the assignee will schedule; an
+                        estimate is the assignor's guess at a fixed-date task.
+                        Naming which one this is decides what happens next. */}
+                    {n.deadlineMode === "timer" ? "Budget" : "Estimate"}{" "}
+                    <span data-figure className="text-ink">
+                      {formatDuration(n.effortSecs)}
+                    </span>
+                  </span>
+                )}
+                {n.dueAt ? (
+                  <span>
+                    Due <span className="text-ink">{formatDateTime(n.dueAt)}</span>
+                  </span>
+                ) : (
+                  /* A budget task genuinely has no date until the window is
+                     accepted — saying so states a fact rather than leaving a
+                     gap that reads as missing data. */
+                  <span>
+                    {n.deadlineMode === "timer"
+                      ? "Date set once you accept the time"
+                      : "No date yet"}
+                  </span>
+                )}
+                {n.requirementCount > 0 && (
+                  <span>
+                    <span data-figure className="text-ink">
+                      {n.requirementCount}
+                    </span>{" "}
+                    {n.requirementCount === 1 ? "requirement" : "requirements"}
+                  </span>
+                )}
+                {n.projectName && <span className="truncate">In {n.projectName}</span>}
+                {n.isSubtask && <Chip tone="neutral">Part of a larger task</Chip>}
+              </div>
+
+              <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                {n.assignedByName && (
+                  <span className="text-[11px] text-ink-faint">
+                    Assigned by {n.assignedByName}
+                  </span>
+                )}
+                {/* The real next step for THIS task, from the same resolver
+                    the action inbox uses — "Confirm receipt", "Accept or
+                    discuss the time", "Propose a deadline" — linking to the
+                    screen that actually does it. */}
+                {n.action && (
+                  <Link
+                    href={n.action.href}
+                    onClick={dismiss}
+                    className="ms-auto shrink-0 rounded-full bg-[var(--control)] px-2.5 py-1 text-[11px] font-medium text-ink transition-colors hover:bg-[var(--control-hover)]"
+                  >
+                    {n.action.label}
+                  </Link>
+                )}
+              </div>
             </li>
           ))}
         </ul>

@@ -74,18 +74,7 @@ export function Home() {
           resolve to the same 557 / 328 and 443 / 443 the reference measures. */}
       <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
         <div className="flex min-w-0 flex-col gap-4 deck:col-span-8">
-          {/* Row 1 — now/start card comes first so the timer is always above
-              the fold; workload graph anchors row 2 below it. */}
-          <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
-            <div className="min-w-0">
-              {team ? <TeamLoadCard /> : <NowCard />}
-            </div>
-            <div className="min-w-0">
-              <WorkMix />
-            </div>
-          </div>
-
-          {/* Row 2 — hero graph 5, stacked stat pair 3. */}
+          {/* Row 1 — hero graph 5, stacked stat pair 3. */}
           <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-8">
             <div className="min-w-0 deck:col-span-5">
               <SignatureGraph />
@@ -93,6 +82,16 @@ export function Home() {
             <div className="flex min-w-0 flex-col gap-4 deck:col-span-3">
               <ScoreStat />
               <LoadStat />
+            </div>
+          </div>
+
+          {/* Row 2 — the two halves: now/start card and the work mix ring. */}
+          <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
+            <div className="min-w-0">
+              {team ? <TeamLoadCard /> : <NowCard />}
+            </div>
+            <div className="min-w-0">
+              <WorkMix />
             </div>
           </div>
         </div>

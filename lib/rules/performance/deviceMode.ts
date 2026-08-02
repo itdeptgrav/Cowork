@@ -34,9 +34,35 @@ import {
  * record would carry the laptop's compromise onto the desktop, and — worse —
  * would make it a thing an administrator could set for somebody else. It lives
  * in `localStorage`, so it is a property of the machine in front of you.
+ *
+ * ## The fourth mode, and why it is not a half-measure
+ *
+ * Between `balanced` and `low` sits `lite`, and the gap it fills is a real one:
+ * somebody whose machine stutters had exactly one remedy, and it cost them the
+ * whole look of the product. Most of that look is not the effect — it is the
+ * PICTURE the effect produces, and the picture can be painted directly.
+ *
+ * Two substitutions carry it, and both are honest about what they are:
+ *
+ *  · **The frost.** `backdrop-filter` blurs what is behind the bar. What is
+ *    behind the bar is the background field: six radial gradients so soft that
+ *    blurring them again moves almost nothing. So the filter goes and the
+ *    translucency stays — the surface still shows the field's colour through
+ *    itself, which is the part anybody actually sees. Raised a few percent more
+ *    opaque so scrolled text underneath cannot ghost through unblurred.
+ *  · **The field.** Ten permanently-composited layers, each blurred at 46px and
+ *    animating forever, become ONE element whose background is a stack of
+ *    gradients — painted once, then drifted with a transform. A transform on an
+ *    already-composited layer is the one animation that costs the compositor
+ *    nothing per frame: no repaint, no filter, no readback.
+ *
+ * Calling it an illusion is not a disclaimer, it is the design. `low` mode is
+ * the honest surrender of the look; `lite` keeps the look and surrenders the
+ * technique. What it may NOT do is surrender anything above — the same refusals
+ * apply to it as to every other mode.
  */
 
-export type DeviceMode = "high" | "balanced" | "low";
+export type DeviceMode = "high" | "balanced" | "lite" | "low";
 
 export const DEVICE_MODES: {
   id: DeviceMode;
@@ -52,6 +78,11 @@ export const DEVICE_MODES: {
     id: "balanced",
     label: "Balanced",
     hint: "The default. Full visuals, with the most expensive effects trimmed under load.",
+  },
+  {
+    id: "lite",
+    label: "Lightweight",
+    hint: "Looks like Balanced, painted rather than computed. The frost and the drifting background are drawn once instead of recalculated every frame — the same picture, without the per-frame cost. Everything still works.",
   },
   {
     id: "low",
@@ -76,6 +107,27 @@ export interface PerformanceProfile {
    * it costs a composite per scrolled frame to reveal almost nothing.
    */
   blur: boolean;
+  /**
+   * Paint the frosted look WITHOUT the filter.
+   *
+   * True only where `blur` is false but the surface should still read as glass:
+   * translucency and the lit lip are kept, the per-frame blur is not. Named as
+   * an illusion rather than as "cheap blur" because the settings screen says so
+   * to the reader too — a mode that quietly redefines "frosted" would be a mode
+   * somebody cannot check against their own screen.
+   */
+  paintedFrost: boolean;
+  /**
+   * How the background field is drawn.
+   *
+   *  · `animated` — ten composited layers, blurred and drifting. The only thing
+   *    in the product that costs anything AT REST.
+   *  · `painted` — one element, a stack of gradients, drifted by transform
+   *    alone. Reads as the same field; costs one paint and no per-frame work.
+   *  · `none` — not rendered. Coherent only where there is no frost for it to
+   *    sit behind.
+   */
+  backdropField: "animated" | "painted" | "none";
   /** Long shadows and the inset lip. Cheap individually, additive in a list. */
   decorativeShadows: boolean;
   /**
@@ -107,6 +159,8 @@ export interface PerformanceProfile {
 const HIGH: PerformanceProfile = {
   animations: true,
   blur: true,
+  paintedFrost: false,
+  backdropField: "animated",
   decorativeShadows: true,
   timerTickMs: 1_000,
   uiPollMs: 2_500,
@@ -125,9 +179,33 @@ const BALANCED: PerformanceProfile = {
   listChunkSize: 50,
 };
 
+/**
+ * Balanced's picture, none of Balanced's per-frame work.
+ *
+ * Spread from `BALANCED` rather than written out, and that is the point: every
+ * field a reader would check to ask "does this still look like the default?" —
+ * animation, charts, shadows, the timer's second hand, how many rows a table
+ * gives you — is literally the same value, not a copy that can drift from it.
+ * The three fields that differ are the three that are illusions.
+ */
+const LITE: PerformanceProfile = {
+  ...BALANCED,
+  /* The filter goes; the translucency and the lit lip stay. */
+  blur: false,
+  paintedFrost: true,
+  backdropField: "painted",
+  /* The one non-cosmetic trim, and it is the watcher's own preview only: 24 is
+     below the 30 the publisher sends and above anything a reader would call
+     choppy. The captured stream is untouched — it is somebody's evidence of
+     work and its quality is not a local preference. */
+  previewFps: 24,
+};
+
 const LOW: PerformanceProfile = {
   animations: false,
   blur: false,
+  paintedFrost: false,
+  backdropField: "none",
   decorativeShadows: false,
   /* Two seconds rather than one. A running timer still reads correctly; it
      simply redraws half as often. */
@@ -143,6 +221,8 @@ export function performanceProfile(mode: DeviceMode): PerformanceProfile {
   switch (mode) {
     case "high":
       return HIGH;
+    case "lite":
+      return LITE;
     case "low":
       return LOW;
     case "balanced":
@@ -285,7 +365,12 @@ export const DEVICE_MODE_DISMISSED_KEY = "cowork.deviceMode.suggestionDismissed"
 
 /** A stored value, or null where nothing valid is stored. */
 export function readStoredMode(raw: string | null): DeviceMode | null {
-  return raw === "high" || raw === "balanced" || raw === "low" ? raw : null;
+  return raw === "high" ||
+    raw === "balanced" ||
+    raw === "lite" ||
+    raw === "low"
+    ? raw
+    : null;
 }
 
 /**

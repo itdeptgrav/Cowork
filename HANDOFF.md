@@ -3700,3 +3700,41 @@ assignment, and whether `listTasks` with `status:["assigned"]` returns
 assignment rows carrying `assignedAt` on the production repository (the
 fallback to `task.createdAt` exists for when it does not, but which branch
 actually runs has not been observed).
+
+## 22.13 · The notice, made worth reading
+
+The first version gave a title, a priority and a date — which asks somebody
+to open every task before they can tell which one matters. Each row now
+carries:
+
+- **the reference**, the **description** (two lines, clamped),
+- **how long it is expected to take**, labelled **Budget** or **Estimate** —
+  not the same thing and the distinction decides what happens next: a budget
+  is time the assignee will schedule and its deadline only exists once they
+  accept the window; an estimate is the assignor's figure on a task that
+  already has a date,
+- **when it is due**, or — on a budget task — *"Date set once you accept the
+  time"*, which states a fact where the old *"No date yet"* read as missing
+  data,
+- **how many requirements** define done, **the project**, and whether it is
+  **part of a larger task**,
+- **who assigned it**, and
+- **the real next step**, as a button going to the screen that performs it.
+
+That last one is the important one, and it is not hardcoded: it comes from
+`actionableFor` — the same resolver the action inbox uses. A newly assigned
+task is NOT always "Confirm receipt". A budget task with a window on offer is
+"Accept or discuss the time"; one with no deadline set is "Propose a
+deadline", and that one goes to `/tasks/{id}/deadline` rather than the task
+page. Hardcoding "Confirm receipt" would have sent people to the wrong screen
+for two of the three real cases, and would have let the notice and the inbox
+name different next steps for one task.
+
+The heading totals the committed time, via `committedEffort`, which returns
+**a pair** — the total and how many tasks it covers — rather than one number.
+"12h" across five tasks when only two carry a figure reads as the whole
+commitment and is not; the copy says "across 2 of 5 — the rest have no time
+set yet". Tested.
+
+Help article updated to describe what is actually on screen, per the standing
+rule. 10 rule tests, coverage guard, tsc and lint all pass.

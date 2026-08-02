@@ -28,6 +28,7 @@ import { TaskFlowSection } from "./TaskFlowSection";
 import { RelationshipNote } from "./RelationshipNote";
 import { PriorityDialog } from "./PriorityDialog";
 import { DeadlinePanel } from "./DeadlinePanel";
+import { ReportsPanel } from "./ReportsPanel";
 import { SubmissionPanel } from "./SubmissionPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -78,7 +79,13 @@ import { REWORK_DEDUCTION } from "@/lib/rules/scoring/engine";
  */
 
 type Tab =
-  "overview" | "deadline" | "submission" | "review" | "history" | "chat";
+  | "overview"
+  | "deadline"
+  | "reports"
+  | "submission"
+  | "review"
+  | "history"
+  | "chat";
 
 export function TaskDetail({
   taskId,
@@ -156,17 +163,19 @@ export function TaskDetail({
       href: `/tasks/${taskId}`,
       icon: "overview" as const,
     },
-    /* **A project has no deadline, no submission and no review of its own.**
-       Nobody works it, so there is nothing to hand in; and with nothing handed
-       in there is nothing to decide on. Its completion is derived instead — it
-       closes when every completion requirement is satisfied, and each one is
-       satisfied by the subtask that claimed it completing. Each of those
-       subtasks runs its own deadline, submission and review with its own
-       assignee, which is where all three of these tabs actually live.
+    /* **A project has no deadline, no reports, no submission and no review of
+       its own.** Nobody works it, so there is no day to report on and nothing
+       to hand in; and with nothing handed in there is nothing to decide on. Its
+       completion is derived instead — it closes when every completion
+       requirement is satisfied, and each one is satisfied by the subtask that
+       claimed it completing. Each of those subtasks runs its own deadline,
+       daily reports, submission and review with its own assignee, which is
+       where all four of these tabs actually live.
 
        Dropped rather than shown empty: a Submission tab on a project invites
-       somebody to hand in work they did not do, and a Deadline tab invites a
-       date that binds nobody. */
+       somebody to hand in work they did not do, a Deadline tab invites a date
+       that binds nobody, and a Reports tab invites progress on work this
+       document does not carry. */
     ...(isContainer
       ? []
       : [
@@ -175,6 +184,15 @@ export function TaskDetail({
             label: "Deadline",
             href: `/tasks/${taskId}/deadline`,
             icon: "clock" as const,
+          },
+          /* Between the deadline and the submission because that is where it
+             falls in the work: the time is settled, then the days are reported
+             as they pass, then the work is handed in. */
+          {
+            id: "reports",
+            label: "Reports",
+            href: `/tasks/${taskId}/reports`,
+            icon: "timeline" as const,
           },
           {
             id: "submission",
@@ -501,6 +519,7 @@ export function TaskDetail({
               same: the work moved down a level. */}
           {isContainer &&
             (tab === "deadline" ||
+              tab === "reports" ||
               tab === "submission" ||
               tab === "review") && (
               <Panel>
@@ -508,17 +527,19 @@ export function TaskDetail({
                   This task has been broken down
                 </h2>
                 <p className="mt-2 max-w-[62ch] text-sm text-ink-muted">
-                  It is a project now: its deadline, its submission and its
-                  review all live on its subtasks, each negotiated and decided
-                  with the person carrying that piece. This task closes when
-                  every completion requirement is satisfied. Open a subtask to
-                  see or change its time, hand it in, or decide on it.
+                  It is a project now: its deadline, its daily reports, its
+                  submission and its review all live on its subtasks, each
+                  worked and decided with the person carrying that piece. This
+                  task closes when every completion requirement is satisfied.
+                  Open a subtask to see or change its time, read its progress,
+                  hand it in, or decide on it.
                 </p>
               </Panel>
             )}
           {tab === "deadline" && !isContainer && (
             <DeadlinePanel view={v} onChange={refetch} />
           )}
+          {tab === "reports" && !isContainer && <ReportsPanel view={v} />}
           {tab === "submission" && !isContainer && (
             <SubmissionPanel view={v} onChange={refetch} />
           )}
@@ -817,19 +838,6 @@ function Overview({
      the panel showing a count the other half no longer supports. */
   onChange: () => void;
 }) {
-  const reports = useQuery(
-    (r) => r.listDailyReports(view.task.id),
-    [view.task.id],
-  );
-
-  /* Recomputed rather than passed in, from the same module the tab bar reads.
-     Both callers hold `view` and the children already, so the argument would
-     only be a second chance to hand one of them a stale answer. */
-  const isContainer = isProjectContainer({
-    isProject: view.completion.isProject,
-    loadedSubtasks: subtasks.length,
-  });
-
   return (
     <>
       {/* The Time panel used to sit here, between the brief and the subtasks.
@@ -866,28 +874,12 @@ function Overview({
 
       <ProjectPanel view={view} subtasks={subtasks} onChange={onChange} />
 
-      {/* Daily reports are progress on work being done, and nobody is doing a
-          project — the reports are on its subtasks. */}
-      {!isContainer && (reports.data?.length ?? 0) > 0 && (
-        <Panel padded={false}>
-          <div className="border-b border-hairline px-5 py-3">
-            <h2 className="text-sm font-medium text-ink">Daily reports</h2>
-          </div>
-          <div className="divide-y divide-hairline">
-            {reports.data?.map((r) => (
-              <div key={r.id} className="px-5 py-2.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-ink-faint">{r.reportDate}</span>
-                  <span data-figure className="ml-auto text-xs text-ink">
-                    {r.progressPercent}%
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-ink-muted">{r.message}</p>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
+      {/* Daily reports used to be the last card here, and only when at least
+          one existed — so on the task where somebody wondered where the
+          progress notes had gone there was nothing on screen to answer them.
+          They have a tab of their own now, `ReportsPanel`. Not repeated here:
+          two lists of one thing is two places to keep right, and the one
+          further down the page loses. */}
     </>
   );
 }

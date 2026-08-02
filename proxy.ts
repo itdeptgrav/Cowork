@@ -55,6 +55,7 @@ function isPublic(pathname: string): boolean {
   return (
     PUBLIC_PATHS.has(pathname) ||
     pathname.startsWith("/join/") ||
+    pathname.startsWith("/meetings/guest/") ||
     pathname === "/privacy" ||
     isLegacyOperatorSurface(pathname)
   );

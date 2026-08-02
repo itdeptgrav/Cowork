@@ -244,9 +244,36 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "approvals-what-happens",
       "approvals-who-approves",
       "task-rework",
+      "task-daily-reports",
     ],
     source:
       "submitCompletion, reviewSubmission self-approval guard (spec defect P1)",
+  },
+  {
+    id: "task-daily-reports",
+    category: "tasks",
+    title: "Daily reports",
+    keywords: [
+      "daily report",
+      "daily reports",
+      "reports tab",
+      "progress report",
+      "report progress",
+      "end of day",
+      "what did you accomplish",
+      "progress percentage on a task",
+    ],
+    examples: [
+      "Where do I see daily reports?",
+      "What is the Reports tab on a task?",
+      "How do I report progress on a task?",
+      "Why was I asked what I did before going offline?",
+    ],
+    answer:
+      "A daily report is progress on a task while the work is still running, which is a different thing from the submission that hands it over. You write them at the end of a day, and the only route to one is going offline: choosing Offline from the status menu opens “End of day” before your status actually changes, listing every task your timer ran on that day with the time recorded against each, a note — “What did you accomplish? Any blockers?” — and a progress figure you pick from 0, 25, 50, 75 or 100%. “Submit & go offline” files one report per task listed and then takes you offline; “Skip & go offline” takes you offline having filed none. If the timer did not run at all that day there is nothing to report on, and the only button is “Go offline”. A report with nothing written in it is not filed — the answer is “Write what you did.” — so a task you leave blank is skipped while the others go through. There is no button on a task to write a report against it, and only the tasks your timer actually ran on that day are offered, so a report always covers work that was measurably done. Reading them is on the task itself, under Reports, which sits between Deadline and Submission. It lists every report filed against that task with the most recent first, naming who wrote it, the day it covers, the progress they reported and what they wrote. The tab is there whether or not anybody has filed one, and when nobody has it says where reports come from rather than showing an empty list. Anyone who can open the task can read its reports. The progress figure is a statement by the person doing the work rather than a measurement: it is not worked out from the time logged, it does not move the task through its statuses, and no part of your score reads it. A task that has been broken down has no Reports tab at all, for the same reason it has no Deadline, Submission or Review — nobody works a project, so the days being reported on belong to its subtasks.",
+    related: ["task-submit", "status-offline", "task-break-down"],
+    source:
+      "submitDailyReport and listDailyReports in lib/repositories/mock/index.ts and lib/repositories/legacy/index.ts (cowork_tasks/{id}/dailyReports); DailyReportModal.tsx is the end-of-day dialog, opened by StatusButton.tsx when Offline is chosen and built from listDayCommits; ReportsPanel.tsx renders the tab, wired in TaskDetail.tsx and gated on isContainer the same way the deadline, submission and review tabs are. Moved out of a card at the bottom of the overview tab into a tab of its own 2026-08-02",
   },
   {
     id: "task-rework",
@@ -382,7 +409,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I get rid of the new task popup?",
     ],
     answer:
-      "When somebody assigns you work, the next time you open Cowork you get a notice listing what arrived — its priority, its deadline if it has one yet, and who assigned it. It is a notice, not a gate: Later closes it, Escape closes it, clicking outside closes it, and the work is on your task list either way. Clicking a task in the list opens it so you can confirm it or discuss the deadline. It lists at most five and says how many more there are, so coming back from leave to twenty new tasks does not produce a modal you have to scroll. What it shows is work that is still waiting for you to confirm it — once you confirm a task it stops counting as new, and confirming is the thing that actually moves it into your queue. Cowork remembers that it has shown you a notice in the browser you are using, not on your account, so signing in on a second machine can show you the same one once more. That is deliberate: the alternative is a device you no longer use marking work as seen and you never hearing about it. Being assigned the same task again later counts as new again, because it is.",
+      "When somebody assigns you work, the next time you open Cowork you get a notice listing what arrived. Each task shows its priority, its reference, the first couple of lines of its description, how long it is expected to take, when it is due, how many requirements it carries, the project it belongs to, whether it is part of a larger task, who assigned it, and a button for the one thing to do about it next — “Confirm receipt”, “Accept or discuss the time” or “Propose a deadline”, whichever genuinely applies, going straight to the screen that does it. Where the tasks carry time figures the heading adds them up, and says how many of them the total actually covers rather than implying it covers all. A time BUDGET and an ESTIMATE are labelled differently on purpose: a budget is time you will schedule and its deadline appears once you accept it, an estimate is the assignor's figure on a task that already has a date. It is a notice, not a gate: Later closes it, Escape closes it, clicking outside closes it, and the work is on your task list either way. Clicking a task in the list opens it so you can confirm it or discuss the deadline. It lists at most five and says how many more there are, so coming back from leave to twenty new tasks does not produce a modal you have to scroll. What it shows is work that is still waiting for you to confirm it — once you confirm a task it stops counting as new, and confirming is the thing that actually moves it into your queue. Cowork remembers that it has shown you a notice in the browser you are using, not on your account, so signing in on a second machine can show you the same one once more. That is deliberate: the alternative is a device you no longer use marking work as seen and you never hearing about it. Being assigned the same task again later counts as new again, because it is.",
     related: ["task-who-can-assign", "task-priority", "task-budget-vs-deadline-rights"],
     source:
       "components/features/tasks/NewAssignmentGate.tsx; lib/rules/tasks/newAssignments.ts; TaskStatus 'assigned' is the server-side record of not-yet-confirmed",
@@ -460,7 +487,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why does my project show a time budget and a timer?",
     ],
     answer:
-      "There is no Forward button and no folders. Both were removed. To give part of a task to somebody else, open the task and use Break out a subtask. The difference matters: forwarding handed over a slice of your time budget and left nothing saying what the work was for, whereas a subtask has to claim at least one of the parent task's completion requirements — the dialog will not let you create one otherwise, and the message is “Choose at least one completion requirement this subtask will satisfy.” So a task needs completion requirements before it can be broken down, and a task with none shows no breakdown button at all: the Completion requirements panel instead offers Add completion requirements, where you type them one per line. You can also set them when you create the task, where the new-task form calls the same field Acceptance criteria — it is one list under two names, and either route fills it. Adding only ever appends — existing requirements are never replaced or reordered, because the subtasks already claiming them point at their positions. Who may add them is the same rule as editing a task's title or description: before the task has been confirmed or started, its creator or any lead; once it has started, only the person who assigned it, and anyone else is told “This task has already started — only the sender who assigned it can edit it now.” Once created, a subtask appears in three places: a Subtasks section on the parent task, headed with how many have been broken out; under the requirement it claims, which now reads “Delegated” with the subtask named beneath it; and in the task list, indented directly beneath its parent. The list is a tree — a task that has been broken down carries a folder mark and a chevron you can click to fold its subtasks away, and its row shows “—” where a priority would be, because a priority is a position in one person's queue and nobody is queued to do a container. The subtasks underneath carry the real priorities, each in its own assignee's queue, and each row is marked “Subtask”. Tab counts and dashboard totals are unaffected by any of this: they count tasks, not rows, so breaking one task into three does not turn one into four. A subtask runs the full task lifecycle of its own — budget, priority, submission and review all apply — so it is created on the ordinary new-task form, not a cut-down dialog: Break out a subtask opens the same screen as New task, with the same fields, and asks for one thing more, which is which of the parent's completion requirements this subtask satisfies. It takes a title, a brief, its own acceptance criteria, attachments, an assignee and its own time — a working-time budget or a fixed date, decided the same way as on any task, by who you are assigning to. The type picker is not shown, because a subtask is a standard task; assigning it to yourself is what makes it a self subtask, and then your manager approves and reviews it exactly as with a self-assigned task. You stay responsible for the parent task. Once a task has been broken down it stops being work in its own right and becomes a project: its Time panel disappears, and so do its Deadline, Submission and Review tabs, because nobody works a project — there is nothing to start, nothing to hand in and so nothing to decide on. All three live on the subtasks, each negotiated and decided with the person carrying that piece. Opening one of those pages on a project says “This task has been broken down” and points you at them. What the project keeps is its title, its brief and its completion requirements, and it closes when every one of them is satisfied. Nothing about it is actionable any more, either: its Overview tab shows one card explaining it is a project rather than the Accept button, the budget proposal or the “waiting for you to accept” line it carried the moment before it was broken down — that state belonged to it as an ordinary task, and nothing rewrites the document when a subtask makes it a container, so a screen that read it blindly kept offering to accept, propose a time, or start a timer on a task nobody is meant to touch again. Its row in the task list matches: no deadline, no time-budget figure, no timer control, and its next-action column says “Project — see its subtasks” instead of naming an action. Two subtasks under the same project can each still be numbered normally — a project never consumes a priority number of its own, so three real subtasks read P1, P2, P3, not P1, P3, P5 with a project sitting in the gap. That applies before acceptance too: a subtask awaiting acceptance is numbered among the other work also awaiting acceptance, its own count starting at 1 and separate from the live queue's — it takes its place in the live queue the moment it is accepted. The person doing the subtask sees which requirement they are answerable for, and that requirement is satisfied when their subtask completes — you cannot tick it off yourself once it is delegated. Your task cannot complete until every requirement is satisfied. Subtasks go one level deep: a subtask cannot itself be broken down. For grouping work without any of this, use a project.",
+      "There is no Forward button and no folders. Both were removed. To give part of a task to somebody else, open the task and use Break out a subtask. The difference matters: forwarding handed over a slice of your time budget and left nothing saying what the work was for, whereas a subtask has to claim at least one of the parent task's completion requirements — the dialog will not let you create one otherwise, and the message is “Choose at least one completion requirement this subtask will satisfy.” So a task needs completion requirements before it can be broken down, and a task with none shows no breakdown button at all: the Completion requirements panel instead offers Add completion requirements, where you type them one per line. You can also set them when you create the task, where the new-task form calls the same field Acceptance criteria — it is one list under two names, and either route fills it. Adding only ever appends — existing requirements are never replaced or reordered, because the subtasks already claiming them point at their positions. Who may add them is the same rule as editing a task's title or description: before the task has been confirmed or started, its creator or any lead; once it has started, only the person who assigned it, and anyone else is told “This task has already started — only the sender who assigned it can edit it now.” Once created, a subtask appears in three places: a Subtasks section on the parent task, headed with how many have been broken out; under the requirement it claims, which now reads “Delegated” with the subtask named beneath it; and in the task list, indented directly beneath its parent. The list is a tree — a task that has been broken down carries a folder mark and a chevron you can click to fold its subtasks away, and its row shows “—” where a priority would be, because a priority is a position in one person's queue and nobody is queued to do a container. The subtasks underneath carry the real priorities, each in its own assignee's queue, and each row is marked “Subtask”. Tab counts and dashboard totals are unaffected by any of this: they count tasks, not rows, so breaking one task into three does not turn one into four. A subtask runs the full task lifecycle of its own — budget, priority, submission and review all apply — so it is created on the ordinary new-task form, not a cut-down dialog: Break out a subtask opens the same screen as New task, with the same fields, and asks for one thing more, which is which of the parent's completion requirements this subtask satisfies. It takes a title, a brief, its own acceptance criteria, attachments, an assignee and its own time — a working-time budget or a fixed date, decided the same way as on any task, by who you are assigning to. The type picker is not shown, because a subtask is a standard task; assigning it to yourself is what makes it a self subtask, and then your manager approves and reviews it exactly as with a self-assigned task. You stay responsible for the parent task. Once a task has been broken down it stops being work in its own right and becomes a project: its Time panel disappears, and so do its Deadline, Reports, Submission and Review tabs, because nobody works a project — there is nothing to start, no day to report on, nothing to hand in and so nothing to decide on. All four live on the subtasks, each negotiated and decided with the person carrying that piece. Opening one of those pages on a project says “This task has been broken down” and points you at them. What the project keeps is its title, its brief and its completion requirements, and it closes when every one of them is satisfied. Nothing about it is actionable any more, either: its Overview tab shows one card explaining it is a project rather than the Accept button, the budget proposal or the “waiting for you to accept” line it carried the moment before it was broken down — that state belonged to it as an ordinary task, and nothing rewrites the document when a subtask makes it a container, so a screen that read it blindly kept offering to accept, propose a time, or start a timer on a task nobody is meant to touch again. Its row in the task list matches: no deadline, no time-budget figure, no timer control, and its next-action column says “Project — see its subtasks” instead of naming an action. Two subtasks under the same project can each still be numbered normally — a project never consumes a priority number of its own, so three real subtasks read P1, P2, P3, not P1, P3, P5 with a project sitting in the gap. That applies before acceptance too: a subtask awaiting acceptance is numbered among the other work also awaiting acceptance, its own count starting at 1 and separate from the live queue's — it takes its place in the live queue the moment it is accepted. The person doing the subtask sees which requirement they are answerable for, and that requirement is satisfied when their subtask completes — you cannot tick it off yourself once it is delegated. Your task cannot complete until every requirement is satisfied. Subtasks go one level deep: a subtask cannot itself be broken down. For grouping work without any of this, use a project.",
     related: [
       "task-create",
       "task-deadline-modes",
@@ -469,7 +496,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "task-projects",
     ],
     source:
-      "lib/rules/tasks/completion.ts — subtaskRefusal() and completionState(); createSubtask and addRequirements in lib/repositories/mock/index.ts and lib/repositories/legacy/index.ts; ProjectPanel.tsx renders the Subtasks section and the Add completion requirements form; NewTaskForm.tsx with presetParentTaskId is the subtask form, reached at /tasks/new?parent=; isProjectContainer() in lib/rules/tasks/completion.ts is what removes the project's Time panel and its Deadline, Submission and Review tabs in TaskDetail.tsx; buildTaskTree() in lib/rules/tasks/tree.ts nests the list rows and TaskQuery.includeSubtasks is what keeps counts off the tree. isContainer in lib/rules/tasks/priorityQueue.ts excludes a project from isActiveWorkload; provisionalQueuePositions() in lib/rules/tasks/activeQueue.ts numbers not-yet-accepted work in its own gap-free sequence, threaded through TaskAssignment.provisionalPosition and getPersonPriority's provisional_position scale in lib/rules/tasks/priority.ts. Every negotiation card in TaskDetail.tsx's overview tab and the deadline/time-budget/timer cells in TaskTable.tsx's Row are gated on isContainer, tested against the source in lib/rules/tasks/projectContainerAffordances.test.ts and lib/rules/tasks/containerQueue.test.ts. The edit gate is the engine's own, taskForward.js:1660-1676. Forwarding and folders removed 2026-07-27; addRequirements connected to the engine, subtask time budget wired, the broken-down parent made a project and the cut-down subtask dialog replaced by the full task form 2026-08-02; the priority gap a project's leftover stored rank left in its siblings' numbering closed, and every remaining action card and table cell that still offered to negotiate or start a project removed, 2026-08-02",
+      "lib/rules/tasks/completion.ts — subtaskRefusal() and completionState(); createSubtask and addRequirements in lib/repositories/mock/index.ts and lib/repositories/legacy/index.ts; ProjectPanel.tsx renders the Subtasks section and the Add completion requirements form; NewTaskForm.tsx with presetParentTaskId is the subtask form, reached at /tasks/new?parent=; isProjectContainer() in lib/rules/tasks/completion.ts is what removes the project's Time panel and its Deadline, Reports, Submission and Review tabs in TaskDetail.tsx; buildTaskTree() in lib/rules/tasks/tree.ts nests the list rows and TaskQuery.includeSubtasks is what keeps counts off the tree. isContainer in lib/rules/tasks/priorityQueue.ts excludes a project from isActiveWorkload; provisionalQueuePositions() in lib/rules/tasks/activeQueue.ts numbers not-yet-accepted work in its own gap-free sequence, threaded through TaskAssignment.provisionalPosition and getPersonPriority's provisional_position scale in lib/rules/tasks/priority.ts. Every negotiation card in TaskDetail.tsx's overview tab and the deadline/time-budget/timer cells in TaskTable.tsx's Row are gated on isContainer, tested against the source in lib/rules/tasks/projectContainerAffordances.test.ts and lib/rules/tasks/containerQueue.test.ts. The edit gate is the engine's own, taskForward.js:1660-1676. Forwarding and folders removed 2026-07-27; addRequirements connected to the engine, subtask time budget wired, the broken-down parent made a project and the cut-down subtask dialog replaced by the full task form 2026-08-02; the priority gap a project's leftover stored rank left in its siblings' numbering closed, and every remaining action card and table cell that still offered to negotiate or start a project removed, 2026-08-02",
   },
   {
     id: "task-projects",
@@ -1086,8 +1113,13 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "I didn't change anything and I'm offline.",
     ],
     answer:
-      "Offline is never chosen for you arbitrarily — it is what happens when the thing that made you Online stops. Stopping the share from the browser's own bar, losing the room connection, closing the tab, or a share that stops being a whole screen all return you to Offline. The status menu always states the reason underneath, so Offline is never left to be inferred. If your computer crashes, sleeps or is closed without a chance to sign out, your status goes offline on its own shortly afterwards — a live session keeps proving it is there, and one that stops proving it stops counting as online. That is why nobody is left showing as online overnight. Having several tabs open is fine: the one holding the share keeps you online, and closing any of the others changes nothing.",
-    related: ["status-online", "status-entire-screen", "status-task-actions"],
+      "Offline is never chosen for you arbitrarily — it is what happens when the thing that made you Online stops. Stopping the share from the browser's own bar, losing the room connection, closing the tab, or a share that stops being a whole screen all return you to Offline. The status menu always states the reason underneath, so Offline is never left to be inferred. If your computer crashes, sleeps or is closed without a chance to sign out, your status goes offline on its own shortly afterwards — a live session keeps proving it is there, and one that stops proving it stops counting as online. That is why nobody is left showing as online overnight. Having several tabs open is fine: the one holding the share keeps you online, and closing any of the others changes nothing. Choosing Offline yourself is the one case that asks you for something first: it opens the end-of-day report over the tasks your timer ran on that day, and you go offline whether you fill it in or skip it.",
+    related: [
+      "status-online",
+      "status-entire-screen",
+      "status-task-actions",
+      "task-daily-reports",
+    ],
     source:
       "ScreenShareBridge reportShare detail; onDisconnected goes offline; STALE_AFTER_MS heartbeat window in rules/presence/duty.ts",
   },
@@ -1637,6 +1669,34 @@ export const HELP_ARTICLES: HelpArticle[] = [
     ],
     source: "cowork_settings_audit via listSettingsAudit; applySettingsChange",
   },
+  {
+    id: "settings-device-mode",
+    category: "settings",
+    title: "Device mode — making Cowork lighter on a slow machine",
+    keywords: [
+      "device mode",
+      "slow",
+      "laggy",
+      "stutter",
+      "blur",
+      "frosted",
+      "lightweight mode",
+      "low-end laptop",
+      "performance mode",
+      "fan spinning",
+    ],
+    examples: [
+      "Cowork feels slow on my laptop.",
+      "How do I turn off the blur?",
+      "What is lightweight mode?",
+      "Can I make the interface lighter without it looking worse?",
+    ],
+    answer:
+      "Settings, then Performance. Device mode decides how much work this browser does to draw the interface, and it is kept on the machine in front of you rather than on your account — one person may use a fast desktop and a slow laptop, and nobody else, administrator included, can set it for you. There are four. High performance runs everything as designed. Balanced is the default: the same picture, with the most expensive effects trimmed under load. Lightweight looks exactly like Balanced — the frosted surfaces and the drifting background are painted once and then left alone instead of being worked out again for every frame, so the screen looks the same while the machine stops recomputing it as you scroll. Low-end laptop gives the look up on purpose: flat surfaces, no blur, no motion, fewer redraws and shorter pages of rows. Whichever you pick, nothing stops working. Presence, task timers, deadlines, screen sharing, notifications and every rule behind them behave identically in all four modes. A timer redrawing every two seconds is still counting every second, because the figure is worked out from when you started rather than added up from the redraws — and no mode slows the signal that keeps you Online, because a performance setting that marked you away would not be one. If your browser reports few processor cores, little memory, reduced motion or data saving, Cowork offers you a lighter mode once and says which of those prompted it. It never switches for you: those figures are coarse and say nothing about the graphics chip, which is what actually struggles with the frosted surfaces. Sharing your screen to go online costs more than every visual effect combined, and no mode changes that — if the machine struggles while you are online, weigh that first.",
+    related: ["status-online", "general-what-is-cowork"],
+    source:
+      "DEVICE_MODES and performanceProfile in lib/rules/performance/deviceMode.ts; the data-perf layers in app/globals.css",
+  },
 
   /* ── General ────────────────────────────────────────────────────────────── */
   {
@@ -1874,6 +1934,35 @@ export const HELP_ARTICLES: HelpArticle[] = [
     related: ["general-documents", "general-what-is-cowork"],
     source:
       "lib/rules/documents/access.ts (roleOf, editRefusal, memberChangeRefusal); ShareMenu; useCollabSession",
+  },
+  {
+    id: "general-music-playlists",
+    category: "general",
+    title: "Playlists in Music",
+    keywords: [
+      "playlist",
+      "playlists",
+      "make a playlist",
+      "save songs",
+      "add to playlist",
+      "favourites",
+      "queue",
+      "music",
+      "rename playlist",
+      "delete playlist",
+    ],
+    examples: [
+      "How do I make a playlist?",
+      "How do I save songs I like?",
+      "What is the difference between a playlist and favourites?",
+      "How do I delete a playlist?",
+      "Why can't I add the same song twice?",
+    ],
+    answer:
+      "Music has three separate places a track can sit, and they do different jobs. The queue is what plays next and empties as it goes. Favourites is one flat list of things you liked, with no order. A playlist is a named list you build and arrange yourself, and it stays until you delete it. Make one from the New button on the Playlists card, or from the list button on any track — that opens Add to playlist, which shows every playlist you have with a tick beside the ones already holding that track; clicking a ticked one takes the track back out again. Naming one you have already used is refused with “You already have a playlist with that name.”, and a name of nothing but spaces with “Give the playlist a name.”. A track can only be in a playlist once — adding it a second time does nothing rather than queueing it twice. Playing a playlist replaces the queue with it and starts at the first track; Add to queue puts it after whatever is already lined up, which is why they are two buttons rather than one. Open a playlist to reorder its tracks with the up and down arrows, or take one out. Renaming is the pencil button on the row. Deleting asks first, naming the playlist and saying “The tracks stay on YouTube; the list does not come back.”, because Cowork keeps no copy of a list you built. Playlists are yours alone: they are never shared, never visible to your manager, and like everything else in Music they are not connected to your score, your attendance or any task timer. They are kept in the browser you made them in, so a different computer starts empty.",
+    related: ["general-what-is-cowork"],
+    source:
+      "lib/music/playlists.ts (naming, duplicates, ordering, limits); components/features/music/PlaylistsCard.tsx and AddToPlaylistDialog.tsx; lib/domain/music.ts",
   },
   {
     id: "general-missing-answer",

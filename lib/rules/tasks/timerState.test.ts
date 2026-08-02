@@ -256,6 +256,52 @@ test("a press is answered before the write lands", () => {
   );
 });
 
+/* ── The number only ever counts up ──────────────────────────────────────── */
+
+test("the ticker's figure is keyed to the origin it was measured against", () => {
+  /* "The timer goes back and then suddenly jumps numbers forward." A bare
+     `secs` survives a pause, so a resume rendered the previous run's minutes
+     on top of the banked total until the next interval fired, then dropped
+     back. Keyed, a figure belonging to a previous origin is rebased on the
+     render that notices. */
+  const src = code(CONTROL);
+  assert.match(src, /originMs: startedAtRealMs,\s*\n?\s*secs: elapsedSecs\(startedAtRealMs, Date\.now\(\)\),/);
+  assert.match(src, /rebaseSecs\(tick, startedAtRealMs\)/);
+  assert.equal(
+    /const \[secs, setSecs\] = useState/.test(src),
+    false,
+    "the unkeyed figure is back — a resume will carry the last run's seconds",
+  );
+});
+
+test("a spent optimistic press is discarded, not left to be re-matched", () => {
+  /* Expiry by comparison alone is not expiry: `serverRunning` returning to its
+     press-time value re-arms the override, which then re-asserts a run whose
+     origin is the original press — the clock leaps forward by everything that
+     has happened since. */
+  const src = code(CONTROL);
+  assert.match(
+    src,
+    /if \(pressed && serverRunning !== pressed\.fromServer\) setPressed\(null\)/,
+  );
+});
+
+test("the away figure is per-second, not measured against the coarse clock", () => {
+  /* `useNow` is quantised DOWN to the minute, so a 40-second run measured 0
+     against it: stepping away dropped the clock by up to a minute and banking
+     the real elapsed a moment later threw it forward again. */
+  const src = code(CONTROL);
+  assert.match(src, /const elapsed = away\s*\n?\s*\? banked \+ ticked/);
+  assert.equal(
+    /elapsedSecs\(session\?\.startedAtRealMs \?\? null, nowMs\)/.test(src),
+    false,
+    "the away branch is reading the minute-quantised clock again",
+  );
+  /* `nowMs` keeps its one honest job: a SIXTEEN HOUR threshold, where a minute
+     of resolution is ample. */
+  assert.match(src, /timerDisplayState\(session, banked, nowMs\)/);
+});
+
 test("the pause figure is held, never rolled back", () => {
   /* On an optimistic pause the banked total does not yet include the run being
      closed, so falling through to it makes the number jump BACKWARDS. */

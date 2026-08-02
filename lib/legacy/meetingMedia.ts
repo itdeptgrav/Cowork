@@ -195,6 +195,7 @@ export async function getPublicMeetingInfo(input: {
     meetTitle?: string;
     status?: string;
     canJoin?: boolean;
+    participantCount?: number;
   }>
 > {
   return legacyFetch({

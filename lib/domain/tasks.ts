@@ -490,6 +490,21 @@ export interface TimerSession {
   startedAtRealMs: number | null;
 }
 
+/**
+ * A file hung off a daily report.
+ *
+ * Carries the name and type alongside the URL because a report's files are
+ * listed back to a person, and a bare URL is not something anyone can read. The
+ * legacy store keeps only `imageUrls` and `pdfAttachments` — flat arrays of
+ * strings — so a report written by the old application resolves to entries
+ * whose `name` is derived from the URL rather than recorded.
+ */
+export interface ReportAttachment {
+  url: string;
+  name: string;
+  mimeType: string;
+}
+
 export interface DailyReport {
   id: string;
   taskId: TaskId;
@@ -497,7 +512,18 @@ export interface DailyReport {
   reportDate: string;
   message: string;
   progressPercent: number;
+  /** URLs, for compatibility with the legacy shape. Prefer `attachments`. */
   attachmentIds: string[];
+  attachments: ReportAttachment[];
+  /**
+   * A Cowork document written as part of this report.
+   *
+   * The long form of a report — what a text box cannot hold. Stored as a real
+   * document (`cowork_documents`) rather than as HTML on the report, so it is
+   * editable, shareable and searchable like every other document.
+   */
+  documentId: string | null;
+  documentTitle: string | null;
   createdAt: string;
 }
 

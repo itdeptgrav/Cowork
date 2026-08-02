@@ -55,6 +55,9 @@ export function DeviceModeSection() {
                 <span className="flex flex-wrap items-center gap-2 text-sm text-ink">
                   {option.label}
                   {option.id === "balanced" && <Chip>Default</Chip>}
+                  {/* Said on the option itself, because it is the reason
+                      somebody would pick this one over the mode below it. */}
+                  {option.id === "lite" && <Chip>Same look</Chip>}
                 </span>
                 <span className="mt-0.5 block max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
                   {option.hint}
@@ -103,17 +106,47 @@ export function DeviceModeSection() {
           In this mode
         </p>
         <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
-          <Effect on={profile.blur} label="Frosted surfaces" />
-          <Effect on={profile.animations} label="Animation" />
-          <Effect on={profile.richCharts} label="Charts and graphs" />
           <Effect
-            on={profile.timerTickMs <= 1000}
+            state={
+              profile.blur ? "on" : profile.paintedFrost ? "painted" : "off"
+            }
+            label="Frosted surfaces"
+          />
+          <Effect
+            state={
+              profile.backdropField === "none"
+                ? "off"
+                : profile.backdropField === "painted"
+                  ? "painted"
+                  : "on"
+            }
+            label="Moving background"
+          />
+          <Effect state={profile.animations ? "on" : "off"} label="Animation" />
+          <Effect
+            state={profile.richCharts ? "on" : "off"}
+            label="Charts and graphs"
+          />
+          <Effect
+            state={profile.timerTickMs <= 1000 ? "on" : "off"}
             label="Timer redraws every second"
           />
         </ul>
+        {/* What "painted" means, said once and only where it applies. Somebody
+            looking at a frosted surface marked "painted" will otherwise assume
+            the label is wrong — the whole point is that it looks the same. */}
+        {(profile.paintedFrost || profile.backdropField === "painted") && (
+          <p className="mt-2 max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
+            Painted means the effect is drawn once and then left alone, instead
+            of being worked out again for every frame. It is the same picture on
+            screen; your graphics chip simply stops recomputing it while you
+            scroll. The blur behind the top bar is the clearest case — it was
+            costing a full pass to reveal about six percent of what is under it.
+          </p>
+        )}
         <p className="mt-2 max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
           Presence, task timers, deadlines, screen sharing, notifications and
-          every rule behind them work identically in all three modes. A timer
+          every rule behind them work identically in all four modes. A timer
           redrawing every two seconds is still counting every second — the figure
           is worked out from when you started, not added up from the redraws.
         </p>
@@ -133,14 +166,36 @@ function Signal({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Effect({ on, label }: { on: boolean; label: string }) {
+/**
+ * One effect, in one of three states.
+ *
+ * `painted` is neither on nor off and is not struck through, because striking
+ * it through would be a lie about the screen the reader is looking at: the
+ * frosted surface is still there. It is marked as an approximation instead, and
+ * the paragraph above says what the approximation is.
+ */
+function Effect({
+  state,
+  label,
+}: {
+  state: "on" | "painted" | "off";
+  label: string;
+}) {
+  const mark = state === "on" ? "✓" : state === "painted" ? "≈" : "—";
   return (
     <li className="flex items-center gap-1.5">
-      <span aria-hidden className={on ? "text-ink" : "text-ink-faint"}>
-        {on ? "✓" : "—"}
+      <span aria-hidden className={state === "off" ? "text-ink-faint" : "text-ink"}>
+        {mark}
       </span>
-      <span className={on ? "text-ink-muted" : "text-ink-faint line-through"}>
+      <span
+        className={
+          state === "off" ? "text-ink-faint line-through" : "text-ink-muted"
+        }
+      >
         {label}
+        {state === "painted" && (
+          <span className="text-ink-faint"> · painted</span>
+        )}
       </span>
     </li>
   );
@@ -153,6 +208,15 @@ function Effect({ on, label }: { on: boolean; label: string }) {
  * about the GPU; downgrading somebody's interface on that evidence would be
  * acting on a guess about their hardware. Dismissing it is remembered, and so is
  * choosing to stay where they are.
+ *
+ * ## Why the gentler mode is offered first
+ *
+ * The signals here are a guess, and the cost of a wrong guess is what decides
+ * the order. Lightweight keeps the interface looking as it does and removes the
+ * per-frame work, so being wrong about the machine costs the reader nothing.
+ * Low-end mode is a real trade — flat surfaces, no motion — and is worth making
+ * only once somebody knows they need it. Both are still offered, because a
+ * suggestion that has already chosen for you is not a suggestion.
  */
 export function DeviceModeSuggestion() {
   const { suggestion, setMode, dismissSuggestion } = useDeviceMode();
@@ -161,18 +225,27 @@ export function DeviceModeSuggestion() {
   return (
     <Panel className="mb-4">
       <p className="text-sm text-ink">
-        This browser may run Cowork more smoothly in low-end laptop mode.
+        This browser may run Cowork more smoothly in a lighter mode.
       </p>
       <p className="mt-1 max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
-        {suggestion} Low-end mode drops the frosted surfaces and the animation
-        and keeps everything else exactly as it is — presence, timers, deadlines,
-        screen sharing and notifications are untouched.
+        {suggestion} Lightweight mode looks exactly like the interface you have
+        now — the frosted surfaces and the drifting background are painted once
+        instead of being recalculated for every frame. Low-end mode goes further
+        and makes everything flat and still. Either way presence, timers,
+        deadlines, screen sharing and notifications are untouched.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => setMode("low")}
+          onClick={() => setMode("lite")}
           className="rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-[var(--body-bg)]"
+        >
+          Use lightweight mode
+        </button>
+        <button
+          type="button"
+          onClick={() => setMode("low")}
+          className="rounded-full bg-[var(--control)] px-3 py-1.5 text-xs font-medium text-ink-muted hover:text-ink"
         >
           Use low-end mode
         </button>

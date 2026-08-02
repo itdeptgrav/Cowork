@@ -46,16 +46,26 @@ export function DocumentsArea({
   kind = "doc",
   mode,
   onMode,
+  initialOpenId = null,
+  reportTaskId = null,
+  reportTaskTitle = null,
+  reportProgress = null,
 }: {
   kind?: DocumentKind;
   /** Which workspace surface is showing — the palette offers the other two. */
   mode?: "map" | "docs" | "sheets";
   onMode?: (next: "map" | "docs" | "sheets") => void;
+  /** A specific document to open immediately — the daily report's deep link. */
+  initialOpenId?: string | null;
+  /** Threaded straight through to `DocumentEditor`'s "submit as report" banner. */
+  reportTaskId?: string | null;
+  reportTaskTitle?: string | null;
+  reportProgress?: number | null;
 }) {
   const docs = useQuery((r) => r.listDocuments(kind), [kind]);
   const noun = kind === "sheet" ? "sheet" : "document";
   const plural = kind === "sheet" ? "Sheets" : "Documents";
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(() => initialOpenId);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
@@ -138,6 +148,9 @@ export function DocumentsArea({
             onClose={() => setOpenId(null)}
             onChanged={docs.refetch}
             creating={createState.isPending}
+            reportTaskId={open.id === initialOpenId ? reportTaskId : null}
+            reportTaskTitle={open.id === initialOpenId ? reportTaskTitle : null}
+            reportProgress={open.id === initialOpenId ? reportProgress : null}
           />
         )}
       </WorkspaceStage>
