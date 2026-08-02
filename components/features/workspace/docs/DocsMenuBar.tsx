@@ -53,8 +53,9 @@ export interface MenuBarActions {
   onShowRuler: (value: boolean) => void;
   showPageGuides: boolean;
   onShowPageGuides: (value: boolean) => void;
-  fullScreen: boolean;
-  onFullScreen: () => void;
+  /** The browser's own chrome is hidden — not a size the document can be. */
+  chromeless: boolean;
+  onChromeless: () => void;
   spellcheck: boolean;
   onSpellcheck: (value: boolean) => void;
 
@@ -237,11 +238,15 @@ export function DocsMenuBar({
                     onSelect={() => actions.onShowPageGuides(!actions.showPageGuides)}
                   />
                   <MenuSeparator />
+                  {/* Not "Full screen": the document already is. What this
+                      hides is the browser's own tabs and address bar, and
+                      naming it after the thing it does is the difference
+                      between a control people press once and one they trust. */}
                   <MenuItem
-                    label="Full screen"
-                    active={actions.fullScreen}
+                    label="Hide browser chrome"
+                    active={actions.chromeless}
                     shortcut="Esc to exit"
-                    onSelect={actions.onFullScreen}
+                    onSelect={actions.onChromeless}
                   />
                   {actions.canEdit && (
                     <>

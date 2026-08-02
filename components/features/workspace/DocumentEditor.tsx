@@ -19,7 +19,9 @@ import {
 } from "@tiptap/extension-text-style";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
-import { InlineError, SkeletonRows } from "@/components/ui/Primitives";
+import { Icon } from "@/components/ui/Icons";
+import { InlineError } from "@/components/ui/Primitives";
+import { StageError, StageSkeleton } from "./WorkspaceStage";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { getRepository } from "@/lib/repositories";
 import { formatStamp } from "@/lib/utils/format";
@@ -42,6 +44,7 @@ import { ShareMenu } from "./ShareMenu";
 import { useCollabSession } from "./useCollabSession";
 import { caretRender, caretSelection } from "./collabCaret";
 import { DocIcon } from "./docs/DocsIcons";
+import { DocsAssistant } from "./ai/DocsAssistant";
 import { DocsMenuBar } from "./docs/DocsMenuBar";
 import { DocsToolbar } from "./docs/DocsToolbar";
 import { DocsRuler } from "./docs/DocsRuler";
@@ -131,10 +134,21 @@ export function DocumentEditor({
   const [mode, setMode] = useState<"editing" | "viewing">("editing");
   const [zoom, setZoom] = useState(1);
   const [showOutline, setShowOutline] = useState(true);
+  const [showAssistant, setShowAssistant] = useState(false);
   const [showRuler, setShowRuler] = useState(true);
   const [showPageGuides, setShowPageGuides] = useState(false);
   const [spellcheck, setSpellcheck] = useState(true);
-  const [full, setFull] = useState(false);
+  /**
+   * Whether the BROWSER is showing its own chrome — not whether this document
+   * is maximised, which it always is now. See {@link WorkspaceStage}.
+   *
+   * There used to be one flag meaning both, and the two meanings could
+   * disagree: leaving native fullscreen with Escape left a document claiming to
+   * be maximised while sitting in a 78vh box. All this decides now is the tab
+   * strip and the address bar, which is a real thing to want for a long read
+   * and a different thing from the size of the editor.
+   */
+  const [chromeless, setChromeless] = useState(false);
 
   const [dialog, setDialog] = useState<
     null | "page-setup" | "word-count" | "shortcuts" | "link" | "image"
@@ -388,30 +402,24 @@ export function DocumentEditor({
     };
   }, [flush]);
 
-  /* Follows the browser rather than assuming. Pressing Escape exits native
+  /* Follows the browser rather than assuming. Pressing Escape leaves native
      fullscreen without going through the button, and the state must not be
-     left claiming otherwise. */
+     left claiming otherwise. This is now the ONLY thing that sets the flag —
+     there is no second, CSS-level meaning for it to disagree with. */
   useEffect(() => {
-    const sync = () => {
-      if (!document.fullscreenElement) setFull(false);
-    };
+    const sync = () => setChromeless(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", sync);
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
 
-  const toggleFull = async () => {
-    if (full) {
-      setFull(false);
-      if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
-      return;
-    }
-    setFull(true);
-    /* The CSS maximise is what actually guarantees the change; this is the
-       upgrade to a real fullscreen surface where it is permitted. */
+  const toggleChrome = async () => {
     try {
-      await shell.current?.requestFullscreen?.();
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await shell.current?.requestFullscreen?.();
     } catch {
-      /* Refused — the maximised state still applies. */
+      /* Refused by the browser — a kiosk policy, or a permissions setting. The
+         document is already occupying the window either way, so there is
+         nothing to report and nothing to put back. */
     }
   };
 
@@ -554,6 +562,12 @@ export function DocumentEditor({
       if (e.key === "f") {
         e.preventDefault();
         setFinding(true);
+      } else if (e.key === "k") {
+        /* What Ctrl-K means in every editor anybody has used. It is also why
+           the workspace's command palette is mounted on the browsing surface
+           and not in here — two things cannot own one reflex. */
+        e.preventDefault();
+        setDialog("link");
       } else if (e.key === "p") {
         e.preventDefault();
         print();
@@ -574,28 +588,40 @@ export function DocumentEditor({
     return () => window.removeEventListener("keydown", onKey);
   }, [flush, print]);
 
-  if (doc.isLoading || body.isLoading) return <SkeletonRows rows={8} />;
+  if (doc.isLoading || body.isLoading) return <StageSkeleton onClose={onClose} />;
   if (!doc.data)
     return (
-      <InlineError message="This document is not available. It may have been deleted, or you may not be in it." />
+      <StageError
+        message="This document is not available. It may have been deleted, or you may not be in it."
+        onClose={onClose}
+      />
     );
 
   const record = doc.data;
 
   return (
+    /* One shape. The surface this fills is the whole window — the stage owns
+       the frame; this owns the document inside it. */
     <div
       ref={shell}
-      className={
-        full
-          ? "fixed inset-0 z-[90] flex flex-col bg-[var(--body-bg)]"
-          : "flex h-full min-h-0 flex-col bg-[var(--body-bg)]"
-      }
+      className="flex h-full min-h-0 flex-col bg-[var(--body-bg)]"
     >
       {/* ── Title bar ───────────────────────────────────────────────────── */}
       <header className="flex shrink-0 flex-wrap items-start gap-x-3 gap-y-1 border-b border-hairline bg-[var(--surface-raised)] px-3 pt-2 pb-1">
-        <span className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted">
-          <DocIcon.outline className="h-4 w-4" />
-        </span>
+        {/* The way out, in the corner every application puts it. This slot used
+            to hold a document icon, which told somebody looking at a document
+            that they were looking at a document; now that the editor takes the
+            window, leaving it is the thing that needs a control — the rail
+            carries one too, and the rail can be closed. */}
+        <button
+          type="button"
+          aria-label="Back to all documents"
+          title="Back to all documents"
+          onClick={() => onClose?.()}
+          className="mt-1 grid h-8 w-8 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+        >
+          <DocIcon.chevronLeft className="h-4 w-4" />
+        </button>
 
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
@@ -661,8 +687,8 @@ export function DocumentEditor({
               onShowRuler: setShowRuler,
               showPageGuides,
               onShowPageGuides: setShowPageGuides,
-              fullScreen: full,
-              onFullScreen: () => void toggleFull(),
+              chromeless,
+              onChromeless: () => void toggleChrome(),
               spellcheck,
               onSpellcheck: setSpellcheck,
               mode,
@@ -677,13 +703,33 @@ export function DocumentEditor({
           {canManage(record, me.data?.id ?? null) && (
             <ShareMenu document={record} onChanged={doc.refetch} />
           )}
+          {mayEdit && (
+            <button
+              type="button"
+              aria-label={showAssistant ? "Close assistant" : "Open assistant"}
+              aria-pressed={showAssistant}
+              title="Assistant (Gemini Flash-Lite)"
+              onClick={() => setShowAssistant((v) => !v)}
+              className={`grid h-7 w-7 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] hover:text-ink ${
+                showAssistant ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+              }`}
+            >
+              <Icon.chat className="h-4 w-4" />
+            </button>
+          )}
           <button
             type="button"
-            aria-label={full ? "Exit full screen" : "Full screen"}
-            aria-pressed={full}
-            title={full ? "Exit full screen (Esc)" : "Full screen"}
-            onClick={() => void toggleFull()}
-            className="grid h-7 w-7 place-items-center rounded-inset text-ink-muted hover:bg-[var(--control)] hover:text-ink"
+            aria-label={chromeless ? "Show browser chrome" : "Hide browser chrome"}
+            aria-pressed={chromeless}
+            title={
+              chromeless
+                ? "Show the browser's tabs and address bar (Esc)"
+                : "Hide the browser's tabs and address bar"
+            }
+            onClick={() => void toggleChrome()}
+            className={`grid h-7 w-7 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] hover:text-ink ${
+              chromeless ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+            }`}
           >
             <DocIcon.fullscreen className="h-4 w-4" />
           </button>
@@ -715,7 +761,11 @@ export function DocumentEditor({
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
+      {/* `relative`: the assistant panel below is an OVERLAY, `absolute`
+          against this row specifically — so it floats over the page without
+          reserving flex space and squeezing the page down to a sliver, and
+          without covering the title bar / toolbar / ruler above it. */}
+      <div className="relative flex min-h-0 flex-1">
         {showOutline && (
           <DocsSidebar
             documents={documents}
@@ -796,6 +846,10 @@ export function DocumentEditor({
             </div>
           </div>
         </div>
+
+        {showAssistant && editor && (
+          <DocsAssistant editor={editor} onClose={() => setShowAssistant(false)} />
+        )}
       </div>
 
       {/* ── Status bar ──────────────────────────────────────────────────── */}

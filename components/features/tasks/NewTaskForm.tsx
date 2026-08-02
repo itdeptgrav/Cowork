@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import { FileUploader } from "@/components/features/attachments/Attachments";
@@ -97,7 +97,11 @@ function optionLabel(
 export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
   const me = useViewerId();
   const router = useRouter();
-  const [type, setType] = useState<TaskType>("standard");
+  const params = useSearchParams();
+  const initialType = (params.get("type") as TaskType | null) ?? "standard";
+  const [type, setType] = useState<TaskType>(
+    TYPES.some((t) => t.id === initialType) ? initialType : "standard",
+  );
   const [title, setTitle] = useState("");
   /* Chosen but not yet sent — see the create handler for why they cannot go
      up before the task exists. */

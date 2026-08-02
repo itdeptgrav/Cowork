@@ -1579,6 +1579,9 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "find and replace",
       "word count",
       "zoom",
+      "full screen",
+      "close a document",
+      "command palette",
     ],
     examples: [
       "Where do I write a document?",
@@ -1586,12 +1589,70 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I print a document?",
       "Can I export a document?",
       "How do I search inside a document?",
+      "How do I get back to the list of documents?",
+      "Can I make a document smaller on the page?",
     ],
     answer:
-      "Workspace, then Documents. A document opens as a page: menus, a toolbar, a ruler, the outline of its own headings down the left, and word count and zoom along the bottom. Formatting is what you would expect — paragraph styles, fonts and sizes, colour and highlight, alignment, line spacing, indentation, lists and checklists, tables, links, images by address, quotes, code blocks, horizontal lines and page breaks. File then Page setup sets the paper, the orientation and the margins, and the ruler's two stops change the left and right margin directly; that page belongs to the document, so everybody who opens it sees the same measure and the same line breaks. Zoom is yours alone and is not saved. Find and replace is Ctrl F and highlights every match at once, with replace-all landing as a single undo step. Word count is Ctrl Shift C and counts the selection separately when there is one. Printing uses the document's own paper and margins, and prints on white with dark ink whichever theme you are in. File then Download gives a web page or plain text — there is no PDF export, so print to PDF for that. Images are added by address: there is no upload for documents yet, and a file from your machine cannot be added. There are no comments and no version history, so nothing in the menus offers them.",
-    related: ["general-document-access", "general-what-is-cowork"],
+      "Workspace, then Documents. The list is a table — name, what is in it, when it was last touched — and Ctrl K opens a command palette over it for the few things done most: a new document, one of the last five you had open, or the other workspace surfaces. Opening a document takes the whole screen, always; there is no smaller size to put it in, because a page of prose in a box scrolls against its own chrome. The way back is the ← at the top left, or the same arrow in the rail. Hide browser chrome, under View, hides the browser's own tabs and address bar for a long read — Escape brings them back; it does not change the size of the editor, which is already the window. A document opens as a page: menus, a toolbar, a ruler, the outline of its own headings down the left, and word count and zoom along the bottom. Formatting is what you would expect — paragraph styles, fonts and sizes, colour and highlight, alignment, line spacing, indentation, lists and checklists, tables, links, images by address, quotes, code blocks, horizontal lines and page breaks. File then Page setup sets the paper, the orientation and the margins, and the ruler's two stops change the left and right margin directly; that page belongs to the document, so everybody who opens it sees the same measure and the same line breaks. Zoom is yours alone and is not saved. Find and replace is Ctrl F and highlights every match at once, with replace-all landing as a single undo step. Ctrl K puts a link on the selected text. Word count is Ctrl Shift C and counts the selection separately when there is one. Printing uses the document's own paper and margins, and prints on white with dark ink whichever theme you are in. File then Download gives a web page or plain text — there is no PDF export, so print to PDF for that. Images are added by address: there is no upload for documents yet, and a file from your machine cannot be added. There are no comments and no version history, so nothing in the menus offers them.",
+    related: ["general-document-access", "general-sheets", "general-ai-assistant", "general-what-is-cowork"],
     source:
-      "components/features/workspace/DocumentEditor.tsx; lib/rules/documents/pageSetup.ts, find.ts, outline.ts, textStats.ts",
+      "components/features/workspace/DocumentEditor.tsx; components/features/workspace/WorkspaceStage.tsx; lib/rules/documents/pageSetup.ts, find.ts, outline.ts, textStats.ts",
+  },
+  {
+    id: "general-sheets",
+    category: "general",
+    title: "Working in a sheet",
+    keywords: [
+      "sheet",
+      "sheets",
+      "spreadsheet",
+      "formula",
+      "cell",
+      "grid",
+      "chart",
+      "conditional formatting",
+      "sum",
+    ],
+    examples: [
+      "Where are spreadsheets?",
+      "Can I write a formula?",
+      "How do I make a chart from my data?",
+      "Why does my sheet fill the whole screen?",
+    ],
+    answer:
+      "Workspace, then Sheets. They are listed the same way documents are, and Ctrl K opens the same command palette. A sheet opens on the whole screen — there is no half-width version, because a grid in half a window shows about six columns — and the ← at the top left goes back to the list. Above the grid there is a formula bar showing the selected cell or range, and a formatting toolbar: font and size, bold, italic, underline and strikethrough, text and fill colour, borders, alignment and wrapping, indent, number formats including currency and percent, and decimal places. Formulas start with = and are calculated as you type; the function name completes as you type it, and a cell that cannot be worked out says why rather than showing a code. Right-clicking a cell gives cut, copy, paste, fill down and right, and clearing contents or formatting separately. A range plus the chart control inserts a chart onto the sheet as a movable object — column, bar, line, area, pie, doughnut, scatter or combo. Conditional formatting is a panel rather than a menu item, so the rules on a range can be read together. Sharing, roles and live editing work exactly as they do for a document: the same owners, editors and viewers, and everybody in a sheet sees each other's changes as they are typed. There is no PDF or Excel export, and no printing of a sheet.",
+    related: ["general-documents", "general-document-access", "general-ai-assistant"],
+    source:
+      "components/features/workspace/SheetGrid.tsx; lib/rules/sheets/grid.ts; components/features/workspace/WorkspaceStage.tsx",
+  },
+  {
+    id: "general-ai-assistant",
+    category: "general",
+    title: "The assistant in Documents and Sheets",
+    keywords: [
+      "ai",
+      "cowork ai",
+      "assistant",
+      "gemini",
+      "rewrite",
+      "summarize",
+      "generate",
+      "chat",
+      "apply",
+      "undo an ai change",
+    ],
+    examples: [
+      "How do I use the assistant?",
+      "What AI model does Cowork use?",
+      "Does the assistant edit my document by itself?",
+      "How do I undo something the assistant did?",
+      "Why can't the assistant see my whole document?",
+    ],
+    answer:
+      "A chat icon in the header of an open document or sheet — editors only, not viewers — opens the assistant as a panel that floats over the right edge of your work, labelled Cowork AI; it does not shrink the page or the sheet to make room for itself. Behind that name is one fixed, inexpensive model, chosen to keep this fast and cheap to run; nothing here silently switches to a larger one if it struggles with a request. It sends only your selection, plus a small amount of surrounding material — nearby headings in a document, nearby column headers and the selected cells in a sheet — never the whole document or sheet unless you say so in the words \"whole document\" or \"entire sheet\". The assistant never changes anything by itself. Every reply is either a plain answer or one proposed action — a rewrite, a formula, a chart, a sort — shown as a preview: struck-through and underlined text for a rewrite, a before-and-after list of cells for a sheet edit. You choose Apply or Reject. Anything that deletes rows or columns, replaces a large selection, reorders or hides real data, or overwrites cells that already hold something asks you to confirm first, in those words, before Apply does anything. Applying an action goes through the same edit the toolbar would make, so Ctrl-Z undoes it, and the panel's own Undo button is there right after Apply for exactly that moment. In a document the assistant can rewrite, shorten, expand, change tone, summarize, translate, draft, extract action items, build tables, headings and lists, and continue writing from the cursor — it cannot add a comment, because there is no comment layer in Cowork's document editor yet, and it says so rather than pretending to. In a sheet it can write and explain formulas, build tables from a description, clean and sort data, filter rows (hiding them — a count next to \"Show all\" in the header says how many, and that control brings them back), format ranges, add conditional formatting, and embed a chart directly on the sheet canvas. A filtered sheet keeps the row height where a hidden row was rather than closing the gap, so scrolling past a filtered block currently passes through a short empty band.",
+    related: ["general-documents", "general-sheets"],
+    source:
+      "grav-cms-backend/services/aiAssist.service.js, routes/task_routes/aiAssist.routes.js; lib/rules/documents/aiTools.ts, aiContext.ts; lib/rules/sheets/aiTools.ts, aiContext.ts, grid.ts; components/features/workspace/ai/*",
   },
   {
     id: "general-document-access",

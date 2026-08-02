@@ -412,18 +412,26 @@ export function useMeetingRecording({
     }
   }, []);
 
+  /* Holds the latest `startRecording` so the retry setTimeout can call it
+     without the callback referencing itself before it is declared. */
+  const startRecordingRef =
+    useRef<(rejoin?: boolean, attempt?: number) => Promise<void>>(undefined);
+
   const startRecording = useCallback(
     async (rejoin = false, attempt = 1): Promise<void> => {
       if (isRecordingRef.current) return;
-      if (typeof window === "undefined") return;
+      /* Claim the slot BEFORE the first await so a concurrent call (e.g. the
+         host clicking Start and receiving their own socket event simultaneously)
+         cannot also pass the guard and create a second MediaRecorder. */
+      isRecordingRef.current = true;
+      if (typeof window === "undefined") { isRecordingRef.current = false; return; }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: true,
+          audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
           video: false,
         });
         const mimeType = getSupportedMimeType();
         mimeTypeRef.current = mimeType;
-        isRecordingRef.current = true;
         isRejoinRef.current = rejoin;
         isFinalizedRef.current = false;
         chunkIndexRef.current = 0;
@@ -464,7 +472,7 @@ export function useMeetingRecording({
           name === "PermissionDeniedError";
         if (!permanent && attempt < START_RETRY_LIMIT) {
           setTimeout(
-            () => void startRecording(rejoin, attempt + 1),
+            () => void startRecordingRef.current?.(rejoin, attempt + 1),
             START_RETRY_DELAY_MS,
           );
           return;
@@ -480,6 +488,7 @@ export function useMeetingRecording({
     },
     [startChunkTimer, broadcastStatus],
   );
+  startRecordingRef.current = startRecording;
 
   const stopRecording = useCallback(async () => {
     if (isFinalizedRef.current) return;
@@ -644,16 +653,14 @@ export function useMeetingRecording({
     joinMeetingRoom(meetId);
 
     let retries = 0;
-    const retryJoin = setInterval(() => {
-      if (retries++ >= 5) {
-        clearInterval(retryJoin);
-        return;
-      }
+    const joinRetry: { id: ReturnType<typeof setInterval> | null } = { id: null };
+    joinRetry.id = setInterval(() => {
       joinMeetingRoom(meetId);
+      if (++retries >= 5 && joinRetry.id) clearInterval(joinRetry.id);
     }, 3000);
 
     return () => {
-      clearInterval(retryJoin);
+      if (joinRetry.id) clearInterval(joinRetry.id);
       socket.off("recording_started", onStarted);
       socket.off("recording_stopped", onStopped);
       socket.off("participant_status", onStatus);

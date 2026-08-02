@@ -114,9 +114,18 @@ export function NodeInspector({
       className="frost-panel flex h-full min-h-0 w-full flex-col rounded-card border border-hairline"
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-hairline px-4 py-3">
-        <span className="min-w-0 flex-1 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-          {isRoot ? "Root card" : "Card"}
+        {/* A role pill, not a tracked eyebrow — the same idiom the document and
+           sheet headers use for "View only" / "Editor". A tracked uppercase
+           kicker over a panel is a defect the system names explicitly, and this
+           one was announcing a panel rather than doing wayfinding. */}
+        <span className="min-w-0 flex-1 text-sm font-medium text-ink">
+          Card details
         </span>
+        {isRoot && (
+          <span className="shrink-0 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
+            Root
+          </span>
+        )}
         <button
           type="button"
           aria-label="Close details"

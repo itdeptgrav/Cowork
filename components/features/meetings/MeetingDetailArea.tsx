@@ -17,6 +17,8 @@ import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { canView, joinRefusal, manageRefusal } from "@/lib/rules/meetings/access";
 import { MeetingRoom, RoomClosed } from "./MeetingRoom";
+import { MeetingSummaryPanel } from "./MeetingSummaryPanel";
+import { PublicLinkPanel } from "./PublicLinkPanel";
 
 /**
  * One meeting: the room, and everything the room does not say.
@@ -266,19 +268,24 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
 
           <Panel>
             <PanelHead
-              title="After the meeting"
-              sub="Notes and action items"
+              title="AI Summary"
+              sub="Generated from meeting audio"
             />
-            {/* Deliberately inert. The record has somewhere to put a transcript
-                and its action items; nothing generates them, and D22 keeps
-                Cowork from being positioned as an AI product. Saying the field
-                is empty is honest; pretending it is coming is not. */}
-            <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-              {m.actionItems.length > 0
-                ? `${m.actionItems.length} action items recorded.`
-                : "No notes or action items yet. Nothing here is generated automatically."}
-            </p>
+            <MeetingSummaryPanel
+              meetId={meetingId}
+              meetStatus={m.status}
+            />
           </Panel>
+
+          {isOrganiser && (
+            <Panel>
+              <PanelHead
+                title="Guest link"
+                sub="Share with people outside CoWork"
+              />
+              <PublicLinkPanel meetId={meetingId} />
+            </Panel>
+          )}
 
           <Panel>
             <PanelHead title="History" sub="Every change to this meeting" />

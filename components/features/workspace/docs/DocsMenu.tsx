@@ -268,9 +268,17 @@ export function MenuSeparator() {
   return <div aria-hidden="true" className="my-1 h-px bg-hairline" />;
 }
 
+/**
+ * A group label inside a menu — "Mode" over Editing/Viewing.
+ *
+ * Not tracked uppercase: a section eyebrow standing in for a heading is what
+ * the system's One Kicker Rule forbids, and a menu group is exactly a section.
+ * Compact and muted instead, so it reads as a label without competing with the
+ * menu's one legitimate wayfinding kicker elsewhere on the page.
+ */
 export function MenuHeading({ children }: { children: ReactNode }) {
   return (
-    <div className="px-2.5 pb-1 pt-1.5 text-[10px] uppercase tracking-[0.09em] text-ink-faint">
+    <div className="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-ink-muted">
       {children}
     </div>
   );

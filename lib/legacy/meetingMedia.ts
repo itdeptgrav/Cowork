@@ -51,6 +51,7 @@ export async function generateMeetingSummary(input: {
     method: "POST",
     query: input.force ? { force: "true" } : undefined,
     token: input.token,
+    timeoutMs: 300_000, // Gemini pipeline: Drive download → File API upload → poll → generate
   });
 }
 
@@ -79,6 +80,7 @@ export async function askMeetingAI(input: {
     method: "POST",
     body: { question: input.question },
     token: input.token,
+    timeoutMs: 120_000, // Gemini inference on audio can take up to ~2 minutes
   });
 }
 
@@ -153,6 +155,31 @@ export async function revokeMeetingPublicLink(input: {
     method: "POST",
     body: { meetId: input.meetId },
     token: input.token,
+  });
+}
+
+/**
+ * Guest join — NO AUTH.
+ * `POST /cowork/public/guest-join`. Returns LiveKit creds + guest session.
+ */
+export async function guestJoinMeeting(input: {
+  shareToken: string;
+  guestName: string;
+}): Promise<
+  LegacyResult<{
+    token?: string;
+    url?: string;
+    roomName?: string;
+    meetId?: string;
+    meetTitle?: string;
+    guestId?: string;
+    guestSessionId?: string;
+  }>
+> {
+  return legacyFetch({
+    path: "/cowork/public/guest-join",
+    method: "POST",
+    body: { token: input.shareToken, guestName: input.guestName },
   });
 }
 

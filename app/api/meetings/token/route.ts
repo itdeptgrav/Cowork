@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
-import { currentSession } from "@/lib/server/session";
+import { mailPrincipal } from "@/lib/server/mailPrincipal";
 
 /**
  * A seat in a meeting room.
@@ -49,25 +49,8 @@ const NO_STORE = { "Cache-Control": "no-store" } as const;
 const ROOM_PREFIX = "meet-";
 
 export async function POST(request: Request) {
-  /**
-   * **This route still requires `cowork_session`, and that shuts real staff
-   * out.** The Firebase sign-in path never issues one, so an employee who can
-   * open every page gets 401 here — the same defect the presence token route
-   * had, and it is NOT fixed here.
-   *
-   * It cannot be fixed the same way. The presence route takes its identity from
-   * the query string and only needs to know somebody real is behind the
-   * request; this route mints a token AS a named person, and reads
-   * `session.employeeId` below to do it. A verified Firebase token carries a
-   * Firebase uid, which is not the workspace employee id — resolving one to the
-   * other server-side is the identity/workspace seam, and guessing it would put
-   * one person into a meeting under another person's name.
-   *
-   * Left refusing rather than half-connected, which is the honest state until
-   * that seam is resolved.
-   */
-  const session = await currentSession();
-  if (!session) {
+  const principal = await mailPrincipal(request);
+  if (!principal) {
     return NextResponse.json(
       { error: "Not authenticated." },
       { status: 401, headers: NO_STORE },
@@ -105,12 +88,12 @@ export async function POST(request: Request) {
     );
   }
 
-  /* Identity is the SESSION's employee, never the body's. A caller naming
+  /* Identity is the PRINCIPAL's employee, never the body's. A caller naming
      somebody else would appear in the room under their name, and the
      participant grid is how people know who is present. */
   const token = new AccessToken(apiKey, apiSecret, {
-    identity: session.employeeId,
-    name: displayName || session.displayName || session.employeeId,
+    identity: principal.employeeId,
+    name: displayName || principal.displayName || principal.employeeId,
     /* Long enough that a full-day workshop does not drop, and no longer. The
        meeting ends when the organiser ends it, not when a token expires. */
     ttl: "12h",
