@@ -59,6 +59,24 @@ export interface QueueCandidate {
    * a queue must not be padded on an assumption.
    */
   accepted?: boolean;
+  /**
+   * This task has been broken down and is a container now, not workload.
+   *
+   * **Holds no slot, exactly like a closed task, and for the same reason.** A
+   * project is title, brief and completion requirements — the assignees, the
+   * budget and the timer moved to its subtasks the moment it was broken down.
+   * Nothing changed on the container's OWN document, though: it still carries
+   * whatever `assigneePriorities` entry it was given back when it was an
+   * ordinary task, and until this flag existed that stored number kept
+   * competing for a slot forever, the same way a completed task's used to.
+   *
+   * The visible symptom was a gap: three siblings numbered P1, P3, P5 with
+   * nothing at P2 or P4, because two of the five documents for that queue had
+   * become containers and nothing excluded them. Legacy's own client-side
+   * equivalent (`CreateTaskModal.jsx`'s `fetchNextPriorityForAssignees`) already
+   * filters on `!subtaskIds.length` for exactly this reason; this had not.
+   */
+  isContainer?: boolean;
 }
 
 /**
@@ -108,21 +126,39 @@ export const INACTIVE_STATUSES = [
 /**
  * Does this task consume one of this person's priority slots?
  *
- * Three conditions, and each one has produced a real defect on its own:
+ * Four conditions now, and each one has produced a real defect on its own:
  *
- *  1. **A live status.** A completed task keeping slot 1 for ever is what made
+ *  1. **Not a container.** A project holds no slot at all, ever, regardless of
+ *     what its document still says — see `QueueCandidate.isContainer`.
+ *  2. **A live status.** A completed task keeping slot 1 for ever is what made
  *     the next thing to do read "P2" with no P1 to be found.
- *  2. **A settled budget.** A task whose hours are still being argued over sat
+ *  3. **A settled budget.** A task whose hours are still being argued over sat
  *     ahead of work that was ready to start and pushed everything below it down.
- *  3. **Accepted by this person.** Work nobody has taken on is not yet workload,
+ *  4. **Accepted by this person.** Work nobody has taken on is not yet workload,
  *     and letting it hold a slot means accepted work is ranked behind something
  *     that may never be accepted at all.
  */
 export function isActiveWorkload(candidate: QueueCandidate): boolean {
+  if (candidate.isContainer) return false;
   if (!ACTIVE_STATUSES.has(candidate.status)) return false;
   if (!isBudgetSettled(candidate.budgetState)) return false;
   if (ACCEPTANCE_IMPLIED.has(candidate.status)) return true;
   return candidate.accepted === true;
+}
+
+/**
+ * Does this task belong to this person's day AT ALL — accepted or not?
+ *
+ * **Broader than `isActiveWorkload` on purpose**, and the gap between the two
+ * is exactly the set `provisionalQueuePositions` numbers: live, real work that
+ * has not yet cleared acceptance or budget settlement. Drops both of those
+ * requirements; keeps the two that never depend on a negotiation still in
+ * progress — a live status, and not a container, since a project is not
+ * workload at any stage of its subtasks' negotiation.
+ */
+export function isLiveCandidate(candidate: QueueCandidate): boolean {
+  if (candidate.isContainer) return false;
+  return ACTIVE_STATUSES.has(candidate.status);
 }
 
 /**
@@ -151,26 +187,62 @@ export function getActiveTasksForUser(
  * That last clause is what makes this safe to persist: an unstable sort would
  * renumber the queue differently on each call and write a change every time.
  */
+/**
+ * The comparator behind every queue this module orders.
+ *
+ * Extracted so `calculatePriorityOrder` (active workload) and
+ * `calculateProvisionalOrder` (live-but-not-yet-workload) sort by the exact
+ * same rule and cannot drift into two orderings for what is conceptually one
+ * kind of list. Only the FILTER feeding it differs between the two.
+ */
+function compareQueueCandidates(a: QueueCandidate, b: QueueCandidate): number {
+  /* An unranked task sorts to the BOTTOM. `MAX_RANK + 1` rather than legacy's
+     999 sentinel: the comparison only needs to lose to every real rank, and
+     using the sentinel invited somebody to read it as a position. */
+  const ra = isRealRank(a.storedRank) ? a.storedRank : MAX_RANK + 1;
+  const rb = isRealRank(b.storedRank) ? b.storedRank : MAX_RANK + 1;
+  if (ra !== rb) return ra - rb;
+
+  const oa = a.order ?? Number.MAX_SAFE_INTEGER;
+  const ob = b.order ?? Number.MAX_SAFE_INTEGER;
+  if (oa !== ob) return oa - ob;
+
+  const ca = a.createdAtMs ?? 0;
+  const cb = b.createdAtMs ?? 0;
+  if (ca !== cb) return ca - cb;
+
+  return a.taskId.localeCompare(b.taskId);
+}
+
 export function calculatePriorityOrder(candidates: QueueCandidate[]): string[] {
   return [...getActiveTasksForUser(candidates)]
-    .sort((a, b) => {
-      /* An unranked task sorts to the BOTTOM. `MAX_RANK + 1` rather than
-         legacy's 999 sentinel: the comparison only needs to lose to every real
-         rank, and using the sentinel invited somebody to read it as a position. */
-      const ra = isRealRank(a.storedRank) ? a.storedRank : MAX_RANK + 1;
-      const rb = isRealRank(b.storedRank) ? b.storedRank : MAX_RANK + 1;
-      if (ra !== rb) return ra - rb;
+    .sort(compareQueueCandidates)
+    .map((c) => c.taskId);
+}
 
-      const oa = a.order ?? Number.MAX_SAFE_INTEGER;
-      const ob = b.order ?? Number.MAX_SAFE_INTEGER;
-      if (oa !== ob) return oa - ob;
-
-      const ca = a.createdAtMs ?? 0;
-      const cb = b.createdAtMs ?? 0;
-      if (ca !== cb) return ca - cb;
-
-      return a.taskId.localeCompare(b.taskId);
-    })
+/**
+ * The order of everything real but not yet in the active queue — a task
+ * awaiting acceptance, or one whose budget is still being negotiated.
+ *
+ * **Disjoint from `calculatePriorityOrder`'s set, deliberately.** A pending
+ * task is not merged into the accepted queue's own numbering — mixing them
+ * would let something that may never be accepted push an already-committed
+ * task's displayed position down, which is precisely the failure
+ * `isActiveWorkload`'s acceptance requirement exists to prevent for the
+ * accepted queue. So this is its own independent 1..N, over its own subset:
+ * live, not a container, and not already counted as active workload.
+ *
+ * The reported defect lived here specifically. Before a task is accepted its
+ * priority had no derivation at all — screens fell back to the raw stored
+ * number, gaps and all, which is where a container's leftover rank showed up
+ * as a missing sibling number (P1, P3, P5, nothing at P2 or P4).
+ */
+export function calculateProvisionalOrder(
+  candidates: QueueCandidate[],
+): string[] {
+  return [...candidates]
+    .filter((c) => isLiveCandidate(c) && !isActiveWorkload(c))
+    .sort(compareQueueCandidates)
     .map((c) => c.taskId);
 }
 

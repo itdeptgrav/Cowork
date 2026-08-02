@@ -141,6 +141,12 @@ export const Icon = {
       <circle cx="12.6" cy="8" r="1" fill="currentColor" stroke="none" />
     </S>
   ),
+  /** A task broken down into subtasks — a project, in the task-detail sense. */
+  folder: (p: P) => (
+    <S {...p}>
+      <path d="M1.8 4.2a1 1 0 011-1h3.1l1.4 1.6h5.9a1 1 0 011 1v6a1 1 0 01-1 1H2.8a1 1 0 01-1-1z" />
+    </S>
+  ),
   chevronRight: (p: P) => (
     <S {...p}>
       <path d="M6 3.4L10.6 8 6 12.6" />

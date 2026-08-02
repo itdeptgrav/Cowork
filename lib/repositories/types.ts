@@ -187,6 +187,21 @@ export interface TaskQuery {
   assigneeId?: EmployeeId;
   projectId?: ProjectId | null;
   parentTaskId?: TaskId | null;
+  /**
+   * Return subtasks alongside their parents, for a caller that renders a TREE.
+   *
+   * Off by default, and the default is not laziness. Without a tree there is
+   * nowhere to put a child, so the list rolls other people's subtasks up into
+   * the parent row and reports one row for one piece of work — which is what
+   * every count, tab badge and dashboard total in the product is computed
+   * from. Turning this on for those callers would silently inflate all of
+   * them; the old app kept the same separation, counting only roots
+   * (`page.js:4114-4118`) while its tree showed everything.
+   *
+   * So this is set by the one surface that can nest — the task table — and by
+   * nothing else.
+   */
+  includeSubtasks?: boolean;
   search?: string;
   overdueOnly?: boolean;
   blockedOnly?: boolean;
@@ -1397,6 +1412,28 @@ export interface CoworkRepository {
     file: File,
   ): Promise<ActionResult<MessageAttachment>>;
   /**
+   * Upload one file to shared media storage and return where it lives.
+   *
+   * The general form of the method above, for every surface that needs a file
+   * somebody else can SEE: a picture on a mind-map card, an image in a
+   * document, a screenshot in a thread. Returns a Drive file id, which is what
+   * `driveImageSources` turns into something an `<img>` can load.
+   *
+   * **This is public media.** Confidential files go through `uploadAttachment`,
+   * which stores them privately and streams them back behind the permission
+   * check. The two are not interchangeable and neither should grow into the
+   * other — a component picking the wrong one either leaks a file or fails to
+   * render it.
+   *
+   * Optional for the same reason as the method above: the in-memory prototype
+   * has no storage, so a surface that needs it renders its control off rather
+   * than offering an upload that cannot happen.
+   */
+  uploadDriveFile?(
+    file: File,
+    onProgress?: (fraction: number) => void,
+  ): Promise<ActionResult<UploadedMedia>>;
+  /**
    * Start a conversation, or return the existing one.
    *
    * Direct messages are DEDUPLICATED on the pair: messaging somebody you have
@@ -1883,6 +1920,24 @@ export interface CreateMeetingInput {
  * people and typing a title is not that, and quietly minting a Group record
  * here would put unmanaged entries on a surface somebody is responsible for.
  */
+/**
+ * One uploaded file, as every surface that draws it needs it.
+ *
+ * `fileId` is the load-bearing field and `url` is the courtesy: an `<img>` is
+ * pointed at `driveImageSources(...)`, which builds the CDN URL from the id and
+ * falls back to the byte proxy. The stored URL is kept so a record written today
+ * still means something if the CDN host ever changes, and so a non-Drive asset
+ * from the old application round-trips unchanged.
+ */
+export interface UploadedMedia {
+  /** The Drive file id. Null only for a store that is not Drive. */
+  fileId: string | null;
+  url: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
 export interface CreateSubtaskInput {
   parentTaskId: TaskId;
   title: string;

@@ -420,6 +420,25 @@ export async function respondToCounter(input: {
  * Legacy's own delegation route, and the one that replaced Forward when
  * forwarding was removed. The engine owns parent linkage and the approval gates
  * a subtask inherits, so nothing is computed here.
+ *
+ * `satisfiesRequirementIds` names the parent requirements the child closes. The
+ * engine stores the array and reads nothing in it — the meaning of an id is
+ * this application's, and keeping the interpretation on one side is what stops
+ * the two from disagreeing about what a subtask is for.
+ *
+ * **The time budget goes on the wire under the ENGINE's field names.** This
+ * used to send `dueDate` and `windowSecs`; the route destructures `hasTimer`,
+ * `senderTimerWindowSecs` and `fixedDeadline` (`taskForward.js:1399`) and
+ * nothing else. Neither name matched, so every subtask ever created arrived
+ * with `senderTimerWindowSecs: Number(undefined) || 0` — a timer task with a
+ * budget of zero, which is why a delegated piece of work showed no time to do
+ * it in and no deadline to do it by. The names below are transcribed from the
+ * destructure and must move with it.
+ *
+ * `hasTimer` selects WHICH of the other two the engine reads: true and it takes
+ * the window, false and it takes the fixed date. The route's own default is
+ * `hasTimer !== false`, so omitting it silently chooses the timer — it is sent
+ * explicitly rather than left to that default.
  */
 export async function createSubtask(input: {
   token: string;
@@ -427,9 +446,15 @@ export async function createSubtask(input: {
   title: string;
   assigneeIds: string[];
   description?: string;
-  dueDate?: string;
-  windowSecs?: number;
+  satisfiesRequirementIds?: string[];
+  /** `false` puts the child on a fixed date instead of a working-time budget. */
+  hasTimer?: boolean;
+  /** The budget, in seconds. Read only when `hasTimer` is not false. */
+  senderTimerWindowSecs?: number;
+  /** ISO date. Read only when `hasTimer` is false. */
+  fixedDeadline?: string | null;
 }): Promise<LegacyResult<unknown>> {
+  const onTimer = input.hasTimer !== false;
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/subtask`,
     method: "POST",
@@ -437,8 +462,10 @@ export async function createSubtask(input: {
       title: input.title,
       assigneeIds: input.assigneeIds,
       description: input.description ?? "",
-      dueDate: input.dueDate,
-      windowSecs: input.windowSecs,
+      satisfiesRequirementIds: input.satisfiesRequirementIds ?? [],
+      hasTimer: onTimer,
+      senderTimerWindowSecs: onTimer ? (input.senderTimerWindowSecs ?? 0) : 0,
+      fixedDeadline: onTimer ? null : (input.fixedDeadline ?? null),
     },
     token: input.token,
   });

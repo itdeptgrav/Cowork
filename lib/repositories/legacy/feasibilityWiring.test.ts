@@ -47,14 +47,34 @@ test("the repository does no simulation of its own", () => {
 });
 
 test("workload filtering is left to the shared rule", () => {
-  /* No second definition of active — the rule calls `isActivePriorityTask`. */
+  /*
+   * No second definition of active — the repository still does not test a
+   * status or a budget state itself; that decision lives in the rule.
+   *
+   * **Which rule changed, deliberately.** This used to assert the rule calls
+   * `isActivePriorityTask` — the same "settled budget only" predicate the
+   * dashboards and counters use. Reused here, it meant two pending subtasks
+   * for one person previewed the identical completion time: neither had a
+   * settled budget, so each excluded the other from its own chain and
+   * computed "now + my own window" independently. `isLiveCandidate` is the
+   * fix — no acceptance or settlement requirement, so a proposed-but-pending
+   * sibling still takes a real place in the preview using its proposed
+   * window, which is the best estimate available before it is negotiated.
+   * `isActivePriorityTask` keeps its old meaning everywhere else (dashboards,
+   * counters, the accepted chain) — only THIS preview's filter moved.
+   */
   const fn = method();
   assert.equal(
     /status !== "completed"|=== "ACCEPTED"/.test(fn),
     false,
     "the repository filters workload itself",
   );
-  assert.match(code(RULE), /isActivePriorityTask\(/);
+  assert.match(code(RULE), /isLiveCandidate\(/);
+  assert.equal(
+    /isActivePriorityTask\(/.test(code(RULE)),
+    false,
+    "reverted to the settled-only filter, which is what produced two identical completion times for pending siblings",
+  );
 });
 
 test("only a SETTLED budget contributes time", () => {

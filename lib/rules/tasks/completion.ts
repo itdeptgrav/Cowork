@@ -131,6 +131,38 @@ export function completionState(
 }
 
 /**
+ * Whether this task has stopped being work and become the container for it.
+ *
+ * The moment a task is broken down, execution moves to its children: they hold
+ * the assignees, the time budget, the timer and the deadline, and the parent
+ * holds the title, the brief and the requirements that say when the whole thing
+ * is done. So a container shows no timer and no deadline of its own — not
+ * because they are hidden, but because it has none. A budget on the parent and
+ * budgets on each child would be two answers to "how long is this", and the
+ * children's are the ones the engine actually counts.
+ *
+ * **Two signals, ORed, and neither alone is enough.** `isProject` is derived
+ * from the children the repository read; `loadedSubtasks` is what the screen
+ * has in hand. A read that returned the parent but not its children answers
+ * false to the first and true to the second, and a screen that then rendered a
+ * timer would offer the parent's owner a control that starts work nobody is
+ * doing. Where they disagree, "there is something below this" wins.
+ *
+ * Deliberately NOT `subtaskCount`, which comes off the parent document's
+ * `subtaskIds` array. That array is not pruned when a child is deleted, so a
+ * task whose only subtask was removed would keep reading as a container and
+ * would never get its own timer back.
+ */
+export function isProjectContainer(input: {
+  /** `CompletionState.isProject` — from the children the read supplied. */
+  isProject: boolean;
+  /** Children this screen actually holds. */
+  loadedSubtasks: number;
+}): boolean {
+  return input.isProject || input.loadedSubtasks > 0;
+}
+
+/**
  * Why a subtask cannot be created, or null.
  *
  * Separate from the repository so the dialog can refuse before a round trip and

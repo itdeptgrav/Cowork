@@ -47,7 +47,23 @@ export function TaskBoard({
   projectId?: string;
 }) {
   const board = useQuery(
-    (r) => r.listTasks({ scope, projectId, sort: "rank" }).then((p) => p.items),
+    (r) =>
+      r
+        .listTasks({
+          scope,
+          projectId,
+          sort: "rank",
+          /* Scoped to a project, this board must show every subtask that
+             belongs to it — not just the ones the viewer happens to hold or
+             have created. Without this the roll-up that hides other people's
+             subtasks under their parent (see `TaskQuery.includeSubtasks`)
+             ran first, so a manager's project board silently dropped
+             teammates' cards. Off for the general board, which has no
+             `projectId` and would otherwise inflate its own counts with
+             rolled-up subtasks nobody asked to see individually. */
+          includeSubtasks: !!projectId,
+        })
+        .then((p) => p.items),
     [scope, projectId],
   );
   const { data, isLoading } = board;

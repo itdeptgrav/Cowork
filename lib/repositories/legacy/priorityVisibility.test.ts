@@ -215,7 +215,9 @@ test("the list queue sees pending assignees and uses the shared resolver", () =>
   /* The list builds its own queue. It was filtering on `assigneeIds` and
      re-typing legacy's priority expression — a fifth copy. */
   const src = code(REPO);
-  const at = src.indexOf("const myQueue = activeQueuePositions(");
+  /* `myQueueEntries`, not `activeQueuePositions(` — the entries are now built
+     once and read by both the accepted queue and the provisional one. */
+  const at = src.indexOf("const myQueueEntries = legacyTasks");
   assert.ok(at > 0);
   const block = src.slice(at, at + 1400);
   assert.match(block, /holdersOf\(\{/);
@@ -243,10 +245,18 @@ test("the list and the task page get their dates from one chain", () => {
      same `#activeQueueOf` the detail page uses. Dates still come from one chain;
      they are just computed per person rather than only for the viewer. */
   assert.match(src, /queuesBySubject/);
-  assert.match(
-    src,
-    /ownerId: viewerId, positions: myQueue, dueDates: myDueDates/,
-  );
+  /* Each fact checked on its own rather than as one literal line: the viewer's
+     seed entry gained a `provisionalPositions` field alongside `positions` and
+     `dueDates`, and pinning the old single-line shape would fail on the next
+     genuinely unrelated field this object gains too. What must stay true is
+     that `myQueue` and `myDueDates` — not some other pair — seed the viewer's
+     own row. */
+  const seedAt = src.search(/\[\s*viewerId,\s*\{\s*ownerId: viewerId,/);
+  assert.ok(seedAt > 0, "the viewer's seed entry in queuesBySubject is missing");
+  const seed = src.slice(seedAt, seedAt + 300);
+  assert.match(seed, /ownerId: viewerId,/);
+  assert.match(seed, /positions: myQueue,/);
+  assert.match(seed, /dueDates: myDueDates,/);
   assert.match(src, /this\.#activeQueueOf\(subjectId\)/);
   assert.match(src, /queue: \(subjectId && queuesBySubject\.get\(subjectId\)\)/);
   /* And the chain is seeded from settled budgets and a presence-frozen anchor —

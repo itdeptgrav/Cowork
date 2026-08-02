@@ -253,6 +253,24 @@ export interface TaskAssignment {
    * other silently is the defect this field exists to have fixed.
    */
   queuePosition: number | null;
+  /**
+   * This person's position among work that is real but not yet in the queue
+   * above — awaiting their acceptance, or awaiting a settled budget. 1..N,
+   * derived per read, and its OWN independent sequence: never the same number
+   * space as `queuePosition`, and never both populated for the one task.
+   *
+   * Null past acceptance (by then `queuePosition` is the answer), on a
+   * container (a project holds no position, provisional or otherwise), and
+   * wherever this person's queue was not the one fetched — the same
+   * circumstances that leave `queuePosition` null.
+   *
+   * Exists because before it did, a pending task's displayed number was the
+   * RAW stored rank — ungapped, and visibly wrong the moment a sibling task
+   * became a container: three real subtasks would read P1, P3, P5 with
+   * nothing at P2 or P4, the two missing numbers belonging to documents that
+   * had stopped being workload but had not stopped holding a stored figure.
+   */
+  provisionalPosition: number | null;
   assignedAt: string;
   confirmedAt: string | null;
   startedAt: string | null;

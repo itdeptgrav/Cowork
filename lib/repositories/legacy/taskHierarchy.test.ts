@@ -17,11 +17,28 @@ const read = (doc: Record<string, unknown>) => readTask({ ...base, ...doc })!;
 
 type T = ReturnType<typeof read>;
 
-const rootFilter = (tasks: T[], role: string, scope: string) => {
+/**
+ * The roll-up, as `listTasks` applies it.
+ *
+ * Legacy's two clauses — role, then "is the parent already here" — plus the one
+ * this product had to add. Legacy rendered an EXPANDABLE parent row, so folding
+ * a child into it lost nothing; this list has no tree, so a folded child is a
+ * task that exists in Firestore and on no screen. The role clause was the worst
+ * of it: a TL or CEO assigned a subtask saw it in no tab at all.
+ */
+const rootFilter = (
+  tasks: T[],
+  role: string,
+  scope: string,
+  me = "ME",
+) => {
   const byId = new Map(tasks.map((t) => [t.id, t]));
   if (scope === "submitted") return tasks;
   return tasks.filter((t) => {
     if (!t.parentTaskId) return true;
+    /* Work you hold or raised is never represented by its parent. */
+    if (t.assigneeIds.includes(me) || t.pendingAssigneeId === me) return true;
+    if (t.createdById === me) return true;
     if (role === "ceo" || role === "tl") return false;
     return t.isForwardedTask || !byId.has(t.parentTaskId);
   });
@@ -44,14 +61,68 @@ const hasAssignedDescendant = (
 
 /* ── Root-only filtering ───────────────────────────────────────────────── */
 
-test("a TL and a CEO see roots only", () => {
+test("a TL and a CEO see roots only, for work that is not theirs", () => {
   const tasks = [
-    read({ id: "P", subtaskIds: ["C"] }),
-    read({ id: "C", parentTaskId: "P" }),
+    read({ id: "P", subtaskIds: ["C"], assignedBy: "E2" }),
+    read({ id: "C", parentTaskId: "P", assigneeIds: ["E1"], assignedBy: "E2" }),
   ];
   for (const role of ["tl", "ceo"]) {
     const kept = rootFilter(tasks, role, "mine").map((t) => t.id);
     assert.deepEqual(kept, ["P"], `${role} must see the root only`);
+  }
+});
+
+test("a TL or CEO assigned a subtask still sees it", () => {
+  /* The role clause used to return false for EVERY subtask, so a lead who was
+     handed one had it in no tab. The parent is somebody else's — it is not in
+     their list — so nothing stood in for it either. */
+  const tasks = [
+    read({ id: "P", subtaskIds: ["C"], assignedBy: "E2" }),
+    read({ id: "C", parentTaskId: "P", assigneeIds: ["ME"], assignedBy: "E2" }),
+  ];
+  for (const role of ["tl", "ceo"]) {
+    assert.deepEqual(
+      rootFilter(tasks, role, "mine").map((t) => t.id).sort(),
+      ["C", "P"],
+      `${role} must keep a subtask assigned to them`,
+    );
+  }
+});
+
+test("a subtask held at the gate for me is kept", () => {
+  /* At a cross-department gate `assigneeIds` is empty and the target sits in
+     `pendingAssigneeId`. It is still the work I was sent. */
+  const tasks = [
+    read({ id: "P", subtaskIds: ["C"], assignedBy: "E2" }),
+    read({
+      id: "C",
+      parentTaskId: "P",
+      status: "pending_department_approval",
+      assigneeIds: [],
+      pendingAssigneeId: "ME",
+      assignedBy: "E2",
+    }),
+  ];
+  assert.deepEqual(
+    rootFilter(tasks, "tl", "mine").map((t) => t.id).sort(),
+    ["C", "P"],
+  );
+});
+
+test("whoever broke the work out keeps the subtask in view", () => {
+  /* The reported fault, from the other side: you press Create subtask, the
+     write succeeds, and the task is nowhere — you hold both documents, so the
+     parent was always present to stand in for the child. */
+  const tasks = [
+    read({ id: "P", subtaskIds: ["C"], assignedBy: "ME" }),
+    read({ id: "C", parentTaskId: "P", assigneeIds: ["E1"], assignedBy: "ME" }),
+  ];
+  for (const role of ["employee", "tl", "ceo"]) {
+    assert.deepEqual(
+      rootFilter(tasks, role, "mine").map((t) => t.id).sort(),
+      ["C", "P"],
+      `${role} must keep a subtask they raised`,
+    );
   }
 });
 
@@ -130,6 +201,33 @@ test("a cycle in subtaskIds terminates", () => {
   ];
   const byId = new Map(tasks.map((t) => [t.id, t]));
   assert.equal(hasAssignedDescendant(byId, "A", "E1"), false);
+});
+
+/* ── What a subtask claims ─────────────────────────────────────────────── */
+
+test("the requirements a subtask claims are read off the document", () => {
+  const t = read({
+    id: "C",
+    parentTaskId: "P",
+    satisfiesRequirementIds: ["P#req-0", "P#req-2"],
+  });
+  assert.deepEqual(t.satisfiesRequirementIds, ["P#req-0", "P#req-2"]);
+});
+
+test("a document written before the field carries no claims, not an error", () => {
+  /* Every subtask created while the write dropped the field, and everything
+     legacy's own UI broke out. It still exists, still shows under its parent,
+     and simply closes no requirement. */
+  assert.deepEqual(read({ id: "C", parentTaskId: "P" }).satisfiesRequirementIds, []);
+});
+
+test("malformed claims are dropped rather than rendered", () => {
+  const t = read({
+    id: "C",
+    parentTaskId: "P",
+    satisfiesRequirementIds: ["P#req-0", "", null, 7, "P#req-1"],
+  });
+  assert.deepEqual(t.satisfiesRequirementIds, ["P#req-0", "P#req-1"]);
 });
 
 /* ── Cross-department gate scoping ─────────────────────────────────────── */

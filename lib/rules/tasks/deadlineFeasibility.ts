@@ -1,4 +1,4 @@
-import { isActivePriorityTask } from "./activeQueue.ts";
+import { isLiveCandidate } from "./priorityQueue.ts";
 import {
   chainDeadlines,
   rankOf,
@@ -34,6 +34,15 @@ export interface FeasibilityTask extends QueueTask {
   status?: string;
   /** The budget negotiation's state, where the task has one. */
   budgetState?: string | null;
+  /**
+   * Broken down into subtasks — holds no place in anyone's queue.
+   *
+   * A container KEEPS whatever window it was proposed with before it had any
+   * subtasks, and stays in `assigneeIds` for whoever it was assigned to — so
+   * without this it would compete for a slot in its own former assignee's
+   * preview using a figure that describes nothing happening any more.
+   */
+  isContainer?: boolean;
   /**
    * Legacy's STORED date — `deadline.dueAt` / `officialDueAt`.
    *
@@ -124,18 +133,44 @@ export interface Feasibility {
 }
 
 /**
- * The tasks that actually consume this person's time.
+ * The tasks that actually take a place in this person's queue for a placement
+ * PREVIEW — deliberately broader than `isActivePriorityTask`'s "counts as
+ * committed workload".
  *
- * Delegates to `isActivePriorityTask` rather than testing statuses here — one
- * definition of active workload across the product, so a preview and a workload
- * count cannot disagree about who is busy.
+ * **The reported defect.** Two subtasks for one person, neither yet accepted,
+ * each proposed at two hours: both previewed the identical completion time,
+ * because `isActivePriorityTask` requires a SETTLED budget and neither had
+ * one — so each ran `competingTasks` as though it were the only thing in the
+ * person's queue, chained from "now", and landed on the same answer. A person
+ * with two two-hour tasks does not finish both at the same moment; the second
+ * one finishes two hours after the first, whether or not either has been
+ * accepted yet.
+ *
+ * `isLiveCandidate` is the fix: live status, not a container, and — this is
+ * the point — no acceptance or settlement requirement. A task that has been
+ * PROPOSED already carries the number this function needs (`windowSecsFor`
+ * reads the proposed window same as the accepted one), so there is a real
+ * figure to chain against; withholding it until acceptance is what produced
+ * two identical dates instead of one accurate pair.
+ *
+ * **This does not change what counts as committed workload anywhere else.**
+ * `isActivePriorityTask` is untouched and still gates the dashboards, the
+ * counters and the accepted chain (`#chainQueue`) that becomes the real,
+ * production `operationalDueAt` — those answer "how much is this person
+ * actually committed to", and an unsettled proposal correctly does not count
+ * there. This function answers a narrower question — "if these proposals run
+ * in rank order, when does each land" — and a dry-run preview is exactly where
+ * that distinction belongs: `previewDeadlineFeasibility`'s own contract is
+ * that nothing here is a promise the engine has made.
  */
 function competingTasks(tasks: FeasibilityTask[]): FeasibilityTask[] {
   return tasks.filter((t) => {
     if (windowSecsFor(t) <= 0) return false;
-    return isActivePriorityTask({
-      task: { status: t.status ?? "" },
-      budgetNegotiation: t.budgetState ? { state: t.budgetState } : null,
+    return isLiveCandidate({
+      taskId: String(t.taskId),
+      status: t.status ?? "",
+      storedRank: null,
+      isContainer: t.isContainer,
     });
   });
 }

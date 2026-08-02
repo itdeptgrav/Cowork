@@ -106,6 +106,7 @@ export function rankFor(view: TaskView, viewerId: string | null): RankDisplay {
       employeeId: String(a.employeeId),
       rank: a.rank,
       queuePosition: a.queuePosition,
+      provisionalPosition: a.provisionalPosition,
     })),
   });
 

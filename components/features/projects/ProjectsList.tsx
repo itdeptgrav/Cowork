@@ -109,14 +109,17 @@ export function ProjectsList() {
             ]}
           />
         }
+        /* **A project is not created here, and the button used to say it was.**
+           It pointed at a form whose `createProject` the engine has no store
+           for, so it threw. A project comes into being by breaking a task down:
+           the moment work is split out, that task stops being work and becomes
+           the container for it, and it appears in this list. So the action is
+           the one that actually starts the sequence. */
         action={
           <Button tone="primary" size="sm">
-            <Link
-              href="/tasks/projects/new"
-              className="flex items-center gap-1.5"
-            >
+            <Link href="/tasks/new" className="flex items-center gap-1.5">
               <Icon.plus />
-              New project
+              New task
             </Link>
           </Button>
         }
@@ -169,11 +172,14 @@ export function ProjectsList() {
                   ? "Nothing completed yet"
                   : "No active projects"
             }
-            body="A project groups connected tasks under an owner, members, dates and milestones."
+            /* Says how one comes to exist, because there is no button that
+               makes one directly. An empty state that only names the thing
+               leaves the reader looking for a control that is not there. */
+            body="A project is a task that has been broken down. Give a task its completion requirements, break out a subtask for one of them, and it becomes a project here — with its subtasks as the work, and its members whoever is carrying them."
             action={
               filter === "active" ? (
                 <Button tone="primary">
-                  <Link href="/tasks/projects/new">New project</Link>
+                  <Link href="/tasks?view=tasks">Go to tasks</Link>
                 </Button>
               ) : undefined
             }
