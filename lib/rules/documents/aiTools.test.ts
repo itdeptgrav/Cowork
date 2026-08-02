@@ -98,3 +98,78 @@ test("additive actions never require confirmation, regardless of size", () => {
     false,
   );
 });
+
+/* ── insert_blocks — the whole-document tool ───────────────────────────── */
+
+test("insert_blocks accepts a real multi-part body", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [
+      { type: "heading", text: "Letter of Appreciation", level: 1 },
+      { type: "paragraph", text: "Dear Mayfair Hotels and Resorts Team," },
+      { type: "bullets", items: ["Brand integration", "Responsive design"] },
+      { type: "table", headers: ["Phase", "Status"], rows: [["Design", "Done"]] },
+    ],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const blocks = (r.action as { blocks: unknown[] }).blocks;
+    assert.equal(blocks.length, 4);
+  }
+});
+
+test("insert_blocks clamps an out-of-range heading level instead of discarding the page", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "heading", text: "Title", level: 9 }],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const first = (r.action as { blocks: { level: number }[] }).blocks[0]!;
+    assert.equal(first.level, 4);
+  }
+});
+
+test("insert_blocks pads a ragged table row rather than refusing the document", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "table", headers: ["A", "B", "C"], rows: [["1", "2"]] }],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const table = (r.action as { blocks: { rows: string[][] }[] }).blocks[0]!;
+    assert.deepEqual(table.rows[0], ["1", "2", ""]);
+  }
+});
+
+test("insert_blocks drops empty paragraphs and empty lists rather than inserting blanks", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [
+      { type: "paragraph", text: "Real content." },
+      { type: "paragraph", text: "   " },
+      { type: "bullets", items: [] },
+    ],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal((r.action as { blocks: unknown[] }).blocks.length, 1);
+});
+
+test("insert_blocks with nothing usable in it is refused", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "paragraph", text: "  " }],
+  });
+  assert.equal(r.ok, false);
+});
+
+test("insert_blocks rejects an unknown block type by name", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "video", text: "x" }],
+  });
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.match(r.message, /video/);
+});
+
+test("insert_blocks is additive, so it never asks for confirmation", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "paragraph", text: "Body." }],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) assert.equal(docsActionRequiresConfirmation(r.action, 5000), false);
+});

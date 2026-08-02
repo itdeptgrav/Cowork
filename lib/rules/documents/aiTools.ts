@@ -20,11 +20,21 @@
  */
 
 const MAX_TEXT_LENGTH = 20_000;
+const MAX_BLOCKS = 200;
 const MAX_LIST_ITEMS = 200;
 const MAX_TABLE_ROWS = 200;
 const MAX_TABLE_COLS = 20;
 
+/** One element of a whole-document body. See `insert_blocks`. */
+export type DocsBlock =
+  | { type: "heading"; text: string; level: 1 | 2 | 3 | 4 }
+  | { type: "paragraph"; text: string }
+  | { type: "bullets"; items: string[] }
+  | { type: "numbered"; items: string[] }
+  | { type: "table"; headers: string[]; rows: string[][] };
+
 export type DocsAiAction =
+  | { tool: "insert_blocks"; blocks: DocsBlock[] }
   | { tool: "insert_text"; text: string }
   | { tool: "replace_selection"; text: string }
   | { tool: "create_heading"; text: string; level: 1 | 2 | 3 | 4 }
@@ -80,6 +90,70 @@ export function validateDocsToolCall(
   }
 
   switch (tool) {
+    case "insert_blocks": {
+      const raw = args["blocks"];
+      if (!Array.isArray(raw) || raw.length === 0)
+        return { ok: false, message: "The assistant returned an empty document." };
+      if (raw.length > MAX_BLOCKS)
+        return { ok: false, message: `That document is too long (over ${MAX_BLOCKS} blocks).` };
+
+      const blocks: DocsBlock[] = [];
+      let totalText = 0;
+      for (const entry of raw) {
+        if (!entry || typeof entry !== "object")
+          return { ok: false, message: "The assistant returned a malformed block." };
+        const b = entry as Record<string, unknown>;
+        const type = b["type"];
+        const text = typeof b["text"] === "string" ? (b["text"] as string) : "";
+        totalText += text.length;
+        if (totalText > MAX_TEXT_LENGTH)
+          return { ok: false, message: "That document is too long to insert safely." };
+
+        if (type === "heading") {
+          const level = typeof b["level"] === "number" ? Math.round(b["level"] as number) : 1;
+          if (!text.trim()) return { ok: false, message: "The assistant returned a heading with no text." };
+          /* Clamped rather than refused: an out-of-range heading level is a
+             cosmetic slip in an otherwise good document, and throwing the
+             whole page away over it would be the wrong trade. */
+          const safe = Math.min(4, Math.max(1, level)) as 1 | 2 | 3 | 4;
+          blocks.push({ type: "heading", text, level: safe });
+        } else if (type === "paragraph") {
+          if (!text.trim()) continue; /* A blank paragraph is spacing, not content — drop it. */
+          blocks.push({ type: "paragraph", text });
+        } else if (type === "bullets" || type === "numbered") {
+          const items = strArray(b, "items")?.filter((i) => i.trim()) ?? [];
+          if (items.length === 0) continue;
+          if (items.length > MAX_LIST_ITEMS)
+            return { ok: false, message: `A list in that document is too long (over ${MAX_LIST_ITEMS} items).` };
+          blocks.push({ type, items });
+        } else if (type === "table") {
+          const headers = strArray(b, "headers");
+          const rowsRaw = b["rows"];
+          if (!headers || headers.length === 0 || !Array.isArray(rowsRaw))
+            return { ok: false, message: "The assistant returned a malformed table." };
+          if (headers.length > MAX_TABLE_COLS || rowsRaw.length > MAX_TABLE_ROWS)
+            return { ok: false, message: "A table in that document is too large." };
+          const rows: string[][] = [];
+          for (const row of rowsRaw) {
+            if (!Array.isArray(row) || !row.every((c) => typeof c === "string"))
+              return { ok: false, message: "The assistant returned a malformed table row." };
+            /* Padded/trimmed rather than refused — a ragged row in an
+               otherwise usable table is worth fixing, not discarding. */
+            const cells = (row as string[]).slice(0, headers.length);
+            while (cells.length < headers.length) cells.push("");
+            rows.push(cells);
+          }
+          blocks.push({ type: "table", headers, rows });
+        } else {
+          return { ok: false, message: `The assistant returned an unknown block type (${String(type)}).` };
+        }
+      }
+
+      if (blocks.length === 0)
+        return { ok: false, message: "The assistant returned a document with nothing in it." };
+      return { ok: true, action: { tool: "insert_blocks", blocks } };
+    }
+
     case "insert_text":
     case "replace_selection":
     case "create_paragraph": {

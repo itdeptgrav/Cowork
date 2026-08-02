@@ -64,6 +64,68 @@ export function DocsAssistant({
 
   function buildPreview(action: DocsAiAction): React.ReactNode {
     switch (action.tool) {
+      case "insert_blocks":
+        /* The whole body, laid out the way it will land — this is the one
+           proposal a person genuinely has to read before accepting, so it
+           gets rendered rather than summarised as "12 blocks". */
+        return (
+          <div className="flex flex-col gap-1.5">
+            {action.blocks.map((b, i) => {
+              if (b.type === "heading")
+                return (
+                  <p
+                    key={i}
+                    className={`font-medium text-ink ${b.level === 1 ? "text-[14px]" : "text-[12.5px]"}`}
+                  >
+                    {b.text}
+                  </p>
+                );
+              if (b.type === "paragraph")
+                return (
+                  <p key={i} className="text-[12px] leading-relaxed text-ink-muted">
+                    {b.text}
+                  </p>
+                );
+              if (b.type === "bullets" || b.type === "numbered")
+                return (
+                  <ul
+                    key={i}
+                    className={`space-y-0.5 pl-4 text-[12px] text-ink-muted ${
+                      b.type === "bullets" ? "list-disc" : "list-decimal"
+                    }`}
+                  >
+                    {b.items.map((item, j) => (
+                      <li key={j}>{item}</li>
+                    ))}
+                  </ul>
+                );
+              return (
+                <table key={i} className="w-full border-collapse text-[11px]">
+                  <thead>
+                    <tr>
+                      {b.headers.map((h, j) => (
+                        <th key={j} className="border border-hairline px-1.5 py-1 text-left font-medium text-ink">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {b.rows.map((row, j) => (
+                      <tr key={j}>
+                        {row.map((cell, k) => (
+                          <td key={k} className="border border-hairline px-1.5 py-1 text-ink-muted">
+                            {cell}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              );
+            })}
+          </div>
+        );
       case "replace_selection":
         return <DiffPreview before={selection.text} after={action.text} />;
       case "insert_text":
@@ -172,6 +234,50 @@ function applyDocsAction(
   const chain = editor.chain().focus();
 
   switch (action.tool) {
+    case "insert_blocks": {
+      /* One `insertContentAt` with the whole body, so the entire document
+         arrives as a SINGLE undo step — inserting block by block would make
+         Ctrl-Z peel a twelve-block letter off one paragraph at a time. */
+      const content = action.blocks.map((b) => {
+        if (b.type === "heading")
+          return {
+            type: "heading",
+            attrs: { level: b.level },
+            content: b.text ? [{ type: "text", text: b.text }] : [],
+          };
+        if (b.type === "paragraph")
+          return { type: "paragraph", content: b.text ? [{ type: "text", text: b.text }] : [] };
+        if (b.type === "bullets" || b.type === "numbered")
+          return {
+            type: b.type === "bullets" ? "bulletList" : "orderedList",
+            content: b.items.map((item) => ({
+              type: "listItem",
+              content: [{ type: "paragraph", content: [{ type: "text", text: item }] }],
+            })),
+          };
+        return {
+          type: "table",
+          content: [
+            {
+              type: "tableRow",
+              content: b.headers.map((h) => ({
+                type: "tableHeader",
+                content: [{ type: "paragraph", content: h ? [{ type: "text", text: h }] : [] }],
+              })),
+            },
+            ...b.rows.map((row) => ({
+              type: "tableRow",
+              content: row.map((cell) => ({
+                type: "tableCell",
+                content: [{ type: "paragraph", content: cell ? [{ type: "text", text: cell }] : [] }],
+              })),
+            })),
+          ],
+        };
+      });
+      chain.insertContentAt(selection.to, content).run();
+      return;
+    }
     case "insert_text":
       /* Inserted at the END of the selection, never replacing it — "insert"
          adds, it does not overwrite what was already there. */

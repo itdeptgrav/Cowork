@@ -3547,3 +3547,50 @@ picture of what a parallel session is holding, and a commit-then-checkout in
 one session silently discards another's uncommitted work. Nothing in this
 round is a fix for that — it is recorded so the next unexplained
 disappearance is recognised in seconds rather than re-diagnosed.
+
+## 22.10 · "Write a full A4 document" produced a three-word title
+
+Reported with a screenshot: the prompt *"write a full a4 document content
+thanking mayfair hotels and resorts…"* applied a single `# Letter of
+Appreciation` heading and nothing else. Three words, where a page was asked
+for.
+
+**The model behaved correctly; the tool set could not express the request.**
+Every Docs tool wrote ONE element — `create_heading`, `create_paragraph`,
+`create_bullet_list` — and the system instruction says *"Call AT MOST ONE
+tool per reply… do the single most useful step."* Under those two rules
+together, "write a letter" has no representable answer better than a heading.
+That rule is a real cost/safety constraint and stays; what was wrong was
+having no tool whose single call is a whole document.
+
+New `insert_blocks`: an ordered array of `heading` / `paragraph` / `bullets`
+/ `numbered` / `table` blocks, the entire body in one call. The system
+instruction now names it for exactly the cases that were failing (document,
+letter, report, SOP, email, meeting notes) and tells the model to write
+finished content rather than a title plus placeholders.
+
+`maxOutputTokens` went 1024 → 4096. An A4 page is roughly 500 words ≈ 700
+tokens BEFORE the JSON scaffolding of a blocks call, so the old ceiling was
+truncating precisely the requests this tool exists for. Still a hard cap
+(~six pages), not an open tap.
+
+Verified live against the real key with the user's own prompt: 10 blocks —
+H1, two paragraphs, an H2, a bulleted list, another H2, three more
+paragraphs, a sign-off. A real letter.
+
+Validation is deliberately **lenient about cosmetics, strict about
+structure**: an out-of-range heading level is clamped and a ragged table row
+is padded, because throwing away an otherwise good twelve-block letter over a
+`level: 9` would be the wrong trade; but an unknown block type is refused by
+name, and a body with nothing usable in it is refused outright. Empty
+paragraphs and empty lists are dropped rather than inserted as blank space.
+
+The executor issues **one** `insertContentAt` with the whole body, so a
+twelve-block letter is a single undo step — inserting block by block would
+make Ctrl-Z peel it off one paragraph at a time.
+
+87 AI-feature tests pass (7 new). tsc and lint clean on every file this
+touched. The 28 suite failures and 7 tsc errors currently in the tree are all
+in `lib/repositories/legacy/*` and `components/features/meetings/*` — the
+concurrent session's work, confirmed by the fact that no file this feature
+owns appears in either list.
