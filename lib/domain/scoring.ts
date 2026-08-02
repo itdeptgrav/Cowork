@@ -113,6 +113,7 @@ export type ScoreEventType =
   | "late_arrival"
   | "early_departure"
   | "absence"
+  | "overtime_credit"
   | "manual_adjustment"
   | "reversal";
 

@@ -51,6 +51,9 @@ import type {
   ApprovalWorkflow,
   Department,
   ReportingRelationship,
+  MrfRequest,
+  MrfChatMessage,
+  RawItemHit,
   ReworkRequest,
   Role,
   ScoreLedgerEntry,
@@ -143,6 +146,9 @@ export interface Store {
   reporting: ReportingRelationship[];
   departments: Department[];
   workflows: ApprovalWorkflow[];
+  mrfs: MrfRequest[];
+  mrfChat: MrfChatMessage[];
+  mrfCatalogue: RawItemHit[];
 
   tasks: Task[];
   assignments: TaskAssignment[];
@@ -289,6 +295,9 @@ function build(): Store {
     reporting: clone(seed.reporting),
     departments: clone(seed.departments),
     workflows: clone(seed.workflows),
+    mrfs: clone(seed.mrfRequests),
+    mrfChat: clone(seed.mrfChat),
+    mrfCatalogue: clone(seed.mrfCatalogue),
 
     tasks: clone(seed.tasks),
     assignments: clone(seed.assignments),
@@ -487,9 +496,11 @@ function buildRules(): (ScoringRule & { version: ScoringRuleVersion })[] {
         absenceDeduction: 1,
         halfDayDeduction: 0.5,
         earlyDepartureRatePerMinute: 0.01,
+        overtimeCreditRate: 0.01,
+        overtimeGraceMins: 15,
       },
       true,
-      "Proportional lateness is confirmed; every rate and threshold is not — O5.",
+      "Proportional lateness is confirmed; every rate, threshold and the overtime offset is not — O5.",
     ),
   ];
 }

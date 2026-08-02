@@ -1098,6 +1098,50 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "projectScores C1 projection; deductionFor; officialDueAt is what scoring reads",
   },
   {
+    id: "scoring-timer-sop",
+    category: "scoring",
+    title: "Work-time deficit and overtime",
+    keywords: [
+      "timer sop",
+      "deficit counter",
+      "overtime",
+      "work time",
+      "daily minimum hours",
+      "idle pool",
+    ],
+    examples: [
+      "What is the deficit counter?",
+      "How does overtime affect my points?",
+      "Why were points cut for short hours?",
+    ],
+    answer:
+      "Alongside the four components, an optional engine watches your tracked work time each day against a daily minimum. Time short of that minimum builds a deficit; time worked after the office closes builds overtime. Each counter fills toward a threshold, and every time it crosses one, points are cut for the deficit or added for the overtime, with the remainder carried forward to the next crossing. The daily minimum, the thresholds and the point amounts are all set on the office-policy settings, and every one of them is a placeholder until the owner confirms it, so both counters are shown as provisional. The engine can be switched off, and while it is paused nothing is cut or added.",
+    related: ["scoring-components", "scoring-provisional", "settings-office-policy"],
+    source:
+      "evaluateTimerSop and bucketWorkByDay in lib/rules/scoring; getTimerSopStatus",
+  },
+  {
+    id: "attendance-record",
+    category: "scoring",
+    title: "Recording attendance",
+    keywords: [
+      "record attendance",
+      "mark present",
+      "mark absent",
+      "late arrival",
+      "attendance entry",
+    ],
+    examples: [
+      "How do I record someone's attendance?",
+      "Can I mark my own attendance?",
+      "Who can enter a late arrival?",
+    ],
+    answer:
+      "A manager can record attendance for the people who report to them, and People Operations or an administrator for anyone. Nobody records their own day. A day is marked present, half, absent, approved leave, holiday or a week off, with the minutes late or left early where they apply. The recorded day feeds C4 Attendance straight away: present and on time earns a full day, lateness and leaving early take away in proportion, absence removes the day, and approved leave or a holiday keeps it so time off never lowers a score. Staying past the scheduled end earns an overtime offset that can cancel the same day's lateness, but a day never counts above a full day.",
+    related: ["scoring-components", "scoring-timer-sop"],
+    source: "recordAttendance; validateAttendanceRecord; the attendance.record permission",
+  },
+  {
     id: "scoring-provisional",
     category: "scoring",
     title: "Figures marked provisional",
@@ -1430,6 +1474,21 @@ export const HELP_ARTICLES: HelpArticle[] = [
   },
 
   /* ── General ────────────────────────────────────────────────────────────── */
+  {
+    id: "mrf-basics",
+    category: "general",
+    title: "Material requests (MRF)",
+    keywords: ["mrf", "material request", "store", "supplies", "materials"],
+    examples: [
+      "How do I request materials?",
+      "What is an MRF?",
+      "Who approves my material request?",
+    ],
+    answer:
+      "A material request asks the store for supplies. You choose whether the items are consumed or borrowed and returned, give a reason, list the items with quantities, and send it. It routes to your manager to approve or reject; if you have no manager it goes straight to the store. You can withdraw a request while it is still awaiting approval. A manager sees the requests routed to them under Approvals and decides each one. Each request has a shared thread where the requester, the approver and the store can message each other.",
+    related: ["general-what-is-cowork"],
+    source: "lib/rules/mrf/lifecycle.ts; the MRF list/create/decide methods and MrfArea",
+  },
   {
     id: "general-what-is-cowork",
     category: "general",

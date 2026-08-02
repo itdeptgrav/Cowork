@@ -33,6 +33,9 @@ import type {
   ProjectMilestone,
   ProjectTaskLink,
   ReportingRelationship,
+  MrfRequest,
+  MrfChatMessage,
+  RawItemHit,
   Role,
   Task,
   TaskAssignment,
@@ -216,6 +219,144 @@ export const reporting: ReportingRelationship[] = [
   rel("r5", "e-03", "e-07"),
   rel("r6", "e-05", "e-07"),
   rel("r7", "e-07", "e-09"),
+];
+
+/* ── Material Request Forms ───────────────────────────────────────────────────
+   A couple awaiting Maya (e-01, a manager) so the Approvals tab has content, and
+   a couple of Maya's own so My Requests does too. */
+export const mrfRequests: MrfRequest[] = tenant<MrfRequest>([
+  {
+    id: "m-01",
+    mrfNumber: "MRF-2608-0001",
+    requesterId: "e-02",
+    requesterName: "Tobias Lund",
+    requesterDepartment: "Product",
+    requestType: "uses_based",
+    priority: "normal",
+    reason: "Foam board and adhesive for the activation prototype.",
+    neededBy: iso(72),
+    deadline: null,
+    status: "pending",
+    approverId: "e-01",
+    approverName: "Maya Ferreira",
+    autoForwarded: false,
+    rejectionNote: null,
+    items: [
+      { id: "mi-01", name: "Foam board A1", sku: "FB-A1", isUnmatched: false, requestedQty: 10, unit: "sheet", description: "5mm", status: "pending" },
+      { id: "mi-02", name: "Spray adhesive", sku: null, isUnmatched: true, requestedQty: 2, unit: "can", description: null, status: "pending" },
+    ],
+    history: [{ at: iso(-6), action: "created", actorName: "Tobias Lund", detail: null }],
+    createdAt: iso(-6),
+    updatedAt: iso(-6),
+  },
+  {
+    id: "m-02",
+    mrfNumber: "MRF-2608-0002",
+    requesterId: "e-06",
+    requesterName: "Jonas Weber",
+    requesterDepartment: "Product",
+    requestType: "time_based",
+    priority: "urgent",
+    reason: "Camera kit for the launch shoot.",
+    neededBy: iso(24),
+    deadline: iso(96),
+    status: "pending",
+    approverId: "e-01",
+    approverName: "Maya Ferreira",
+    autoForwarded: false,
+    rejectionNote: null,
+    items: [
+      { id: "mi-03", name: "DSLR body", sku: "CAM-01", isUnmatched: false, requestedQty: 1, unit: "unit", description: "with 50mm lens", status: "pending" },
+    ],
+    history: [{ at: iso(-3), action: "created", actorName: "Jonas Weber", detail: null }],
+    createdAt: iso(-3),
+    updatedAt: iso(-3),
+  },
+  {
+    id: "m-03",
+    mrfNumber: "MRF-2608-0003",
+    requesterId: "e-01",
+    requesterName: "Maya Ferreira",
+    requesterDepartment: "Product",
+    requestType: "uses_based",
+    priority: "normal",
+    reason: "Printer toner for the studio.",
+    neededBy: iso(48),
+    deadline: null,
+    status: "approved",
+    approverId: "e-07",
+    approverName: "Priya Raman",
+    autoForwarded: false,
+    rejectionNote: null,
+    items: [
+      { id: "mi-04", name: "Toner cartridge", sku: "TN-55", isUnmatched: false, requestedQty: 3, unit: "unit", description: null, status: "partially_issued", issuedQty: 1, returnedQty: 0, availability: "available", availableQty: 3, availabilityNote: null },
+    ],
+    history: [
+      { at: iso(-30), action: "created", actorName: "Maya Ferreira", detail: null },
+      { at: iso(-28), action: "approved", actorName: "Priya Raman", detail: null },
+    ],
+    createdAt: iso(-30),
+    updatedAt: iso(-28),
+  },
+]);
+
+export const mrfChat: MrfChatMessage[] = [
+  {
+    id: "mc-01",
+    mrfId: "m-01",
+    senderId: "e-02",
+    senderName: "Tobias Lund",
+    senderRole: "employee",
+    body: "Any update on the foam board?",
+    isSystem: false,
+    createdAt: iso(-5),
+  },
+  {
+    id: "mc-02",
+    mrfId: "m-01",
+    senderId: null,
+    senderName: "Store",
+    senderRole: "store",
+    body: "Checking stock now — back shortly.",
+    isSystem: false,
+    createdAt: iso(-4),
+  },
+];
+
+/* A small store catalogue for the request form's search — one item with colour
+   variants and their stock, plus a couple of plain items. */
+export const mrfCatalogue: RawItemHit[] = [
+  {
+    id: "raw-01",
+    name: "Suiting fabric 63/37 PC plain",
+    sku: "SUIT-6337",
+    baseUnit: "mtr",
+    quantity: 9848,
+    units: ["mtr", "roll"],
+    variants: [
+      { id: "v-01", combination: ["Black"], quantity: 5169.8, sku: "SUIT-BLK" },
+      { id: "v-02", combination: ["Blue"], quantity: 169.8, sku: "SUIT-BLU" },
+      { id: "v-03", combination: ["Navy"], quantity: 4508.4, sku: "SUIT-NVY" },
+    ],
+  },
+  {
+    id: "raw-02",
+    name: "Spray adhesive",
+    sku: "ADH-01",
+    baseUnit: "can",
+    quantity: 40,
+    units: ["can"],
+    variants: [],
+  },
+  {
+    id: "raw-03",
+    name: "Foam board A1 5mm",
+    sku: "FB-A1",
+    baseUnit: "sheet",
+    quantity: 120,
+    units: ["sheet"],
+    variants: [],
+  },
 ];
 
 /* ── Departments ──────────────────────────────────────────────────────────────

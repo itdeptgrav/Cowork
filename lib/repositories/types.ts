@@ -26,6 +26,17 @@ import type { ActionableReason } from "@/lib/rules/tasks/actionable";
 import type { CompletionState } from "@/lib/rules/tasks/completion";
 import type { DutyMode } from "@/lib/rules/presence/duty";
 import type { OfficePolicy } from "@/lib/legacy/officePolicy";
+import type {
+  TimerSopConfig,
+  TimerSopResult,
+  TodayTarget,
+} from "@/lib/rules/scoring/timerSop";
+import type { MrfChatMessage, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
+import type {
+  MrfApprovalStats,
+  MrfStats,
+  NewMrfInput,
+} from "@/lib/rules/mrf/lifecycle";
 import type { ReportingNode } from "@/lib/legacy/hierarchy";
 import type { TaskRules } from "@/lib/rules/settings/taskRules";
 import type { WorkflowRouting } from "@/lib/rules/settings/workflowRouting";
@@ -38,6 +49,7 @@ import type {
   ApprovalStage,
   ApprovalWorkflow,
   AttendanceDay,
+  AttendanceStatus,
   Attachment,
   BlockedDate,
   ChannelId,
@@ -401,6 +413,15 @@ export type ActionErrorCode =
   | "conflict"
   | "budget_exceeded"
   | "offline";
+
+/** The Timer SOP counters for one person, with the config they were judged by. */
+export interface TimerSopStatus {
+  employeeId: EmployeeId;
+  config: TimerSopConfig;
+  result: TimerSopResult;
+  /** The live "Today's Work" target, or null when the engine is paused. */
+  today: TodayTarget | null;
+}
 
 /* ── The repository ───────────────────────────────────────────────────────── */
 
@@ -978,6 +999,19 @@ export interface CoworkRepository {
     reason?: string,
   ): Promise<ActionResult<OfficePolicy>>;
 
+  /* Timer SOP Point Engine — work-time deficit and overtime. Configured on the
+     office-policy settings surface; the counters read live from work commits. */
+  getTimerSopConfig(): Promise<TimerSopConfig>;
+  /** Requires `score.configure`. */
+  setTimerSopConfig(
+    config: TimerSopConfig,
+  ): Promise<ActionResult<TimerSopConfig>>;
+  /**
+   * The deficit/overtime counters for one person, computed from their real work
+   * commits against the office calendar. Defaults to the acting viewer.
+   */
+  getTimerSopStatus(employeeId?: EmployeeId): Promise<TimerSopStatus>;
+
   /* ── The rest of the settings console ─────────────────────────────────────
    *
    * Five sections, one write path. Every setter below routes through
@@ -1361,6 +1395,52 @@ export interface CoworkRepository {
     from: string,
     to: string,
   ): Promise<AttendanceDay[]>;
+  /**
+   * Record or correct one person's attendance for a day, upserting by employee
+   * and date. A manager may record for a direct report; People Operations and
+   * administrators for anyone in the workspace. Nobody records their own day —
+   * the reporting scope forbids it. The recorded day feeds C4 · Attendance
+   * immediately.
+   */
+  recordAttendance(input: {
+    employeeId: EmployeeId;
+    /** YYYY-MM-DD. */
+    date: string;
+    status: AttendanceStatus;
+    lateMinutes?: number;
+    earlyDepartureMinutes?: number;
+    scheduledStart?: string | null;
+    scheduledEnd?: string | null;
+    actualStart?: string | null;
+    actualEnd?: string | null;
+    isExpectedWorkingDay?: boolean;
+  }): Promise<ActionResult<AttendanceDay>>;
+
+  /* Material Request Forms — request and approval (store issue/return is a
+     separate app). */
+  listMyMrfs(): Promise<{ requests: MrfRequest[]; stats: MrfStats }>;
+  /** The approver's queue: requests routed to the acting viewer. */
+  listMrfApprovals(
+    status?: MrfStatus | "all",
+  ): Promise<{ requests: MrfRequest[]; stats: MrfApprovalStats }>;
+  getMrf(id: string): Promise<MrfRequest | null>;
+  createMrf(input: NewMrfInput): Promise<ActionResult<MrfRequest>>;
+  cancelMrf(id: string, note?: string): Promise<ActionResult<MrfRequest>>;
+  /** The resolved approver (or CEO) approves or rejects a pending request. */
+  decideMrf(
+    id: string,
+    decision: {
+      approve: boolean;
+      note?: string;
+      /** Per-item approve/reject; absent items default to the overall decision. */
+      itemDecisions?: Record<string, "approved" | "rejected">;
+    },
+  ): Promise<ActionResult<MrfRequest>>;
+  /** The shared thread on one request — requester, approver and store. */
+  listMrfChat(id: string): Promise<MrfChatMessage[]>;
+  sendMrfChat(id: string, body: string): Promise<ActionResult<MrfChatMessage>>;
+  /** Search the store catalogue (name or SKU) for items, with variants and stock. */
+  searchMrfItems(query: string): Promise<RawItemHit[]>;
 
   /* Collaboration */
   listConversations(): Promise<(Conversation & { participants: Employee[] })[]>;

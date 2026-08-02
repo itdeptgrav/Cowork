@@ -226,7 +226,8 @@ test("every event type has a human label", () => {
     "task_completed", "rework_applied", "deadline_missed", "extension_charged",
     "extension_waived", "rejection_applied", "goal_activity_completed",
     "goal_activity_late", "conduct_breach", "attendance_present",
-    "late_arrival", "early_departure", "absence", "manual_adjustment", "reversal",
+    "late_arrival", "early_departure", "absence", "overtime_credit",
+    "manual_adjustment", "reversal",
   ]) {
     const label = eventLabel(type);
     assert.ok(label.length > 0);

@@ -177,10 +177,29 @@ export const PROVISIONAL_RULES: Record<string, ProvisionalRule> = {
   attendanceCredits: {
     decisionId: "O5",
     label: "Attendance credits and overtime bonuses",
-    legacyBehaviour: "A reward direction existed in the ledger",
-    value: "none",
-    unit: "none | overtime | manual",
-    note: "Explicitly NOT invented. No credits are issued in the prototype.",
+    legacyBehaviour:
+      "Legacy issued an Overtime Reward and a Late Stay Boost as separate reward entries that could push attendance past its ceiling",
+    value: "offset",
+    unit: "none | offset | bonus",
+    note:
+      "Overtime is credited as an OFFSET only: staying late can cancel a same-period attendance deduction, but a day still cannot exceed its 1.0 maximum and the component still caps at 100%. Legacy's bonus-above-ceiling behaviour is deliberately not reproduced. The offset rate is a placeholder — O5.",
+  },
+  overtimeCreditRate: {
+    decisionId: "O5",
+    label: "Overtime credit rate",
+    legacyBehaviour:
+      "Overtime Reward and Late Stay Boost accrued at a flat rate outside any per-day cap",
+    value: 0.01,
+    unit: "points per minute worked past the scheduled end",
+    note: "Placeholder mirroring the lateness rate. Credit is offset-only and clamped to the day maximum — O5.",
+  },
+  overtimeGraceMins: {
+    decisionId: "O5",
+    label: "Overtime grace period",
+    legacyBehaviour: "None — any minute past close counted",
+    value: 15,
+    unit: "minutes past the scheduled end before overtime credit begins",
+    note: "Placeholder. Stops a few incidental minutes from generating credit — O5.",
   },
 
   /* ── Aggregation ────────────────────────────────────────────────────────── */
