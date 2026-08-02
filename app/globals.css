@@ -588,6 +588,26 @@
     animation-delay: var(--delay, 0ms);
   }
 
+  /* Chrome answering a keystroke — the command palette, and anything else that
+     arrives because somebody asked for it a fifth of a second ago. `.rise` is
+     620ms over 14px, which is right for content a reader has just navigated to
+     and wrong here: a palette that takes half a second is one people type into
+     before it has settled. Short, and from a position already legible. */
+  .snap-in {
+    animation: snap-in 150ms var(--ease-out-expo) both;
+  }
+
+  @keyframes snap-in {
+    from {
+      opacity: 0;
+      transform: translateY(-4px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+
   @keyframes rise {
     from {
       opacity: 0;

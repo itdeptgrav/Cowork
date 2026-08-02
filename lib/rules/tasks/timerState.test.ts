@@ -170,6 +170,11 @@ test("a dead listener does not take the page with it", () => {
 /* ── The control consumes the rules ───────────────────────────────────────── */
 
 const CONTROL = "components/features/tasks/TimerControl.tsx";
+/* The keyed subscription moved out of the control when the status-tracking
+   surface needed the same listener against a PERSON rather than a task's
+   assignee. Two copies of a listener is two places for one to be left
+   unsubscribed, so the guarantees below now hold against the hook. */
+const WATCH = "lib/hooks/useTimerSession.ts";
 
 test("the control derives its state from the rule, not from React", () => {
   /* `view.loggedSecs + ticked` had no notion of a session left running, so a
@@ -206,8 +211,8 @@ test("the control watches the ASSIGNEE's session, not the viewer's", () => {
      usually nothing — on somebody else's work. */
   const src = code(CONTROL);
   assert.match(src, /view\.assignments\[0\]\?\.employeeId/);
-  assert.match(src, /useAssigneeSession\(taskId,/);
-  assert.match(src, /repo\.watchTimerSession\(assigneeId, taskId,/);
+  assert.match(src, /useWatchedTimerSession\(assigneeId \? String\(assigneeId\) : null, taskId\)/);
+  assert.match(code(WATCH), /repo\.watchTimerSession\(String\(employeeId\), String\(taskId\)/);
 });
 
 test("the live session outranks the one-shot read", () => {
@@ -219,8 +224,7 @@ test("a previous person's clock cannot linger under a new one", () => {
   /* The session is keyed by subject and compared on read, so a change of
      assignee discards the old value rather than showing it until the first
      snapshot lands. */
-  const src = code(CONTROL);
-  assert.match(src, /entry\.key === key \? entry\.session : null/);
+  assert.match(code(WATCH), /entry\.key === key \? entry\.session : null/);
 });
 
 test("the control never calls the clock during render", () => {

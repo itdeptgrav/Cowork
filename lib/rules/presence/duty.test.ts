@@ -167,20 +167,55 @@ test("leaving emergency for online raises the span immediately", () => {
   assert.equal(t.emergencyToRaiseMs, 600_000);
   assert.equal(t.emergencyReason, "power cut");
   assert.equal(t.patch.emergencyStartedAtMs, null);
-  assert.equal(t.patch.pendingEmergencyGapMs, undefined, "nothing is held — it was raised");
+  assert.equal(t.patch.pendingEmergencyGapMs, null, "nothing is held — it was raised");
 });
 
-test("leaving emergency for anything else holds the span for next time", () => {
-  /* `:142`. The span is the whole subject of the approval request and cannot be
-     reconstructed once the start is cleared, so it is banked rather than lost. */
+test("leaving emergency banks nothing, and clears what was banked", () => {
+  /* **CHANGED ON PURPOSE.** This used to assert the span was held in
+     `pendingEmergencyGapMs` on every non-online exit — "held, not dropped", so
+     it could not be lost. That was right when nothing else recorded the span. It
+     is wrong now, and it was a second claim on the same minutes:
+
+      · the exit is gated by the end-emergency dialog, which raises the approval
+        request BEFORE this transition runs, so the span is already recorded with
+        its reason and document;
+      · the old application turns anything in this field into ANOTHER approval
+        request, and two approvals of one emergency shift every deadline twice.
+
+     Emergency time reaches a deadline through exactly one door now:
+     `decideEmergencyRequest`, on approval by the named manager. So the field is
+     actively cleared — including a value written by the old app. */
   const t = dutyTransition({
-    previous: { mode: "emergency", emergencyStartedAtMs: T0 - 300_000, emergencyReason: "flood" },
+    previous: {
+      mode: "emergency",
+      emergencyStartedAtMs: T0 - 300_000,
+      emergencyReason: "flood",
+      pendingEmergencyGapMs: 999_000,
+    } as never,
     next: "offline", nowMs: T0, connectionId: null,
   });
   assert.equal(t.emergencyToRaiseMs, 0);
-  assert.equal(t.patch.pendingEmergencyGapMs, 300_000);
-  assert.equal(t.patch.pendingEmergencyReason, "flood");
+  assert.equal(t.patch.pendingEmergencyGapMs, null, "a stale claim survived");
+  assert.equal(t.patch.pendingEmergencyReason, null);
   assert.equal(t.patch.emergencyStartedAtMs, null);
+});
+
+test("no exit from an emergency credits it as break or offline time", () => {
+  /* The requirement stated directly. Whatever the person goes to, the emergency
+     span is worth zero until a manager approves it — it must not reappear as a
+     break to credit, nor start an offline clock that reaches back over it. */
+  for (const next of ["online", "offline", "break"] as const) {
+    const t = dutyTransition({
+      previous: { mode: "emergency", emergencyStartedAtMs: T0 - 600_000 },
+      next, nowMs: T0, connectionId: next === "online" ? "tab-a" : null,
+    });
+    assert.equal(t.breakToCreditMs, 0, `credited as break leaving for ${next}`);
+    assert.equal(t.offlineToCreditMs, 0, `credited as offline leaving for ${next}`);
+    /* A new clock may START now — that time is genuinely break or offline — but
+       it can never reach back over the emergency. */
+    if (next === "break") assert.equal(t.patch.breakStartedAtMs, T0);
+    if (next === "offline") assert.equal(t.patch.offlineStartedAtMs, T0);
+  }
 });
 
 test("re-declaring an emergency keeps the original start", () => {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  emergencyCompensationMs,
   emergencyDecisionRefusal,
   emergencyRequestRefusal,
   isAcceptedDocument,
@@ -37,6 +38,7 @@ function req(over: Partial<EmergencyRequest> = {}): EmergencyRequest {
     reason: "Flooding at home.",
     attachmentId: "att-1",
     status: "pending",
+    compensationAppliedAt: null,
     decisionReason: null,
     decidedAt: null,
     appliedTaskIds: [],
@@ -300,4 +302,101 @@ test("a declined request names no shifted tasks", () => {
   assert.deepEqual(declined.appliedTaskIds, []);
   assert.equal(declined.status, "declined");
   assert.ok(declined.decisionReason, "a decline is always explained");
+});
+
+
+/* ── 8. Compensation is owed only on an approval by the named manager ──────────
+ *
+ * The requirement, stated as the product states it: emergency time affects a
+ * deadline only after the employee's primary manager approves it. Everything
+ * else — before the decision, a rejection, a cancellation, a second approval,
+ * an approval by somebody else — is worth exactly zero. Not "less", not
+ * "deferred": zero.
+ */
+
+test("an approval by the named manager is worth the frozen duration, exactly", () => {
+  assert.equal(
+    emergencyCompensationMs({ request: req(), actorId: "rakesh", approve: true }),
+    3600 * 1000,
+  );
+});
+
+test("nothing is owed before a decision is taken", () => {
+  /* There is no partial credit and no advance. A pending request has moved
+     nothing, which is the whole point of it being pending. */
+  assert.equal(
+    emergencyCompensationMs({ request: req(), actorId: "rakesh", approve: false }),
+    0,
+  );
+});
+
+test("a rejection adds zero, and so does a decided request", () => {
+  /* There is no `cancelled` status in this domain, and that is not a gap: a
+     person who dismisses the end-emergency dialog never raises a request at all
+     — they stay in the emergency. So "cancelled" is the absence of a record,
+     which is worth zero without any rule needing to say so. */
+  for (const status of ["declined", "approved"] as const) {
+    assert.equal(
+      emergencyCompensationMs({
+        request: req({ status }),
+        actorId: "rakesh",
+        approve: true,
+      }),
+      0,
+      status,
+    );
+  }
+});
+
+test("approving twice pays once", () => {
+  /* The consumed marker, and the reason it is not derived from `status`: a
+     record can be re-approved by a retry, a double click, or the old
+     application turning a stale `pendingEmergencyGapMs` into a second request.
+     Each replay would otherwise move every deadline again. */
+  const applied = req({ compensationAppliedAt: "2026-07-28T10:05:00.000Z" });
+  assert.equal(
+    emergencyCompensationMs({ request: applied, actorId: "rakesh", approve: true }),
+    0,
+  );
+  assert.match(
+    emergencyDecisionRefusal({
+      request: applied,
+      actorId: "rakesh",
+      approve: true,
+      decisionReason: "",
+    }) ?? "",
+    /already been applied/,
+  );
+});
+
+test("nobody but the named manager can make it worth anything", () => {
+  /* The four the requirement names, each getting zero rather than a refusal
+     that some caller might not check. Identity, never capability — an
+     administrator with organisation scope is still not this person's manager. */
+  for (const actorId of [
+    "soumya", // the requester, and the assignee whose deadlines would move
+    "maya", // a secondary manager
+    "someone-else", // an unrelated user
+    "", // no session at all
+  ]) {
+    assert.equal(
+      emergencyCompensationMs({ request: req(), actorId, approve: true }),
+      0,
+      actorId || "(nobody)",
+    );
+  }
+});
+
+test("the duration is the one frozen on the record, not one recomputed now", () => {
+  /* The manager approves a span they read. Recomputing it from the timestamps
+     at decision time would let a later edit to either end change what was
+     approved, after the fact. */
+  const stretched = req({
+    durationSecs: 600,
+    endedAt: "2026-07-28T23:00:00.000Z",
+  });
+  assert.equal(
+    emergencyCompensationMs({ request: stretched, actorId: "rakesh", approve: true }),
+    600 * 1000,
+  );
 });

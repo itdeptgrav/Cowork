@@ -1,6 +1,6 @@
 "use client";
 
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import { FileUploader } from "@/components/features/attachments/Attachments";
@@ -94,10 +94,35 @@ function optionLabel(
   return ready;
 }
 
-export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
+export function NewTaskForm({
+  presetProjectId,
+  presetParentTaskId,
+}: {
+  presetProjectId?: string;
+  /**
+   * Break work out of this task instead of raising a free-standing one.
+   *
+   * **The same form, deliberately.** A subtask is a task — it negotiates a
+   * budget, holds a priority, is submitted and reviewed — so it needs every
+   * field a task needs. The dialog that used to do this asked for four of them
+   * and the engine filled the rest with defaults nobody chose, which is how a
+   * delegated piece of work arrived with no acceptance criteria and no
+   * attachments. The old app made the same call for the same reason: one
+   * `CreateTaskModal`, opened with a `parentTask` (`page.js:10110`).
+   *
+   * What the parent adds is one panel — which of its completion requirements
+   * this child answers for — and it removes the type picker, because a subtask
+   * is a standard task and self-ness follows from assigning it to yourself.
+   */
+  presetParentTaskId?: string;
+}) {
   const me = useViewerId();
   const router = useRouter();
-  const [type, setType] = useState<TaskType>("standard");
+  const params = useSearchParams();
+  const initialType = (params.get("type") as TaskType | null) ?? "standard";
+  const [type, setType] = useState<TaskType>(
+    TYPES.some((t) => t.id === initialType) ? initialType : "standard",
+  );
   const [title, setTitle] = useState("");
   /* Chosen but not yet sent — see the create handler for why they cannot go
      up before the task exists. */
@@ -109,7 +134,20 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
   const [reqDraft, setReqDraft] = useState("");
   const [assignees, setAssignees] = useState<string[]>([]);
   const [projectId, setProjectId] = useState(presetProjectId ?? "");
-  const [parentTaskId, setParentTaskId] = useState("");
+  const [parentTaskId, setParentTaskId] = useState(presetParentTaskId ?? "");
+  /* Which of the parent's completion requirements this child closes. Empty and
+     unused on an ordinary task; required on a subtask, and the reason the
+     parent is read at all. */
+  const [claims, setClaims] = useState<string[]>([]);
+  const isSubtask = !!presetParentTaskId;
+  const parentView = useQuery(
+    (r) =>
+      presetParentTaskId
+        ? r.getTask(presetParentTaskId)
+        : Promise.resolve(null),
+    [presetParentTaskId],
+  );
+  const parent = parentView.data ?? null;
   const [goalId, setGoalId] = useState("");
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [filterDept, setFilterDept] = useState("");
@@ -236,90 +274,226 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
   const effectiveAssignees = multiAllowed ? assignees : assignees.slice(0, 1);
 
   const [create, state] = useAction((r) =>
-    r.createTask({
-      title,
-      description: description || null,
-      requirements,
-      type,
-      assigneeIds: effectiveAssignees,
-      /* Not sent. The owning department is the creator's, and `createTask`
-         reads that off the acting employee — passing a value from here would
-         be this form asserting something it was never told. */
-      departmentId: null,
-      projectId: projectId || null,
-      parentTaskId: parentTaskId || null,
-      goalId: goalId || null,
-      /* No approver is chosen in the form. For a self task the backend resolves
-         the assignee's primary manager from HR and makes them the counterparty
-         (budget, priority, review); for every other type this stays null. */
-      approverId: null,
-      deadlineMode: mode,
-      fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
-      senderWindowSecs: mode === "timer" ? budgetSecs : null,
-      /* Only when a budget was actually entered. This previously sent four
-         hours of "estimated effort" on every deadline-based task, taken from a
-         control the reader never saw — a number nobody chose, recorded as
-         though they had. */
-      estimatedEffortSecs: mode === "timer" ? budgetSecs : null,
-    }),
+    /* **A subtask goes through `createSubtask`, not `createTask` with a
+       parent id.** They are different routes on the engine: `/task/:id/subtask`
+       owns the parent linkage, the `subtaskIds` write on the parent, the
+       inherited review chain (`rootCreatedByRole`) and the manager-mediation a
+       self subtask needs. `createTask` with `parentTaskId` writes the child and
+       none of the rest, so the parent never learns it has been broken down. */
+    isSubtask
+      ? r.createSubtask({
+          parentTaskId: parentTaskId,
+          title,
+          description: description || null,
+          assigneeIds: effectiveAssignees,
+          satisfiesRequirementIds: claims,
+          fixedDueAt:
+            mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
+          senderWindowSecs: mode === "timer" ? budgetSecs : null,
+          estimatedEffortSecs: mode === "timer" ? budgetSecs : null,
+        })
+      : r.createTask({
+          title,
+          description: description || null,
+          requirements,
+          type,
+          assigneeIds: effectiveAssignees,
+          /* Not sent. The owning department is the creator's, and `createTask`
+             reads that off the acting employee — passing a value from here would
+             be this form asserting something it was never told. */
+          departmentId: null,
+          projectId: projectId || null,
+          parentTaskId: parentTaskId || null,
+          goalId: goalId || null,
+          /* No approver is chosen in the form. For a self task the backend resolves
+             the assignee's primary manager from HR and makes them the counterparty
+             (budget, priority, review); for every other type this stays null. */
+          approverId: null,
+          deadlineMode: mode,
+          fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
+          senderWindowSecs: mode === "timer" ? budgetSecs : null,
+          /* Only when a budget was actually entered. This previously sent four
+             hours of "estimated effort" on every deadline-based task, taken from a
+             control the reader never saw — a number nobody chose, recorded as
+             though they had. */
+          estimatedEffortSecs: mode === "timer" ? budgetSecs : null,
+        }),
   );
 
   const isMulti = assignees.length > 1;
+
 
   return (
     <>
       <Breadcrumb
         items={[
           { label: "Tasks", href: "/tasks?view=tasks" },
-          { label: "New task" },
+          ...(isSubtask && parent
+            ? [
+                {
+                  label: parent.task.title,
+                  href: `/tasks/${parent.task.id}`,
+                },
+              ]
+            : []),
+          { label: isSubtask ? "New subtask" : "New task" },
         ]}
       />
-      <h1 className="mt-2 mb-4 text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
-        New task
+      <h1 className="mt-2 text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
+        {isSubtask ? "Break out a subtask" : "New task"}
       </h1>
+      {isSubtask && (
+        <p className="mt-1.5 max-w-[64ch] text-sm leading-relaxed text-ink-muted">
+          You stay responsible for{" "}
+          <span className="text-ink">
+            {parent?.task.title ?? "the task above"}
+          </span>
+          . This delegates one area of it — and it is a task in its own right,
+          so it takes the same fields as any other.
+        </p>
+      )}
+      <div className="mb-4" />
 
       <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
         <div className="flex flex-col gap-4 deck:col-span-8">
-          {/* 1 — type first, because it gates everything below. */}
-          <Panel>
-            <h2 className="text-sm font-medium text-ink">Type</h2>
-            <div className="mt-3 grid gap-2 sm:grid-cols-3">
-              {TYPES.map((t) => {
-                const Ico = Icon[t.icon];
-                const on = type === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    type="button"
-                    onClick={() => {
-                      setType(t.id);
-                      /* A self task pre-selects you; leaving it drops you again,
-                         because the standard picker excludes the viewer and a
-                         stale self-selection would read as "forbidden". */
-                      setAssignees((cur) => {
-                        if (t.id === "self_assigned") return me ? [me] : cur;
-                        return me ? cur.filter((id) => id !== me) : cur;
-                      });
-                    }}
-                    aria-pressed={on}
-                    className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
-                      on
-                        ? "bg-[var(--control-active)] shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
-                        : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
-                    }`}
-                  >
-                    <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
-                      <Ico />
-                      {t.label}
-                    </span>
-                    <span className="mt-1 block text-[11px] text-ink-faint">
-                      {t.body}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </Panel>
+          {/* 1 — type first, because it gates everything below.
+
+              Absent on a subtask: the engine's subtask route creates a standard
+              task and reads no type, so a picker here would offer four choices
+              that change nothing. Self-ness is not a type on a subtask either —
+              it follows from putting yourself in the assignee list, which the
+              People panel says in as many words. */}
+          {!isSubtask && (
+            <Panel>
+              <h2 className="text-sm font-medium text-ink">Type</h2>
+              <div className="mt-3 grid gap-2 sm:grid-cols-3">
+                {TYPES.map((t) => {
+                  const Ico = Icon[t.icon];
+                  const on = type === t.id;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => {
+                        setType(t.id);
+                        /* A self task pre-selects you; leaving it drops you again,
+                           because the standard picker excludes the viewer and a
+                           stale self-selection would read as "forbidden". */
+                        setAssignees((cur) => {
+                          if (t.id === "self_assigned") return me ? [me] : cur;
+                          return me ? cur.filter((id) => id !== me) : cur;
+                        });
+                      }}
+                      aria-pressed={on}
+                      className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
+                        on
+                          ? "bg-[var(--control-active)] shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
+                          : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
+                      }`}
+                    >
+                      <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
+                        <Ico />
+                        {t.label}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-ink-faint">
+                        {t.body}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </Panel>
+          )}
+
+          {/* 1b — what this subtask answers for. The contract with the parent,
+              above the brief because it is the reason the child exists: a
+              subtask that satisfies nothing leaves its parent's requirement
+              undelegated, and the parent then cannot tell whether it mattered.
+              `subtaskRefusal` refuses the write without one, so the panel is
+              required rather than advisory. */}
+          {isSubtask && (
+            <Panel>
+              <h2 className="text-sm font-medium text-ink">
+                Which completion requirements does this satisfy?
+              </h2>
+              <p className="mt-0.5 text-[11px] text-ink-faint">
+                At least one. Choose several if this subtask closes more than
+                one.
+              </p>
+              {parentView.isLoading ? (
+                <p className="mt-3 text-sm text-ink-faint">
+                  Loading the parent task…
+                </p>
+              ) : !parent ? (
+                <p className="mt-3 text-sm text-ink-faint">
+                  The parent task could not be read, so its requirements cannot
+                  be shown. Reload the page to try again.
+                </p>
+              ) : parent.completion.requirements.length === 0 ? (
+                /* Reachable by URL, not by the button — `ProjectPanel` only
+                   offers the breakdown once there are requirements. Saying so
+                   beats an empty list that reads as a loading failure. */
+                <p className="mt-3 max-w-[62ch] text-sm text-ink-muted">
+                  This task has no completion requirements yet, so there is
+                  nothing for a subtask to contribute to. Add them on the task
+                  first — its Completion requirements panel has the form.
+                </p>
+              ) : (
+                <ul className="mt-3 flex flex-col gap-1">
+                  {parent.completion.requirements.map((r) => {
+                    const on = claims.includes(r.requirement.id);
+                    return (
+                      <li key={r.requirement.id}>
+                        <button
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() =>
+                            setClaims((c) =>
+                              c.includes(r.requirement.id)
+                                ? c.filter((x) => x !== r.requirement.id)
+                                : [...c, r.requirement.id],
+                            )
+                          }
+                          className={`flex w-full items-start gap-3 rounded-inset px-3 py-2.5 text-left transition-colors ${
+                            on
+                              ? "bg-[var(--control-active)]"
+                              : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
+                          }`}
+                        >
+                          <span
+                            className={`mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full ${
+                              on
+                                ? "bg-ink text-[var(--body-bg)]"
+                                : "text-transparent shadow-[inset_0_0_0_1.5px_var(--color-hairline)]"
+                            }`}
+                          >
+                            <Icon.check className="h-3 w-3" />
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-sm text-ink">
+                              {r.requirement.text}
+                            </span>
+                            {r.isSatisfied && (
+                              <span className="mt-0.5 block text-[11px] text-ink-faint">
+                                Already satisfied — choosing it will reopen it
+                                until this subtask completes.
+                              </span>
+                            )}
+                            {r.claimants.length > 0 && (
+                              <span className="mt-0.5 block text-[11px] text-ink-faint">
+                                Also claimed by{" "}
+                                {r.claimants.map((c) => c.title).join(", ")}
+                              </span>
+                            )}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Panel>
+          )}
 
           {/* 2 — the brief. */}
           <Panel>
@@ -673,19 +847,26 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
                     ))}
                   </Select>
                 </Field>
-                <Field label="Parent task" hint="Makes this a subtask.">
-                  <Select
-                    value={parentTaskId}
-                    onChange={(e) => setParentTaskId(e.target.value)}
-                  >
-                    <option value="">None</option>
-                    {(tasks.data ?? []).slice(0, 20).map((t) => (
-                      <option key={t.task.id} value={t.task.id}>
-                        {t.task.title}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
+                {/* Absent when the parent is already fixed — the page was
+                    opened from that task, and a picker that could re-point the
+                    subtask at a different parent would leave the requirement
+                    claims above pointing at requirements that no longer exist.
+                    The parent is named in the breadcrumb instead. */}
+                {!isSubtask && (
+                  <Field label="Parent task" hint="Makes this a subtask.">
+                    <Select
+                      value={parentTaskId}
+                      onChange={(e) => setParentTaskId(e.target.value)}
+                    >
+                      <option value="">None</option>
+                      {(tasks.data ?? []).slice(0, 20).map((t) => (
+                        <option key={t.task.id} value={t.task.id}>
+                          {t.task.title}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
                 {type === "goal" && (
                   <Field label="Goal" required>
                     <Select
@@ -758,7 +939,14 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
               data-help="task-create-submit"
               tone="primary"
               disabled={
-                state.isPending || !title.trim() || hasForbidden || needsAssignee
+                state.isPending ||
+                !title.trim() ||
+                hasForbidden ||
+                needsAssignee ||
+                /* The claim the repository refuses without. Checked here so the
+                   button is honest before the round trip, and there too so the
+                   form can never permit what the engine rejects. */
+                (isSubtask && claims.length === 0)
               }
               onClick={async () => {
                 const r = await create();
@@ -789,7 +977,11 @@ export function NewTaskForm({ presetProjectId }: { presetProjectId?: string }) {
                 router.push(`/tasks/${r.data.id}`);
               }}
             >
-              {state.isPending ? "Creating…" : "Create task"}
+              {state.isPending
+                ? "Creating…"
+                : isSubtask
+                  ? "Create subtask"
+                  : "Create task"}
             </Button>
           </div>
         </div>

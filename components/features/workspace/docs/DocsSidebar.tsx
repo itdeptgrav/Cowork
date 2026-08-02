@@ -58,7 +58,10 @@ export function DocsSidebar({
         >
           <DocIcon.chevronLeft className="h-4 w-4" />
         </button>
-        <span className="min-w-0 flex-1 truncate text-[11px] uppercase tracking-[0.09em] text-ink-faint">
+        {/* Title type, not a tracked uppercase eyebrow. This system spends its
+            one kicker per view on wayfinding and on a dense table's column
+            headings; two of them stacked down one rail is neither. */}
+        <span className="min-w-0 flex-1 truncate text-[12.5px] font-medium tracking-[-0.012em] text-ink">
           Documents
         </span>
         <button
@@ -94,7 +97,7 @@ export function DocsSidebar({
       </ul>
 
       <div className="flex items-center gap-2 border-t border-hairline px-3 py-2">
-        <span className="text-[11px] uppercase tracking-[0.09em] text-ink-faint">
+        <span className="text-[12.5px] font-medium tracking-[-0.012em] text-ink">
           Outline
         </span>
         {rows.length > 0 && (

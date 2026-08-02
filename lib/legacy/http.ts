@@ -34,6 +34,8 @@ export interface LegacyRequest {
   /** Firebase ID token. Absent means the call goes out unauthenticated. */
   token?: string | null;
   signal?: AbortSignal;
+  /** Override the default 20s timeout for calls that are expected to be slow. */
+  timeoutMs?: number;
 }
 
 /**
@@ -127,7 +129,10 @@ export async function legacyFetch<T>(
    * timeout is composed with it rather than replacing it.
    */
   const timeoutController = new AbortController();
-  const timer = setTimeout(() => timeoutController.abort(), LEGACY_TIMEOUT_MS);
+  const timer = setTimeout(
+    () => timeoutController.abort(),
+    request.timeoutMs ?? LEGACY_TIMEOUT_MS,
+  );
   const signal = request.signal
     ? anySignal([request.signal, timeoutController.signal])
     : timeoutController.signal;
@@ -151,7 +156,7 @@ export async function legacyFetch<T>(
       return {
         ok: false,
         error: {
-          message: `The Cowork engine did not answer within ${LEGACY_TIMEOUT_MS / 1000}s.`,
+          message: `The Cowork engine did not answer within ${(request.timeoutMs ?? LEGACY_TIMEOUT_MS) / 1000}s.`,
           status: 0,
           kind: "network",
         },

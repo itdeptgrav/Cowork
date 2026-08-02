@@ -6,6 +6,7 @@ import { UNRANKED_SENTINEL as UNRANKED } from "./priorityDeadline.ts";
 import {
   assignPriorityRanks,
   calculatePriorityOrder,
+  calculateProvisionalOrder,
   isActiveWorkload,
 } from "./priorityQueue.ts";
 
@@ -117,6 +118,8 @@ export interface QueueEntry {
    * against hours nobody has agreed.
    */
   budgetState?: string | null;
+  /** This task has been broken down and holds no slot. See `priorityQueue.ts`. */
+  isContainer?: boolean;
 }
 
 /**
@@ -140,6 +143,32 @@ export function activeQueuePositions(entries: QueueEntry[]): Map<string, number>
    * and no duplicates by construction, exactly as before.
    */
   return assignPriorityRanks(calculatePriorityOrder(entries));
+}
+
+/**
+ * P1, P2, P3 over the work that is real but has not cleared the active queue —
+ * a task awaiting acceptance, or one whose budget is still being negotiated.
+ *
+ * **A second, independent sequence, not an extension of `activeQueuePositions`.**
+ * The two answer different questions and must not be merged: the active queue
+ * is "what you have committed to, in order"; this is "among what has not been
+ * committed to yet, what order is it in". Folding a pending task into the
+ * SAME numbering as accepted work would let it push an already-accepted
+ * task's displayed position down — exactly the failure the active queue's own
+ * acceptance requirement exists to prevent. So a task is numbered by EXACTLY
+ * one of the two functions, never both, and `calculateProvisionalOrder`
+ * enforces the split.
+ *
+ * Before this existed, a pending task's number came from the raw stored rank
+ * with no derivation at all — which is where a broken-down task's leftover
+ * rank surfaced as a missing sibling: three real subtasks stored 1, 3, 5
+ * because two containers occupied 2 and 4, and nothing closed the gap the way
+ * a finished task's gap has always been closed here.
+ */
+export function provisionalQueuePositions(
+  entries: QueueEntry[],
+): Map<string, number> {
+  return assignPriorityRanks(calculateProvisionalOrder(entries));
 }
 
 /**

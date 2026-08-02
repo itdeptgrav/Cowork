@@ -248,6 +248,7 @@ import {
 import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
 import { previewOfHtml } from "@/lib/rules/documents/preview";
 import { pageSetupRefusal } from "@/lib/rules/documents/pageSetup";
+import { emergencyCompensationMs } from "@/lib/rules/tasks/emergency";
 import { storedPictureRefusal } from "@/lib/rules/people/profilePicture";
 import {
   canManage as canManageDocument,
@@ -1244,8 +1245,11 @@ export class MockRepository implements CoworkRepository {
         taskId: id,
         employeeId: empId,
         rank: Math.min(open + 1, maxRank),
-        /* Derived per read from the whole queue, never stored. */
+        /* Derived per read from the whole queue, never stored. The mock does
+           not compute a live or provisional queue at all — see the LegacyRepository
+           equivalents in activeQueue.ts for the real derivation. */
         queuePosition: null,
+        provisionalPosition: null,
         assignedAt: nowIso(),
         confirmedAt: null,
         startedAt: null,
@@ -1827,8 +1831,11 @@ export class MockRepository implements CoworkRepository {
         taskId: t.id,
         employeeId: empId,
         rank: Math.min(open + 1, maxRank),
-        /* Derived per read from the whole queue, never stored. */
+        /* Derived per read from the whole queue, never stored. The mock does
+           not compute a live or provisional queue at all — see the LegacyRepository
+           equivalents in activeQueue.ts for the real derivation. */
         queuePosition: null,
+        provisionalPosition: null,
         assignedAt: nowIso(),
         confirmedAt: null,
         startedAt: null,
@@ -2007,8 +2014,11 @@ export class MockRepository implements CoworkRepository {
             taskId: task.id,
             employeeId: empId,
             rank: Math.min(open + 1, maxRank),
-            /* Derived per read from the whole queue, never stored. */
+            /* Derived per read from the whole queue, never stored. The mock does
+               not compute a live or provisional queue at all — see the LegacyRepository
+               equivalents in activeQueue.ts for the real derivation. */
             queuePosition: null,
+            provisionalPosition: null,
             assignedAt: nowIso(),
             confirmedAt: null,
             startedAt: null,
@@ -3742,14 +3752,17 @@ export class MockRepository implements CoworkRepository {
         endedAt: new Date(now).toISOString(),
       });
     }
-    if (emergencyToRaiseMs > 0) {
-      await this.createEmergencyRequest({
-        startedAt: new Date(now - emergencyToRaiseMs).toISOString(),
-        endedAt: new Date(now).toISOString(),
-        reason: typeof previous?.emergencyReason === "string" ? previous.emergencyReason : "",
-        document: null,
-      });
-    }
+    /* **The exit no longer raises the request; the dialog already did.**
+     *
+     * `StatusButton` holds the transition until `EmergencyEndDialog` has raised
+     * the request WITH its reason and document, and only then applies the mode.
+     * So by the time this runs the request exists — raising another here made
+     * two pending records for one emergency, and approving both shifted every
+     * deadline twice. `emergencyToRaiseMs` is left in the return type because it
+     * is what the caller would need if a non-gated exit ever existed; nothing
+     * acts on it, and nothing should without also deciding what to do about the
+     * request the dialog already made. */
+    void emergencyToRaiseMs;
 
     /* **Offline compensation — the third unavailable state.**
      *
@@ -4146,6 +4159,8 @@ export class MockRepository implements CoworkRepository {
       decisionReason: null,
       decidedAt: null,
       appliedTaskIds: [],
+      /* Nothing applied — which is what pending means, and what the gate holds. */
+      compensationAppliedAt: null,
       createdAt: nowIso(),
     };
     s.emergencyRequests.push(req);
@@ -4206,12 +4221,39 @@ export class MockRepository implements CoworkRepository {
         refusal,
       );
 
+    /* Computed BEFORE the status is written, from the record the refusal above
+       was taken against — zero for a rejection, zero for an already-applied
+       request, zero for anybody who is not the named manager. Same rule the
+       production repository runs. */
+    const lostSecs = Math.round(
+      emergencyCompensationMs({ request: req, actorId: actingId(), approve }) / 1000,
+    );
+
     tick();
     req.status = approve ? "approved" : "declined";
     req.decisionReason = decisionReason.trim() || null;
     req.decidedAt = nowIso();
+    /* The consumed marker, stamped with the payout rather than with the
+       decision: an approval worth nothing has nothing to consume. */
+    if (lostSecs > 0) req.compensationAppliedAt = nowIso();
 
-    if (approve) {
+    /* Whatever was decided, the banked claim is spent — a rejected emergency
+       must not leave one lying on the duty document. */
+    const duty = this.#duty.get(String(req.employeeId));
+    if (duty)
+      this.#duty.set(String(req.employeeId), {
+        ...duty,
+        /* `DutyDocument` types only the fields the rules read; the pending gap
+           is legacy's own key, carried on the same document. Cast rather than
+           widened, so the domain type keeps describing what this product uses
+           rather than everything the old app happens to write. */
+        ...({ pendingEmergencyGapMs: null, pendingEmergencyReason: null } as Record<
+          string,
+          unknown
+        >),
+      });
+
+    if (lostSecs > 0) {
       const affected = shiftableTasks({
         tasks: s.tasks,
         employeeId: req.employeeId,
@@ -4228,15 +4270,15 @@ export class MockRepository implements CoworkRepository {
           task: t,
           proposalId: null,
           previousWindowSecs: previous,
-          newWindowSecs: previous + req.durationSecs,
-          newDueAt: shiftedDueAt(t.deadline.dueAt!, req.durationSecs),
+          newWindowSecs: previous + lostSecs,
+          newDueAt: shiftedDueAt(t.deadline.dueAt!, lostSecs),
           waivePenalty: true,
         });
         req.appliedTaskIds.push(t.id);
         this.#event(
           t.id,
           "extension_decided",
-          `Deadline moved by an approved emergency (${Math.round(req.durationSecs / 60)}m)`,
+          `Deadline moved by an approved emergency (${Math.round(lostSecs / 60)}m)`,
         );
       }
     }

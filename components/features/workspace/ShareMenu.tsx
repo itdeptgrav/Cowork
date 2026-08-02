@@ -83,9 +83,9 @@ export function ShareMenu({
           />
           <div className="absolute end-0 z-[81] mt-2 w-[320px]">
             <Panel>
-              <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-                Who has access
-              </p>
+              {/* Title type, not a tracked eyebrow, over the member list — the
+                 same fix already made in DocsSidebar and NodeInspector. */}
+              <p className="text-[12.5px] font-medium text-ink">Who has access</p>
 
               <ul className="mt-2 flex flex-col gap-1">
                 {members.map((m) => (

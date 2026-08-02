@@ -1,4 +1,6 @@
-import { readProfilePicture } from "@/lib/rules/people/profilePicture";
+/* Relative `.ts`: this module is loaded by `node --test`, which does not
+   resolve `@/` for a VALUE import. */
+import { readProfilePicture } from "../../rules/people/profilePicture.ts";
 import type { ChannelId, Employee, ScoreOverview, Viewer } from "@/lib/domain";
 import type { LegacyEmployee } from "@/lib/legacy/employees";
 import type { LegacyScoreDashboard } from "@/lib/legacy/scoring";

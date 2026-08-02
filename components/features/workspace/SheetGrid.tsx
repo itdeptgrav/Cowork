@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as Y from "yjs";
 import { HyperFormula } from "hyperformula";
 import { Icon } from "@/components/ui/Icons";
-import { InlineError, SkeletonRows } from "@/components/ui/Primitives";
+import { DocIcon } from "./docs/DocsIcons";
+import { InlineError } from "@/components/ui/Primitives";
+import { StageError, StageSkeleton } from "./WorkspaceStage";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { getRepository } from "@/lib/repositories";
 import {
@@ -54,6 +56,8 @@ import {
 } from "./SheetChartObject";
 import { ChartPanel } from "./ChartPanel";
 import { ConditionalPanel } from "./ConditionalPanel";
+import { SheetsAssistant } from "./ai/SheetsAssistant";
+import { parseCellDirective, resolveAutosum } from "@/lib/rules/sheets/cellDirectives";
 import { SheetContextMenu, type MenuAction } from "./SheetContextMenu";
 import type { SelectionState, SheetCommand } from "./sheetCommands";
 
@@ -102,7 +106,18 @@ function newId(fallback: string): string {
     : fallback;
 }
 
-export function SheetGrid({ documentId }: { documentId: string }) {
+export function SheetGrid({
+  documentId,
+  onClose,
+  onNew,
+  creating = false,
+}: {
+  documentId: string;
+  /** Back to the list. The grid fills the window, so this is the only way out. */
+  onClose?: () => void;
+  onNew?: () => void;
+  creating?: boolean;
+}) {
   const doc = useQuery((r) => r.getDocument(documentId), [documentId]);
   const body = useQuery((r) => r.getDocumentBody(documentId), [documentId]);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
@@ -145,7 +160,9 @@ export function SheetGrid({ documentId }: { documentId: string }) {
   /* Windowing: the scroll offset and the viewport height decide which rows exist. */
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportH, setViewportH] = useState(480);
-  const [full, setFull] = useState(false);
+  /* Whether the BROWSER is showing its own chrome. Not a size the grid can be:
+     it fills the window always — see `WorkspaceStage`. */
+  const [chromeless, setChromeless] = useState(false);
   const [undoMgr, setUndoMgr] = useState<Y.UndoManager | null>(null);
   /* The right-click menu's viewport position, or null when closed. */
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
@@ -153,6 +170,17 @@ export function SheetGrid({ documentId }: { documentId: string }) {
   const [selectedChart, setSelectedChart] = useState<string | null>(null);
   /* The conditional-formatting panel, and which rule's editor is expanded. */
   const [cfOpen, setCfOpen] = useState(false);
+  const [showAssistant, setShowAssistant] = useState(false);
+  /**
+   * An `=ai …` typed into a cell, waiting to be handed to the panel.
+   *
+   * Held here rather than passed straight down because the panel may not be
+   * mounted at the moment the cell commits — opening it and delivering the
+   * request are two steps, and the request has to survive the gap. Cleared
+   * by the panel once it has taken it, so re-opening the panel later does
+   * not re-ask a question from ten minutes ago.
+   */
+  const [cellPrompt, setCellPrompt] = useState<{ ref: string; text: string } | null>(null);
   const [selectedRule, setSelectedRule] = useState<string | null>(null);
 
   const gridRef = useRef<HTMLDivElement | null>(null);
@@ -449,6 +477,43 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     scheduleSave();
   };
 
+  /**
+   * Replace the whole sheet with an already-computed one — the landing spot
+   * for `lib/rules/sheets/grid.ts`'s `insertRows`/`deleteRows`/
+   * `insertColumns`/`deleteColumns`/`sortRange`, which each take the current
+   * `SheetData` and return the new one rather than a patch. Cells, styles,
+   * charts and conditionals are CRDT-backed when collaborating, so the swap
+   * is delete-everything-then-set-everything inside one transaction — the
+   * same delete/insert-whole-array shape `moveRule` already uses for
+   * conditionals, extended to every Yjs structure this touches. `rows`,
+   * `cols` and `hidden` are not CRDT-backed (see the top of this file), so
+   * they go through `setSheet` either way.
+   */
+  const applyStructuralEdit = (next: SheetData) => {
+    if (readOnly) return;
+    setError(null);
+    if (yCells && yStyles) {
+      collab.session?.doc.transact(() => {
+        for (const key of Array.from(yCells.keys())) yCells.delete(key);
+        for (const [ref, value] of Object.entries(next.cells)) yCells.set(ref, value);
+        for (const key of Array.from(yStyles.keys())) yStyles.delete(key);
+        for (const [ref, style] of Object.entries(next.styles)) yStyles.set(ref, style);
+        if (yCharts) {
+          yCharts.delete(0, yCharts.length);
+          if (next.charts?.length) yCharts.insert(0, next.charts);
+        }
+        if (yConds) {
+          yConds.delete(0, yConds.length);
+          if (next.conditionals?.length) yConds.insert(0, next.conditionals);
+        }
+      });
+      setSheet((s) => (s ? { ...s, rows: next.rows, cols: next.cols, hidden: next.hidden } : s));
+    } else {
+      setSheet(() => next);
+    }
+    scheduleSave();
+  };
+
   /* Formatting applies to the WHOLE selection, as a spreadsheet does — bolding
      A1:C3 bolds all nine. Each cell keeps its other styles; only the patched keys
      change (`null`-valued keys are stripped, so "no fill" is an absence, not a
@@ -490,7 +555,35 @@ export function SheetGrid({ documentId }: { documentId: string }) {
   };
 
   const commit = () => {
-    if (editing) setCell(editing, draft);
+    if (editing) {
+      /**
+       * Two things you can type into a cell that aren't formulas.
+       *
+       * `=autosum` resolves HERE, deterministically — no model, no network,
+       * no proposal to approve, because it is arithmetic over the cells
+       * adjacent to this one rather than a guess about intent. It becomes a
+       * real `=SUM(range)` and lands like any other formula, so undo, the
+       * formula bar and the engine all treat it as exactly what it is. With
+       * nothing adjacent to total, what was typed is left alone rather than
+       * writing a `=SUM()` over nothing.
+       *
+       * `=ai …` is the opposite and stays the opposite: it opens the
+       * assistant with the request, and whatever comes back is a proposal
+       * with a preview and an Apply button, never a direct write. The cell
+       * keeps whatever it held before.
+       */
+      const directive = sheet ? parseCellDirective(draft) : null;
+      if (directive?.kind === "autosum" && sheet) {
+        const formula = resolveAutosum(sheet, editing);
+        setCell(editing, formula ?? draft);
+        if (!formula) setError("There's nothing next to that cell to total.");
+      } else if (directive?.kind === "ask") {
+        setCellPrompt({ ref: editing, text: directive.text });
+        setShowAssistant(true);
+      } else {
+        setCell(editing, draft);
+      }
+    }
     setEditing(null);
     setAcHidden(false);
     resetPointing();
@@ -669,16 +762,22 @@ export function SheetGrid({ documentId }: { documentId: string }) {
 
   const topChartZ = () => rawCharts.reduce((m, c) => Math.max(m, c.z ?? 1), 0);
 
-  const insertChart = (type: ChartType) => {
+  /**
+   * The one place a chart is actually created. `insertChart` (the toolbar's
+   * "＋ Chart" control) derives its range and title from the current
+   * selection and an ordinal; `dispatch({type:"createChart"})` — the AI
+   * assistant's tool — supplies both explicitly, since the range it proposes
+   * is rarely what happens to be selected right now.
+   */
+  const insertChartAt = (range: string, type: ChartType, title: string) => {
     if (readOnly) return;
-    const range = selRect ? rangeLabel(selRect) : active;
     /* Drop it into the current viewport, staggered so several don't stack. */
     const stagger = (rawCharts.length % 6) * 24;
     const spec: ChartSpec = {
       id: newId(`chart-${rawCharts.length}-${range}`),
       type,
       range,
-      title: `Chart ${rawCharts.length + 1}`,
+      title,
       x: HEAD_W + 12 + stagger,
       y: scrollTop + CELL_H + 12 + stagger,
       w: CHART_DEFAULT_W,
@@ -690,6 +789,12 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     setCfOpen(false);
     setSelectedChart(spec.id);
     scheduleSave();
+  };
+
+  const insertChart = (type: ChartType) => {
+    if (readOnly) return;
+    const range = selRect ? rangeLabel(selRect) : active;
+    insertChartAt(range, type, `Chart ${rawCharts.length + 1}`);
   };
 
   /* Patch one chart in place. A CRDT array has no set-at-index, so it is a
@@ -977,6 +1082,29 @@ export function SheetGrid({ documentId }: { documentId: string }) {
       case "beginEdit":
         beginEdit(command.ref, command.seed ?? "");
         break;
+      case "writeCells":
+        writeCells(command.cells.map((c) => [c.ref, c.value]));
+        break;
+      case "structuralEdit":
+        applyStructuralEdit(command.next);
+        break;
+      case "setHiddenRows":
+        if (!readOnly) {
+          setSheet((s) => (s ? { ...s, hidden: command.hidden } : s));
+          scheduleSave();
+        }
+        break;
+      case "createChart":
+        insertChartAt(command.range, command.chartType, command.title);
+        break;
+      case "applyConditionalFormat": {
+        if (readOnly) break;
+        const rule: ConditionalRule = { id: newId(`cf-${rawConds.length}`), ...command.rule };
+        if (yConds) yConds.push([rule]);
+        else setSheet((s) => (s ? { ...s, conditionals: [...(s.conditionals ?? []), rule] } : s));
+        scheduleSave();
+        break;
+      }
     }
   };
 
@@ -1080,38 +1208,29 @@ export function SheetGrid({ documentId }: { documentId: string }) {
     return () => window.removeEventListener("mouseup", up);
   }, []);
 
-  /* Follow the browser out of fullscreen — Escape leaves it without the button,
-     and the state must not be left claiming otherwise. */
+  /* Follow the browser: Escape leaves fullscreen without the button, and the
+     state must not be left claiming otherwise. This is the only writer, so
+     there is no second meaning for it to disagree with. */
   useEffect(() => {
-    const sync = () => {
-      if (!document.fullscreenElement) setFull(false);
-    };
+    const sync = () => setChromeless(!!document.fullscreenElement);
     document.addEventListener("fullscreenchange", sync);
     return () => document.removeEventListener("fullscreenchange", sync);
   }, []);
 
-  const toggleFull = async () => {
-    if (full) {
-      setFull(false);
-      if (document.fullscreenElement)
-        await document.exitFullscreen().catch(() => {});
-      return;
-    }
-    setFull(true);
-    /* Two mechanisms, because one is not reliable: the fixed maximised layout
-       below always applies, and the real Fullscreen API is the upgrade where the
-       embedding permits it. */
+  const toggleChrome = async () => {
     try {
-      await shell.current?.requestFullscreen?.();
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else await shell.current?.requestFullscreen?.();
     } catch {
-      /* Refused — the maximised state still applies. */
+      /* Refused by the browser. The grid already fills the window either way,
+         so there is nothing to report and nothing to put back. */
     }
   };
 
   if (doc.isLoading || body.isLoading || !sheet || !hf)
-    return <SkeletonRows rows={8} />;
+    return <StageSkeleton onClose={onClose} />;
   if (!doc.data)
-    return <InlineError message="This sheet is not available." />;
+    return <StageError message="This sheet is not available." onClose={onClose} />;
 
   const activeRaw = rawCells[active] ?? "";
 
@@ -1258,18 +1377,37 @@ export function SheetGrid({ documentId }: { documentId: string }) {
   };
 
   return (
-    <div
-      ref={shell}
-      className={
-        full
-          ? "fixed inset-0 z-[90] flex flex-col bg-[var(--body-bg)]"
-          : "flex h-full min-h-0 flex-col"
-      }
-    >
-      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline px-4 py-2.5">
-        <span className="min-w-0 flex-1 truncate text-sm text-ink">
+    /* One shape — the stage owns the frame, this owns the sheet inside it. */
+    <div ref={shell} className="flex h-full min-h-0 flex-col bg-[var(--body-bg)]">
+      <header className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-[var(--surface-raised)] px-3 py-2">
+        {/* The grid fills the window, so the way back is chrome rather than
+            something behind it. Same corner, same glyph as a document's. */}
+        {onClose && (
+          <button
+            type="button"
+            aria-label="Back to all sheets"
+            title="Back to all sheets"
+            onClick={onClose}
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+          >
+            <DocIcon.chevronLeft className="h-4 w-4" />
+          </button>
+        )}
+        <span className="min-w-0 flex-1 truncate text-[15px] text-ink">
           {doc.data.title}
         </span>
+        {onNew && (
+          <button
+            type="button"
+            aria-label="New sheet"
+            title="New sheet"
+            disabled={creating}
+            onClick={onNew}
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-inset text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink disabled:opacity-40"
+          >
+            <DocIcon.plus className="h-4 w-4" />
+          </button>
+        )}
         {myRole && myRole !== "owner" && (
           <span className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
             {myRole === "viewer" ? "View only" : "Editor"}
@@ -1277,6 +1415,19 @@ export function SheetGrid({ documentId }: { documentId: string }) {
         )}
         {canManage(doc.data, me.data?.id ?? null) && (
           <ShareMenu document={doc.data} onChanged={doc.refetch} />
+        )}
+        {!readOnly && sheet.hidden && sheet.hidden.length > 0 && (
+          <button
+            type="button"
+            onClick={() => {
+              setSheet((s) => (s ? { ...s, hidden: [] } : s));
+              scheduleSave();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
+            title="A filter is hiding rows on this sheet"
+          >
+            <span data-figure>{sheet.hidden.length}</span> rows hidden · Show all
+          </button>
         )}
         {collab.connected && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
@@ -1294,15 +1445,37 @@ export function SheetGrid({ documentId }: { documentId: string }) {
             )}
           </span>
         )}
+        {!readOnly && (
+          <button
+            type="button"
+            aria-label={showAssistant ? "Close assistant" : "Open assistant"}
+            aria-pressed={showAssistant}
+            title="Assistant (Gemini Flash-Lite)"
+            onClick={() => setShowAssistant((v) => !v)}
+            className={`grid h-7 w-7 shrink-0 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] hover:text-ink ${
+              showAssistant ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+            }`}
+          >
+            <Icon.chat className="h-4 w-4" />
+          </button>
+        )}
+        {/* Named for what it does. The sheet is already the whole window; the
+            only thing left to hide is the browser's own tabs and address bar. */}
         <button
           type="button"
-          aria-label={full ? "Exit full screen" : "Full screen"}
-          aria-pressed={full}
-          title={full ? "Exit full screen (Esc)" : "Full screen"}
-          onClick={() => void toggleFull()}
-          className="grid h-7 w-7 shrink-0 place-items-center rounded-inset text-ink-muted hover:bg-[var(--control)] hover:text-ink"
+          aria-label={chromeless ? "Show browser chrome" : "Hide browser chrome"}
+          aria-pressed={chromeless}
+          title={
+            chromeless
+              ? "Show the browser's tabs and address bar (Esc)"
+              : "Hide the browser's tabs and address bar"
+          }
+          onClick={() => void toggleChrome()}
+          className={`grid h-7 w-7 shrink-0 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] hover:text-ink ${
+            chromeless ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+          }`}
         >
-          <Icon.external className={`h-3.5 w-3.5 ${full ? "rotate-180" : ""}`} />
+          <DocIcon.fullscreen className="h-4 w-4" />
         </button>
       </header>
 
@@ -1507,7 +1680,11 @@ export function SheetGrid({ documentId }: { documentId: string }) {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1">
+      {/* `relative`: the assistant panel below is an OVERLAY, `absolute`
+          against this row specifically — so it floats over the grid instead
+          of permanently squeezing it down, and stays clear of the header,
+          formula bar and formatting toolbar above it. */}
+      <div className="relative flex min-h-0 flex-1">
       <div
         ref={gridRef}
         tabIndex={0}
@@ -1708,6 +1885,23 @@ export function SheetGrid({ documentId }: { documentId: string }) {
             )}
             {Array.from({ length: last - first }, (_, i) => {
               const r = first + i;
+              /* A row `filter_range` hid. Kept at its full CELL_H rather than
+                 collapsed — collapsing it would desync the scrollbar from
+                 `sheet.rows * CELL_H`, which the windowing math above assumes
+                 is constant. The compromise is a visible gap where the row
+                 used to be, not a seamless close-up the way a spreadsheet
+                 with real column-store rendering can afford. */
+              if (sheet.hidden?.includes(r)) {
+                return (
+                  <tr key={r} aria-hidden="true">
+                    <td
+                      colSpan={sheet.cols + 1}
+                      className="border border-hairline bg-[var(--surface-sunken)]"
+                      style={{ height: CELL_H, padding: 0 }}
+                    />
+                  </tr>
+                );
+              }
               return (
                 <tr key={r}>
                   <th
@@ -2003,6 +2197,26 @@ export function SheetGrid({ documentId }: { documentId: string }) {
           )}
         </div>
       </div>
+
+        {/* A sibling of the SCROLL container, never a child of it. Nested
+            inside, an `absolute` panel is clipped by the grid's own
+            `overflow-auto` box and drifts sideways with the sheet's
+            horizontal scroll — which is what made its input unreachable. It
+            belongs exactly where the chart and conditional panels already
+            sit: a direct child of the content row. */}
+        {showAssistant && (
+          <SheetsAssistant
+            documentId={documentId}
+            documentTitle={doc.data.title}
+            sheet={sheet}
+            selection={selection}
+            dispatch={dispatch}
+            pendingPrompt={cellPrompt}
+            onPromptTaken={() => setCellPrompt(null)}
+            onRenamed={() => doc.refetch()}
+            onClose={() => setShowAssistant(false)}
+          />
+        )}
 
         {selectedChartSpec && (
           <ChartPanel

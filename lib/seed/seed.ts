@@ -1354,8 +1354,10 @@ function asg(
     rank,
     /* Never seeded. A queue position is a consequence of the whole queue and is
        filled in by the read; a fixture holding one would be asserting a position
-       the derivation might not agree with. */
+       the derivation might not agree with. Same reasoning for its provisional
+       counterpart. */
     queuePosition: null,
+    provisionalPosition: null,
     assignedAt: at(1),
     confirmedAt: at(6),
     startedAt: at(10),

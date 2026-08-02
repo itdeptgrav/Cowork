@@ -21,6 +21,7 @@ import type {
   MessageAttachment,
   MessageReply,
 } from "../../domain/work.ts";
+import { driveFileIdFrom } from "../../rules/media/driveUrls.ts";
 
 export const DM_COLLECTION = "cowork_direct_messages";
 export const GROUP_COLLECTION = "cowork_groups";
@@ -71,19 +72,25 @@ export function previewOf(text: string): string {
   return text.slice(0, 80);
 }
 
-/** The Google Drive file id a URL points at, or null if it is not Drive-hosted.
- *  Covers the shapes the old app stored — `thumbnail?id=`, `uc?id=`, `/file/d/{id}`,
- *  and the `googleusercontent.com/d/{id}` render form. A Cloudinary URL yields
- *  null and is served as-is. */
+/**
+ * The Google Drive file id a URL points at, or null if it is not Drive-hosted.
+ *
+ * Host-checked, then delegated to `driveFileIdFrom` so the shapes this
+ * recognises and the shapes the RENDERER recognises are one list. They used to
+ * be two, in two files, and the failure that produces is silent: a URL one of
+ * them parses and the other does not gives an image with a `fileId` nothing
+ * draws, or a CDN link built from an id nobody stored.
+ *
+ * The host check stays here because this one has a job the shared helper does
+ * not — a Cloudinary URL from the old application must yield null and be served
+ * as-is, rather than having a `/d/` segment read out of some unrelated path.
+ */
 export function driveFileId(url: string): string | null {
   try {
     const u = new URL(url);
     if (!/(^|\.)(google\.com|googleusercontent\.com)$/.test(u.hostname))
       return null;
-    const byQuery = u.searchParams.get("id");
-    if (byQuery) return byQuery;
-    const byPath = u.pathname.match(/\/(?:file\/)?d\/([^/]+)/);
-    return byPath ? byPath[1] : null;
+    return driveFileIdFrom(url);
   } catch {
     return null;
   }

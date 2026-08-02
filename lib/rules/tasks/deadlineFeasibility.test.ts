@@ -135,11 +135,36 @@ test("at the front nothing blocks and it starts now", () => {
   assert.equal(r.estimatedStartTime, new Date(MONDAY_9AM).toISOString());
 });
 
-/* ── 4 · Unsettled budgets are not workload ───────────────────────────────── */
+/* ── 4 · Unsettled budgets ARE workload, for this preview ─────────────────── */
 
-test("a task still negotiating its budget does not delay the simulation", () => {
-  /* It is real work nobody has committed to. Counting it would show a
-     placement as infeasible because of hours neither side has agreed. */
+/**
+ * **Reversed, deliberately, from "does not delay the simulation".**
+ *
+ * The original version of this test asserted the opposite of what is below:
+ * that a task still negotiating its budget should NOT compete for a place in
+ * the chain, reasoning that counting it would show a placement as infeasible
+ * over hours neither side had agreed.
+ *
+ * That protected against one failure mode and produced another, worse one:
+ * two people's real, freshly-proposed work — most commonly two subtasks
+ * broken out of the same parent in one sitting — is invisible to each other
+ * until one of them is accepted. Ask "when will subtask 1 finish" and "when
+ * will subtask 2 finish" and both come back with the SAME answer, because
+ * each is evaluated as though it were the only thing in the queue. A person
+ * looking at two sequential two-hour tasks does not finish both at the same
+ * moment, whether or not either has been accepted yet — and a completion
+ * preview that says otherwise is not "conservative", it is measurably wrong.
+ *
+ * The trade-off this reopens: a large, still-negotiable proposal sitting
+ * anywhere in someone's queue now pushes out the preview for an unrelated new
+ * placement too, until it is negotiated down or accepted. Weighed against two
+ * pending tasks silently sharing one date, this is the direction chosen —
+ * `windowSecsFor` already uses the proposed figure as the best available
+ * estimate everywhere else (it is, after all, what is shown on screen as the
+ * task's own time budget), so using it here treats a preview as what it says
+ * it is: a preview, not a promise, over whatever the queue currently claims.
+ */
+test("a task still negotiating its budget DOES compete for a place, using its proposed window", () => {
   const withPending = calculateDeadlineFeasibility({
     ...base,
     proposedPriority: 2,
@@ -161,11 +186,88 @@ test("a task still negotiating its budget does not delay the simulation", () => 
     committedDeadline: null,
     tasks: [],
   });
-  assert.equal(
+  assert.notEqual(
     withPending.estimatedCompletionTime,
     withNothing.estimatedCompletionTime,
+    "an unsettled 20h task ahead of it must push the completion time out — otherwise two pending siblings read as simultaneous",
   );
-  assert.equal(withPending.blockingTasks.length, 0);
+  assert.equal(
+    withPending.blockingTasks.length,
+    1,
+    "the unsettled task is what is in the way, and the reader is owed that name",
+  );
+});
+
+test("two pending siblings, same budget, chain — the exact reported symptom", () => {
+  /* T716 and T717: two subtasks broken out of the same parent, neither
+     accepted, each proposed at two hours. Before the fix both reported the
+     same completion time. */
+  const tasks = [
+    task({
+      taskId: "T716",
+      senderTimerWindowSecs: 2 * H,
+      priority: 1,
+      budgetState: "WAITING_FOR_ASSIGNEE",
+    }),
+  ];
+  const secondSubtask = calculateDeadlineFeasibility({
+    ...base,
+    taskId: "T717",
+    proposedPriority: 2,
+    estimatedWorkSeconds: 2 * H,
+    committedDeadline: null,
+    tasks,
+  });
+  const firstSubtask = calculateDeadlineFeasibility({
+    ...base,
+    taskId: "T716",
+    proposedPriority: 1,
+    estimatedWorkSeconds: 2 * H,
+    committedDeadline: null,
+    tasks,
+  });
+  assert.notEqual(
+    firstSubtask.estimatedCompletionTime,
+    secondSubtask.estimatedCompletionTime,
+    "T716 and T717 must not land on the same moment",
+  );
+  assert.equal(
+    Date.parse(secondSubtask.estimatedCompletionTime!) -
+      Date.parse(firstSubtask.estimatedCompletionTime!),
+    2 * H * 1000,
+    "T717 is a full two-hour budget behind T716, not simultaneous with it — Date.parse is milliseconds, H is seconds",
+  );
+});
+
+test("a container ahead in the queue is not counted, even with its old proposed window", () => {
+  const withContainer = calculateDeadlineFeasibility({
+    ...base,
+    proposedPriority: 2,
+    estimatedWorkSeconds: 2 * H,
+    committedDeadline: null,
+    tasks: [
+      task({
+        taskId: "WAS_A_TASK",
+        senderTimerWindowSecs: 20 * H,
+        priority: 1,
+        budgetState: "WAITING_FOR_ASSIGNEE",
+        isContainer: true,
+      }),
+    ],
+  });
+  const withNothing = calculateDeadlineFeasibility({
+    ...base,
+    proposedPriority: 1,
+    estimatedWorkSeconds: 2 * H,
+    committedDeadline: null,
+    tasks: [],
+  });
+  assert.equal(
+    withContainer.estimatedCompletionTime,
+    withNothing.estimatedCompletionTime,
+    "a broken-down task's leftover window must not compete — it holds no place in anyone's queue",
+  );
+  assert.equal(withContainer.blockingTasks.length, 0);
 });
 
 test("an accepted budget DOES delay it", () => {

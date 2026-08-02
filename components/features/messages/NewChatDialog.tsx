@@ -24,7 +24,7 @@ import type { Employee } from "@/lib/domain";
  * them to classify the conversation before they have picked anybody.
  *
  * It follows the dialog pattern the product already owns (`PriorityDialog`,
- * `NewSubtaskDialog`): a portal, a frosted panel over a blurred scrim, Escape to
+ * `PriorityReorderConfirm`): a portal, a frosted panel over a blurred scrim, Escape to
  * close, and the action's error rendered in place rather than thrown away.
  *
  * **Nothing here gates who you may reach.** There is no messaging capability in

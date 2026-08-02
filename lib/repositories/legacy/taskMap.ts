@@ -182,12 +182,24 @@ export function toTask(legacy: LegacyTask): Task {
       satisfiedAt: null,
       satisfiedById: null,
     })),
-    satisfiesRequirementIds: [],
+    /*
+     * Which of the parent's requirements this subtask closes.
+     *
+     * Hardcoded `[]` here, and `parentTaskId` hardcoded `null` below it — the
+     * pair is why a subtask vanished the moment it was created. With no parent
+     * id the child could not name what it was part of, and with no claims the
+     * parent's requirements never read as delegated, so `completionState`
+     * answered `isProject: false` and `ProjectPanel` rendered no Subtasks
+     * section at all. The work existed in Firestore and on nobody's screen.
+     *
+     * Both are on the document. Read them.
+     */
+    satisfiesRequirementIds: legacy.satisfiesRequirementIds,
     createdById: legacy.createdById ?? "",
     createdByRoleId: "",
     rootCreatorEmployeeId: legacy.createdById ?? "",
     departmentId: "",
-    parentTaskId: null,
+    parentTaskId: legacy.parentTaskId,
     projectId: null,
     groupId: null,
     /*
@@ -430,6 +442,12 @@ export function toTaskView(input: {
   queue?: {
     ownerId: string;
     positions: ReadonlyMap<string, number>;
+    /**
+     * The SAME owner's position among work not yet accepted or budget-settled
+     * — a separate, independently gap-free sequence. See
+     * `TaskAssignment.provisionalPosition`.
+     */
+    provisionalPositions?: ReadonlyMap<string, number>;
     /* Chained operational dates for that same queue, keyed by task id. */
     dueDates?: ReadonlyMap<string, string>;
   };
@@ -444,6 +462,25 @@ export function toTaskView(input: {
    * line is in neither the task document nor the directory snapshot.
    */
   budgetOwner?: Employee | null;
+  /**
+   * This task's children, where the caller has read them.
+   *
+   * Supplied rather than fetched because the mapper is pure and a list of
+   * fifty tasks must not make fifty more round trips. Absent means "not read",
+   * NOT "none" — which is exactly the distinction the list path relies on: it
+   * carries `subtaskIds` for the count and leaves the delegation state to the
+   * detail page, which reads the documents.
+   */
+  subtasks?: LegacyTask[];
+  /** The parent document, where this task has one and the caller read it. */
+  parent?: LegacyTask | null;
+  /**
+   * The PARENT's children — this task's siblings, including itself.
+   *
+   * Needed to answer "is this subtask the only thing that requirement is
+   * waiting on", which no single document can answer about itself.
+   */
+  parentSubtasks?: LegacyTask[];
 }): TaskView {
   const { legacy, employeesById } = input;
   const task = toTask(legacy);
@@ -556,6 +593,12 @@ export function toTaskView(input: {
         input.queue && input.queue.ownerId === employeeId
           ? (input.queue.positions.get(legacy.id) ?? null)
           : null,
+      /* Same owner check as `queuePosition` — read from the SAME queue fetch,
+         just the other of its two maps. */
+      provisionalPosition:
+        input.queue && input.queue.ownerId === employeeId
+          ? (input.queue.provisionalPositions?.get(legacy.id) ?? null)
+          : null,
       assignedAt: "",
       confirmedAt: legacy.confirmedByIds.includes(employeeId) ? "" : null,
       startedAt: legacy.startedAtMs
@@ -618,6 +661,10 @@ export function toTaskView(input: {
           queuePosition:
             input.queue && input.queue.ownerId === input.viewerId
               ? (input.queue.positions.get(legacy.id) ?? null)
+              : null,
+          provisionalPosition:
+            input.queue && input.queue.ownerId === input.viewerId
+              ? (input.queue.provisionalPositions?.get(legacy.id) ?? null)
               : null,
           viewerId: input.viewerId,
         }).rank ?? null),
@@ -749,7 +796,15 @@ export function toTaskView(input: {
       ? legacy.reworkHistory.length
       : 0,
     isOverdue: dueAtMs !== null && !terminal && dueAtMs < input.nowMs,
-    subtaskCount: 0,
+    /*
+     * How many children this task holds.
+     *
+     * From `subtaskIds` rather than from `input.subtasks`, so a list row that
+     * read no child documents still reports the truth — the count is the one
+     * fact the parent's own document already carries, and `signals.ts` renders
+     * "holds 3 subtasks" from it.
+     */
+    subtaskCount: legacy.subtaskIds.length,
     chatCount: 0,
     /*
      * The completion gate, built by the rule that owns it.
@@ -761,10 +816,62 @@ export function toTaskView(input: {
      * nothing for the whole life of the task.
      *
      * `completionState` rather than a hand-built object, so the counts and the
-     * gate agree with every other caller. No subtasks are read on this path, so
-     * nothing is delegated and each requirement stands on its own.
+     * gate agree with every other caller.
+     *
+     * `input.subtasks` is what makes a requirement read as DELEGATED, and
+     * passing `[]` unconditionally is what hid every subtask ever created: with
+     * no claimants `isProject` is false, and `ProjectPanel` renders its
+     * Subtasks section only for a project. The caller supplies the children on
+     * the detail path; a list row supplies none and each requirement stands on
+     * its own, which is the honest answer for a read that did not ask.
      */
-    completion: completionState(task, []),
-    parent: null,
+    completion: completionState(task, (input.subtasks ?? []).map(toTask)),
+    parent: input.parent ? parentContext(task, input.parent, input) : null,
+  };
+}
+
+/**
+ * What a subtask needs to know about the project above it.
+ *
+ * The parent's own requirement state, filtered to the claims THIS child makes.
+ * Computed over the parent's whole set of children — `subtasks` on the input is
+ * the parent's, not the child's — because `isSoleClaimant` is a question about
+ * siblings, and a child cannot answer it from its own document.
+ *
+ * A parent whose children were not read yields claims with `isSatisfied: false`
+ * and `isSoleClaimant: false`. Both are the cautious answer: nothing is
+ * reported as done that has not been shown to be done.
+ */
+function parentContext(
+  child: Task,
+  parentLegacy: LegacyTask,
+  input: {
+    employeesById: ReadonlyMap<string, Employee>;
+    /** The PARENT's children, where the caller read them. Includes `child`. */
+    parentSubtasks?: LegacyTask[];
+  },
+): TaskView["parent"] {
+  const parentTask = toTask(parentLegacy);
+  const state = completionState(
+    parentTask,
+    (input.parentSubtasks ?? []).map(toTask),
+  );
+  const claimed = new Set(child.satisfiesRequirementIds);
+
+  return {
+    id: parentTask.id,
+    title: parentTask.title,
+    reference: parentTask.reference,
+    ownerName:
+      input.employeesById.get(parentTask.createdById)?.displayName ?? null,
+    claimedRequirements: state.requirements
+      .filter((r) => claimed.has(r.requirement.id))
+      .map((r) => ({
+        id: r.requirement.id,
+        text: r.requirement.text,
+        isSatisfied: r.isSatisfied,
+        isSoleClaimant:
+          r.claimants.length === 1 && r.claimants[0]?.id === child.id,
+      })),
   };
 }

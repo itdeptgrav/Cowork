@@ -1,8 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { WorkspaceHead } from "@/components/ui/Workspace";
-import { Button, EmptyState, InlineError, Panel } from "@/components/ui/Primitives";
+import {
+  Button,
+  Chip,
+  EmptyState,
+  InlineError,
+  Panel,
+} from "@/components/ui/Primitives";
 import {
   addChild,
   deleteNode,
@@ -14,6 +20,11 @@ import {
 } from "@/lib/rules/mindmap/tree";
 import { nextNodeId, resetMap, update } from "@/lib/mindmap/store";
 import { Segmented } from "@/components/ui/Primitives";
+import {
+  CommandPalette,
+  navigationCommands,
+  type PaletteCommand,
+} from "./CommandPalette";
 import { DocumentsArea } from "./DocumentsArea";
 import { MindMapCanvas } from "./MindMapCanvas";
 import { NodeInspector } from "./NodeInspector";
@@ -54,53 +65,98 @@ export function WorkspaceArea() {
   const patch = (id: MindNodeId, next: Partial<MindNode>) =>
     update((m) => updateNode(m, id, next));
 
+  /**
+   * The mindmap's palette. Three commands and the two journeys out.
+   *
+   * Deliberately not a copy of the toolbar: "Add card" is here because it is
+   * the thing done most, and "Start over" because it is the thing hardest to
+   * find a second time. Everything else on a map is done ON the map.
+   */
+  const mapCommands = useMemo<PaletteCommand[]>(() => {
+    const own: PaletteCommand[] = [];
+    if (root)
+      own.push({
+        id: "add-card",
+        label: "Add card",
+        group: "Mindmap",
+        icon: "plus",
+        keywords: ["node", "branch", "child"],
+        run: () => handleAddChild(root.id),
+      });
+    own.push({
+      id: "start-over",
+      label: "Start over",
+      group: "Mindmap",
+      icon: "history",
+      keywords: ["clear", "reset", "empty"],
+      run: () => {
+        resetMap();
+        setSelectedId(null);
+      },
+    });
+    return [...own, ...navigationCommands(mode, setMode)];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [root?.id, mode]);
+
   return (
     <>
+      {/* Title, then the surfaces, then this surface's own controls: three
+          tiers read in that order. Crowding the mode switch in beside the
+          actions makes one row that has to be parsed rather than scanned. */}
       <WorkspaceHead
         title="Workspace"
         count={mode === "map" ? `${map.nodes.length} cards` : undefined}
-        action={
-          <div className="flex items-center gap-2">
-            <Segmented
-              label="Workspace mode"
-              size="sm"
-              value={mode}
-              onChange={setMode}
-              options={[
-                { id: "map", label: "Mindmap" },
-                { id: "docs", label: "Documents" },
-                { id: "sheets", label: "Sheets" },
-              ]}
-            />
-            {mode === "map" && root && (
-              <Button size="sm" onClick={() => handleAddChild(root.id)}>
-                Add card
+        tabs={
+          <Segmented
+            label="Workspace mode"
+            size="sm"
+            value={mode}
+            onChange={setMode}
+            options={[
+              { id: "map", label: "Mindmap" },
+              { id: "docs", label: "Documents" },
+              { id: "sheets", label: "Sheets" },
+            ]}
+          />
+        }
+        toolbar={
+          mode === "map" ? (
+            <>
+              {/* The "kept in this browser" fact used to be a faint line
+                  floating on the field — panel-only ink on a live ground,
+                  which this system forbids because the backdrop moves. It
+                  rides a chip instead: real text on a real surface, with the
+                  whole sentence on hover. */}
+              <Chip
+                tone="neutral"
+                title="The mindmap is kept in this browser. Not shared, and it does not follow you to another machine. Documents and sheets are stored properly."
+              >
+                On this device
+              </Chip>
+              <CommandPalette commands={mapCommands} surface="Workspace" />
+              {root && (
+                <Button size="sm" onClick={() => handleAddChild(root.id)}>
+                  Add card
+                </Button>
+              )}
+              <Button
+                size="sm"
+                tone="ghost"
+                onClick={() => {
+                  /* No confirm dialog, because this is reversible in the only
+                     sense that matters here — nothing else depends on the map,
+                     and a modal on every clear is friction on a thinking tool.
+                     The label says what it does. */
+                  resetMap();
+                  setSelectedId(null);
+                }}
+              >
+                Start over
               </Button>
-            )}
-            {mode === "map" && <Button
-              size="sm"
-              tone="ghost"
-              onClick={() => {
-                /* No confirm dialog, because this is reversible in the only
-                   sense that matters here — nothing else depends on the map,
-                   and a modal on every clear is friction on a thinking tool.
-                   The label says what it does. */
-                resetMap();
-                setSelectedId(null);
-              }}
-            >
-              Start over
-            </Button>}
-          </div>
+            </>
+          ) : undefined
         }
       />
-
-      {mode === "map" && (
-        <p className="-mt-1 mb-3 text-[11px] text-ink-faint">
-          The mindmap is kept in this browser. Not shared, and it does not
-          follow you to another machine. Documents are stored properly.
-        </p>
-      )}
 
       {mode === "map" && saveError && (
         <div className="mb-3">
@@ -109,9 +165,9 @@ export function WorkspaceArea() {
       )}
 
       {mode === "sheets" ? (
-        <DocumentsArea kind="sheet" />
+        <DocumentsArea kind="sheet" mode={mode} onMode={setMode} />
       ) : mode === "docs" ? (
-        <DocumentsArea kind="doc" />
+        <DocumentsArea kind="doc" mode={mode} onMode={setMode} />
       ) : !root ? (
         <Panel>
           <EmptyState

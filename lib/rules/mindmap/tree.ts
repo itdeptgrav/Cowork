@@ -30,16 +30,29 @@ export interface MindLink {
 /**
  * An attached image.
  *
- * `dataUrl` holds the actual bytes. This is a base64 data URL rather than an
- * uploaded file because the mindmap persists to `localStorage` and there is no
- * storage service in the path — see `lib/mindmap/store.ts`. It is why the
- * attach control refuses anything large: a few of these will fill the quota,
- * and a silent quota failure would lose the whole map rather than one picture.
+ * **`fileId` is where the bytes are: Google Drive, the same store every other
+ * attachment in this product uses.** They used to be here, as a base64
+ * `dataUrl`, justified by "the mindmap persists to `localStorage` and there is
+ * no storage service in the path". The second half was wrong — the engine has
+ * had a Drive upload route since the old application, and `uploadDriveFile`
+ * reaches it — and the first half was the actual problem rather than the
+ * excuse: a picture on a card lived in one browser, so a map shared with a
+ * colleague arrived with holes in it, and clearing site data threw the pictures
+ * away. The 512 KB cap existed only to keep the quota from filling.
+ *
+ * `dataUrl` is kept and OPTIONAL, because maps written before this exist in
+ * people's browsers and their pictures still have to draw. Nothing writes it any
+ * more. A card image has one or the other, never neither.
  */
 export interface MindImage {
   id: string;
   name: string;
-  dataUrl: string;
+  /** The Drive file id. Null only on a picture stored before the upload path. */
+  fileId?: string | null;
+  /** What the store returned, kept so a record still means something on its own. */
+  url?: string | null;
+  /** Legacy in-browser bytes. Read, never written. */
+  dataUrl?: string;
   sizeBytes: number;
 }
 

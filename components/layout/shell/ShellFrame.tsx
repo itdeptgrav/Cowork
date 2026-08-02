@@ -9,6 +9,7 @@ import { PresenceRoom } from "@/components/features/status/PresenceRoom";
 import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
+import { GlobalCommandPalette } from "./GlobalCommandPalette";
 import { SessionProvider, useSession } from "@/components/features/auth/SessionProvider";
 
 /**
@@ -29,6 +30,15 @@ import { SessionProvider, useSession } from "@/components/features/auth/SessionP
 const AUTH_ROUTES = new Set(["/signin", "/signup", "/reset-password"]);
 
 /**
+ * Route prefixes that must render without a session.
+ *
+ * Guest meeting links (`/meetings/guest/[token]`) are public: someone outside
+ * the company follows a share link and should land directly in a lobby, not a
+ * sign-in wall.
+ */
+const PUBLIC_PREFIXES = ["/meetings/guest/"];
+
+/**
  * The one route that must render without a session: the connection diagnostic.
  *
  * `/legacy/health` reports whether Firebase and the backend can be reached at
@@ -47,9 +57,9 @@ const AUTH_ROUTES = new Set(["/signin", "/signup", "/reset-password"]);
  * so the same account works everywhere and there is nothing left to bypass.
  */
 function rendersWithoutSession(pathname: string): boolean {
-  return (
-    process.env.NODE_ENV !== "production" && pathname === "/legacy/health"
-  );
+  if (process.env.NODE_ENV !== "production" && pathname === "/legacy/health")
+    return true;
+  return PUBLIC_PREFIXES.some((p) => pathname.startsWith(p));
 }
 
 export function ShellFrame({ children }: { children: ReactNode }) {
@@ -204,6 +214,10 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
       {/* Blocking acknowledgement for cascaded deadlines — see the component
         for why it cannot be dismissed. */}
       <PriorityAckGate />
+      {/* Global ⌘K palette — available on every authenticated route.
+          On /workspace routes the shortcut is handed off to the workspace's
+          own CommandPalette; the two never register at the same time. */}
+      <GlobalCommandPalette />
     </>
   );
 }

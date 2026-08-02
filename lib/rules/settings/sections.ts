@@ -65,7 +65,8 @@ export type SettingsSectionId =
   | "workflow-routing"
   | "organisation"
   | "office-policy"
-  | "provisional-rules";
+  | "provisional-rules"
+  | "employees";
 
 /**
  * The audit `section` string for each area.
@@ -82,6 +83,7 @@ export const AUDIT_SECTION: Record<SettingsSectionId, string> = {
   organisation: "organisation",
   "office-policy": "office",
   "provisional-rules": "provisional_rules",
+  employees: "employees",
 };
 
 /** The event names the log records. One per writable area. */
@@ -150,6 +152,16 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     summary:
       "Placeholder values standing in for decisions nobody has taken. Publishing one resolves it.",
     store: "cowork_settings/rule_overrides",
+    enforcement: "cowork_ui",
+    mayAffectDeadlines: false,
+  },
+  {
+    id: "employees",
+    label: "Add employees",
+    href: "/admin/settings/employees",
+    summary:
+      "Import HR employees into CoWork. Pick who needs an account — the system creates their login and sends a welcome email.",
+    store: "Firebase Auth + cowork_employees",
     enforcement: "cowork_ui",
     mayAffectDeadlines: false,
   },

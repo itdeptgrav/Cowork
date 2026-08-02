@@ -245,7 +245,9 @@ export function WordCountDialog({
 
       {selectionText.trim() ? (
         <>
-          <p className="mt-3 border-t border-hairline pt-3 text-[11px] uppercase tracking-[0.09em] text-ink-faint">
+          {/* Title type, not a tracked eyebrow: a section label over a list is
+             the defect the One Kicker Rule names, not a wayfinding device. */}
+          <p className="mt-3 border-t border-hairline pt-3 text-[12.5px] font-medium text-ink">
             Selection
           </p>
           <dl className="mt-1.5 grid grid-cols-[1fr_auto] gap-x-4 gap-y-1.5 text-[12.5px]">
@@ -309,7 +311,10 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
       <div className="grid gap-4">
         {SHORTCUTS.map((section) => (
           <div key={section.group}>
-            <p className="mb-1.5 text-[11px] uppercase tracking-[0.09em] text-ink-faint">
+            {/* Same fix as `Selection` above: Title type, not a tracked
+               eyebrow — three of these in one dialog would triple-fire the
+               One Kicker Rule even before touching the rest of the page. */}
+            <p className="mb-1.5 text-[12.5px] font-medium text-ink">
               {section.group}
             </p>
             <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 text-[12.5px]">

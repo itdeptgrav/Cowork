@@ -5,6 +5,7 @@ import { formatRankDisplay, rankFor } from "@/lib/rules/tasks/priorityDisplay";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
+import { buildTaskTree } from "@/lib/rules/tasks/tree";
 import { useMemo, useState } from "react";
 import {
   statusMeta,
@@ -97,6 +98,21 @@ export function TaskTable({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(
     new Set(),
   );
+  /* Collapsed PARENTS, by task id — the tree's own fold state, separate from
+     the group headers above. Empty on arrival, so a task that has been broken
+     down shows what it was broken into without a click: the breakdown is the
+     point of the row, and a tree that arrives shut looks like a flat list with
+     an extra control. */
+  const [collapsedParents, setCollapsedParents] = useState<Set<string>>(
+    new Set(),
+  );
+  const toggleParent = (id: string) =>
+    setCollapsedParents((c) => {
+      const next = new Set(c);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   const tableViewerId = useViewerId();
   const tablePerms = usePermissions();
   const tableViewer = useQuery((r) => r.getViewer(), []);
@@ -232,6 +248,10 @@ export function TaskTable({
           overdueOnly: onlyOverdue || undefined,
           blockedOnly: onlyBlocked || undefined,
           assigneeId: onlyMine ? (tableViewerId ?? undefined) : undefined,
+          /* This table nests, so it asks for the children. Every other caller
+             leaves this off and keeps the rolled-up counts — see
+             `TaskQuery.includeSubtasks`. */
+          includeSubtasks: true,
         })
         .then((p) => p.items),
     [
@@ -656,9 +676,28 @@ export function TaskTable({
                     )}
                     {!isCollapsed && (
                       <div className="divide-y divide-hairline">
-                        {items.map((v) => {
+                        {buildTaskTree(
+                          items,
+                          (v) => ({
+                            id: v.task.id,
+                            parentId: v.task.parentTaskId
+                              ? String(v.task.parentTaskId)
+                              : null,
+                          }),
+                          collapsedParents,
+                        ).map((node) => {
+                          const v = node.item;
+                          /* Broken down, so this row is the container and not
+                             the work. It carries no priority — priority is a
+                             position in ONE person's queue, and a container has
+                             no assignee doing it — and for the same reason it
+                             cannot be dragged into somebody's order. The
+                             subtasks beneath it are what hold both. */
+                          const isContainerRow =
+                            node.hasChildren || v.subtaskCount > 0;
                           const rowInQueue =
                             isAssigneeGroup &&
+                            !isContainerRow &&
                             inActiveQueue(v, groupAssigneeId!);
                           const rowDraggable = canDrag && rowInQueue;
                           /* The gap-free position. Prefer the SERVER's derived
@@ -678,13 +717,24 @@ export function TaskTable({
                             : null;
                           /* Why an OPEN task shows no live position — so the
                              reader is told, not left to guess. */
-                          const holdReason = isAssigneeGroup
-                            ? queueHoldReason(v, groupAssigneeId!)
-                            : null;
+                          const holdReason =
+                            isAssigneeGroup && !isContainerRow
+                              ? queueHoldReason(v, groupAssigneeId!)
+                              : null;
                           return (
                             <Row
                               key={v.task.id}
                               view={v}
+                              depth={node.depth}
+                              isContainer={isContainerRow}
+                              childCount={node.childCount}
+                              isLastChild={node.isLastChild}
+                              collapsed={collapsedParents.has(v.task.id)}
+                              onToggleChildren={
+                                node.hasChildren
+                                  ? () => toggleParent(v.task.id)
+                                  : undefined
+                              }
                               rankSubjectId={groupAssigneeId ?? undefined}
                               displayRank={derivedPos}
                               draggable={rowDraggable}
@@ -736,7 +786,9 @@ export function TaskTable({
                               }
                               notInQueueReason={holdReason}
                               onPriority={
-                                mayReorderOn(v) && !holdReason
+                                mayReorderOn(v) &&
+                                !holdReason &&
+                                !isContainerRow
                                   ? () => setPriorityFor(v)
                                   : null
                               }
@@ -830,6 +882,12 @@ function Row({
   onPriority,
   hideProject,
   onUnlink,
+  depth = 0,
+  isContainer = false,
+  childCount = 0,
+  isLastChild = false,
+  collapsed = false,
+  onToggleChildren,
   rankSubjectId,
   displayRank = null,
   notInQueueReason = null,
@@ -849,6 +907,23 @@ function Row({
   onPriority: (() => void) | null;
   hideProject: boolean;
   onUnlink?: () => void;
+  /** 0 for a root, 1 for a subtask. Drives the indent and the connector. */
+  depth?: number;
+  /**
+   * This task has been broken down, so the row stands for the container.
+   *
+   * It shows a folder rather than a status dot, and NO priority — a rank is a
+   * position in one person's queue, and nobody is queued to do a container. Its
+   * subtasks carry the ranks.
+   */
+  isContainer?: boolean;
+  /** Children beneath it in THIS list, for the count beside the title. */
+  childCount?: number;
+  /** Last child under its parent — the connector stops rather than continuing. */
+  isLastChild?: boolean;
+  collapsed?: boolean;
+  /** Absent when there is nothing to fold, which is what hides the chevron. */
+  onToggleChildren?: () => void;
   /** Whose rank to show — the assignee whose queue this row sits in, when the
       list is grouped by person; the viewer otherwise. */
   rankSubjectId?: string;
@@ -955,14 +1030,52 @@ function Row({
           still needs and announced it as disabled to a screen reader. Not
           interactive is a span, not a disabled button — the same treatment the
           task detail already gives it. */}
-      {heldReason ? (
-        /* Held out of the queue: no live position, no reorder. The em-dash says
-           "no rank here"; the tooltip says why. */
+      {isContainer ? (
+        /* A container holds no rank at all — not "—, because the budget isn't
+           settled", but "there is no queue this belongs to". Its subtasks each
+           sit in their own assignee's queue with their own number, which is the
+           whole reason the work was broken out. */
+        <span
+          title="A project — its subtasks carry the priority, each in its own assignee's queue."
+          className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
+        >
+          <span data-figure>—</span>
+        </span>
+      ) : heldReason && rankText === "—" ? (
+        /* Held out of the queue, and genuinely no number was ever stored —
+           the em-dash says "no rank here"; the tooltip says why. */
         <span
           title={heldReason}
           className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
         >
           <span data-figure>—</span>
+        </span>
+      ) : heldReason ? (
+        /* **Held out of the LIVE queue, but real work with a real number —
+           show it.** `queueRankFor`'s own test states the rule this used to
+           violate: "It is real work with a real priority — just not yet in
+           the running order." Blanking `rankText` here regardless of its
+           value hid the number `rankFor` had already resolved for every task
+           awaiting acceptance — which is EVERY newly created task and EVERY
+           subtask, since both start in `WAITING_FOR_ASSIGNEE`.
+
+           The number itself is the PROVISIONAL position, not the raw stored
+           rank — its own gap-free 1, 2, 3 among everything else of this
+           person's awaiting acceptance, computed by `provisionalQueuePositions`
+           and excluding anything that has become a container. Before that
+           existed this showed the raw, ungapped stored figure, which is why a
+           project sitting between two pending subtasks read as a missing
+           number rather than as nothing (see `task-priority` in help).
+
+           Not a button: this position is real but not yet a live queue slot,
+           so it is not draggable and does not open the reorder dialog —
+           dragging it would insert a task into a queue it has not actually
+           joined. */
+        <span
+          title={`${heldReason} Shown is its position among your work still awaiting acceptance — a separate count from the live queue.`}
+          className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
+        >
+          <span data-figure>{rankText}</span>
         </span>
       ) : onPriority ? (
         <button
@@ -998,10 +1111,78 @@ function Row({
         </span>
       )}
 
-      {/* An anchor drags its URL by default, which would fight the row drag —
-          so the title is not itself draggable; the row around it is. */}
-      <Link href={`/tasks/${view.task.id}`} draggable={false} className="min-w-0">
+      {/* The title cell carries the tree: the fold control and the folder on a
+          container, the indent and the elbow on a child. Both live INSIDE this
+          cell rather than taking columns of their own, so the eleven-column
+          grid — and every other row's alignment — is untouched. */}
+      <div className="flex min-w-0 items-center">
+        {depth > 0 && (
+          /* The elbow. `aria-hidden` because the relationship is already
+             carried in words by the "Subtask" mark below the title — a screen
+             reader gets the fact, not a drawing of it. */
+          <span
+            aria-hidden="true"
+            /* `self-stretch` rather than a fixed height: rows are two lines
+               tall and a 32px rule left a gap between consecutive children, so
+               the trunk read as a dashed line rather than one branch. */
+            className="relative mr-1 w-5 shrink-0 self-stretch"
+          >
+            <span
+              /* Stops halfway down on the last child, so the branch ends at the
+                 row it points to instead of trailing into the next task. */
+              className={`absolute left-2 top-0 w-px bg-[var(--color-hairline)] ${
+                isLastChild ? "h-1/2" : "bottom-0"
+              }`}
+            />
+            <span className="absolute left-2 top-1/2 h-px w-3 bg-[var(--color-hairline)]" />
+          </span>
+        )}
+
+        {onToggleChildren ? (
+          <button
+            type="button"
+            onClick={onToggleChildren}
+            aria-expanded={!collapsed}
+            aria-label={
+              collapsed
+                ? `Show the ${childCount} subtask${childCount === 1 ? "" : "s"} of ${view.task.title}`
+                : `Hide the subtasks of ${view.task.title}`
+            }
+            className="mr-1 grid h-5 w-5 shrink-0 place-items-center rounded text-ink-faint transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+          >
+            {collapsed ? (
+              <Icon.chevronRight className="h-3.5 w-3.5" />
+            ) : (
+              <Icon.chevronDown className="h-3.5 w-3.5" />
+            )}
+          </button>
+        ) : (
+          /* Holds the chevron's width so titles line up down the column
+             whether or not a row can be folded. */
+          <span aria-hidden="true" className="mr-1 h-5 w-5 shrink-0" />
+        )}
+
+        {/* An anchor drags its URL by default, which would fight the row drag —
+            so the title is not itself draggable; the row around it is. */}
+        <Link
+          href={`/tasks/${view.task.id}`}
+          draggable={false}
+          className="min-w-0 flex-1"
+        >
         <span className="flex items-center gap-1.5">
+          {isContainer && (
+            /* A broken-down task IS a project — the same word the task's own
+               Completion requirements panel has always used for this state. It
+               is not the `/tasks/projects` feature, which links independent
+               tasks that each stand on their own; this one is a single piece of
+               work whose parts have to come back together. */
+            <span
+              title="A project — broken down into subtasks"
+              className="shrink-0 text-ink-faint"
+            >
+              <Icon.folder className="h-3.5 w-3.5" />
+            </span>
+          )}
           {view.task.isBlocked && (
             <span title="Blocked" className="text-[var(--state-blocked-ink)]">
               <Icon.blocked className="h-3.5 w-3.5" />
@@ -1011,6 +1192,23 @@ function Row({
         </span>
         <span className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-faint">
           <span data-figure>{view.task.reference}</span>
+          {/* Which side of a breakdown this row is on. A subtask reads as an
+              ordinary task otherwise, and the two rows tell a reader nothing
+              about how they relate — which matters most in the list where both
+              appear, the one belonging to whoever broke the work out. The
+              parent's title is not here: resolving it costs a read per row, and
+              the task itself carries the link. */}
+          {view.task.parentTaskId ? (
+            <span>· Subtask</span>
+          ) : (
+            view.subtaskCount > 0 && (
+              <span>
+                · Project ·{" "}
+                <span data-figure>{view.subtaskCount}</span>{" "}
+                {view.subtaskCount === 1 ? "subtask" : "subtasks"}
+              </span>
+            )
+          )}
           {!hideProject && view.project && (
             <span className="truncate">· {view.project.name}</span>
           )}
@@ -1021,7 +1219,8 @@ function Row({
             </span>
           )}
         </span>
-      </Link>
+        </Link>
+      </div>
 
       {/* Owner → assignee, so both are visible in one 78px cell. */}
       <span className="flex items-center gap-1">
@@ -1058,13 +1257,23 @@ function Row({
 
       <span className="min-w-0">
         <Chip tone={meta.tone}>{meta.label}</Chip>
+        {/* No next action on a container. `action`/`meta` read this document's
+            own stored status — usually whatever it was mid-negotiation when it
+            got broken down — and nothing here decides for itself that the
+            document stopped being actionable the moment it gained a subtask.
+            Naming the project instead of a false "Accept" is the fix; leaving
+            the chip alone since a stale status label is at least true of the
+            document, where a call to action on it was not. */}
         <span
           className={`mt-0.5 block truncate text-[11px] ${
-            action.actor === "you" ? "text-ink" : "text-ink-faint"
+            !isContainer && action.actor === "you"
+              ? "text-ink"
+              : "text-ink-faint"
           }`}
         >
-          {action.actor === "you" && "→ "}
-          {action.label}
+          {isContainer
+            ? "Project — see its subtasks"
+            : `${action.actor === "you" ? "→ " : ""}${action.label}`}
         </span>
       </span>
 
@@ -1082,25 +1291,50 @@ function Row({
             A budget extension leaves the committed deadline frozen (by design) but
             pushes the derived date — so a task with no commitment showed nothing
             here and never reflected the extra time. `operationalDueAt` is the same
-            figure the detail page labels "Expected completion". */}
-        {formatDate(
-          view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
-        )}
+            figure the detail page labels "Expected completion".
+
+            **A container shows neither.** Both figures are read off THIS
+            document's own deadline block — whatever it held the moment it was
+            broken down — and a project negotiates no deadline of its own. Each
+            subtask carries its own; this row's date would be a fossil, not a
+            fact. */}
+        {isContainer
+          ? "—"
+          : formatDate(
+              view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
+            )}
       </span>
 
       <span className="text-right">
-        <span data-figure className="block text-xs text-ink">
-          {formatTimer(view.loggedSecs)}
-        </span>
-        <span data-figure className="block text-[11px] text-ink-faint">
-          of {formatDurationTimer(view.task.estimatedEffortSecs)}
-        </span>
+        {isContainer ? (
+          /* No time budget on a container — see the deadline cell's note; the
+             same document field, the same reason it is not this row's to show. */
+          <span data-figure className="block text-xs text-ink-faint">
+            —
+          </span>
+        ) : (
+          <>
+            <span data-figure className="block text-xs text-ink">
+              {formatTimer(view.loggedSecs)}
+            </span>
+            <span data-figure className="block text-[11px] text-ink-faint">
+              of {formatDurationTimer(view.task.estimatedEffortSecs)}
+            </span>
+          </>
+        )}
       </span>
 
       {/* Play / pause, wired to the repository. Rows that cannot run a session
-          hold the column's width and show elapsed instead of a dead control. */}
+          hold the column's width and show elapsed instead of a dead control.
+          A container is one more thing that cannot run a session — nobody
+          works a project — so it gets the same dash rather than a Start
+          button that would begin timing nothing. */}
       <span className="justify-self-start">
-        <TimerControl view={view} />
+        {isContainer ? (
+          <span className="text-xs text-ink-faint">—</span>
+        ) : (
+          <TimerControl view={view} />
+        )}
       </span>
 
       <span className="min-w-0 text-[11px] text-ink-faint">

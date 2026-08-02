@@ -43,6 +43,7 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { DashboardChrome } from "@/components/features/dashboard/Chrome";
+import { DashboardSearch } from "@/components/features/dashboard/DashboardSearch";
 import { SignatureGraph } from "@/components/features/dashboard/SignatureGraph";
 import { ScoreStat, LoadStat } from "@/components/features/dashboard/Stats";
 import { AttentionCard } from "@/components/features/dashboard/AttentionCard";
@@ -60,6 +61,8 @@ export function Home() {
   return (
     <>
       <DashboardChrome />
+
+      <DashboardSearch />
 
       {/* Two regions, not one grid of cells.
           A twelve-column grid with a row-spanning cell stretches its other rows

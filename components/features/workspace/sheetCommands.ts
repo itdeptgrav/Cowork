@@ -17,7 +17,13 @@
  * single, stable front door.
  */
 
-import type { CellStyle, ChartType, Rect } from "@/lib/rules/sheets/grid";
+import type {
+  CellStyle,
+  ChartType,
+  ConditionalRule,
+  Rect,
+  SheetData,
+} from "@/lib/rules/sheets/grid";
 
 /** A read-only snapshot of what is selected, handed to menus and panels. */
 export interface SelectionState {
@@ -56,7 +62,22 @@ export type SheetCommand =
   | { type: "style"; patch: Partial<CellStyle> }
   | { type: "insertChart"; chartType: ChartType }
   | { type: "selectRange"; range: string }
-  | { type: "beginEdit"; ref: string; seed?: string };
+  | { type: "beginEdit"; ref: string; seed?: string }
+  /**
+   * The five commands below exist for the AI assistant's Sheets tools —
+   * `writeCells`/`structuralEdit`/`setHiddenRows`/`createChart` (explicit
+   * range)/`applyConditionalFormat` (explicit rule). Nothing about them is
+   * AI-specific: they are ordinary spreadsheet operations a menu could issue
+   * too, expressed as data the same way every other command is. See
+   * `components/features/workspace/ai/SheetsAssistant.tsx` for the one
+   * caller today.
+   */
+  | { type: "writeCells"; cells: { ref: string; value: string }[] }
+  /** A structural edit (insert/delete rows or columns, a sort) as its fully-computed result — see `lib/rules/sheets/grid.ts`'s insertRows/deleteRows/insertColumns/deleteColumns/sortRange. */
+  | { type: "structuralEdit"; next: SheetData }
+  | { type: "setHiddenRows"; hidden: number[] }
+  | { type: "createChart"; range: string; chartType: ChartType; title: string }
+  | { type: "applyConditionalFormat"; rule: Omit<ConditionalRule, "id"> };
 
 /** The grid's front door: turn an intent into the change that carries it out. */
 export type SheetDispatch = (command: SheetCommand) => void;

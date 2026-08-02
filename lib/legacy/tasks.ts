@@ -117,6 +117,15 @@ export interface LegacyTaskDoc {
 
   /** Children, maintained by the engine's `arrayUnion` on subtask create. */
   subtaskIds?: string[];
+  /**
+   * Which of the PARENT's completion requirements this subtask closes.
+   *
+   * A new-product concept the engine stores verbatim — see the note on
+   * `LegacyTask.satisfiesRequirementIds`. Absent on every document written
+   * before the subtask route began forwarding it, which is why it is read
+   * defensively rather than assumed.
+   */
+  satisfiesRequirementIds?: unknown;
   /** Marks a doc as forward-created, so its parent chain can be hidden. */
   isForwardedTask?: boolean;
 
@@ -333,6 +342,20 @@ export interface LegacyTask {
   parentTaskId: string | null;
   /** Children, as the engine maintains them via `arrayUnion` on create. */
   subtaskIds: string[];
+  /**
+   * The parent requirements this subtask is answerable for.
+   *
+   * Ids in the domain's own vocabulary — `compositeId(parentId, "req-N")`,
+   * where N is the position in the parent's `requirements` array. Legacy stores
+   * requirements as bare strings with no identity of their own, so the position
+   * IS the identity and the engine stores this array without interpreting it.
+   *
+   * Empty on a subtask created before the route forwarded the field, and on
+   * anything broken out through legacy's own UI. Empty means "claims nothing"
+   * — the subtask still exists, still shows under its parent, and simply does
+   * not close a requirement.
+   */
+  satisfiesRequirementIds: string[];
   /** Created by a forward. Its parent chain stays hidden from the list. */
   isForwardedTask: boolean;
   /** Approver ids on a held task. Empty when the task is not gated. */
@@ -617,6 +640,11 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     parentTaskId: doc.parentTaskId ?? null,
     subtaskIds: Array.isArray(doc.subtaskIds)
       ? doc.subtaskIds.filter(
+          (id): id is string => typeof id === "string" && id !== "",
+        )
+      : [],
+    satisfiesRequirementIds: Array.isArray(doc.satisfiesRequirementIds)
+      ? doc.satisfiesRequirementIds.filter(
           (id): id is string => typeof id === "string" && id !== "",
         )
       : [],

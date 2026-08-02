@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
+import { DriveImage } from "@/components/ui/DriveImage";
 import {
   Button,
   Field,
@@ -9,6 +10,7 @@ import {
   Input,
   Textarea,
 } from "@/components/ui/Primitives";
+import { useRepo } from "@/lib/hooks/useRepository";
 import {
   childrenOf,
   normaliseUrl,
@@ -29,8 +31,16 @@ import {
  * occasionally saves something you did not mean.
  */
 
-/** Refused above this. See the note on `MindImage` — these go into localStorage. */
-const MAX_IMAGE_BYTES = 512 * 1024;
+/**
+ * Refused above this.
+ *
+ * The old ceiling was 512 KB and it was a `localStorage` quota, not a judgement
+ * about pictures: the bytes were kept in the browser, so a handful of
+ * screenshots filled the store and a silent quota failure lost the whole map.
+ * They go to Drive now, so the cap can be what a picture on a card actually
+ * warrants rather than what a browser will tolerate.
+ */
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 export function NodeInspector({
   map,
@@ -50,6 +60,12 @@ export function NodeInspector({
   const [linkDraft, setLinkDraft] = useState("");
   const [linkError, setLinkError] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
+  const [uploading, setUploading] = useState(false);
+
+  const repo = useRepo();
+  /* Off entirely without a store behind it, rather than offering an upload that
+     cannot happen — the in-memory prototype has no `uploadDriveFile`. */
+  const canUpload = typeof repo.uploadDriveFile === "function";
 
   const isRoot = node.parentId === null;
   const kids = childrenOf(map, node.id);
@@ -77,7 +93,16 @@ export function NodeInspector({
     setLinkDraft("");
   };
 
-  const attach = (file: File | undefined) => {
+  /**
+   * Attach a picture — to Drive, where the rest of this product's files live.
+   *
+   * This used to `readAsDataURL` and put the base64 on the card. The card is
+   * `localStorage`, so the picture was in one browser: a map shared with a
+   * colleague arrived with holes where the images were, and clearing site data
+   * threw them away with no copy anywhere. Uploading first means the card
+   * carries a Drive file id and the picture is a file, like every other file.
+   */
+  const attach = async (file: File | undefined) => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       setImageError("Attach an image. Other files are not supported here yet.");
@@ -85,27 +110,39 @@ export function NodeInspector({
     }
     if (file.size > MAX_IMAGE_BYTES) {
       setImageError(
-        `That image is ${Math.round(file.size / 1024)} KB. The limit is ${MAX_IMAGE_BYTES / 1024} KB — the map is kept in this browser, and large pictures fill its store.`,
+        `That image is ${Math.round(file.size / 1024 / 1024)} MB. The limit is ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
       );
       return;
     }
+    if (!repo.uploadDriveFile) {
+      setImageError("Image storage is not configured on this deployment.");
+      return;
+    }
+
     setImageError(null);
-    const reader = new FileReader();
-    reader.onload = () => {
-      onChange({
-        images: [
-          ...node.images,
-          {
-            id: `i${Date.now().toString(36)}`,
-            name: file.name,
-            dataUrl: String(reader.result),
-            sizeBytes: file.size,
-          },
-        ],
-      });
-    };
-    reader.onerror = () => setImageError("That image could not be read.");
-    reader.readAsDataURL(file);
+    setUploading(true);
+    const r = await repo.uploadDriveFile(file);
+    setUploading(false);
+    if (!r.ok) {
+      /* The store's own reason. "Attachment storage is not configured on this
+         server" is an operator's problem and says so; a generic failure sends
+         somebody looking at their file instead. */
+      setImageError(r.message);
+      return;
+    }
+
+    onChange({
+      images: [
+        ...node.images,
+        {
+          id: `i${Date.now().toString(36)}`,
+          name: r.data.name || file.name,
+          fileId: r.data.fileId,
+          url: r.data.url,
+          sizeBytes: r.data.sizeBytes || file.size,
+        },
+      ],
+    });
   };
 
   return (
@@ -114,9 +151,18 @@ export function NodeInspector({
       className="frost-panel flex h-full min-h-0 w-full flex-col rounded-card border border-hairline"
     >
       <header className="flex shrink-0 items-center gap-2 border-b border-hairline px-4 py-3">
-        <span className="min-w-0 flex-1 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-          {isRoot ? "Root card" : "Card"}
+        {/* A role pill, not a tracked eyebrow — the same idiom the document and
+           sheet headers use for "View only" / "Editor". A tracked uppercase
+           kicker over a panel is a defect the system names explicitly, and this
+           one was announcing a panel rather than doing wayfinding. */}
+        <span className="min-w-0 flex-1 text-sm font-medium text-ink">
+          Card details
         </span>
+        {isRoot && (
+          <span className="shrink-0 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
+            Root
+          </span>
+        )}
         <button
           type="button"
           aria-label="Close details"
@@ -153,20 +199,34 @@ export function NodeInspector({
         <div className="mt-5">
           <p className="text-sm font-medium text-ink">Images</p>
           <p className="mt-0.5 text-[11px] text-ink-faint">
-            Kept in this browser, not uploaded. Up to{" "}
-            <span data-figure>{MAX_IMAGE_BYTES / 1024}</span> KB each.
+            {canUpload
+              ? `Stored with the rest of your files, so anyone you share the map with sees them. Up to ${MAX_IMAGE_BYTES / 1024 / 1024} MB each.`
+              : "Image storage is not configured on this deployment."}
           </p>
 
           {node.images.length > 0 && (
             <ul className="mt-2 grid grid-cols-2 gap-2">
               {node.images.map((img) => (
                 <li key={img.id} className="group relative">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={img.dataUrl}
-                    alt={img.name}
-                    className="h-24 w-full rounded-inset border border-hairline object-cover"
-                  />
+                  {/* A picture stored before the upload path still has its bytes
+                      on the card and nothing to fetch, so it is drawn as-is.
+                      Everything since is a Drive file. */}
+                  {img.dataUrl && !img.fileId ? (
+                    /* eslint-disable-next-line @next/next/no-img-element */
+                    <img
+                      src={img.dataUrl}
+                      alt={img.name}
+                      className="h-24 w-full rounded-inset border border-hairline object-cover"
+                    />
+                  ) : (
+                    <DriveImage
+                      fileId={img.fileId}
+                      url={img.url}
+                      alt={img.name}
+                      width={480}
+                      className="h-24 w-full rounded-inset border border-hairline object-cover"
+                    />
+                  )}
                   <button
                     type="button"
                     aria-label={`Remove ${img.name}`}
@@ -184,17 +244,27 @@ export function NodeInspector({
             </ul>
           )}
 
-          <label className="mt-2 flex cursor-pointer items-center gap-2.5 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5 transition-colors hover:bg-[var(--control)]">
+          <label
+            aria-disabled={!canUpload || uploading}
+            className={`mt-2 flex items-center gap-2.5 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5 transition-colors ${
+              canUpload && !uploading
+                ? "cursor-pointer hover:bg-[var(--control)]"
+                : "cursor-not-allowed opacity-60"
+            }`}
+          >
             <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-[var(--control)] text-ink-faint">
               <Icon.attach className="h-3.5 w-3.5" />
             </span>
-            <span className="text-sm text-ink">Attach an image</span>
+            <span className="text-sm text-ink">
+              {uploading ? "Uploading…" : "Attach an image"}
+            </span>
             <input
               type="file"
               accept="image/*"
+              disabled={!canUpload || uploading}
               className="sr-only"
               onChange={(e) => {
-                attach(e.target.files?.[0]);
+                void attach(e.target.files?.[0]);
                 /* Cleared so attaching the SAME file twice still fires a
                    change event the second time. */
                 e.target.value = "";

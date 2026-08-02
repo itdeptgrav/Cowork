@@ -1,36 +1,43 @@
 /**
- * The Cowork mark.
+ * The Cowork mark — the folder-and-check brand logo.
  *
- * It is the stepped slab silhouette at 20px — the same geometry as every score
- * card, so the identity and the product's signature shape are literally one
- * shape. Two forms read in it: the step of a rising measure, and two surfaces
- * sharing one edge.
- *
- * Drawn as a path rather than composed like the CSS card because at this scale
- * a fixed viewBox has no aspect-ratio distortion to worry about.
+ * A layered folder: a cream back (tab + body), a purple sheet tilted out of it,
+ * and a black rounded front carrying the white check. Unlike the old monochrome
+ * slab it is FULL-COLOUR and fixed, so it reads the same on every surface and
+ * does not take `currentColor`. `className` still controls only its size, and the
+ * geometry is mirrored in `app/icon.svg` (the favicon) so the two never drift.
  */
 export function Mark({ className = "" }: { className?: string }) {
   return (
     <svg
-      viewBox="0 0 24 24"
+      viewBox="0 0 1000 1000"
       className={className}
       role="img"
       aria-label="Cowork"
       fill="none"
     >
-      {/* Stepped slab: high across the left, stepping down at 71% through a
-          convex radius and a concave fillet, matching SlabCard. */}
-      <path
-        d="M4.4 1h8.2a3.4 3.4 0 0 1 3.4 3.4 3.4 3.4 0 0 0 3.4 3.4A3.4 3.4 0 0 1 22.8 11.2v8.4A3.4 3.4 0 0 1 19.4 23H4.4A3.4 3.4 0 0 1 1 19.6V4.4A3.4 3.4 0 0 1 4.4 1Z"
-        fill="currentColor"
+      {/* Cream folder — the back tab, then the body. */}
+      <path d="M0 60A60 60 0 0 1 60 0H500A60 60 0 0 1 560 60V150H0Z" fill="#F6E3A0" />
+      <rect x="0" y="175" width="1000" height="760" rx="150" fill="#F6E3A0" />
+      {/* Purple sheet, tilted out of the folder. */}
+      <rect
+        x="10"
+        y="290"
+        width="980"
+        height="560"
+        rx="150"
+        transform="rotate(-7 500 520)"
+        fill="#9B82F0"
       />
-      {/* The tab's identity slot, knocked out — the same hole the avatar fills
-          on a score card. */}
-      <circle
-        cx="8.1"
-        cy="8.1"
-        r="2.5"
-        fill="var(--color-frost-bar, #fafafa)"
+      {/* Black rounded front, carrying the check. */}
+      <rect x="0" y="500" width="945" height="500" rx="215" fill="#0B0B0F" />
+      <path
+        d="M150 780L270 895L480 655"
+        fill="none"
+        stroke="#FFFFFF"
+        strokeWidth="72"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
     </svg>
   );

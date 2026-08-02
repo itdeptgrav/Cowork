@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { formatRankDisplay, rankFor, rankTitle } from "@/lib/rules/tasks/priorityDisplay";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
+import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import { useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
@@ -140,6 +141,14 @@ export function TaskDetail({
   const meta = statusMeta(v);
   const action = nextAction(v, me ?? "");
 
+  /* Broken down, so the work — and with it the timer, the budget and the
+     deadline — lives on the children. Decided once here and passed down, so
+     the tab bar and the panels cannot reach different answers. */
+  const isContainer = isProjectContainer({
+    isProject: v.completion.isProject,
+    loadedSubtasks: (subtasks.data ?? []).length,
+  });
+
   const tabs = [
     {
       id: "overview",
@@ -147,24 +156,39 @@ export function TaskDetail({
       href: `/tasks/${taskId}`,
       icon: "overview" as const,
     },
-    {
-      id: "deadline",
-      label: "Deadline",
-      href: `/tasks/${taskId}/deadline`,
-      icon: "clock" as const,
-    },
-    {
-      id: "submission",
-      label: "Submission",
-      href: `/tasks/${taskId}/submission`,
-      icon: "send" as const,
-    },
-    {
-      id: "review",
-      label: "Review",
-      href: `/tasks/${taskId}/review`,
-      icon: "approvals" as const,
-    },
+    /* **A project has no deadline, no submission and no review of its own.**
+       Nobody works it, so there is nothing to hand in; and with nothing handed
+       in there is nothing to decide on. Its completion is derived instead — it
+       closes when every completion requirement is satisfied, and each one is
+       satisfied by the subtask that claimed it completing. Each of those
+       subtasks runs its own deadline, submission and review with its own
+       assignee, which is where all three of these tabs actually live.
+
+       Dropped rather than shown empty: a Submission tab on a project invites
+       somebody to hand in work they did not do, and a Deadline tab invites a
+       date that binds nobody. */
+    ...(isContainer
+      ? []
+      : [
+          {
+            id: "deadline",
+            label: "Deadline",
+            href: `/tasks/${taskId}/deadline`,
+            icon: "clock" as const,
+          },
+          {
+            id: "submission",
+            label: "Submission",
+            href: `/tasks/${taskId}/submission`,
+            icon: "send" as const,
+          },
+          {
+            id: "review",
+            label: "Review",
+            href: `/tasks/${taskId}/review`,
+            icon: "approvals" as const,
+          },
+        ]),
     {
       id: "chat",
       label: "Chat",
@@ -281,9 +305,20 @@ export function TaskDetail({
             better — it names what happens after the decision and requires a
             reason for a refusal. Rendering both would put two Approve buttons
             on one screen wired to the same endpoint.
-          */}
+
+            **Every card in this block is suppressed on a container.** Nothing
+            below here is a decision about WORK — it is a decision about a
+            timer, a budget, a deadline or an acceptance, and a project has none
+            of those; its subtasks do. Before this gate a project still carried
+            whatever negotiation state it had the moment it was broken down —
+            usually "Assigned, awaiting acceptance" — so its detail page kept
+            offering an Accept button and a budget proposal for work that was
+            never going to happen on that document again. Pressing Accept would
+            have accepted a project, which is not a coherent action; the button
+            simply should never have been there. */}
           {action.actor !== "nobody" &&
             tab === "overview" &&
+            !isContainer &&
             !v.pendingApprovals.some(
               (a) => a.approverId === me && a.kind === "cross_department",
             ) && (
@@ -293,7 +328,7 @@ export function TaskDetail({
           {/* **Accepting the work itself**, before any of the negotiations below.
               It renders only where acceptance is the outstanding step and decides
               for itself whether this viewer is the person who owes it. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <AssignmentConfirmationCard
               view={v}
               viewerId={me}
@@ -306,20 +341,20 @@ export function TaskDetail({
               a request, and it decides for itself whether this viewer is the
               manager who owns the hours. Above the budget card because it is a
               live question rather than a standing state. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <ExtensionDecisionCard view={v} viewerId={me} onChange={refetch} />
           )}
 
           {/* The assignor's half of the same escalation, in DATES only. It
               renders only for a deadline request and decides for itself whether
               this viewer owns the commitment. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <DeadlineRevisionCard view={v} viewerId={me} onChange={refetch} />
           )}
 
           {/* The move that had no surface: a counter-offer hands the turn back
               to whoever asked, and nothing rendered for them. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <CounterDeadlineCard view={v} viewerId={me} onChange={refetch} />
           )}
 
@@ -327,7 +362,7 @@ export function TaskDetail({
               answers a request for hours, and the assignee — whose week the
               figure binds — has to agree to it. `approved` used to be terminal,
               so the record said "confirm this" and nothing rendered. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <BudgetConfirmationCard view={v} viewerId={me} onChange={refetch} />
           )}
 
@@ -335,27 +370,27 @@ export function TaskDetail({
               plain statement of whose turn it is for everybody else. One card
               for both parties: two cards each with their own conditions is how
               an assignee came to be offered an accept over their own proposal. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <BudgetNegotiationCard view={v} viewerId={me} onChange={refetch} />
           )}
 
           {/* Both extension conversations in the order they happened, each in
               its own unit. Filtered by the rule: the assignor sees the dates
               only, because the hours are not their decision. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <ExtensionTimeline view={v} viewerId={me} />
           )}
 
           {/* What was asked to be corrected, above the flow — somebody whose
               work came back needs the list before the diagram. Renders nothing
               on a task that has never been returned. */}
-          {tab === "overview" && <ReworkPanel view={v} />}
+          {tab === "overview" && !isContainer && <ReworkPanel view={v} />}
 
           {/* The decision this viewer owes, above everything else — a person
               who has a button to press should not have to read a timeline to
               discover it. Renders for the current approver only; everyone else
               falls straight through to the read-only flow below. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <ApprovalActionCard
               task={v.task}
               approvals={v.approvals}
@@ -373,7 +408,7 @@ export function TaskDetail({
               questions: that one is "what can I do", this is "what is going on"
               — and a reader with no action to take was previously left with a
               status label and no way to find out who was holding the work. */}
-          {tab === "overview" && (
+          {tab === "overview" && !isContainer && (
             <TaskFlowSection
               task={v.task}
               approvals={v.approvals}
@@ -407,8 +442,27 @@ export function TaskDetail({
               only pending ones — the assignee of a fixed-deadline task has the
               same question as its creator, and answering it only while
               something is blocked means the answer disappears the moment it is
-              approved. */}
-          {tab === "overview" && <RelationshipNote view={v} />}
+              approved. Absent on a container: it explains a deadline model
+              that no longer applies to this document. */}
+          {tab === "overview" && !isContainer && <RelationshipNote view={v} />}
+
+          {/* The project's own explanation, in the ONE card's place all the
+              above would otherwise occupy. Says plainly that this task is a
+              container now and where the real state lives. */}
+          {tab === "overview" && isContainer && (
+            <Panel>
+              <h2 className="text-sm font-medium text-ink">
+                This is a project
+              </h2>
+              <p className="mt-2 max-w-[62ch] text-sm text-ink-muted">
+                It has been broken down into subtasks, so nothing happens on it
+                directly — no timer, no time budget, no deadline, and nothing to
+                accept or submit here. Its title, brief and completion
+                requirements are below. The work, and everything that happens to
+                it, is on its subtasks.
+              </p>
+            </Panel>
+          )}
 
           {tab === "overview" && (
             <Overview
@@ -420,11 +474,40 @@ export function TaskDetail({
               }}
             />
           )}
-          {tab === "deadline" && <DeadlinePanel view={v} onChange={refetch} />}
-          {tab === "submission" && (
+          {/* Guarded as well as untabbed: the tab is gone from the bar, and
+              `/tasks/:id/deadline` is still a URL somebody can hold open from
+              before the task was broken down. */}
+          {/* Guarded as well as untabbed. All three are gone from the bar on a
+              project, and all three are URLs somebody can hold open from before
+              the task was broken down — a bookmark, a notification, a back
+              button. One explanation covers them, because the reason is the
+              same: the work moved down a level. */}
+          {isContainer &&
+            (tab === "deadline" ||
+              tab === "submission" ||
+              tab === "review") && (
+              <Panel>
+                <h2 className="text-sm font-medium text-ink">
+                  This task has been broken down
+                </h2>
+                <p className="mt-2 max-w-[62ch] text-sm text-ink-muted">
+                  It is a project now: its deadline, its submission and its
+                  review all live on its subtasks, each negotiated and decided
+                  with the person carrying that piece. This task closes when
+                  every completion requirement is satisfied. Open a subtask to
+                  see or change its time, hand it in, or decide on it.
+                </p>
+              </Panel>
+            )}
+          {tab === "deadline" && !isContainer && (
+            <DeadlinePanel view={v} onChange={refetch} />
+          )}
+          {tab === "submission" && !isContainer && (
             <SubmissionPanel view={v} onChange={refetch} />
           )}
-          {tab === "review" && <ReviewPanel view={v} onChange={refetch} />}
+          {tab === "review" && !isContainer && (
+            <ReviewPanel view={v} onChange={refetch} />
+          )}
           {tab === "history" && <HistoryPanel taskId={taskId} />}
           {tab === "chat" && (
             <ChatPanel taskId={taskId} status={v.task.status} />
@@ -435,6 +518,7 @@ export function TaskDetail({
         <div className="flex flex-col gap-4 deck:col-span-4">
           <FactsRail
             view={v}
+            isContainer={isContainer}
             onPriority={
               mayChangePriority ? () => setPriorityOpen(true) : null
             }
@@ -656,6 +740,14 @@ function Overview({
     [view.task.id],
   );
 
+  /* Recomputed rather than passed in, from the same module the tab bar reads.
+     Both callers hold `view` and the children already, so the argument would
+     only be a second chance to hand one of them a stale answer. */
+  const isContainer = isProjectContainer({
+    isProject: view.completion.isProject,
+    loadedSubtasks: subtasks.length,
+  });
+
   return (
     <>
       {/* Above the brief on purpose: on a subtask this is the context for
@@ -685,58 +777,68 @@ function Overview({
       </Panel>
 
       {/* The work session, and the commits it has produced. One control, shared
-          with the table rows — the detail variant just states more of it. */}
-      <Panel padded={false}>
-        <div className="border-b border-hairline px-5 py-3">
-          <div className="mb-3 flex items-center gap-2">
-            <h2 className="text-sm font-medium text-ink">Time</h2>
-            <span className="text-[11px] text-ink-faint">
-              Pausing writes a work commit — that record is what credits worked
-              time.
-            </span>
+          with the table rows — the detail variant just states more of it.
+
+          **Absent on a container.** Once a task is broken down, nobody works
+          the parent — the assignees, the budget and the timer are on its
+          children. A Start button here would bank time against a task whose
+          work is somebody else's, and it would be counted twice: once on the
+          parent and once on the subtask actually doing it. */}
+      {!isContainer && (
+        <Panel padded={false}>
+          <div className="border-b border-hairline px-5 py-3">
+            <div className="mb-3 flex items-center gap-2">
+              <h2 className="text-sm font-medium text-ink">Time</h2>
+              <span className="text-[11px] text-ink-faint">
+                Pausing writes a work commit — that record is what credits worked
+                time.
+              </span>
+            </div>
+            <TimerControl view={view} size="detail" />
           </div>
-          <TimerControl view={view} size="detail" />
-        </div>
-        {commits.data?.length ? (
-          <div className="divide-y divide-hairline">
-            {commits.data.slice(0, 5).map((c) => (
-              <div key={c.id} className="flex items-center gap-3 px-5 py-2">
-                <Icon.clock className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">
-                  {c.message ?? "Work session"}
-                </span>
-                <span data-figure className="shrink-0 text-xs text-ink-faint">
-                  {formatDurationTimer(c.durationSecs)}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : view.loggedSecs > 0 ? (
-          /*
-           * Legacy records no per-run commits — `pauseTimer` only accumulates
-           * into `totalSeconds` — so this list is empty on every real task and
-           * said "No time logged yet" over hours of work. The banked total is
-           * the honest answer where the breakdown does not exist.
-           */
-          <div className="px-5 py-4">
-            <p data-figure className="text-[15px] text-ink">
-              {formatTimer(view.loggedSecs)}
+          {commits.data?.length ? (
+            <div className="divide-y divide-hairline">
+              {commits.data.slice(0, 5).map((c) => (
+                <div key={c.id} className="flex items-center gap-3 px-5 py-2">
+                  <Icon.clock className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                  <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">
+                    {c.message ?? "Work session"}
+                  </span>
+                  <span data-figure className="shrink-0 text-xs text-ink-faint">
+                    {formatDurationTimer(c.durationSecs)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          ) : view.loggedSecs > 0 ? (
+            /*
+             * Legacy records no per-run commits — `pauseTimer` only accumulates
+             * into `totalSeconds` — so this list is empty on every real task and
+             * said "No time logged yet" over hours of work. The banked total is
+             * the honest answer where the breakdown does not exist.
+             */
+            <div className="px-5 py-4">
+              <p data-figure className="text-[15px] text-ink">
+                {formatTimer(view.loggedSecs)}
+              </p>
+              <p className="mt-0.5 text-xs text-ink-faint">
+                Total worked. This engine records a running total rather than a
+                run-by-run breakdown.
+              </p>
+            </div>
+          ) : (
+            <p className="px-5 py-4 text-sm text-ink-faint">
+              No time logged yet.
             </p>
-            <p className="mt-0.5 text-xs text-ink-faint">
-              Total worked. This engine records a running total rather than a
-              run-by-run breakdown.
-            </p>
-          </div>
-        ) : (
-          <p className="px-5 py-4 text-sm text-ink-faint">
-            No time logged yet.
-          </p>
-        )}
-      </Panel>
+          )}
+        </Panel>
+      )}
 
       <ProjectPanel view={view} subtasks={subtasks} onChange={onChange} />
 
-      {(reports.data?.length ?? 0) > 0 && (
+      {/* Daily reports are progress on work being done, and nobody is doing a
+          project — the reports are on its subtasks. */}
+      {!isContainer && (reports.data?.length ?? 0) > 0 && (
         <Panel padded={false}>
           <div className="border-b border-hairline px-5 py-3">
             <h2 className="text-sm font-medium text-ink">Daily reports</h2>
@@ -764,9 +866,12 @@ function Overview({
 
 function FactsRail({
   view,
+  isContainer,
   onPriority,
 }: {
   view: import("@/lib/repositories").TaskView;
+  /** No priority, no completion date, no time budget — see the facts below. */
+  isContainer: boolean;
   /** Null when this viewer may change nobody's priority on this task. */
   onPriority: (() => void) | null;
 }) {
@@ -848,35 +953,42 @@ function FactsRail({
 
         {/* Priority only once the time budget is decided — see the header chip.
             Until then the task holds no live queue position, so the whole row is
-            omitted rather than showing a rank that means nothing yet. */}
-        {isBudgetSettled(v.budgetNegotiation?.state ?? null) && (
-          <Fact label="Priority">
-            {onPriority ? (
-              <button
-                type="button"
-                onClick={onPriority}
-                className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink transition-colors hover:bg-[var(--control-hover)]"
-              >
-                <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
-              </button>
-            ) : (
-              <span
-                title="Your priority is set by your manager"
-                className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink"
-              >
-                <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
-              </span>
-            )}
-          </Fact>
-        )}
+            omitted rather than showing a rank that means nothing yet. Also
+            omitted on a container outright: a rank is a position in a queue of
+            work, and nobody is queued to do a project — its subtasks each carry
+            their own. */}
+        {!isContainer &&
+          isBudgetSettled(v.budgetNegotiation?.state ?? null) && (
+            <Fact label="Priority">
+              {onPriority ? (
+                <button
+                  type="button"
+                  onClick={onPriority}
+                  className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink transition-colors hover:bg-[var(--control-hover)]"
+                >
+                  <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
+                </button>
+              ) : (
+                <span
+                  title="Your priority is set by your manager"
+                  className="rounded-full bg-[var(--control)] px-2 py-0.5 text-sm text-ink"
+                >
+                  <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
+                </span>
+              )}
+            </Fact>
+          )}
 
         {/* WHEN IT WILL BE DONE, from the assignee's real queue. Placed above
             the requested date because it is the operational answer — the one a
             person plans against. Renders nothing where there is no queue answer
-            to give. */}
-        <Fact label="Expected completion">
-          <ExpectedCompletion view={v} />
-        </Fact>
+            to give. Absent on a container: nobody's queue is being asked, since
+            nobody is doing this document. */}
+        {!isContainer && (
+          <Fact label="Expected completion">
+            <ExpectedCompletion view={v} />
+          </Fact>
+        )}
 
         {/* The assignor's requested deadline is deliberately NOT shown.
             Expected completion is the operational answer, and two dates side by
@@ -884,26 +996,34 @@ function FactsRail({
             still constrains: it is what the completion line above is measured
             against, and what the feasibility warning fires on. */}
 
-        {v.task.deadline.officialDueAt !== v.task.deadline.dueAt && (
-          <Fact label="Scored against">
-            <span
-              className="text-sm text-ink"
-              title="Charged extensions move the working deadline but not the scored one"
-            >
-              {formatDateTime(v.task.deadline.officialDueAt)}
+        {!isContainer &&
+          v.task.deadline.officialDueAt !== v.task.deadline.dueAt && (
+            <Fact label="Scored against">
+              <span
+                className="text-sm text-ink"
+                title="Charged extensions move the working deadline but not the scored one"
+              >
+                {formatDateTime(v.task.deadline.officialDueAt)}
+              </span>
+            </Fact>
+          )}
+
+        {/* No time budget on a container — it has none of its own; each
+            subtask has its own, shown on that subtask's own facts. Showing this
+            document's leftover figure (whatever it was proposed with before it
+            was broken down) is what put "05:00:00" and an Accept button on a
+            screen that starts and stops nothing. */}
+        {!isContainer && (
+          <Fact label="Time budget">
+            <span className="text-sm text-ink">
+              <span data-figure>{formatDurationTimer(v.loggedSecs)}</span>
+              <span className="text-ink-faint">
+                {" "}
+                of {formatDurationTimer(v.task.estimatedEffortSecs)}
+              </span>
             </span>
           </Fact>
         )}
-
-        <Fact label="Time budget">
-          <span className="text-sm text-ink">
-            <span data-figure>{formatDurationTimer(v.loggedSecs)}</span>
-            <span className="text-ink-faint">
-              {" "}
-              of {formatDurationTimer(v.task.estimatedEffortSecs)}
-            </span>
-          </span>
-        </Fact>
 
         <Fact label="Project">
           {v.project ? (

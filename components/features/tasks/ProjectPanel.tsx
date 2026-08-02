@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
@@ -14,8 +15,8 @@ import {
 } from "@/components/ui/Primitives";
 import { useAction } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import { statusMeta } from "./statusMeta";
-import { NewSubtaskDialog } from "./NewSubtaskDialog";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -43,7 +44,7 @@ export function ProjectPanel({
   onChange: () => void;
 }) {
   const me = useViewerId();
-  const [adding, setAdding] = useState(false);
+  const router = useRouter();
   const [drafting, setDrafting] = useState(false);
   const [draft, setDraft] = useState("");
 
@@ -66,9 +67,19 @@ export function ProjectPanel({
     ),
   );
 
+  /* Whether there is anything below this task at all — the same predicate
+     `TaskDetail` uses to decide the task has no timer and no deadline of its
+     own, from the shared module so the two cannot answer differently. A panel
+     that listed subtasks beside a running timer would be showing a container
+     and a piece of work at once. */
+  const hasSubtasks = isProjectContainer({
+    isProject: c.isProject,
+    loadedSubtasks: subtasks.length,
+  });
+
   /* Nothing to show, and nothing offered: a task with no requirements that
      nobody may break down is an ordinary task and should look like one. */
-  if (c.total === 0 && !c.isProject && !mayDelegate) return null;
+  if (c.total === 0 && !hasSubtasks && !mayDelegate) return null;
 
   return (
     <>
@@ -285,7 +296,20 @@ export function ProjectPanel({
         {c.total > 0 && mayDelegate && (
           <div className="flex flex-wrap items-center gap-2 border-t border-hairline px-5 py-3">
             {!isSubtask && (
-              <Button size="sm" onClick={() => setAdding(true)}>
+              /* The full task form, not a cut-down dialog. A subtask needs
+                 every field a task needs — acceptance criteria, attachments,
+                 department scoping, the budget model derived from who it is
+                 for — and the dialog that used to open here asked for four of
+                 them. The old app made the same call: one `CreateTaskModal`,
+                 opened with a `parentTask`. */
+              <Button
+                size="sm"
+                onClick={() =>
+                  router.push(
+                    `/tasks/new?parent=${encodeURIComponent(view.task.id)}`,
+                  )
+                }
+              >
                 <Icon.plus className="h-3.5 w-3.5" />
                 {c.isProject ? "Add a subtask" : "Break this down into subtasks"}
               </Button>
@@ -301,9 +325,26 @@ export function ProjectPanel({
         )}
       </Panel>
 
-      {c.isProject && (
+      {hasSubtasks && (
         <Panel padded={false} label="Subtasks" className="mt-4">
-          <PanelHead title="Subtasks" className="mb-0 px-5 pt-4 pb-3" />
+          <PanelHead
+            title="Subtasks"
+            /* The count is stated because this list is the ONLY place a
+               subtask surfaces on the project, and a section that silently
+               renders nothing is indistinguishable from one that failed. */
+            aside={`${subtasks.length} broken out`}
+            className="mb-0 px-5 pt-4 pb-3"
+          />
+          {subtasks.length === 0 && (
+            /* Reachable when the task's own read found children and this
+               page's fetch has not returned them — a failed or in-flight
+               `getSubtasks`. Saying so beats an empty panel that reads as
+               "there are none". */
+            <p className="px-5 pb-4 text-sm text-ink-faint">
+              This task has been broken down, but its subtasks could not be
+              loaded. Reload the page to try again.
+            </p>
+          )}
           <ul className="divide-y divide-hairline">
             {subtasks.map((s) => {
               const meta = statusMeta(s);
@@ -324,11 +365,15 @@ export function ProjectPanel({
                       <span className="block truncate text-sm text-ink">
                         {s.task.title}
                       </span>
-                      {claims.length > 0 && (
-                        <span className="mt-1 block truncate text-[11px] text-ink-faint">
-                          Satisfies {claims.join(" · ")}
-                        </span>
-                      )}
+                      {/* What this child is answerable for — or that it is
+                          answerable for nothing, which is a real state on
+                          anything broken out before the claim was recorded
+                          and must not read as a rendering failure. */}
+                      <span className="mt-1 block truncate text-[11px] text-ink-faint">
+                        {claims.length > 0
+                          ? `Satisfies ${claims.join(" · ")}`
+                          : "Satisfies no requirement on this task"}
+                      </span>
                     </span>
                     {s.assignees[0] && (
                       <Avatar
@@ -348,16 +393,6 @@ export function ProjectPanel({
         </Panel>
       )}
 
-      {adding && (
-        <NewSubtaskDialog
-          parent={view}
-          onClose={() => setAdding(false)}
-          onCreated={() => {
-            setAdding(false);
-            onChange();
-          }}
-        />
-      )}
     </>
   );
 }

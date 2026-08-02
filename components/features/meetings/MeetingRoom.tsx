@@ -7,6 +7,7 @@ import {
   LiveKitRoom,
   ParticipantTile,
   RoomAudioRenderer,
+  useLocalParticipant,
   useParticipants,
   useTracks,
 } from "@livekit/components-react";
@@ -15,7 +16,10 @@ import "@livekit/components-styles";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import { Chip, InlineError } from "@/components/ui/Primitives";
-import { useAction } from "@/lib/hooks/useRepository";
+import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
+import { RecordingControls } from "./RecordingControls";
+import { TranscriptPanel } from "./TranscriptPanel";
 import { formatDateTime } from "@/lib/utils/format";
 import type { Meeting } from "@/lib/domain";
 
@@ -29,10 +33,10 @@ import type { Meeting } from "@/lib/domain";
  * everything around them — the slab, the information rail, the header — so the
  * room reads as part of this product rather than as a widget dropped into it.
  *
- * The slab is deliberate: docs/architecture/DESIGN.md reserves it for measurement, and live video
- * is the most literal measurement there is. It is also the only material that
- * seats moving picture without the frost's translucency fighting whatever is on
- * somebody's camera. Same decision as `LiveScreenViewer`.
+ * The slab is deliberate: docs/architecture/DESIGN.md reserves it for
+ * measurement, and live video is the most literal measurement there is. It is
+ * also the only material that seats moving picture without the frost's
+ * translucency fighting whatever is on somebody's camera.
  *
  * **The token is fetched, never constructed.** `/api/meetings/token` signs it
  * server-side from `MEET_LIVEKIT_*`; nothing here knows a secret exists.
@@ -52,9 +56,25 @@ export function MeetingRoom({
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  const [transcriptOpen, setTranscriptOpen] = useState(false);
+
   const [present, presentState] = useAction((r, joined: boolean) =>
     r.recordMeetingPresence(meeting.id, joined),
   );
+
+  /* Recording rides the meeting id, not the LiveKit room name — each participant
+     captures their own mic and uploads it to the engine keyed by `meetId`, so it
+     works the same whichever room they are actually connected to. */
+  const viewer = useQuery((r) => r.getViewer(), []);
+  const employeeId = viewer.data?.employeeId ?? "";
+  const firstName = (displayName || "").trim().split(/\s+/)[0] || displayName;
+  const recording = useMeetingRecording({
+    meetId: meeting.id,
+    employeeId,
+    employeeName: displayName,
+    firstName,
+    isHost: isOrganiser,
+  });
 
   const room = meeting.livekitRoomName;
 
@@ -82,7 +102,9 @@ export function MeetingRoom({
       })
       .catch((e: unknown) => {
         if (!cancelled)
-          setError(e instanceof Error ? e.message : "The room could not be reached.");
+          setError(
+            e instanceof Error ? e.message : "The room could not be reached.",
+          );
       });
     return () => {
       cancelled = true;
@@ -117,7 +139,27 @@ export function MeetingRoom({
   }
 
   return (
-    <RoomFrame meeting={meeting}>
+    <RoomFrame
+      meeting={meeting}
+      headerRight={
+        <>
+          <RecordingControls recording={recording} isHost={isOrganiser} />
+          {/* Transcript toggle */}
+          <button
+            type="button"
+            title={transcriptOpen ? "Hide transcript" : "Show transcript"}
+            onClick={() => setTranscriptOpen((v) => !v)}
+            className={`grid h-8 w-8 place-items-center rounded-full transition-colors ${
+              transcriptOpen
+                ? "bg-white/20 text-slab-ink"
+                : "text-slab-ink-muted hover:bg-white/10 hover:text-slab-ink"
+            }`}
+          >
+            <Icon.chat className="h-4 w-4" />
+          </button>
+        </>
+      }
+    >
       <LiveKitRoom
         token={creds.token}
         serverUrl={creds.url}
@@ -125,7 +167,7 @@ export function MeetingRoom({
         video
         audio
         data-lk-theme="default"
-        className="flex h-full min-h-0 flex-col"
+        className="flex h-full min-h-0"
         onConnected={() => void present(true)}
         onDisconnected={() => {
           void present(false);
@@ -133,19 +175,33 @@ export function MeetingRoom({
         }}
         onError={(e) => setError(e.message)}
       >
-        <Stage />
-        {/* LiveKit's own control bar: camera, microphone, screen share and
-            leave, with the device pickers behind each. Reimplementing these
-            would be a second media stack to keep correct. */}
-        <div className="shrink-0 border-t border-white/10">
-          <ControlBar variation="verbose" />
-        </div>
-        <RoomAudioRenderer />
-        {presentState.error && (
-          <div className="p-3">
-            <InlineError compact message={presentState.error} />
+        {/* Bridges the LiveKit mic state into the recorder, so muting also
+            pauses the recording (and logs a speech interval). */}
+        <MuteBridge onMuteChange={recording.setMuted} />
+
+        {/* Main stage + control bar */}
+        <div className="flex min-h-0 flex-1 flex-col">
+          <Stage />
+          {/* LiveKit's own control bar: camera, microphone, screen share and
+              leave, with the device pickers behind each. */}
+          <div className="shrink-0 border-t border-white/10">
+            <ControlBar variation="verbose" />
           </div>
-        )}
+          <RoomAudioRenderer />
+          {presentState.error && (
+            <div className="p-3">
+              <InlineError compact message={presentState.error} />
+            </div>
+          )}
+        </div>
+
+        {/* Transcript sidebar — always mounted, toggled via CSS so the hook
+            (and its Firestore subscription) stays alive while hidden. */}
+        <TranscriptPanel
+          meetId={meeting.id}
+          participantName={displayName}
+          open={transcriptOpen}
+        />
       </LiveKitRoom>
     </RoomFrame>
   );
@@ -207,9 +263,11 @@ export function InRoomList() {
 
 function RoomFrame({
   meeting,
+  headerRight,
   children,
 }: {
   meeting: Meeting;
+  headerRight?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -227,6 +285,7 @@ function RoomFrame({
             {formatDateTime(meeting.startsAt)}
           </span>
         </span>
+        {headerRight}
         <Chip tone={meeting.status === "live" ? "positive" : "neutral"}>
           {meeting.status === "waiting" ? "waiting room" : meeting.status}
         </Chip>
@@ -234,6 +293,25 @@ function RoomFrame({
       {children}
     </section>
   );
+}
+
+/**
+ * Mirrors the LiveKit local mic state into the recorder.
+ *
+ * Rendered inside `LiveKitRoom` because `useLocalParticipant` needs the room
+ * context; it draws nothing. Muting pauses the recorder and closes a speech
+ * interval, so a muted stretch is neither uploaded nor counted as talking.
+ */
+function MuteBridge({
+  onMuteChange,
+}: {
+  onMuteChange: (muted: boolean) => void;
+}) {
+  const { isMicrophoneEnabled } = useLocalParticipant();
+  useEffect(() => {
+    onMuteChange(!isMicrophoneEnabled);
+  }, [isMicrophoneEnabled, onMuteChange]);
+  return null;
 }
 
 function Placeholder({ title, detail }: { title: string; detail: string }) {
@@ -258,7 +336,10 @@ function Placeholder({ title, detail }: { title: string; detail: string }) {
 /** Shown to somebody who may see the meeting but not enter it. */
 export function RoomClosed({ reason }: { reason: string }) {
   return (
-    <section className="slab slab-flat flex min-h-[280px] flex-col overflow-hidden rounded-card" data-on-slab>
+    <section
+      className="slab slab-flat flex min-h-[280px] flex-col overflow-hidden rounded-card"
+      data-on-slab
+    >
       <Placeholder title="You cannot join this meeting" detail={reason} />
     </section>
   );

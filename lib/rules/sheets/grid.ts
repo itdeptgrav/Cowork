@@ -185,6 +185,8 @@ export interface SheetData {
   cols: number;
   charts?: ChartSpec[];
   conditionals?: ConditionalRule[];
+  /** Row indices (0-based) hidden by a filter. Absent or empty ⇒ nothing hidden. */
+  hidden?: number[];
 }
 
 /**
@@ -383,6 +385,10 @@ function parseSheet(input: unknown): SheetData {
       });
     }
   }
+  const hidden = Array.isArray(raw.hidden)
+    ? Array.from(new Set(raw.hidden.filter((n): n is number => typeof n === "number" && n >= 0)))
+    : [];
+
   return {
     cells,
     styles,
@@ -390,6 +396,7 @@ function parseSheet(input: unknown): SheetData {
     cols: clamp(raw.cols ?? DEFAULT_COLS, 1, MAX_COLS),
     ...(charts.length ? { charts } : {}),
     ...(conditionals.length ? { conditionals } : {}),
+    ...(hidden.length ? { hidden } : {}),
   };
 }
 
@@ -432,6 +439,7 @@ function sheetToObject(data: SheetData): Record<string, unknown> {
     cols: data.cols,
     ...(data.charts?.length ? { charts: data.charts } : {}),
     ...(data.conditionals?.length ? { conditionals: data.conditionals } : {}),
+    ...(data.hidden?.length ? { hidden: data.hidden } : {}),
   };
 }
 
@@ -1340,4 +1348,257 @@ export function describeConditional(rule: ConditionalRule): string {
     case "iconSet":
       return `Icon set (${rule.iconSet ?? "arrows"})`;
   }
+}
+
+/* ── Structural edits: rows, columns, sort, filter ──────────────────────────
+ *
+ * Added for the AI assistant's `insert_rows` / `delete_rows` /
+ * `insert_columns` / `delete_columns` / `sort_range` / `filter_range` tools —
+ * the grid had no programmatic way to do any of these before a person did
+ * them by hand, so there was nothing for the assistant's executor to call.
+ *
+ * **Known limitation, stated once here rather than on every function:**
+ * these move CELL VALUES — including formula text — but do not rewrite
+ * formula references. A formula that reads `=SUM(B2:B10)` keeps reading
+ * `=SUM(B2:B10)` even after a row is inserted above it, which is wrong the
+ * instant the insertion happened above row 2. Full reference-repair across
+ * structural edits is what a real spreadsheet engine spends a large amount
+ * of its own code on; building a correct version of it was out of scope for
+ * this pass. `offsetReferences` (above) shifts a formula's OWN references by
+ * a uniform delta for fill/paste, which is a different, narrower problem
+ * than repairing every formula on the sheet that points at a range that just
+ * moved.
+ */
+
+function shiftRef(ref: string, atRow: number, dRow: number, atCol: number, dCol: number): string | null {
+  const pos = parseRef(ref);
+  if (!pos) return null;
+  const row = pos.row >= atRow ? pos.row + dRow : pos.row;
+  const col = pos.col >= atCol ? pos.col + dCol : pos.col;
+  if (row < 0 || col < 0) return null;
+  return cellRef(row, col);
+}
+
+/** A range string shifted by a structural edit. Collapses to null if the whole range was deleted. */
+function shiftRangeString(range: string, atRow: number, dRow: number, atCol: number, dCol: number): string | null {
+  const rect = rangeToRect(range);
+  if (!rect) return range;
+  const top = rect.top >= atRow ? rect.top + dRow : rect.top;
+  const bottom = rect.bottom >= atRow ? rect.bottom + dRow : rect.bottom;
+  const left = rect.left >= atCol ? rect.left + dCol : rect.left;
+  const right = rect.right >= atCol ? rect.right + dCol : rect.right;
+  if (top > bottom || left > right) return null;
+  return rangeLabel({ top, bottom, left, right });
+}
+
+function shiftChartsAndConditionals(
+  data: SheetData,
+  atRow: number,
+  dRow: number,
+  atCol: number,
+  dCol: number,
+): Pick<SheetData, "charts" | "conditionals"> {
+  const charts = (data.charts ?? [])
+    .map((c) => {
+      const range = shiftRangeString(c.range, atRow, dRow, atCol, dCol);
+      return range ? { ...c, range } : null;
+    })
+    .filter((c): c is ChartSpec => c !== null);
+  const conditionals = (data.conditionals ?? [])
+    .map((r) => {
+      const range = shiftRangeString(r.range, atRow, dRow, atCol, dCol);
+      return range ? { ...r, range } : null;
+    })
+    .filter((r): r is ConditionalRule => r !== null);
+  return {
+    ...(charts.length ? { charts } : {}),
+    ...(conditionals.length ? { conditionals } : {}),
+  };
+}
+
+function remapCellsAndStyles(
+  data: SheetData,
+  atRow: number,
+  dRow: number,
+  atCol: number,
+  dCol: number,
+): Pick<SheetData, "cells" | "styles"> {
+  const cells: CellMap = {};
+  for (const [ref, value] of Object.entries(data.cells)) {
+    const next = shiftRef(ref, atRow, dRow, atCol, dCol);
+    if (next) cells[next] = value;
+  }
+  const styles: StyleMap = {};
+  for (const [ref, style] of Object.entries(data.styles)) {
+    const next = shiftRef(ref, atRow, dRow, atCol, dCol);
+    if (next) styles[next] = style;
+  }
+  return { cells, styles };
+}
+
+/** Insert `count` blank rows above `atRow` (0-based). Rows at or below `atRow` shift down. */
+export function insertRows(data: SheetData, atRow: number, count: number): SheetData {
+  const n = Math.max(1, Math.round(count));
+  return {
+    ...data,
+    ...remapCellsAndStyles(data, atRow, n, 0, 0),
+    ...shiftChartsAndConditionals(data, atRow, n, 0, 0),
+    rows: clamp(data.rows + n, 1, MAX_ROWS),
+    hidden: (data.hidden ?? [])
+      .map((r) => (r >= atRow ? r + n : r))
+      .filter((r) => r < data.rows + n),
+  };
+}
+
+/** Delete `count` rows starting at `atRow` (0-based). Content inside the deleted band is dropped. */
+export function deleteRows(data: SheetData, atRow: number, count: number): SheetData {
+  const n = Math.max(1, Math.round(count));
+  const cells: CellMap = {};
+  for (const [ref, value] of Object.entries(data.cells)) {
+    const pos = parseRef(ref)!;
+    if (pos.row >= atRow && pos.row < atRow + n) continue;
+    const next = shiftRef(ref, atRow + n, -n, 0, 0);
+    if (next) cells[next] = value;
+  }
+  const styles: StyleMap = {};
+  for (const [ref, style] of Object.entries(data.styles)) {
+    const pos = parseRef(ref)!;
+    if (pos.row >= atRow && pos.row < atRow + n) continue;
+    const next = shiftRef(ref, atRow + n, -n, 0, 0);
+    if (next) styles[next] = style;
+  }
+  return {
+    ...data,
+    cells,
+    styles,
+    ...shiftChartsAndConditionals(data, atRow + n, -n, 0, 0),
+    rows: clamp(data.rows - n, 1, MAX_ROWS),
+    hidden: (data.hidden ?? [])
+      .filter((r) => r < atRow || r >= atRow + n)
+      .map((r) => (r >= atRow + n ? r - n : r)),
+  };
+}
+
+/** Insert `count` blank columns before `atCol` (0-based). */
+export function insertColumns(data: SheetData, atCol: number, count: number): SheetData {
+  const n = Math.max(1, Math.round(count));
+  return {
+    ...data,
+    ...remapCellsAndStyles(data, 0, 0, atCol, n),
+    ...shiftChartsAndConditionals(data, 0, 0, atCol, n),
+    cols: clamp(data.cols + n, 1, MAX_COLS),
+  };
+}
+
+/** Delete `count` columns starting at `atCol` (0-based). */
+export function deleteColumns(data: SheetData, atCol: number, count: number): SheetData {
+  const n = Math.max(1, Math.round(count));
+  const cells: CellMap = {};
+  for (const [ref, value] of Object.entries(data.cells)) {
+    const pos = parseRef(ref)!;
+    if (pos.col >= atCol && pos.col < atCol + n) continue;
+    const next = shiftRef(ref, 0, 0, atCol + n, -n);
+    if (next) cells[next] = value;
+  }
+  const styles: StyleMap = {};
+  for (const [ref, style] of Object.entries(data.styles)) {
+    const pos = parseRef(ref)!;
+    if (pos.col >= atCol && pos.col < atCol + n) continue;
+    const next = shiftRef(ref, 0, 0, atCol + n, -n);
+    if (next) styles[next] = style;
+  }
+  return {
+    ...data,
+    cells,
+    styles,
+    ...shiftChartsAndConditionals(data, 0, 0, atCol + n, -n),
+    cols: clamp(data.cols - n, 1, MAX_COLS),
+  };
+}
+
+/**
+ * Sort the rows of `rect` by the values in `byCol` (an absolute column
+ * index, must fall within `rect`). Every column in `rect` moves together
+ * with each row — a sort reorders records, not one column in isolation.
+ *
+ * Formula text moves as an opaque string with its row (see the module note
+ * above): `=A1` in a sorted row still reads `=A1` in its new position.
+ */
+export function sortRange(
+  data: SheetData,
+  rect: Rect,
+  byCol: number,
+  direction: "asc" | "desc",
+  hasHeaderRow: boolean,
+): SheetData {
+  const firstRow = hasHeaderRow ? rect.top + 1 : rect.top;
+  if (firstRow > rect.bottom) return data;
+
+  const rowIndices = Array.from({ length: rect.bottom - firstRow + 1 }, (_, i) => firstRow + i);
+  const keyOf = (row: number): string => data.cells[cellRef(row, byCol)] ?? "";
+  const sorted = [...rowIndices].sort((a, b) => {
+    const av = keyOf(a);
+    const bv = keyOf(b);
+    const an = Number(av);
+    const bn = Number(bv);
+    const bothNumeric = av !== "" && bv !== "" && Number.isFinite(an) && Number.isFinite(bn);
+    const cmp = bothNumeric ? an - bn : av.localeCompare(bv);
+    return direction === "asc" ? cmp : -cmp;
+  });
+
+  const cells: CellMap = { ...data.cells };
+  const styles: StyleMap = { ...data.styles };
+  for (const col of range(rect.left, rect.right)) {
+    const originalValues = rowIndices.map((row) => data.cells[cellRef(row, col)]);
+    const originalStyles = rowIndices.map((row) => data.styles[cellRef(row, col)]);
+    sorted.forEach((sourceRow, i) => {
+      const destRow = rowIndices[i]!;
+      const ref = cellRef(destRow, col);
+      const sourceIndex = rowIndices.indexOf(sourceRow);
+      const value = originalValues[sourceIndex];
+      const style = originalStyles[sourceIndex];
+      if (value === undefined) delete cells[ref];
+      else cells[ref] = value;
+      if (style === undefined) delete styles[ref];
+      else styles[ref] = style;
+    });
+  }
+
+  return { ...data, cells, styles };
+}
+
+function range(from: number, to: number): number[] {
+  return Array.from({ length: to - from + 1 }, (_, i) => from + i);
+}
+
+export type FilterCondition = "equals" | "contains" | "notEmpty" | "empty";
+
+/**
+ * Which rows of `rect` do NOT match the condition on `byCol` — the row
+ * indices `filter_range` hides, keeping the header row (if any) visible
+ * regardless of whether it matches.
+ */
+export function rowsNotMatching(
+  data: SheetData,
+  rect: Rect,
+  byCol: number,
+  condition: FilterCondition,
+  value: string,
+  hasHeaderRow: boolean,
+): number[] {
+  const firstRow = hasHeaderRow ? rect.top + 1 : rect.top;
+  const out: number[] = [];
+  for (let row = firstRow; row <= rect.bottom; row++) {
+    const cell = data.cells[cellRef(row, byCol)] ?? "";
+    const matches =
+      condition === "notEmpty"
+        ? cell.trim() !== ""
+        : condition === "empty"
+          ? cell.trim() === ""
+          : condition === "equals"
+            ? cell.trim().toLowerCase() === value.trim().toLowerCase()
+            : cell.toLowerCase().includes(value.toLowerCase());
+    if (!matches) out.push(row);
+  }
+  return out;
 }

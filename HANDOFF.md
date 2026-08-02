@@ -2934,3 +2934,663 @@ check-secrets clean. Everything below is where I would look first:
    claim is now corrected rather than implemented. The engine's `/priority-order`
    route only renumbers ranks. A person who never opens the app learns nothing
    until they do.
+
+---
+
+# Session 13 — 2026-08-02 · profile pictures
+
+**tsc clean · 2248 tests passing · `next build` exit 0 · check-secrets clean.**
+Lint: 4 pre-existing errors (`MessagesArea`, `SheetGrid`), none from this work.
+
+## 20.0 · It was already there, and the mapper was throwing it away
+
+`lib/legacy/employees.ts:79` has always mapped `cowork_employees.profilePicUrl`
+into `LegacyEmployee.avatarUrl`. `toEmployee` never carried it onto the domain
+`Employee`, so **every real employee who set a photograph in the old app was
+drawn here as a monogram** — the engine was sending the picture on every
+directory read and this build discarded it. Same class as
+`estimatedEffortSecs: 0` (§9.2): a mapper field silently dropping a value the
+document had. The read half was two lines.
+
+`Avatar`'s header comment claimed "this build ships no photography ... inventing
+faces for invented employees would present synthetic material as genuine". Half
+right, and now restated rather than deleted: **the seed still ships `null`** and
+every demo avatar is still a monogram; real people on the engine have real
+photographs they set themselves. Nothing generates a face.
+
+## 20.1 · Ported, not designed
+
+Every number is the old app's (`cowork-old-frontend/app/coworking/settings/page.js:102-131`):
+centre-crop to a square, 160×160, JPEG quality 0.75, 10MB source cap, and the
+refusals verbatim — *"Please select an image file."*, *"Image must be under
+10MB."* The stored value is a ~10KB data URL on the employee record, so an
+avatar never costs a request and no storage bucket is needed. Reproducing the
+numbers matters more than improving them: **it is the same field on the same
+document**, so a picture set in either app appears in both, and a different
+output size would give one person two resolutions depending on which app they
+opened.
+
+Two things legacy gets wrong are fixed in `lib/people/encodeProfilePicture.ts`:
+**EXIF orientation** (a phone photo taken sideways was stored lying down) and a
+**leaked object URL** it never revokes.
+
+## 20.2 · The cache decision, which is the one that could have broken it
+
+`setMyProfilePicture` must NOT call `invalidatePeople()`. The directory comes
+from the engine's `/employee/list-members`, and **the engine caches that list for
+five minutes with nothing a browser can clear**. Dropping our own 60-second cache
+after a write therefore fetches the stale list *sooner* and overwrites the
+picture the person just set — on their own screen, seconds later.
+
+So the write writes through: `#ownPicture` holds the value, applies it to the
+cached row, and re-applies it to every refill until the engine's copy agrees, at
+which point it retires itself. A picture removed elsewhere is not held forever.
+
+Consequence to state plainly, and the help article does: **colleagues may keep
+seeing the old picture for a few minutes.** Nothing can make that shorter.
+
+## 20.3 · Self only
+
+`setMyProfilePicture(dataUrl: string | null)` takes no employee id. Legacy's own
+settings page writes exactly one document — its author's — and the engine has no
+route that could decide whether one person may change another's face. A method
+with an id would ask a question nothing can answer. `null` removes.
+
+Another browser-to-Firestore write, argued in the same terms as the timer,
+`cowork_duty_status` and `cowork_settings`: the old frontend writes this document
+today, so this adds a **caller**, not a capability.
+
+## 20.4 · Coverage
+
+`Employee.profilePictureUrl` is REQUIRED, which forced all seven construction
+sites at the typechecker rather than leaving them to be found. `Avatar` gained an
+**optional** `src`, so no call site broke; 33 files then had it passed through
+mechanically, and tsc verified every one of those expressions really was an
+`Employee`.
+
+**Five surfaces keep the monogram deliberately**: both mail headers and the
+LiveKit room list have no employee record at all (a sender is an address; a
+participant is an identity string), the emergency-approval row carries only a
+name, and the "empty conversation" placeholder is not a person. The article says
+so, so it reads as a decision rather than a gap.
+
+## 20.5 · Not verified
+
+No browser. Specifically unexercised: the canvas encode on a real photograph
+(EXIF rotation especially), the write against production Firestore, and whether
+the Firestore rules actually permit this client to write `cowork_employees` —
+inferred from the old app performing the identical write, never observed. If it
+is refused, the failure is loud and named (*"Your picture could not be saved: …"*)
+rather than silent.
+
+---
+
+# Session 14 — 2026-08-02 · the workspace surface
+
+**tsc clean · 2289 tests passing · lint unchanged (4 pre-existing errors,
+`MessagesArea` and `SheetGrid`, none from this work).** No production build and
+no browser render — see 21.5.
+
+## 21.0 · There was a windowed mode, and it was nobody's answer
+
+A document opened into `h-[clamp(520px,78vh,1000px)]` on the workspace page,
+with a button that maximised it. A sheet never even got that: it opened into the
+right pane of a `[300px_minmax(0,1fr)]` grid, so its grid showed about six
+columns while a 300px rail beside it displayed a list of sheets nobody was
+choosing from any more.
+
+Both are gone. Opening either takes the window, always, via `WorkspaceStage` —
+one `fixed inset-0` frame that owns the page's scrollbar while it is up and
+nothing else. **It deliberately owns no keys.** Escape inside a document belongs
+to whatever is innermost: a menu, then find-and-replace, then a dialog. A stage
+that grabbed it would close the document on the first press meant for one of
+those, which is a lost paragraph rather than a lost keystroke.
+
+The removal also killed a state that could disagree with itself. `full` lived in
+both `DocumentEditor` and `SheetGrid` and meant two things at once — a CSS
+layout and native fullscreen — kept in step by a `fullscreenchange` effect that
+only ever cleared it. Leaving fullscreen with Escape left a document claiming to
+be maximised inside a 78vh box. The flag is now `chromeless`, it means exactly
+one thing, and the browser is its only writer.
+
+## 21.1 · What the fullscreen button became
+
+It is still there and it is renamed: **"Hide browser chrome"**, in the View menu
+and on both headers. The editor already fills the window, so the only thing that
+control can still do is hide the browser's own tabs and address bar — which is a
+real thing to want for a long read, and a different thing from the size of the
+editor. Naming it after what it does is the difference between a control people
+press once and one they use.
+
+`MenuBarActions.fullScreen`/`onFullScreen` became `chromeless`/`onChromeless` so
+the prop cannot be read as a size.
+
+## 21.2 · Few commands, one place
+
+`CommandPalette` (Ctrl K) carries the whole of what the workspace is asked to
+do: make one, open one of the last five, go to another surface — plus **Add
+card** and **Start over** on the mindmap. That is the entire set, and it is
+supposed to stay near that size. Formatting, page setup and export are not in it:
+they belong to an open document, where the menus name them in groups that can be
+read. A palette listing sixty commands is a search box over a manual.
+
+The ranking is `lib/rules/workspace/commands.ts`, pure and tested, because the
+first row is the one Enter runs — the order is behaviour, not decoration. Seven
+ranks, every one of them a sentence somebody could say: exact, prefix, initials,
+word-prefix, keyword-prefix, contains, keyword-contains. **No fuzzy subsequence
+matching**, and mid-word matching needs three letters — `nd` finding
+"Mi**nd**map" is how a two-keystroke query starts running commands from another
+surface.
+
+Mounted on the browsing surface only. **Inside a document Ctrl K inserts a
+link**, which is what that keystroke means in every editor anybody has used, and
+two things cannot own one reflex. The shortcuts dialog has claimed
+`Link · Ctrl K` since it was written; nothing was bound to it. Now there is.
+
+## 21.3 · The list is a table now
+
+One list for documents and sheets, wide, with column headings in Label type —
+the one place this system spends tracked uppercase outside wayfinding, because a
+dense table's headings are read as part of the rows under them. Two genuine
+kicker defects went with it: `DocsSidebar` stacked *two* tracked uppercase
+eyebrows down one rail ("DOCUMENTS", "OUTLINE"), and the mindmap's "kept in this
+browser" note was `text-ink-faint` sitting directly on the field — a panel-only
+token on a live ground, which The Field Is Not A Text Surface Rule forbids
+because the backdrop moves as the page scrolls. It rides a chip now.
+
+`.snap-in` is new in `globals.css`: 150ms, 4px, for chrome that arrives because
+somebody pressed a key. `.rise` is 620ms over 14px and is right for content a
+reader navigated to; a palette on that curve is one people type into before it
+has settled.
+
+## 21.4 · Files
+
+- `lib/rules/workspace/commands.ts` · `commands.test.ts` — ranking, grouping,
+  wrap-around selection. 14 tests.
+- `components/features/workspace/WorkspaceStage.tsx` — the immersive frame.
+- `components/features/workspace/CommandPalette.tsx` — the palette and the
+  shared `navigationCommands`.
+- `DocumentsArea.tsx` — one table, both kinds; opens onto the stage.
+- `DocumentEditor.tsx` — `chromeless`, Back in the title bar, Ctrl K → link.
+- `SheetGrid.tsx` — `chromeless`, Back and New in the header, `onClose`/`onNew`.
+- `WorkspaceArea.tsx` — head split into title · surfaces · toolbar; map palette.
+- `docs/DocsMenuBar.tsx`, `docs/DocsSidebar.tsx`, `app/globals.css`.
+- `lib/help/knowledge.ts` — `general-documents` rewritten at the top and a new
+  **`general-sheets`**. Sheets had *no* article at all before this: the coverage
+  guard does not know the word, so nothing failed while the whole surface went
+  undocumented. Worth knowing about the guard's reach.
+
+## 21.5 · Not verified
+
+No browser. The automation browser refused to hold `localhost:3000/workspace` —
+it bounced back to `chrome://newtab` three times — and the route is behind
+sign-in anyway (`307 → /signin?next=%2Fworkspace`). Nothing here has been seen
+rendered.
+
+No `next build` either, and this is a deliberate omission rather than an
+oversight: a dev server belonging to concurrent work in this repo holds `.next`,
+and a second build races it into the `ENOTEMPTY` failure this file has recorded
+before. `tsc --noEmit` is clean for every file touched here. The two type errors
+that remain in the tree (`TranscriptPanel`, `useMeetingTranscript`) belong to
+that concurrent meetings work, not to this.
+
+Specifically unexercised: the stage's body-scroll lock against a page that
+already had one, keyboard selection scrolling inside the palette, the sheet's
+row-window measurement now that its viewport is the window rather than a pane,
+and whether `requestFullscreen` still resolves from an element inside a
+`fixed`-positioned stage.
+
+## 21.6 · Phase 2 · Documents — one repeated defect, found four times
+
+`DocumentEditor.tsx` and its `docs/` toolbar suite needed almost nothing beyond
+21.1–21.2: every control already reads its state from the editor rather than
+from React state (`useEditorState` with a compact, deep-equal signature), the
+toolbar's table controls only appear inside a table, and the popovers close on
+Escape, on an outside `pointerdown`, and on choosing something — all three,
+because missing any one of them is the usual way a menu goes wrong.
+
+What repeated was the same defect already fixed twice in Phase 1 (`DocsSidebar`,
+`NodeInspector`): a tracked-uppercase eyebrow sitting **above a panel, a list or
+a form**, which DESIGN.md's One Kicker Rule names as a defect in those words.
+Found in four places once actually searched for (`grep -rn uppercase`), none of
+them the same file:
+
+- `ShareMenu.tsx` — "WHO HAS ACCESS" over the member list.
+- `DocsDialogs.tsx` — "SELECTION" in the word-count dialog, and "TEXT" /
+  "PARAGRAPH" / "DOCUMENT" in the shortcuts dialog — **three in one 460px
+  dialog**, which would have triple-fired the rule even on its own.
+- `DocsMenu.tsx` — `MenuHeading`, the shared component behind every menu
+  group label in this surface. One fix here closes it everywhere it is used
+  (today, only "Mode" in the View menu, but the next menu that adds a group
+  inherits the fix rather than the defect).
+
+All four now use the same small-Title treatment `DocsSidebar` established:
+`text-[12.5px] font-medium text-ink` (or `text-ink-muted` for the menu-chrome
+context, where full ink would compete with the item labels below it) — never
+uppercase, never tracked.
+
+## 21.7 · Not from this work
+
+`npm test` now shows 2288/2289 — one new failure, `lib/auth/apiRouteAuth.test.ts`,
+a source assertion expecting `/currentSession/` inside
+`app/api/meetings/token/route.ts`. That file, and five others under
+`components/features/meetings/`, are mid-edit by concurrent work in this same
+tree (confirmed via `git status` — none of them touched here). The three stray
+`tsc` errors noted in 21.5 (`TranscriptPanel`, `useMeetingTranscript`,
+`MeetingSummaryPanel`) are the same concurrent session. Left alone rather than
+fixed: touching another session's in-progress files is more likely to conflict
+with it than help.
+
+`tsc --noEmit` is clean for every file this phase touched. Lint run narrowly
+against the four changed files: clean.
+
+## 21.8 · The regression the full-screen change actually caused
+
+The user flagged a screenshot: opening a document or sheet on `/workspace`
+showed eight bare grey bars, top-left, on a flat black field — no header, no
+card, no way out. That is `<SkeletonRows rows={8} />`, returned bare, with
+nothing around it. It was already there before this session — `DocumentEditor`
+and `SheetGrid` have always returned it unwrapped while `doc.isLoading` — and it
+looked fine, because it used to render inside a bounded box
+(`h-[clamp(520px,78vh,1000px)] rounded-panel border`) sitting on the ordinary
+page, under `TopBar`, inside the page's padded column. **21.0's own change is
+what broke it**: once opening a document or sheet takes the whole window via
+`WorkspaceStage`, that same bare fallback now fills the entire viewport with
+nothing around it — no chrome, no card, unpadded, top-left-aligned on
+`--body-bg` (`#0c0c0e` in dark mode, reading as flat black). The eight-row count
+is what pinned it: `DocumentsArea`'s own skeletons all use six; eight only
+appears at `DocumentEditor.tsx:587` and `SheetGrid.tsx:1116-1117`, and nowhere
+else `WorkspaceStage` wraps.
+
+**Found the same way twice.** The not-found path had the identical shape one
+line below each: `<InlineError message="..." />`, bare, no header — a document
+that fails to load stranded the reader with no way back except the browser's
+own button, which is a worse failure than the loading flash, just rarer.
+
+`WorkspaceStage.tsx` gained two exports, `StageSkeleton` and `StageError`,
+sharing one `StageChrome` header — the same Back control, same corner, as the
+real document and sheet headers. `StageSkeleton` previews the shape that is
+actually coming (a header bar, a raised page on the recessed ground, six
+text-line skeletons) rather than a generic list nobody asked for, and it keeps
+a working Back so a slow connection is a wait rather than a trap.
+
+Both call sites now read `<StageSkeleton onClose={onClose} />` and
+`<StageError message="…" onClose={onClose} />`. tsc clean, and lint on the four
+touched files shows only the two pre-existing `SheetGrid` errors already noted
+in every session since (lines 283 and 1002, not lines this touched).
+
+**Not verified.** Same constraint as 21.5: no authenticated session in the
+automation browser (bounced to `/signin?next=%2Fworkspace`), so this is
+confirmed by code trace — the exact match on the eight-row count and the
+`SkeletonRows` shape (dot, bar, trailing pill) against the reported screenshot —
+not by seeing it rendered. Worth an actual look next time a real browser is
+available.
+
+## 21.9 · 21.8's fix wasn't enough — the token was wrong, not just the layout
+
+The user pushed back with a fresh screenshot after 21.8 shipped: a header and a
+card were now present, but both still read as barely-there grey smudges
+floating in a near-total black void — still unprofessional, just with fewer
+bars.
+
+The actual cause: `StageChrome` and `StageSkeleton` used `--surface-raised` and
+`--surface-sunken` for the header and the page card. Both are **translucent**
+in dark mode — `rgba(255,255,255,0.05)` and `rgba(0,0,0,0.24)` — tuned to sit
+on top of the app's moving iridescent field, which is where their contrast
+actually comes from. `WorkspaceStage` deliberately has no field behind it
+(flat `--body-bg`, `#0c0c0e`), so both tokens compose to something visually
+indistinguishable from the frame around them. Confirmed by reading the values
+in `globals.css` rather than guessing again.
+
+Switched both to `--doc-page` — an **opaque**, independently-lit colour
+(`#191920` dark, `#ffffff` light), documented in its own comment as "a lifted
+panel in dark." It does not depend on anything moving behind it. Also added: a
+real `border border-hairline` on the card (the shadow token alone barely reads
+against a background this dark), a second header row of small skeleton squares
+so the loading chrome previews the *shape* of a real toolbar rather than three
+lonely pills, and centred the card vertically instead of pinning it to the top
+of a frame it does not fill. `StageError` got the same card treatment — a bare
+message on the same flat frame was the identical failure, just rarer.
+
+**Not verified — same constraint as 21.5 and 21.8.** No authenticated session
+in the automation browser. This round is argued from the actual computed CSS
+values, not from a render either of us has seen together. If it is still wrong,
+the next fix needs a real screenshot of THIS version specifically, because the
+token-substitution reasoning here is close to the limit of what is diagnosable
+from code alone.
+
+---
+
+# Session 15 — 2026-08-02 · one AI assistant, Docs and Sheets, Gemini Flash-Lite only
+
+**tsc clean (every file this touched) · 2355/2356 tests passing, the one
+failure is the concurrent meetings session's own test, confirmed via `git
+status` in both repos · check-secrets clean, but against a stale bundle — see
+22.6 · lint clean on every file this touched.**
+
+## 22.0 · Where the backend actually lives, and why that mattered
+
+The brief was explicit: reuse `grav-cms-backend`, do not build a second
+backend, keep `GEMINI_API_KEY` out of anything this repo's browser bundle can
+reach. The existing Gemini integration in THIS repo — `lib/help/gemini.ts`,
+called from `app/api/help/route.ts` — does the opposite: its own key lives in
+*this* repo's own `.env`, read from a Next.js Route Handler. That pattern was
+not reused. It would have been the wrong "backend."
+
+`grav-cms-backend` already had everything this needed: `@google/generative-ai`
+as a dependency, `GEMINI_API_KEY` already in its `.env`, and — found only by
+reading `routes/task_routes/askAI.routes.js`, an unrelated meeting-audio-Q&A
+feature — the exact auth convention every write to that backend already uses:
+`Authorization: Bearer <Firebase ID token>`, verified by
+`verifyCoworkToken`/`verifyEmployeeToken`, called directly from the browser at
+`NEXT_PUBLIC_LEGACY_API_URL` (see `uploadMessageAttachment` in
+`lib/repositories/legacy/index.ts` for the existing shape this copies exactly).
+No new environment variable was needed anywhere.
+
+## 22.1 · The model name that doesn't exist for this key
+
+`gemini-2.5-flash-lite` — the literal name the brief asked for — 404s on
+`generateContent` for this project's key: *"This model is no longer available
+to new users."* It still appears in `models.list`, which is the same trap
+`lib/help/gemini.ts` already documents for `gemini-2.5-flash`. Confirmed live,
+not assumed. `gemini-flash-lite-latest` — the maintained alias — works, and is
+what ships. `askAI.routes.js`'s own `MODELS_TO_TRY` list tries four
+progressively cheaper models in sequence on failure; that pattern was
+deliberately NOT copied here — the brief says no silent upgrade, so a model
+failure is reported as a failure, once, with one same-model retry for a
+transient error, never a fallback to a different model.
+
+## 22.2 · Backend
+
+- `routes/task_routes/aiAssist.routes.js` — `POST /cowork/ai/assist`,
+  `GET /cowork/ai/assist/status`. Authenticates, bounds instruction/context/
+  history length independently of whatever the client claims, calls the
+  service, returns its outcome verbatim.
+- `services/aiAssist.service.js` — the only file that imports
+  `@google/generative-ai` for this feature. Declares 10 Docs tools and 13
+  Sheets tools as Gemini function declarations (`SchemaType`-typed), asks for
+  **at most one tool call per reply** in the system instruction, returns a
+  typed outcome (`tool_call` / `message` / a typed failure — `not_configured`
+  / `invalid_tool` / `empty` / `quota` / `failed`). Never touches Firestore,
+  MongoDB, or any document/sheet content beyond what it was handed.
+- `server.js` — one line, registering the route beside every other `/cowork`
+  mount.
+
+Verified LIVE against the real key, not just unit-tested: a grammar-fix
+request returned a correct `replace_selection` call; a "sum this column"
+request returned a correct `=SUM(...)` `set_formula` call; a "delete the
+whole document" request returned **no tool call at all** — a plain-text
+refusal, exactly what the system instruction asks for.
+
+## 22.3 · The validation is real, and it is duplicated on purpose
+
+Two independent validators, one per surface, both re-checking a raw
+`{tool, args}` object as untrusted input regardless of which server sent it:
+
+- `lib/rules/documents/aiTools.ts` — 10 Docs tools. `add_comment` is declared
+  to Gemini (so it recognises "add a comment" as a real request) but is
+  ALWAYS refused here, by name, with the same honesty
+  `DocumentEditor.tsx`'s own header comment already applies to the rest of
+  the product: there is no comment layer in this editor, and pretending
+  otherwise is worse than saying so.
+- `lib/rules/sheets/aiTools.ts` — 13 Sheets tools, each checked against the
+  ACTUAL current sheet, not just its own schema: a range has to fit inside
+  `sheet.rows`/`sheet.cols`, a sort/filter column has to fall inside the
+  range it sorts/filters, a conditional-format kind has to carry the
+  arguments that kind actually needs (`between` needs two numbers,
+  `duplicate` needs none — checked per-kind, not just "some numbers are
+  present").
+
+Both export a `requiresConfirmation` predicate reading the CURRENT state —
+deleting rows, sorting, filtering, and any bulk overwrite of cells that
+already hold data all gate on a second explicit click; additive actions
+(insert, append, a two-cell format) never do, regardless of size.
+
+## 22.4 · What `lib/rules/sheets/grid.ts` didn't have before this
+
+`insertRows`, `deleteRows`, `insertColumns`, `deleteColumns`, `sortRange`,
+`rowsNotMatching` — none of these existed. The grid had never needed a
+programmatic way to do any of them; a person always did it by hand. Each is
+pure, tested (`grid.structural.test.ts`), and each carries the same disclosed
+limitation stated once in the module comment rather than on every function:
+**they move cell VALUES, including formula text, but do not rewrite formula
+references.** `=SUM(B2:B10)` still reads `=SUM(B2:B10)` after a row is
+inserted above it — wrong the instant that happens. Building a correct
+reference-repair pass is what a real spreadsheet engine spends a large amount
+of its own code on; it was out of scope here. Pinned in a test
+(`"column formula TEXT moves with the cell — the documented reference
+limitation"`) so a future "fix" is a deliberate decision, not an accident
+nobody notices until a formula quietly points at the wrong cell.
+
+`SheetData` gained `hidden?: number[]` for `filter_range` — genuine row
+hiding, not a substitute like sorting matches to the top. `SheetGrid.tsx`'s
+row-render loop skips a hidden index; the header gained a "N rows hidden ·
+Show all" control so nobody is stranded with rows they can't get back. **The
+one real compromise**: a hidden row keeps its full `CELL_H` in the scroll
+coordinate space rather than collapsing it, because the windowing math
+(`scrollTop / CELL_H`) assumes uniform row height and closing the gap
+properly would mean rewriting that math to work over a variable-height row
+list. Scrolling past a filtered block currently passes through a short empty
+band rather than a seamless close-up. Disclosed in the new help article, not
+just here.
+
+`sheetCommands.ts` gained five `SheetCommand` variants for capabilities the
+existing union had no way to express: `writeCells`, `structuralEdit` (takes
+the grid.ts functions' already-computed `SheetData` and applies it —
+`SheetGrid.tsx`'s new `applyStructuralEdit` is a delete-everything-then-
+set-everything inside one Yjs transaction, the same shape `moveRule` already
+used for reordering conditional rules, extended to cells/styles/charts/
+conditionals together), `setHiddenRows`, `createChart` (an explicit range and
+title — the toolbar's own `insertChart` still derives both from the current
+selection and an ordinal; `insertChart` now delegates to the new
+`insertChartAt` so neither code path is a copy of the other),
+`applyConditionalFormat` (an explicit rule, where the toolbar's `addRule`
+still fills in defaults from a kind alone). `format_range` and `create_chart`
+otherwise reuse the EXISTING `style`/`insertChart` commands unchanged, by
+dispatching `selectRange` to the proposed range first — no new command needed
+for either.
+
+## 22.5 · The shared panel, and what it deliberately doesn't know
+
+`components/features/workspace/ai/AssistantPanel.tsx` has never heard of
+Tiptap, HyperFormula, or `SheetCommand`. It takes `validate`/`apply`/`undo` as
+callbacks and renders whatever `validate` hands back as `preview` — a
+`ReactNode` the surface-specific executor built, using `DiffPreview.tsx`
+(word-level LCS diff, `lib/rules/workspace/ai/diff.ts`) for Docs rewrites and
+a before/after cell list for Sheets writes. `DocsAssistant.tsx` and
+`SheetsAssistant.tsx` are the only two files in this whole feature that issue
+real mutations — `editor.chain()...run()` and `dispatch(command)`
+respectively — and each only ever runs on an action its OWN file already
+validated. Undo is never a parallel stack: the panel's Undo button is a
+courtesy call to the editor's own history (`editor.chain().undo()` /
+`dispatch({type:"undo"})`, which reaches the existing Yjs `UndoManager`) right
+after Apply — Ctrl-Z does the identical thing. The one exception is
+`rename_sheet`, which writes the document's title over HTTP rather than
+through the sheet's own history; its Undo is a captured previous-title
+revert, not a call into the grid's undo manager, and is scoped to only the
+most recently applied rename.
+
+The model label reads "Gemini Flash-Lite" everywhere, always — never the raw
+alias string, which lives in the badge's tooltip only. There is no code path
+in this feature that can put a different model name there.
+
+## 22.6 · Not verified
+
+**No browser flow was exercised.** The automation browser has no
+authenticated session for this app — every attempt this whole session bounced
+to `/signin?next=%2Fworkspace` — and entering credentials is outside what this
+assistant does regardless. All eleven flows the brief asked to be browser-
+tested (Docs rewrite/preview/apply/undo, Docs table creation, Docs summary
+and action-item extraction, Sheets formula generation and repair, Sheets
+table creation, embedded chart creation, conditional formatting, selected-data
+cleanup, invalid-action rejection, destructive-action confirmation, and
+backend API-key protection) are confirmed only at the level below the
+browser: the Gemini calls are real and live (22.2), the validators are unit-
+tested against exactly the malformed and destructive inputs those flows would
+produce (22.3), and the API-key protection is confirmed by grep — nothing in
+this Next.js repo's source references `GEMINI_API_KEY`, old or new, outside
+the pre-existing unrelated Help Assistant. None of that is the same as
+watching the panel open in a real document and clicking Apply.
+
+`next build` was not run, on purpose — the same standing reason recorded
+earlier this session (§21.5): a dev server belonging to concurrent work in
+this tree holds `.next`, and a second build has previously raced it into an
+`ENOTEMPTY` failure. `check-secrets` ran against whatever `.next/static`
+currently holds, which predates this feature's files — its "clean" result is
+not evidence about this feature specifically, only about the build that
+happened to be sitting there.
+
+Two smaller things not built, stated plainly rather than left to be
+discovered: response caching for repeated summaries (the brief's "cache
+repeated summaries where practical") isn't implemented — every request is a
+live call; and the maximum tool-call count per turn is enforced by asking
+Gemini for at most one in the system instruction, backed by only ever reading
+`functionCalls()?.[0]`, rather than a second structural guarantee that a
+reply carrying more than one call is rejected outright.
+
+## 22.7 · Feedback after 22.0–22.6: overlay, not squeeze; "Cowork AI", not "Gemini"
+
+Two real problems reported after the panel first shipped:
+
+**The panel squeezed the sheet down to almost nothing.** It was built as a
+`w-[360px] shrink-0` flex sibling — the exact shape `ChartPanel`
+(`w-60 shrink-0`) already uses — so structurally it wasn't new, but at 360px
+next to a grid that has real column content to show, the visible sheet
+shrank hard. The fix is a real layout change, not a width tweak: the panel is
+now `absolute inset-y-0 end-0` against the content row (which gained
+`relative` for exactly this), floating over the right edge of the page or
+grid rather than reserving flex space at all. The grid/page renders at its
+full width underneath, unaffected; the panel simply overlaps the rightmost
+340px of it while open. `z-20`, above the grid's sticky row/column headers
+(`z-10`), below every popover and dialog (`z-50`+).
+
+**It said "Gemini Flash-Lite".** Renamed to "Cowork AI" on the panel itself
+and in the new help article — the underlying model choice is an
+implementation decision, not something the product's own UI should be
+naming. `lib/help/knowledge.ts`'s `general-ai-assistant` article updated to
+match, per this project's standing rule that help text has to say what the
+screen actually says.
+
+Also added: a concrete placeholder in the input for each surface (Docs:
+"Rewrite, summarize, translate, or 'continue writing'…"; Sheets: "e.g. 'sum
+this column', 'sort by name', 'add a chart'…") — a direct response to "it'll
+be better if it can do like Google Sheets, like '=sum it'". That capability
+already existed (`set_formula`, and "Sum this column" was already a suggested
+action) — the gap was discoverability, not function, so the fix is copy, not
+new code.
+
+tsc clean, lint clean (same three pre-existing `SheetGrid` errors, none from
+this round), 2355/2356 tests — the one failure is still the concurrent
+meetings session's own test.
+
+## 22.8 · The typing bug was a nesting bug, and `=autosum` is not AI
+
+**"Unable to type in the AI chat."** Real, and not a focus or disabled-state
+problem — a DOM nesting one. In `SheetGrid.tsx` the panel was rendered inside
+the **scrollable grid container** (`ref={gridRef}`, `overflow-auto`), because
+the `</div>` it was placed after closes the inner content-box wrapper
+(`<div className="relative" style={{width: HEAD_W + cols*CELL_W}}>`, the one
+the chart layer positions against), not the grid div. An `absolute` panel
+inside an `overflow-auto` box is clipped by that box and translates with its
+horizontal scroll, so parts of it — the input at the bottom among them — sat
+outside the clip region and could not be reached. `DocumentEditor.tsx` had it
+right already; only the sheet was wrong. It is now a direct child of the
+content row, exactly where `ChartPanel` and `ConditionalPanel` already sit.
+
+Worth noting for anyone touching that render: the grid has FOUR nested
+closing `</div>`s in a row there and the indentation does not match the
+nesting (`{selectedChartSpec && (` is indented two levels deeper than its
+actual parent). That is pre-existing and is what made the wrong insertion
+point look right.
+
+**`=autosum` in a cell.** New `lib/rules/sheets/cellDirectives.ts`, pure and
+tested (13 tests). Typing `=autosum` in a cell finds the contiguous run of
+numbers directly above it — or, failing that, to its left — and writes a real
+`=SUM(B2:B4)`. **No model call, no network, no proposal to approve**: it is
+Excel's AutoSum expressed as something you can type, it is deterministic, and
+it lands as an ordinary formula so undo, the formula bar and HyperFormula all
+treat it as exactly what it is. It reaches across formulas (a subtotal above
+a grand total is part of the column being totalled) and stops at blanks and
+at text (so a header row is excluded). With nothing adjacent, it leaves what
+was typed alone and says so, rather than writing `=SUM()` over nothing.
+
+**`=ai …` / `=ask …` in a cell** opens the panel with the request already
+aimed at that cell (`In cell B5: …`). It stays a *proposal* — preview, Apply,
+Reject — because the standing rule that the model never writes directly
+applies to the in-cell entry point exactly as it does to the panel.
+
+**Natural language is NOT inferred.** `=ai` is required. The alternative —
+"this doesn't parse as a formula, so it must be English" — would mean
+somebody typing `=MYFUNC(1)`, a function this build does not know but a
+future one might, gets an AI panel instead of the `#NAME?` that would
+actually tell them what is wrong. A wrong guess there breaks real formulas;
+an explicit prefix never does. Pinned in a test.
+
+**UI:** suggested actions were eleven full-width bars stacked down a 340px
+column — a wall. They are wrapping pills now; the labels were always two or
+three words, so the width was never carrying meaning.
+
+tsc clean · 2368/2369 tests (the one failure is still the concurrent meetings
+session's own) · lint clean on every file this round touched.
+
+## 22.9 · Uncommitted work was lost mid-session, twice
+
+Two edits — the `SheetGrid` panel move and both `cellDirectives` files —
+were written, confirmed, and then gone minutes later, with `git status`
+showing a clean tree and two new commits present (`57f9df8`, `9401b27`) that
+this session did not make. The AI feature itself survived because it was
+swept into those commits; the two edits in flight at that moment were not.
+They were redone.
+
+Anyone working in this tree concurrently: `git status` here is not a reliable
+picture of what a parallel session is holding, and a commit-then-checkout in
+one session silently discards another's uncommitted work. Nothing in this
+round is a fix for that — it is recorded so the next unexplained
+disappearance is recognised in seconds rather than re-diagnosed.
+
+## 22.10 · "Write a full A4 document" produced a three-word title
+
+Reported with a screenshot: the prompt *"write a full a4 document content
+thanking mayfair hotels and resorts…"* applied a single `# Letter of
+Appreciation` heading and nothing else. Three words, where a page was asked
+for.
+
+**The model behaved correctly; the tool set could not express the request.**
+Every Docs tool wrote ONE element — `create_heading`, `create_paragraph`,
+`create_bullet_list` — and the system instruction says *"Call AT MOST ONE
+tool per reply… do the single most useful step."* Under those two rules
+together, "write a letter" has no representable answer better than a heading.
+That rule is a real cost/safety constraint and stays; what was wrong was
+having no tool whose single call is a whole document.
+
+New `insert_blocks`: an ordered array of `heading` / `paragraph` / `bullets`
+/ `numbered` / `table` blocks, the entire body in one call. The system
+instruction now names it for exactly the cases that were failing (document,
+letter, report, SOP, email, meeting notes) and tells the model to write
+finished content rather than a title plus placeholders.
+
+`maxOutputTokens` went 1024 → 4096. An A4 page is roughly 500 words ≈ 700
+tokens BEFORE the JSON scaffolding of a blocks call, so the old ceiling was
+truncating precisely the requests this tool exists for. Still a hard cap
+(~six pages), not an open tap.
+
+Verified live against the real key with the user's own prompt: 10 blocks —
+H1, two paragraphs, an H2, a bulleted list, another H2, three more
+paragraphs, a sign-off. A real letter.
+
+Validation is deliberately **lenient about cosmetics, strict about
+structure**: an out-of-range heading level is clamped and a ragged table row
+is padded, because throwing away an otherwise good twelve-block letter over a
+`level: 9` would be the wrong trade; but an unknown block type is refused by
+name, and a body with nothing usable in it is refused outright. Empty
+paragraphs and empty lists are dropped rather than inserted as blank space.
+
+The executor issues **one** `insertContentAt` with the whole body, so a
+twelve-block letter is a single undo step — inserting block by block would
+make Ctrl-Z peel it off one paragraph at a time.
+
+87 AI-feature tests pass (7 new). tsc and lint clean on every file this
+touched. The 28 suite failures and 7 tsc errors currently in the tree are all
+in `lib/repositories/legacy/*` and `components/features/meetings/*` — the
+concurrent session's work, confirmed by the fact that no file this feature
+owns appears in either list.
