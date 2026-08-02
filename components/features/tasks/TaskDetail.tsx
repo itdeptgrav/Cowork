@@ -750,34 +750,9 @@ function Overview({
 
   return (
     <>
-      {/* Above the brief on purpose: on a subtask this is the context for
-          everything below it, not a footnote to it. Renders nothing on a root
-          task. */}
-      <ResponsibilityPanel view={view} />
-
-      {/* Renders nothing when the task has no meetings, which is most of them. */}
-      <RelatedMeetings taskId={view.task.id} />
-
-      {/* Reference material, deliverables and correction files, kept apart. */}
-      <TaskFiles view={view} />
-
-      <Panel>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="text-sm font-medium text-ink">Brief</h2>
-          <span className="text-[11px] text-ink-faint">
-            Created {formatDate(view.task.createdAt)}
-          </span>
-        </div>
-        <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
-          {view.task.description ?? "No description was given for this task."}
-        </p>
-        {/* Requirements moved to `ProjectPanel`, which owns their satisfaction
-            state. Rendering them here too would show the same checklist twice
-            with only one copy able to be ticked. */}
-      </Panel>
-
-      {/* The work session, and the commits it has produced. One control, shared
-          with the table rows — the detail variant just states more of it.
+      {/* First on the page on purpose. The timer is the one control somebody
+          opens this task to press, several times a day; everything else here is
+          read once. Below the fold it cost a scroll on every start and pause.
 
           **Absent on a container.** Once a task is broken down, nobody works
           the parent — the assignees, the budget and the timer are on its
@@ -833,6 +808,32 @@ function Overview({
           )}
         </Panel>
       )}
+
+      {/* Above the brief on purpose: on a subtask this is the context for
+          everything below it, not a footnote to it. Renders nothing on a root
+          task. */}
+      <ResponsibilityPanel view={view} />
+
+      {/* Renders nothing when the task has no meetings, which is most of them. */}
+      <RelatedMeetings taskId={view.task.id} />
+
+      {/* Reference material, deliverables and correction files, kept apart. */}
+      <TaskFiles view={view} />
+
+      <Panel>
+        <div className="flex items-start justify-between gap-3">
+          <h2 className="text-sm font-medium text-ink">Brief</h2>
+          <span className="text-[11px] text-ink-faint">
+            Created {formatDate(view.task.createdAt)}
+          </span>
+        </div>
+        <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
+          {view.task.description ?? "No description was given for this task."}
+        </p>
+        {/* Requirements moved to `ProjectPanel`, which owns their satisfaction
+            state. Rendering them here too would show the same checklist twice
+            with only one copy able to be ticked. */}
+      </Panel>
 
       <ProjectPanel view={view} subtasks={subtasks} onChange={onChange} />
 
