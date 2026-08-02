@@ -572,8 +572,8 @@ export function SheetGrid({
        * with a preview and an Apply button, never a direct write. The cell
        * keeps whatever it held before.
        */
-      const directive = parseCellDirective(draft);
-      if (directive?.kind === "autosum") {
+      const directive = sheet ? parseCellDirective(draft) : null;
+      if (directive?.kind === "autosum" && sheet) {
         const formula = resolveAutosum(sheet, editing);
         setCell(editing, formula ?? draft);
         if (!formula) setError("There's nothing next to that cell to total.");

@@ -3482,3 +3482,68 @@ new code.
 tsc clean, lint clean (same three pre-existing `SheetGrid` errors, none from
 this round), 2355/2356 tests — the one failure is still the concurrent
 meetings session's own test.
+
+## 22.8 · The typing bug was a nesting bug, and `=autosum` is not AI
+
+**"Unable to type in the AI chat."** Real, and not a focus or disabled-state
+problem — a DOM nesting one. In `SheetGrid.tsx` the panel was rendered inside
+the **scrollable grid container** (`ref={gridRef}`, `overflow-auto`), because
+the `</div>` it was placed after closes the inner content-box wrapper
+(`<div className="relative" style={{width: HEAD_W + cols*CELL_W}}>`, the one
+the chart layer positions against), not the grid div. An `absolute` panel
+inside an `overflow-auto` box is clipped by that box and translates with its
+horizontal scroll, so parts of it — the input at the bottom among them — sat
+outside the clip region and could not be reached. `DocumentEditor.tsx` had it
+right already; only the sheet was wrong. It is now a direct child of the
+content row, exactly where `ChartPanel` and `ConditionalPanel` already sit.
+
+Worth noting for anyone touching that render: the grid has FOUR nested
+closing `</div>`s in a row there and the indentation does not match the
+nesting (`{selectedChartSpec && (` is indented two levels deeper than its
+actual parent). That is pre-existing and is what made the wrong insertion
+point look right.
+
+**`=autosum` in a cell.** New `lib/rules/sheets/cellDirectives.ts`, pure and
+tested (13 tests). Typing `=autosum` in a cell finds the contiguous run of
+numbers directly above it — or, failing that, to its left — and writes a real
+`=SUM(B2:B4)`. **No model call, no network, no proposal to approve**: it is
+Excel's AutoSum expressed as something you can type, it is deterministic, and
+it lands as an ordinary formula so undo, the formula bar and HyperFormula all
+treat it as exactly what it is. It reaches across formulas (a subtotal above
+a grand total is part of the column being totalled) and stops at blanks and
+at text (so a header row is excluded). With nothing adjacent, it leaves what
+was typed alone and says so, rather than writing `=SUM()` over nothing.
+
+**`=ai …` / `=ask …` in a cell** opens the panel with the request already
+aimed at that cell (`In cell B5: …`). It stays a *proposal* — preview, Apply,
+Reject — because the standing rule that the model never writes directly
+applies to the in-cell entry point exactly as it does to the panel.
+
+**Natural language is NOT inferred.** `=ai` is required. The alternative —
+"this doesn't parse as a formula, so it must be English" — would mean
+somebody typing `=MYFUNC(1)`, a function this build does not know but a
+future one might, gets an AI panel instead of the `#NAME?` that would
+actually tell them what is wrong. A wrong guess there breaks real formulas;
+an explicit prefix never does. Pinned in a test.
+
+**UI:** suggested actions were eleven full-width bars stacked down a 340px
+column — a wall. They are wrapping pills now; the labels were always two or
+three words, so the width was never carrying meaning.
+
+tsc clean · 2368/2369 tests (the one failure is still the concurrent meetings
+session's own) · lint clean on every file this round touched.
+
+## 22.9 · Uncommitted work was lost mid-session, twice
+
+Two edits — the `SheetGrid` panel move and both `cellDirectives` files —
+were written, confirmed, and then gone minutes later, with `git status`
+showing a clean tree and two new commits present (`57f9df8`, `9401b27`) that
+this session did not make. The AI feature itself survived because it was
+swept into those commits; the two edits in flight at that moment were not.
+They were redone.
+
+Anyone working in this tree concurrently: `git status` here is not a reliable
+picture of what a parallel session is holding, and a commit-then-checkout in
+one session silently discards another's uncommitted work. Nothing in this
+round is a fix for that — it is recorded so the next unexplained
+disappearance is recognised in seconds rather than re-diagnosed.
