@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useEmployeeStatus } from "./useEmployeeStatus";
 import {
   STATUS_META,
@@ -67,6 +67,11 @@ const CHOICES: {
     hint: "Stop sharing and leave the room",
   },
 ];
+
+/* The menu's own footprint, used to keep it on screen — see the clamp effect
+   in `StatusButton`. */
+const MENU_WIDTH = 290;
+const MENU_MARGIN = 12;
 
 function elapsed(since: number, now: number): string {
   const secs = Math.max(0, Math.floor((now - since) / 1000));
@@ -156,6 +161,16 @@ export function StatusButton() {
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  /* The menu is anchored `right: 0` to the pill, which is correct on a wide
+     screen where the pill sits far from the left edge. On a narrow phone the
+     pill is nowhere near that far right, and a 290px-wide panel hung off its
+     right edge runs straight past the left edge of the viewport — the "ork
+     has you offline" cut off where "Cowork has you offline" belongs. `right`
+     is shifted negative by exactly the overflow so the panel's LEFT edge
+     never passes the margin, and its width shrinks first on a screen too
+     narrow to hold 290px at all. */
+  const [menuWidth, setMenuWidth] = useState(MENU_WIDTH);
+  const [menuShift, setMenuShift] = useState(0);
 
   const meta = STATUS_META[status];
   const busy = session === "requesting" || session === "connecting";
@@ -176,6 +191,25 @@ export function StatusButton() {
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
   }, [breakStartedAt]);
+
+  /* Keeps the menu on screen. Runs once on open (before paint, so there is no
+     flash at the wrong position) and again on resize/rotate, since the same
+     pill can end up in a different spot relative to the viewport. */
+  useLayoutEffect(() => {
+    if (!open) return;
+    function clamp() {
+      const el = rootRef.current;
+      if (!el) return;
+      const width = Math.min(MENU_WIDTH, window.innerWidth - MENU_MARGIN * 2);
+      const rect = el.getBoundingClientRect();
+      const naturalLeft = rect.right - width;
+      setMenuWidth(width);
+      setMenuShift(Math.max(0, MENU_MARGIN - naturalLeft));
+    }
+    clamp();
+    window.addEventListener("resize", clamp);
+    return () => window.removeEventListener("resize", clamp);
+  }, [open]);
 
   /* Escape closes and returns focus; a click outside closes. */
   useEffect(() => {
@@ -358,7 +392,8 @@ export function StatusButton() {
           id={menuId}
           role="menu"
           aria-label="Set your status"
-          className="frost-bar absolute top-[calc(100%+8px)] right-0 z-50 w-[290px] rounded-panel border border-hairline p-1.5 shadow-[var(--deck-seat)]"
+          style={{ width: menuWidth, right: -menuShift }}
+          className="frost-bar absolute top-[calc(100%+8px)] z-50 rounded-panel border border-hairline p-1.5 shadow-[var(--deck-seat)]"
         >
           {confirming ? (
             <div className="px-2.5 py-2">
