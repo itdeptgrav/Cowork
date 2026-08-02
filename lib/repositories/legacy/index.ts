@@ -8452,12 +8452,15 @@ export class LegacyRepository {
                 requestedQty: it.requestedQty,
                 unit: it.unit,
                 description: it.description ?? "",
+                images: it.images ?? [],
               }
             : {
                 itemName: it.name,
+                category: it.category ?? "",
                 unit: it.unit,
                 requestedQty: it.requestedQty,
                 notes: it.description ?? "",
+                images: it.images ?? [],
               },
         ),
       },

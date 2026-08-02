@@ -6147,6 +6147,7 @@ export class MockRepository implements CoworkRepository {
         rawItemId: it.rawItemId ?? null,
         variantId: it.variantId ?? null,
         variantCombination: it.variantCombination ?? [],
+        images: it.images ?? [],
       })),
       history: [
         {

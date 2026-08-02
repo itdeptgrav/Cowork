@@ -23,7 +23,9 @@ import {
 } from "@/lib/rules/mrf/lifecycle";
 import { formatDate } from "@/lib/utils/format";
 import { MrfChat } from "./MrfChat";
+import { MrfPhotoUploader } from "./MrfPhotoUploader";
 import type {
+  MrfImage,
   MrfPriority,
   MrfRequest,
   MrfRequestType,
@@ -364,6 +366,9 @@ interface DraftItem {
   units: string[];
   /** Stock on hand for the chosen line, for display. */
   stock: number | null;
+  /** For a typed (new) item the store hasn't catalogued yet. */
+  category: string;
+  images: MrfImage[];
 }
 const emptyItem: DraftItem = {
   name: "",
@@ -376,6 +381,8 @@ const emptyItem: DraftItem = {
   variantCombination: [],
   units: [],
   stock: null,
+  category: "",
+  images: [],
 };
 
 function NewMrf({ onDone }: { onDone: () => void }) {
@@ -421,6 +428,8 @@ function NewMrf({ onDone }: { onDone: () => void }) {
         variantCombination: variant?.combination ?? [],
         units: item.units.length ? item.units : [item.baseUnit],
         stock: variant ? variant.quantity : item.quantity,
+        category: "",
+        images: [],
       },
     ]);
     setSearch("");
@@ -603,9 +612,41 @@ function NewMrf({ onDone }: { onDone: () => void }) {
               </button>
               {it.stock != null && (
                 <span className="w-full text-[11px] text-ink-faint">
-                  In stock: <span data-figure>{it.stock}</span> {it.matched ? it.units[0] ?? it.unit : it.unit}
+                  In stock: <span data-figure>{it.stock}</span>{" "}
+                  {it.matched ? it.units[0] ?? it.unit : it.unit}
                 </span>
               )}
+              {/* A typed item is a new-product request: the store will match or
+                  register it. Give them a category, notes and a photo to help. */}
+              <div className="w-full space-y-1.5">
+                {!it.matched && (
+                  <div className="flex flex-wrap items-end gap-2">
+                    <Field label="Category" className="w-[140px]">
+                      <Input
+                        value={it.category}
+                        onChange={(e) => setItem(i, { category: e.target.value })}
+                        placeholder="e.g. Fabric"
+                      />
+                    </Field>
+                    <Field
+                      label="Notes for the store"
+                      className="min-w-[160px] flex-1"
+                    >
+                      <Input
+                        value={it.description}
+                        onChange={(e) =>
+                          setItem(i, { description: e.target.value })
+                        }
+                        placeholder="Anything that helps them find it"
+                      />
+                    </Field>
+                  </div>
+                )}
+                <MrfPhotoUploader
+                  images={it.images}
+                  onChange={(imgs) => setItem(i, { images: imgs })}
+                />
+              </div>
             </div>
           ))}
         </div>
@@ -639,6 +680,8 @@ function NewMrf({ onDone }: { onDone: () => void }) {
                 rawItemId: it.rawItemId,
                 variantId: it.variantId,
                 variantCombination: it.variantCombination,
+                images: it.images,
+                category: it.category || null,
               })),
             });
             if (res.ok) onDone();
