@@ -7,6 +7,7 @@
  */
 
 import type {
+  MrfImage,
   MrfPriority,
   MrfRequest,
   MrfRequestType,
@@ -23,6 +24,9 @@ export interface NewMrfItemInput {
   rawItemId?: string | null;
   variantId?: string | null;
   variantCombination?: string[];
+  /** Reference photos, and (for a new/uncatalogued item) a category. */
+  images?: MrfImage[];
+  category?: string | null;
 }
 
 export interface NewMrfInput {
