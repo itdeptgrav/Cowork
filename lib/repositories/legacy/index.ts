@@ -2806,6 +2806,13 @@ export class LegacyRepository {
            value Firestore refuses outright. */
         documentBody(record, BUDGET_EXTENSION_REQUIRED),
       );
+      /* The whole point of the record is that somebody has to answer it. Until
+         now it was filed and the approver was never told. */
+      this.#announce("budget_extension_requested", {
+        taskId,
+        seconds: input.requestedAdditionalSecs,
+        reason: input.reason ?? "",
+      });
       notifyRepositoryChanged();
       return { ok: true, data: { ...record, id: ref.id } };
     } catch (e) {
@@ -2909,6 +2916,13 @@ export class LegacyRepository {
         approvedAt: decidedAt,
         ...(options?.reason ? { reason: options.reason } : {}),
       });
+      /* The assignee is blocked waiting on this answer — a refusal they are
+         not told about reads as a request nobody ever looked at. */
+      this.#announce("budget_extension_decided", {
+        taskId: record.taskId,
+        approved: false,
+        reason: options?.reason ?? "",
+      });
       notifyRepositoryChanged();
       return {
         ok: true,
@@ -2956,6 +2970,13 @@ export class LegacyRepository {
       confirmedAt: decidedAt,
       confirmedBy: approver,
       ...(options?.reason ? { reason: options.reason } : {}),
+    });
+    /* Approval APPLIES the budget here, so this is the moment the assignee's
+       working window actually changes. They were never told. */
+    this.#announce("budget_extension_decided", {
+      taskId: record.taskId,
+      approved: true,
+      seconds: agreedSecs,
     });
     notifyRepositoryChanged();
     return {
@@ -3272,6 +3293,11 @@ export class LegacyRepository {
         collection(legacyDb(), "cowork_task_deadline_extensions"),
         documentBody(record, DEADLINE_EXTENSION_REQUIRED),
       );
+      /* Filed, and until now waiting on somebody who was never told. */
+      this.#announce("deadline_extension_requested", {
+        taskId: String(input.taskId),
+        reason: input.reason ?? "",
+      });
       notifyRepositoryChanged();
       return { ok: true, data: { ...record, id: ref.id } };
     } catch (e) {
@@ -3346,6 +3372,15 @@ export class LegacyRepository {
         ? { counterDeadline: input.counterDeadline }
         : {}),
       ...(input?.reason ? { reason: input.reason } : {}),
+    });
+    /* Approved, refused or countered — the assignee planned around this answer
+       and had no way of knowing it had come. A counter is announced as a
+       refusal of the date asked for, because that is what it is to the person
+       waiting: the date they proposed is not the date they got. */
+    this.#announce("deadline_extension_decided", {
+      taskId: record.taskId,
+      approved: decision === "approved",
+      reason: input?.reason ?? "",
     });
     notifyRepositoryChanged();
     return {
@@ -6034,6 +6069,79 @@ export class LegacyRepository {
     );
   }
 
+  /**
+   * Mark one notification read. `PATCH /cowork/notifications/:id/read`.
+   *
+   * ## Neither of these existed, and the bell could not be cleared
+   *
+   * `markNotificationRead` and `markAllNotificationsRead` were implemented on
+   * the MOCK repository only. Against the real engine both fell through to the
+   * throwing proxy, so every press of "mark read" on `/notifications` raised
+   * `NotConnectedError` and the badge stayed exactly where it was — on a page
+   * whose entire purpose is clearing it.
+   *
+   * Written through the engine rather than to Firestore, which is the rule for
+   * every write, and here it also carries the recipient check: the browser
+   * holds a document id in a collection every employee shares, so "is this
+   * yours" is not a question the client can be trusted to answer.
+   *
+   * A refusal reads as `not_found` whether the row is missing or belongs to
+   * somebody else — the engine does not distinguish them, deliberately.
+   */
+  async markNotificationRead(id: string): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ success?: boolean; error?: string }>({
+      path: `/cowork/notifications/${encodeURIComponent(String(id))}/read`,
+      method: "PATCH",
+      token,
+    });
+    if (!r.ok) {
+      return {
+        ok: false,
+        code: r.error.kind === "permission" ? "permission_denied" : "not_found",
+        message: r.error.message,
+      };
+    }
+    /* `success: false` with HTTP 200 is legacy's own failure shape — the trap
+       `envelope.ts` exists to pin. Reporting it as success would leave a row
+       looking cleared until the next read put it back unread. */
+    if (r.data?.success === false) {
+      return {
+        ok: false,
+        code: "not_found",
+        message: r.data.error ?? "That notification could not be marked read.",
+      };
+    }
+    notifyRepositoryChanged();
+    return { ok: true, data: undefined };
+  }
+
+  /** Clear the whole inbox. `PATCH /cowork/notifications/read-all`. */
+  async markAllNotificationsRead(): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ success?: boolean; error?: string }>({
+      path: "/cowork/notifications/read-all",
+      method: "PATCH",
+      token,
+    });
+    if (!r.ok) {
+      return {
+        ok: false,
+        code: r.error.kind === "permission" ? "permission_denied" : "conflict",
+        message: r.error.message,
+      };
+    }
+    if (r.data?.success === false) {
+      return {
+        ok: false,
+        code: "conflict",
+        message: r.data.error ?? "Those notifications could not be cleared.",
+      };
+    }
+    notifyRepositoryChanged();
+    return { ok: true, data: undefined };
+  }
+
   /* ── Documents ──────────────────────────────────────────────────────────
    *
    * `cowork_documents` and `cowork_document_bodies`, browser-to-Firestore.
@@ -6209,6 +6317,10 @@ export class LegacyRepository {
       title: next,
       updatedAt: now,
     });
+    /* Announced AFTER the write, so the route reads the new title from the
+       record rather than being told it — the same reason it is never sent any
+       words at all. */
+    this.#announce("document_renamed", { documentId: id });
     return { ok: true, data: { ...record, title: next, updatedAt: now } };
   }
 
@@ -6229,6 +6341,12 @@ export class LegacyRepository {
     const { legacyDb } = await import("../../legacy/firebase.ts");
     /* Soft. The body is left alone — a delete that destroyed the text would
        make the record unrecoverable while still looking recoverable. */
+    /* Announced BEFORE the write, unlike the rename: `loadDocument` on the
+       route reads the record to resolve members and compose the title, and a
+       soft-deleted document would still be readable but is not a thing to be
+       relying on at that moment. The order matters and it differs between the
+       two for that reason alone. */
+    this.#announce("document_deleted", { documentId: id });
     await updateDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id), {
       deletedAt: new Date().toISOString(),
     });
@@ -6328,6 +6446,37 @@ export class LegacyRepository {
       memberIds: next.memberIds,
       updatedAt: now,
     });
+
+    /* **Tell them.** Sharing a document with somebody who is never told is
+       sharing it with nobody: `/workspace` lists what you are a member of, so
+       until they happen to look, a document handed to them does not exist.
+       Removal matters more — a document that silently vanishes from the list
+       reads as data loss.
+
+       Through the ENGINE, not Firestore, even though the membership write
+       above is a direct one. A notification is a row addressed to somebody
+       else, and a browser that could write those could put any message in
+       anybody's inbox. The route re-derives that this caller really is an
+       owner before it announces anything.
+
+       Deliberately not awaited into the result: the membership change is
+       committed and correct whatever happens next, and failing the whole
+       action because an announcement did not send would leave the caller
+       retrying a write that already succeeded. */
+    void (async () => {
+      try {
+        const token = await this.#token();
+        await legacyFetch({
+          path: `/cowork/documents/${encodeURIComponent(id)}/notify-member`,
+          method: "POST",
+          token,
+          body: { employeeId: String(employeeId), role },
+        });
+      } catch {
+        /* Nothing to do and nothing to say: the share worked. */
+      }
+    })();
+
     return {
       ok: true,
       data: { ...record, members: next.members, memberIds: next.memberIds, updatedAt: now },
@@ -7430,6 +7579,19 @@ export class LegacyRepository {
        — and so does this. */
     await this.#recalculateQueueDeadlines(employeeId, await this.#parentOf(taskId));
 
+    /* **This branch only.** The branch above delegates to `reorderPriorities`,
+       which posts to `/employee/:id/priority-order` — and that route announces
+       the reorder itself, so announcing here as well would ring twice for one
+       drag. This is the single-rank write, which reaches no route at all.
+
+       Announcing unconditionally is safe: the event filters the actor out of
+       its own recipients, so setting your own rank still notifies nobody. */
+    this.#announce("task_priority_changed", {
+      taskId,
+      rank,
+      reason: input.reason ?? "",
+    });
+
     /* The live `onSnapshot` will deliver this too, but not necessarily before
        the dialog closes. Nudging the caches here is what makes the new rank
        appear the moment the write returns rather than a beat later. */
@@ -8406,8 +8568,27 @@ export class LegacyRepository {
    * The live listener is `useTaskTimer`, ported verbatim, for surfaces that need
    * the ticking value rather than a snapshot.
    *
-   * A session is **running** when it carries a start stamp — legacy has no
-   * explicit flag. Whichever started most recently wins if several are open.
+   * A session is running when `isActive` says so. Whichever started most
+   * recently wins if several are open.
+   *
+   * ## This read the wrong field name, and returned null for everything
+   *
+   * It asked for `data.startedAt`, and skipped any document without one. The
+   * legacy writer — `hooks/useTaskTimer.js` in `Coworking`, the only thing that
+   * writes this collection — stores `{ totalSeconds, isActive, lastStartTime,
+   * taskTitle }`. There is no `startedAt` on any session document, so
+   * `readInstant` returned null every time and the loop skipped every session:
+   * against the real backend this method could only ever answer "nothing is
+   * running", however many timers were.
+   *
+   * `toTimerSession` a few hundred lines up already read `lastStartTime`
+   * correctly, which is why `TimerControl` showed a live clock on the task row
+   * while the shell pill, the Now card, the stats row and Today's Work all
+   * showed nothing. One collection, two readers, one of them looking for a
+   * field that was never written.
+   *
+   * Both spellings are accepted per the adapter's rule for legacy's duplicate
+   * field names, so a document from any vintage reads.
    */
   async getActiveTimer() {
     const employeeId = String(this.#ctx.employeeId);
@@ -8421,7 +8602,10 @@ export class LegacyRepository {
       );
       snap.forEach((d) => {
         const data = d.data() as Record<string, unknown>;
-        const startedAtMs = readInstant(data.startedAt);
+        /* A paused session keeps its document. Without this check the most
+           recently *touched* session would be reported as running forever. */
+        if (data.isActive !== true) return;
+        const startedAtMs = readInstant(data.lastStartTime ?? data.startedAt);
         if (startedAtMs === null) return;
         const total =
           firstNumber(data, "totalSecs", "totalSeconds") ?? 0;
@@ -10023,6 +10207,93 @@ export class LegacyRepository {
     );
   }
 
+  /**
+   * Announce something this repository just wrote to Firestore.
+   *
+   * ## The bug class this closes
+   *
+   * A large part of this repository writes browser-to-Firestore — the old
+   * app's own pattern, kept deliberately. But the old app pairs each such write
+   * with a call that announces it, and this one did not, so an entire class of
+   * event happened silently: a manager never learned an extension was waiting
+   * on them, an employee never learned their answer had come, somebody added to
+   * a group found out by noticing it in a list. `sendMessage` was the first of
+   * these to be found; it was not the only one.
+   *
+   * **Only the kind and the record id go over the wire.** No title, no body, no
+   * recipients — `coworkEvents.routes.js` reads the record, checks this
+   * caller's standing in it, resolves who is affected and composes the words.
+   * A browser that could send those directly could put any text in anybody's
+   * inbox.
+   *
+   * Always fire-and-forget, and never awaited into a result. The write it
+   * describes is already committed; failing the action because an announcement
+   * did not go out would have somebody repeat a change that already happened.
+   */
+  #announce(kind: string, payload: Record<string, unknown>): void {
+    void (async () => {
+      try {
+        const token = await this.#token();
+        if (!token) return;
+        await legacyFetch({
+          path: "/cowork/notify-event",
+          method: "POST",
+          token,
+          body: { kind, ...payload },
+        });
+      } catch {
+        /* The change landed. There is nothing here worth surfacing. */
+      }
+    })();
+  }
+
+  /**
+   * Tell the recipients a message was sent. Push and email; no Firestore row.
+   *
+   * `POST /cowork/direct-message/notify` and `POST /cowork/group/:id/notify`
+   * exist for exactly this and take the message TEXT rather than an id,
+   * because the engine never sees the message itself — it was written from the
+   * browser. Both resolve their own recipients and both exclude the sender.
+   *
+   * A direct conversation's id encodes the pair, so the recipient is whichever
+   * half is not the sender. A thread somehow addressed only to yourself
+   * notifies nobody rather than notifying you about your own message.
+   */
+  async #announceMessage(
+    conversationId: string,
+    coll: string,
+    text: string,
+    media: MessageAttachment[],
+  ): Promise<void> {
+    try {
+      const token = await this.#token();
+      if (!token) return;
+      const messageType = media.length ? media[0].kind : "text";
+
+      if (coll === GROUP_COLLECTION) {
+        await legacyFetch({
+          path: `/cowork/group/${encodeURIComponent(conversationId)}/notify`,
+          method: "POST",
+          token,
+          body: { text, messageType },
+        });
+        return;
+      }
+
+      const me = String(this.#ctx.employeeId);
+      const toEmployeeId = pairOf(conversationId).find((id) => id !== me);
+      if (!toEmployeeId) return;
+      await legacyFetch({
+        path: "/cowork/direct-message/notify",
+        method: "POST",
+        token,
+        body: { toEmployeeId, text, messageType },
+      });
+    } catch {
+      /* The message is sent. Nothing here is worth surfacing. */
+    }
+  }
+
   async sendMessage(
     conversationId: string,
     text: string,
@@ -10097,6 +10368,28 @@ export class LegacyRepository {
       await setDoc(doc(legacyDb(), coll, conversationId), parent, {
         merge: true,
       });
+
+      /* **Announce it. Writing the message is only half of sending one.**
+       *
+       * Messages are written browser-to-Firestore, which is how the old app
+       * does it too — but the old app then calls a second endpoint whose only
+       * job is to notify, and this did not. The result was a message that
+       * arrived silently: it appeared in the thread and in the conversation
+       * list, and the recipient got no push and no email, so unless they were
+       * already looking at that exact conversation they never learned it
+       * existed.
+       *
+       * These two routes deliberately do NOT write a `cowork_notifications`
+       * row — they send push and email only. That is the engine's own choice
+       * and it is right: the conversation IS the durable record, and a bell
+       * entry per message would bury every task notification underneath chat.
+       *
+       * Fire-and-forget, matching `direct-messages/page.js`'s own
+       * `.catch(() => {})`. The message is committed and correct by this
+       * point; failing the send because a push did not go out would have
+       * somebody re-send a message that already arrived. The engine likewise
+       * answers 200 before it starts, for the same reason. */
+      void this.#announceMessage(conversationId, coll, body, media);
 
       notifyRepositoryChanged();
       return {
@@ -10580,6 +10873,11 @@ export class LegacyRepository {
         ...(patch.title !== undefined ? { name } : {}),
         updatedAt: serverTimestamp(),
       });
+      /* Only on a rename. A group whose name changed is a group people can no
+         longer find; anything else here is not worth a bell. */
+      if (patch.title !== undefined) {
+        this.#announce("group_renamed", { groupId });
+      }
       notifyRepositoryChanged();
       return { ok: true, data: undefined };
     } catch (e) {
@@ -10613,6 +10911,13 @@ export class LegacyRepository {
       await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
         memberIds: arrayUnion(String(employeeId)),
         updatedAt: serverTimestamp(),
+      });
+      /* The engine's own `addGroupMember` sends this, but only for callers who
+         go through its route — and this writes to Firestore directly, as the
+         old app does. So the person joined a group and was never told. */
+      this.#announce("group_member_added", {
+        groupId,
+        targetEmployeeId: String(employeeId),
       });
       notifyRepositoryChanged();
       return { ok: true, data: undefined };
@@ -10650,6 +10955,12 @@ export class LegacyRepository {
         memberIds: arrayRemove(target),
         adminIds: arrayRemove(target),
         updatedAt: serverTimestamp(),
+      });
+      /* A group vanishing from your list with no explanation reads as a fault
+         in the app rather than a decision somebody made. */
+      this.#announce("group_member_removed", {
+        groupId,
+        targetEmployeeId: target,
       });
       notifyRepositoryChanged();
       return { ok: true, data: undefined };
@@ -10709,6 +11020,13 @@ export class LegacyRepository {
         /* Promoting someone brings them into the group if they are not in it. */
         ...(isAdmin ? { memberIds: arrayUnion(target) } : {}),
         updatedAt: serverTimestamp(),
+      });
+      /* Gaining or losing admin changes what the controls in front of you do.
+         Finding that out by pressing one and being refused is the worst way. */
+      this.#announce("group_admin_changed", {
+        groupId,
+        targetEmployeeId: target,
+        isAdmin,
       });
       notifyRepositoryChanged();
       return { ok: true, data: undefined };

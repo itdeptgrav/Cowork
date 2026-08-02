@@ -5,6 +5,8 @@ import {
   computeTodayTarget,
   evaluateTimerSop,
   requiredHoursFor,
+  targetProgressPercent,
+  withLiveRun,
   type DayWork,
   type TimerSopConfig,
 } from "./timerSop.ts";
@@ -98,6 +100,9 @@ test("today's target is a percentage of the window, and the shortfall remains", 
       isOff: false,
       loginMinute: 600,
       closeMinute: 1110,
+      spanHours: 8.5,
+      breakHours: 0,
+      allowanceHours: 0.5,
       windowHours: 8,
       workedHours: 3,
     },
@@ -108,6 +113,27 @@ test("today's target is a percentage of the window, and the shortfall remains", 
   assert.equal(t.met, false);
 });
 
+test("the span, breaks and allowance survive to the card, so its sum adds up", () => {
+  const t = computeTodayTarget(
+    {
+      date: "2026-08-03",
+      isOff: false,
+      loginMinute: 570,
+      closeMinute: 1110,
+      spanHours: 9,
+      breakHours: 0,
+      allowanceHours: 1.5,
+      windowHours: 7.5,
+      workedHours: 0,
+    },
+    cfg({ dailyMinPercent: 95, dailyMinHours: 99 }),
+  );
+  assert.equal(t.spanHours, 9);
+  assert.equal(t.allowanceHours, 1.5);
+  assert.equal(t.windowHours, 7.5); // 9 − 1.5
+  assert.equal(t.targetHours, 7.13); // 95% of 7.5
+});
+
 test("an off day has no target and is never a shortfall", () => {
   const t = computeTodayTarget(
     {
@@ -115,6 +141,9 @@ test("an off day has no target and is never a shortfall", () => {
       isOff: true,
       loginMinute: null,
       closeMinute: 1110,
+      spanHours: 0,
+      breakHours: 0,
+      allowanceHours: 1.5,
       windowHours: 0,
       workedHours: 0,
     },
@@ -122,6 +151,67 @@ test("an off day has no target and is never a shortfall", () => {
   );
   assert.equal(t.targetHours, 0);
   assert.equal(t.remainingHours, 0);
+});
+
+const today = (over: Partial<Parameters<typeof computeTodayTarget>[0]> = {}) =>
+  computeTodayTarget(
+    {
+      date: "2026-08-03",
+      isOff: false,
+      loginMinute: 600,
+      closeMinute: 1110,
+      spanHours: 9.5,
+      breakHours: 0,
+      allowanceHours: 1.5,
+      windowHours: 8,
+      workedHours: 0,
+      ...over,
+    },
+    cfg({ dailyMinPercent: 0, dailyMinHours: 8 }),
+  );
+
+test("progress is worked time over today's target", () => {
+  assert.equal(targetProgressPercent(today({ workedHours: 2 })), 25);
+  assert.equal(targetProgressPercent(today({ workedHours: 6 })), 75);
+});
+
+test("no timer run yet reads zero, not the same as the target being met", () => {
+  assert.equal(targetProgressPercent(today({ workedHours: 0 })), 0);
+});
+
+test("progress never exceeds 100, however long the timers ran", () => {
+  assert.equal(targetProgressPercent(today({ workedHours: 20 })), 100);
+});
+
+test("an off day has no target to be a percentage of", () => {
+  assert.equal(
+    targetProgressPercent(today({ isOff: true, workedHours: 3 })),
+    0,
+  );
+});
+
+test("a running timer counts toward the worked total and the remainder", () => {
+  const t = withLiveRun(today({ workedHours: 2 }), 15 * 60); // 15 min running
+  assert.equal(t.workedHours, 2.25);
+  assert.equal(t.remainingHours, 5.75); // 8h target − 2.25
+  assert.equal(targetProgressPercent(t), 28); // 2.25 / 8
+});
+
+test("nothing running leaves the figures exactly as committed", () => {
+  const base = today({ workedHours: 2 });
+  assert.deepEqual(withLiveRun(base, 0), base);
+});
+
+test("a running timer can be what meets the target", () => {
+  const t = withLiveRun(today({ workedHours: 7.9 }), 10 * 60);
+  assert.equal(t.met, true);
+  assert.equal(t.remainingHours, 0);
+});
+
+test("a day off is never 'met' however long a timer runs", () => {
+  const t = withLiveRun(today({ isOff: true, workedHours: 0 }), 3 * 3600);
+  assert.equal(t.workedHours, 3);
+  assert.equal(t.met, false);
 });
 
 test("net points is added minus deducted", () => {

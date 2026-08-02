@@ -5,6 +5,7 @@ import type {
   Notification,
 } from "@/lib/domain";
 import { LEGACY_ORGANISATION_ID } from "./map.ts";
+import { notificationTarget } from "../../rules/notifications/target.ts";
 
 /**
  * Notifications, meetings and workload, as domain types.
@@ -47,17 +48,23 @@ export function toNotification(
   const id = doc.id ?? doc._id;
   if (!id) return null;
 
+  const type = doc.type ?? "";
+  const data = doc.data ?? {};
+  /* Legacy carries no source FIELD, but it has always written the ids into
+     `data` — so the reference is there and was simply never read. See
+     `notificationTarget`, which is also where the precedence lives. */
+  const target = notificationTarget(type, data);
+
   return {
     organisationId: LEGACY_ORGANISATION_ID,
     id: String(id),
     recipientId: doc.recipientEmployeeId ?? "",
-    type: doc.type ?? "",
+    type,
     title: doc.title ?? "",
     body: doc.body ?? "",
-    data: doc.data ?? {},
-    /* Legacy carries no source reference on the notification itself. */
-    sourceType: null,
-    sourceId: null,
+    data,
+    sourceType: target?.sourceType ?? null,
+    sourceId: target?.sourceId ?? null,
     /* Delivered in the product; legacy does not report which channels fired. */
     channels: ["in_app"],
     readAt: doc.read === true ? "" : null,

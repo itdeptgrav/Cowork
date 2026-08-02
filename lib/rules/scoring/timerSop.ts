@@ -179,7 +179,13 @@ export interface TodayTarget {
   isOff: boolean;
   loginMinute: number | null;
   closeMinute: number;
-  /** Your window today, in hours (login → close, minus breaks). */
+  /** login → close, before any break is taken off. */
+  spanHours: number;
+  /** Recurring office breaks inside that span. */
+  breakHours: number;
+  /** The daily personal break allowance, off the target as well. */
+  allowanceHours: number;
+  /** Your window today: span, less recurring breaks, less the allowance. */
   windowHours: number;
   /** Percentage of the window used, when a percentage target is set. */
   percent: number;
@@ -190,12 +196,62 @@ export interface TodayTarget {
   met: boolean;
 }
 
+/**
+ * How much of today's target has actually been worked, 0–100.
+ *
+ * The card carried `workedHours` from the first day it existed and never
+ * rendered it, so the only evidence of tracked work on screen was the
+ * remainder — and "17h 25m left" reads exactly the same whether a timer has
+ * run for two hours or has never been started once. This is the figure the
+ * progress bar shows.
+ *
+ * An off day has no target, so there is nothing to be a percentage OF. It
+ * returns 0 and the card shows the worked total without a bar, because that
+ * time is overtime rather than progress toward anything.
+ */
+/**
+ * Today's figures with a currently-running timer folded in.
+ *
+ * A work commit is only written when a timer STOPS, so everything derived from
+ * commits alone — the worked total, the remainder, whether the target is met —
+ * ignores the run in progress. Somebody four minutes into a task saw `0m
+ * tracked on task timers` and `15h 59m left`, both computed correctly from an
+ * empty ledger and both wrong about their morning.
+ *
+ * Folded in HERE rather than in each place that reads a figure, so the worked
+ * total, the bar and the banner cannot disagree about the same second. What
+ * `liveSecs` may contain is `liveRunSecsForDay`'s decision, not this one.
+ *
+ * This changes what is DISPLAYED and nothing that is scored: the deficit
+ * engine finalises a day only once it is over, by which time the run has
+ * stopped and its seconds are committed like any other.
+ */
+export function withLiveRun(today: TodayTarget, liveSecs: number): TodayTarget {
+  if (liveSecs <= 0) return today;
+  const workedHours = today.workedHours + liveSecs / 3600;
+  return {
+    ...today,
+    workedHours: round2(workedHours),
+    remainingHours: round2(Math.max(0, today.targetHours - workedHours)),
+    met: !today.isOff && workedHours >= today.targetHours,
+  };
+}
+
+export function targetProgressPercent(today: TodayTarget): number {
+  if (today.isOff || today.targetHours <= 0) return 0;
+  const pct = (today.workedHours / today.targetHours) * 100;
+  return Math.max(0, Math.min(100, Math.round(pct)));
+}
+
 export function computeTodayTarget(
   window: {
     date: string;
     isOff: boolean;
     loginMinute: number | null;
     closeMinute: number;
+    spanHours: number;
+    breakHours: number;
+    allowanceHours: number;
     windowHours: number;
     workedHours: number;
   },
@@ -213,6 +269,9 @@ export function computeTodayTarget(
     isOff: window.isOff,
     loginMinute: window.loginMinute,
     closeMinute: window.closeMinute,
+    spanHours: round2(window.spanHours),
+    breakHours: round2(window.breakHours),
+    allowanceHours: round2(window.allowanceHours),
     windowHours: round2(window.windowHours),
     percent: config.dailyMinPercent,
     usesPercent,
