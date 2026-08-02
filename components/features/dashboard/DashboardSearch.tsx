@@ -137,6 +137,7 @@ export function DashboardSearch() {
     setQuery("");
     setResults([]);
     setSearching(false);
+    inputRef.current?.blur();
   }
 
   function navigate(href: string) {
