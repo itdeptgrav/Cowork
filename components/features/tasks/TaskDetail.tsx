@@ -297,8 +297,25 @@ export function TaskDetail({
 
       <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
         <div className="flex flex-col gap-4 deck:col-span-8">
+          {/* The timer, above everything. It is the one control on this page
+              somebody presses repeatedly through a working day — start, pause,
+              start again — where every card below is a decision taken once and
+              a brief read once. It used to sit between the brief and the
+              subtasks, which put it below the fold on any task with a real
+              description, so starting work cost a scroll every time.
+
+              This displaces "the next required action, always first" below.
+              That card still leads the decisions; it no longer leads the page.
+
+              Suppressed on a container for the same reason as the block below:
+              once a task is broken down nobody works the parent, and a Start
+              button here would bank time against a task whose work is somebody
+              else's — counted twice, once on the parent and once on the subtask
+              actually doing it. */}
+          {tab === "overview" && !isContainer && <TimePanel view={v} />}
+
           {/*
-            The next required action, always first.
+            The next required action, first among the decisions.
 
             Suppressed for a department gate the viewer owes a decision on:
             `ApprovalActionCard` below covers exactly that case and covers it
@@ -717,6 +734,75 @@ function NextActionCard({
   );
 }
 
+/* ── Time ─────────────────────────────────────────────────────────────────── */
+
+/* The work session, and the commits it has produced. One control, shared with
+   the table rows — the detail variant just states more of it.
+
+   Lifted out of `Overview` so it can be rendered FIRST in the detail column,
+   above the negotiation cards. The timer is the one thing on this page somebody
+   presses repeatedly through a working day; every card above it was a decision
+   made once. Kept as its own component rather than a branch inside `Overview`
+   because it owns a query — the commit list — and nothing else up there needs
+   it.
+
+   The caller gates it on `!isContainer`; the reason lives there, with the rest
+   of the container suppressions. */
+function TimePanel({ view }: { view: import("@/lib/repositories").TaskView }) {
+  const commits = useQuery(
+    (r) => r.listWorkCommits(view.task.id),
+    [view.task.id],
+  );
+
+  return (
+    <Panel padded={false}>
+      <div className="border-b border-hairline px-5 py-3">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-sm font-medium text-ink">Time</h2>
+          <span className="text-[11px] text-ink-faint">
+            Pausing writes a work commit — that record is what credits worked
+            time.
+          </span>
+        </div>
+        <TimerControl view={view} size="detail" />
+      </div>
+      {commits.data?.length ? (
+        <div className="divide-y divide-hairline">
+          {commits.data.slice(0, 5).map((c) => (
+            <div key={c.id} className="flex items-center gap-3 px-5 py-2">
+              <Icon.clock className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">
+                {c.message ?? "Work session"}
+              </span>
+              <span data-figure className="shrink-0 text-xs text-ink-faint">
+                {formatDurationTimer(c.durationSecs)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : view.loggedSecs > 0 ? (
+        /*
+         * Legacy records no per-run commits — `pauseTimer` only accumulates
+         * into `totalSeconds` — so this list is empty on every real task and
+         * said "No time logged yet" over hours of work. The banked total is
+         * the honest answer where the breakdown does not exist.
+         */
+        <div className="px-5 py-4">
+          <p data-figure className="text-[15px] text-ink">
+            {formatTimer(view.loggedSecs)}
+          </p>
+          <p className="mt-0.5 text-xs text-ink-faint">
+            Total worked. This engine records a running total rather than a
+            run-by-run breakdown.
+          </p>
+        </div>
+      ) : (
+        <p className="px-5 py-4 text-sm text-ink-faint">No time logged yet.</p>
+      )}
+    </Panel>
+  );
+}
+
 /* ── Overview ─────────────────────────────────────────────────────────────── */
 
 function Overview({
@@ -731,10 +817,6 @@ function Overview({
      the panel showing a count the other half no longer supports. */
   onChange: () => void;
 }) {
-  const commits = useQuery(
-    (r) => r.listWorkCommits(view.task.id),
-    [view.task.id],
-  );
   const reports = useQuery(
     (r) => r.listDailyReports(view.task.id),
     [view.task.id],
@@ -750,64 +832,11 @@ function Overview({
 
   return (
     <>
-      {/* First on the page on purpose. The timer is the one control somebody
-          opens this task to press, several times a day; everything else here is
-          read once. Below the fold it cost a scroll on every start and pause.
-
-          **Absent on a container.** Once a task is broken down, nobody works
-          the parent — the assignees, the budget and the timer are on its
-          children. A Start button here would bank time against a task whose
-          work is somebody else's, and it would be counted twice: once on the
-          parent and once on the subtask actually doing it. */}
-      {!isContainer && (
-        <Panel padded={false}>
-          <div className="border-b border-hairline px-5 py-3">
-            <div className="mb-3 flex items-center gap-2">
-              <h2 className="text-sm font-medium text-ink">Time</h2>
-              <span className="text-[11px] text-ink-faint">
-                Pausing writes a work commit — that record is what credits worked
-                time.
-              </span>
-            </div>
-            <TimerControl view={view} size="detail" />
-          </div>
-          {commits.data?.length ? (
-            <div className="divide-y divide-hairline">
-              {commits.data.slice(0, 5).map((c) => (
-                <div key={c.id} className="flex items-center gap-3 px-5 py-2">
-                  <Icon.clock className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                  <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">
-                    {c.message ?? "Work session"}
-                  </span>
-                  <span data-figure className="shrink-0 text-xs text-ink-faint">
-                    {formatDurationTimer(c.durationSecs)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : view.loggedSecs > 0 ? (
-            /*
-             * Legacy records no per-run commits — `pauseTimer` only accumulates
-             * into `totalSeconds` — so this list is empty on every real task and
-             * said "No time logged yet" over hours of work. The banked total is
-             * the honest answer where the breakdown does not exist.
-             */
-            <div className="px-5 py-4">
-              <p data-figure className="text-[15px] text-ink">
-                {formatTimer(view.loggedSecs)}
-              </p>
-              <p className="mt-0.5 text-xs text-ink-faint">
-                Total worked. This engine records a running total rather than a
-                run-by-run breakdown.
-              </p>
-            </div>
-          ) : (
-            <p className="px-5 py-4 text-sm text-ink-faint">
-              No time logged yet.
-            </p>
-          )}
-        </Panel>
-      )}
+      {/* The Time panel used to sit here, between the brief and the subtasks.
+          It is now `TimePanel`, rendered at the very top of the column — above
+          the negotiation cards, not merely above the brief. Moving it inside
+          this component was not enough: `Overview` is itself the last child of
+          that column, so "first in Overview" was still below a dozen cards. */}
 
       {/* Above the brief on purpose: on a subtask this is the context for
           everything below it, not a footnote to it. Renders nothing on a root
