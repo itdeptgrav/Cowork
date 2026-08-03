@@ -19,6 +19,10 @@ import {
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import {
+  commitCriterion,
+  removeCriterion,
+} from "@/lib/rules/tasks/criteria";
+import {
   assignmentGate,
   assignmentRelationship,
   upwardApprovers,
@@ -132,6 +136,55 @@ export function NewTaskForm({
   const [description, setDescription] = useState("");
   const [requirements, setRequirements] = useState<string[]>([]);
   const [reqDraft, setReqDraft] = useState("");
+  /**
+   * Which criterion is being edited, and the text as it is being typed.
+   *
+   * Held here rather than per row so only one can be open at a time — two
+   * half-edited criteria is a state nobody can save coherently.
+   *
+   * `-1` rather than `null` so the common comparison is `i === editingIndex`
+   * with no narrowing at every use.
+   */
+  const [editingIndex, setEditingIndex] = useState(-1);
+  const [editDraft, setEditDraft] = useState("");
+
+  function startEdit(index: number) {
+    setEditingIndex(index);
+    setEditDraft(requirements[index] ?? "");
+  }
+
+  function cancelEdit() {
+    setEditingIndex(-1);
+    setEditDraft("");
+  }
+
+  /**
+   * Write the edit back, or discard it if it says nothing.
+   *
+   * An emptied criterion is NOT saved as an empty string — a blank acceptance
+   * criterion is a row the reviewer cannot judge and the assignee cannot
+   * satisfy. Clearing the text and confirming removes the line, which is what
+   * somebody who deleted every character of it meant.
+   */
+  function commitEdit() {
+    if (editingIndex < 0) return;
+    const index = editingIndex;
+    const draft = editDraft;
+    /* Cleared FIRST. `commitEdit` runs from blur as well as from Enter and the
+       Save button, so leaving the row open would let the blur fired by closing
+       it re-enter this function. */
+    cancelEdit();
+    setRequirements((c) => commitCriterion(c, index, draft).list);
+  }
+
+  function removeRequirement(index: number) {
+    /* The list and the editor's position move together — see `removeCriterion`,
+       which is where the index-shift rule lives and is tested. */
+    setRequirements((c) => removeCriterion(c, index, editingIndex).list);
+    setEditingIndex(
+      (i) => removeCriterion(requirements, index, i).editingIndex,
+    );
+  }
   const [assignees, setAssignees] = useState<string[]>([]);
   const [projectId, setProjectId] = useState(presetProjectId ?? "");
   const [parentTaskId, setParentTaskId] = useState(presetParentTaskId ?? "");
@@ -533,25 +586,66 @@ export function NewTaskForm({
               </span>
               {requirements.length > 0 && (
                 <ul className="mb-2 space-y-1">
-                  {requirements.map((r, i) => (
-                    <li
-                      key={i}
-                      className="flex items-center gap-2 text-sm text-ink-muted"
-                    >
-                      <Icon.check className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                      <span className="min-w-0 flex-1">{r}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setRequirements((c) => c.filter((_, j) => j !== i))
-                        }
-                        aria-label={`Remove ${r}`}
-                        className="text-ink-faint hover:text-ink"
+                  {requirements.map((r, i) =>
+                    i === editingIndex ? (
+                      <li key={i} className="flex items-center gap-2">
+                        <Icon.check className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                        <Input
+                          autoFocus
+                          value={editDraft}
+                          onChange={(e) => setEditDraft(e.target.value)}
+                          aria-label={`Edit criterion: ${r}`}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              commitEdit();
+                            }
+                            if (e.key === "Escape") {
+                              e.preventDefault();
+                              cancelEdit();
+                            }
+                          }}
+                          /* Saving on blur as well as on Enter. Clicking away
+                             from a field you have just typed into reads as
+                             "done", and losing the edit there is the same
+                             frustration as having no edit at all. Escape is
+                             the way to discard, and it runs first because
+                             `cancelEdit` closes the row before blur fires. */
+                          onBlur={commitEdit}
+                        />
+                        <Button size="sm" onClick={commitEdit}>
+                          Save
+                        </Button>
+                      </li>
+                    ) : (
+                      <li
+                        key={i}
+                        className="group flex items-center gap-2 text-sm text-ink-muted"
                       >
-                        <Icon.close className="h-3 w-3" />
-                      </button>
-                    </li>
-                  ))}
+                        <Icon.check className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                        {/* The text itself opens the editor. A person who
+                            wants to change a line reaches for the line, not
+                            for a control beside it — and it keeps the row from
+                            growing a second icon. */}
+                        <button
+                          type="button"
+                          onClick={() => startEdit(i)}
+                          aria-label={`Edit ${r}`}
+                          className="min-w-0 flex-1 cursor-text truncate text-left hover:text-ink"
+                        >
+                          {r}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeRequirement(i)}
+                          aria-label={`Remove ${r}`}
+                          className="text-ink-faint hover:text-ink"
+                        >
+                          <Icon.close className="h-3 w-3" />
+                        </button>
+                      </li>
+                    ),
+                  )}
                 </ul>
               )}
               <div className="flex gap-2">

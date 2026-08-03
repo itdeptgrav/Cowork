@@ -42,12 +42,24 @@ export type MrfValidation =
   | { ok: true }
   | { ok: false; field: string; message: string };
 
-/** A requester may withdraw only while nothing downstream has acted. */
+/**
+ * A requester may withdraw only while nothing downstream has acted.
+ *
+ * **`approved` used to count, and it should not have.** The comment above has
+ * always said "nothing downstream has acted", but the condition allowed
+ * `approved` — which is precisely the state meaning the approver HAS acted and
+ * the store now owns the request. Worse, `approved` covers everything after
+ * that too: a request showing "Part-issued · Issued 400 of 570" was still
+ * offering Withdraw, so a requester could retract something the store had
+ * already picked, counted and handed over. Nothing in the stock ledger would
+ * have known.
+ *
+ * Pending is the whole window. Once somebody else has committed to the
+ * request, cancelling it is a conversation with the store — the Chat on the
+ * same row — rather than a button.
+ */
 export function canCancelMrf(request: MrfRequest, viewerId: string): boolean {
-  return (
-    request.requesterId === viewerId &&
-    (request.status === "pending" || request.status === "approved")
-  );
+  return request.requesterId === viewerId && request.status === "pending";
 }
 
 /** Only the resolved approver decides, and only while it is still pending. */

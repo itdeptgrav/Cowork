@@ -22,14 +22,31 @@ import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
 import { DriveImage } from "@/components/ui/DriveImage";
 import { ImageLightbox, downloadFile } from "@/components/ui/ImageLightbox";
-import { driveImageSrc, driveProxySrc } from "@/lib/rules/media/driveUrls";
+import {
+  driveFileIdFrom,
+  driveImageSrc,
+  driveProxySrc,
+} from "@/lib/rules/media/driveUrls";
 
 export const MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
 
 /** Where to actually fetch an attachment. Drive-hosted media (`fileId` set)
- *  streams through the backend proxy that loads; Cloudinary serves its own URL. */
+ *  streams through the backend proxy that loads; anything else serves its own URL. */
 export function mediaUrl(a: MessageAttachment): string {
   return (a.fileId && driveProxySrc(MEDIA_BASE, a.fileId)) || a.url;
+}
+
+/**
+ * The proxy URL for an attachment, when one can be derived.
+ *
+ * The download retries through this when the stored URL refuses a fetch. An
+ * attachment saved without a `fileId` still usually carries one INSIDE its
+ * URL — `driveFileIdFrom` reads every shape the two systems have written — so
+ * a file that would otherwise be undownloadable gets a second, working route.
+ */
+export function mediaProxyUrl(a: MessageAttachment): string | null {
+  const id = a.fileId || driveFileIdFrom(a.url);
+  return id ? driveProxySrc(MEDIA_BASE, id) : null;
 }
 
 /**
@@ -109,6 +126,7 @@ function Thumbnail({
   onZoom: () => void;
 }) {
   const name = a.name ?? "image.jpg";
+  const [error, setError] = useState<string | null>(null);
   return (
     <span className="group relative block overflow-hidden rounded-[10px]">
       <button
@@ -124,12 +142,28 @@ function Thumbnail({
         aria-label={`Download ${name}`}
         onClick={(e) => {
           e.stopPropagation();
-          void downloadFile(mediaUrl(a), name);
+          /* `downloadFile` throws now rather than navigating to a URL it could
+             not fetch — which is what saved Google's HTML viewer page as the
+             file. Caught here so a failure is a message, not an unhandled
+             rejection and a mystery file in the downloads tray. */
+          void downloadFile(mediaUrl(a), name, mediaProxyUrl(a)).catch((err) => {
+            setError(
+              err instanceof Error ? err.message : "That file could not be downloaded.",
+            );
+          });
         }}
         className="absolute right-1.5 bottom-1.5 grid h-6 w-6 place-items-center rounded-full bg-black/55 text-white opacity-90 transition-opacity hover:bg-black/70 hover:opacity-100"
       >
         <Icon.download className="h-3 w-3" />
       </button>
+      {error && (
+        <span
+          role="alert"
+          className="absolute inset-x-0 bottom-0 bg-black/75 px-1.5 py-1 text-[10px] leading-tight text-white"
+        >
+          {error}
+        </span>
+      )}
     </span>
   );
 }

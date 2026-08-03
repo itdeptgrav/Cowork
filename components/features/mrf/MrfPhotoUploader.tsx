@@ -3,62 +3,63 @@
 import { useRef, useState } from "react";
 import type { MrfImage } from "@/lib/domain/mrf";
 
-/** Reference photos on a request line — uploaded to the app's image route. */
+/**
+ * Reference photos on a request line — to Google Drive, like every other
+ * upload in the product.
+ *
+ * ## Why this stopped using Cloudinary
+ *
+ * This was the last upload path in the codebase pointing anywhere other than
+ * Drive. Chat media, mind-map images and document images already go through
+ * `uploadToDrive`; task attachments go to Drive privately through
+ * `coworkAttachment.service.js`. One file belonging in two different storage
+ * accounts depending on which screen produced it is a thing nobody can reason
+ * about — not for retention, not for access, not for a bill.
+ *
+ * It also had a second failure mode worth naming: the fallback path did an
+ * **unsigned** upload straight from the browser with a public preset, which is
+ * an open write endpoint for anyone who reads the bundle.
+ *
+ * ## Quality is preserved exactly
+ *
+ * The bytes handed to `uploadToDrive` are the bytes the file picker gave us —
+ * no canvas, no re-encode, no `quality` parameter, no resize. A 12-megapixel
+ * photo is stored as a 12-megapixel photo. That is a change in itself:
+ * Cloudinary applies whatever transformation its upload preset carries, and a
+ * preset with `f_auto,q_auto` silently re-encodes every image on the way in.
+ * Drive stores the original file.
+ */
 const MAX = 5;
-const MAX_BYTES = 8 * 1024 * 1024;
+/* Raised from 8 MB. Phone cameras routinely produce 10–15 MB originals, and
+   the point of storing the original is defeated by a limit that rejects one. */
+const MAX_BYTES = 25 * 1024 * 1024;
 
-async function uploadMrfImage(
-  file: File,
-  folder = "mrf-products",
-): Promise<MrfImage> {
-  // 1. Prefer the app's own route (keeps the Cloudinary secret server-side).
-  //    Wrapped so a route that is unreachable — e.g. the dev server has not
-  //    picked it up yet — falls through to the direct path instead of failing.
-  try {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("folder", folder);
-    const res = await fetch("/api/cloudinary/upload", {
-      method: "POST",
-      body: form,
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.url) return { url: data.url, name: data.name ?? file.name };
-    }
-  } catch {
-    /* Route unreachable — try a direct unsigned upload below. */
-  }
+async function uploadMrfImage(file: File): Promise<MrfImage> {
+  const { idToken } = await import("@/lib/legacy/firebase");
+  const { uploadToDrive } = await import("@/lib/legacy/driveUpload");
 
-  // 2. Direct unsigned upload to Cloudinary — no server route needed.
-  const cloud = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
-  const preset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
-  if (!cloud || !preset)
-    throw new Error(
-      "Image upload is not configured (set the CLOUDINARY values in .env.local, then restart).",
-    );
-  const form = new FormData();
-  form.append("file", file);
-  form.append("upload_preset", preset);
-  form.append("folder", folder);
-  const res = await fetch(
-    `https://api.cloudinary.com/v1_1/${cloud}/upload`,
-    { method: "POST", body: form },
-  );
-  const data = await res.json();
-  if (!res.ok || !data.secure_url)
-    throw new Error(data.error?.message || "Upload failed");
-  return { url: data.secure_url, name: file.name };
+  const token = await idToken();
+  if (!token) throw new Error("Sign in again to upload a photo.");
+
+  const result = await uploadToDrive({ token, file });
+  if (!result.ok) throw new Error(result.error.message);
+
+  /* The thumbnail URL renders in an `<img>`; the view link is the fallback for
+     anything Drive does not thumbnail. `drive-finalize` has already made the
+     file readable, which is what an `<img>` needs — it cannot send a token. */
+  const { url, thumbnailUrl, viewUrl, fileName } = result.data;
+  return { url: thumbnailUrl || url || viewUrl || "", name: fileName || file.name };
 }
 
 export function MrfPhotoUploader({
   images,
   onChange,
-  folder = "mrf-products",
 }: {
   images: MrfImage[];
   onChange: (next: MrfImage[]) => void;
-  folder?: string;
+  /* `folder` is gone with Cloudinary. Drive files land in the folder the
+     backend's upload service is configured with, so a per-call folder name had
+     nowhere to go and would have read as a setting that did nothing. */
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
@@ -83,11 +84,11 @@ export function MrfPhotoUploader({
         continue;
       }
       if (f.size > MAX_BYTES) {
-        failed.push(`${f.name} (over 8 MB)`);
+        failed.push(`${f.name} (over 25 MB)`);
         continue;
       }
       try {
-        uploaded.push(await uploadMrfImage(f, folder));
+        uploaded.push(await uploadMrfImage(f));
       } catch (e) {
         failed.push(`${f.name} (${e instanceof Error ? e.message : "failed"})`);
       }

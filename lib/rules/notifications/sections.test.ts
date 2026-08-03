@@ -135,3 +135,46 @@ test("visiting a section can always clear its own badge", () => {
     assert.equal(unreadForSection(section, afterVisit), 0);
   }
 });
+
+/* ── The badge window ─────────────────────────────────────────────────────── */
+
+const NOW = Date.parse("2026-08-03T12:00:00.000Z");
+const daysAgo = (d: number) =>
+  new Date(NOW - d * 24 * 60 * 60 * 1000).toISOString();
+
+test("a badge counts only what is recent enough to be news", () => {
+  /* Measured against live data before this existed: one employee held 73
+     unread MRF notifications and 17 meeting ones going back to July, so those
+     sections read `9+` permanently — true for months, unactionable, and
+     unchanged by anything anybody did. */
+  const list = [
+    { type: "meet_scheduled", read: false, createdAt: daysAgo(1) },
+    { type: "meet_updated", read: false, createdAt: daysAgo(6) },
+    { type: "meet_cancelled", read: false, createdAt: daysAgo(40) },
+    { type: "meet_started", read: false, createdAt: daysAgo(90) },
+  ];
+  assert.equal(unreadForSection("/meetings", list, NOW), 2);
+});
+
+test("without a clock the window does not apply", () => {
+  /* The cutoff is the caller's decision, not something buried in the rule. */
+  const list = [{ type: "meet_scheduled", read: false, createdAt: daysAgo(90) }];
+  assert.equal(unreadForSection("/meetings", list), 1);
+  assert.equal(unreadForSection("/meetings", list, NOW), 0);
+});
+
+test("an undateable notification is not counted as recent", () => {
+  /* Guessing in favour of showing a number is exactly how a permanent `9+`
+     happens. A notification we cannot date is one we cannot call new. */
+  const list = [
+    { type: "request", read: false },
+    { type: "request", read: false, createdAt: "not a date" },
+    { type: "request", read: false, createdAt: daysAgo(2) },
+  ];
+  assert.equal(unreadForSection("/mrf", list, NOW), 1);
+});
+
+test("the window never resurrects something already read", () => {
+  const list = [{ type: "task_assigned", read: true, createdAt: daysAgo(1) }];
+  assert.equal(unreadForSection("/tasks", list, NOW), 0);
+});

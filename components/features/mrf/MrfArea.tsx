@@ -252,7 +252,17 @@ function MyRequests() {
   const { data, isLoading, refetch } = useQuery((r) => r.listMyMrfs(), []);
   const [creating, setCreating] = useState(false);
   const [chatId, setChatId] = useState<string | null>(null);
-  const [cancel] = useAction((r, id: string) => r.cancelMrf(id));
+  const [cancel, cancelState] = useAction((r, id: string) => r.cancelMrf(id));
+  /**
+   * The request awaiting a withdrawal confirmation, if any.
+   *
+   * Withdrawing is not reversible — there is no un-withdraw, and the approver
+   * has already been notified — so it asks first. Held as the whole request
+   * rather than an id so the dialog can name what is about to be withdrawn;
+   * "Withdraw this request?" over a list of six is not a question anybody can
+   * answer safely.
+   */
+  const [confirming, setConfirming] = useState<MrfRequest | null>(null);
 
   if (isLoading) return <SkeletonRows rows={6} />;
 
@@ -333,7 +343,7 @@ function MyRequests() {
                 {canCancelMrf(m, viewerId ?? "") && (
                   <button
                     type="button"
-                    onClick={() => cancel(m.id).then(() => refetch())}
+                    onClick={() => setConfirming(m)}
                     className="text-ink-muted underline underline-offset-2 hover:text-ink"
                   >
                     Withdraw
@@ -346,7 +356,100 @@ function MyRequests() {
           ))}
         </div>
       )}
+      {confirming && (
+        <WithdrawConfirm
+          request={confirming}
+          pending={cancelState.isPending}
+          error={cancelState.error}
+          onCancel={() => setConfirming(null)}
+          onConfirm={async () => {
+            const r = await cancel(confirming.id);
+            /* Closed only on success. A failure keeps the dialog open with the
+               engine's own words — "Material has already been issued against
+               this request" is the answer to a question the person just asked,
+               and dismissing it back to an unchanged list would leave them
+               guessing whether anything happened. */
+            if (r.ok) {
+              setConfirming(null);
+              refetch();
+            }
+          }}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * Confirm a withdrawal.
+ *
+ * Withdrawing is not reversible — there is no un-withdraw, and the approver has
+ * already been notified that a request needs them. So it is asked rather than
+ * done, and the question names the request and its items: "Withdraw this
+ * request?" over a list of six is not something anybody can answer safely.
+ */
+function WithdrawConfirm({
+  request,
+  pending,
+  error,
+  onCancel,
+  onConfirm,
+}: {
+  request: MrfRequest;
+  pending: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="mrf-withdraw-title"
+      className="fixed inset-0 z-[95] grid place-items-center p-4"
+    >
+      {/* The scrim is a button so Escape-less dismissal works by click and is
+          reachable by keyboard, matching the other dialogs in this product. */}
+      <button
+        type="button"
+        aria-label="Keep this request"
+        onClick={() => !pending && onCancel()}
+        className="absolute inset-0 bg-black/50"
+      />
+      <div className="relative w-full max-w-[42ch] rounded-inset bg-[var(--surface)] p-5 shadow-lg">
+        <h2 id="mrf-withdraw-title" className="text-sm font-medium text-ink">
+          Withdraw {request.mrfNumber}?
+        </h2>
+        <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+          {request.items.length === 1
+            ? `“${request.items[0].name}” will be withdrawn.`
+            : `${request.items.length} items will be withdrawn.`}{" "}
+          {request.approverName
+            ? `${request.approverName} will no longer be asked to approve it.`
+            : "The approver will no longer be asked to approve it."}{" "}
+          This cannot be undone — raise a new request if you need the material
+          later.
+        </p>
+        {error && (
+          <p className="mt-3 rounded-inset bg-[var(--state-rework-surface,var(--surface-sunken))] px-3 py-2 text-xs text-ink">
+            {error}
+          </p>
+        )}
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <Button tone="ghost" size="sm" disabled={pending} onClick={onCancel}>
+            Keep it
+          </Button>
+          <Button
+            tone="destructive"
+            size="sm"
+            disabled={pending}
+            onClick={onConfirm}
+          >
+            {pending ? "Withdrawing…" : "Withdraw"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }
 

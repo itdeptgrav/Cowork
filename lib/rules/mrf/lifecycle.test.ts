@@ -43,11 +43,24 @@ const input = (over: Partial<NewMrfInput> = {}): NewMrfInput => ({
   ...over,
 });
 
-test("the requester can withdraw only while pending or approved", () => {
+test("the requester can withdraw only while pending", () => {
   assert.equal(canCancelMrf(request({ status: "pending" }), "e-02"), true);
-  assert.equal(canCancelMrf(request({ status: "approved" }), "e-02"), true);
   assert.equal(canCancelMrf(request({ status: "rejected" }), "e-02"), false);
+  assert.equal(canCancelMrf(request({ status: "cancelled" }), "e-02"), false);
   assert.equal(canCancelMrf(request(), "e-99"), false); // not the requester
+});
+
+test("an APPROVED request can no longer be withdrawn", () => {
+  /* **This assertion was inverted, and it encoded the bug.** The test read
+     "pending or approved" while the function's own comment said "only while
+     nothing downstream has acted" — and `approved` is exactly the state where
+     the approver HAS acted and the store owns the request.
+
+     It also covers everything after approval, so a request reading
+     "Part-issued · Issued 400 of 570" still offered Withdraw. A requester could
+     retract stock that had already been picked and handed over, and nothing in
+     the ledger would have known. */
+  assert.equal(canCancelMrf(request({ status: "approved" }), "e-02"), false);
 });
 
 test("only the approver decides, and only while pending", () => {

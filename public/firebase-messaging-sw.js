@@ -125,9 +125,22 @@ self.addEventListener('fetch', (event) => {
     if (request.mode === 'navigate') {
         event.respondWith(
             (async () => {
+                // **A failed preload is not "offline".**
+                //
+                // `preloadResponse` REJECTS when the browser's parallel request
+                // fails, and it can fail for reasons the ordinary fetch would
+                // survive — a redirect it will not follow, a connection reused
+                // at the wrong moment, preload racing the worker's own startup.
+                // Catching it together with `fetch` below meant any of those
+                // showed the offline page to somebody with a working
+                // connection. It is caught separately and discarded, so a
+                // preload that did not work costs nothing but the parallelism.
+                const preloaded = await Promise.resolve(event.preloadResponse).catch(
+                    () => null
+                );
+                if (preloaded) return preloaded;
+
                 try {
-                    const preloaded = await event.preloadResponse;
-                    if (preloaded) return preloaded;
                     return await fetch(request);
                 } catch (_) {
                     // Offline. Show our own page rather than the browser's

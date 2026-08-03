@@ -8,7 +8,8 @@ import { useLens } from "./LensContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "@/components/ui/Avatar";
 import { ActiveWorkPill } from "@/components/features/tasks/TimerControl";
-import { useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { useQuery } from "@/lib/hooks/useRepository";
+import { getRepository } from "@/lib/repositories";
 import { useWheelPan } from "@/lib/hooks/useWheelPan";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 import { useViewerId } from "@/lib/hooks/usePermissions";
@@ -246,8 +247,11 @@ function NavCount({
   const section = SECTION_TYPES[href as NotificationSection]
     ? (href as NotificationSection)
     : null;
+  /* Bounded to the badge window. Read from the clock HERE rather than inside
+     the rule, so the rule stays pure and testable at a fixed instant — and so
+     a badge that has been `9+` since May stops claiming to be news. */
   const fromNotifications = section
-    ? unreadForSection(section, notifications)
+    ? unreadForSection(section, notifications, Date.now())
     : 0;
   const label = badgeLabel(fromNotifications + extra);
   if (!label) return null;
@@ -373,8 +377,13 @@ export function TopBar() {
      — sent by somebody else, my id not in `readBy` — so the badge is the sum
      of those. `watchConversations` bumps the repository version when any
      thread changes, which is what refetches this. */
-  const repo = useRepo();
-  useEffect(() => repo.watchConversations?.(), [repo]);
+  /* `getRepository()` rather than the `useRepo()` hook.
+     The effect wants the module singleton, not a subscription — `useRepo` just
+     returns `getRepository()` and gave nothing here except a dependency that
+     had to be listed. Calling it directly is one import fewer in the shell's
+     hot path and makes the effect genuinely mount-once, which is what watching
+     a collection should be. */
+  useEffect(() => getRepository().watchConversations?.(), []);
   const conversations = useQuery((r) => r.listConversations(), []);
   const messageUnread = (conversations.data ?? []).reduce(
     (sum, c) => sum + (c.unreadCount || 0),

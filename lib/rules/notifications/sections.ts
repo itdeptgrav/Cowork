@@ -169,13 +169,59 @@ export function sectionOf(type: string): NotificationSection | null {
   return SECTION_LOOKUP.get(type) ?? null;
 }
 
-/** Unread notifications of the types this section owns. */
+/**
+ * How far back a badge counts.
+ *
+ * Unread is not the same as new, and a badge that ignores the difference stops
+ * being information. Measured against live data: one employee holds 73 unread
+ * MRF notifications and 17 meeting ones going back to July, another has unread
+ * from May. Those sections showed `9+` permanently — a number that had been
+ * true for months, could not be acted on, and never changed whatever anybody
+ * did. People read that as decoration, and then miss the one that matters.
+ *
+ * Seven days is the span in which "you have not looked at this yet" is still a
+ * fact about the present.
+ *
+ * **Nothing is hidden or marked read.** The notifications list still shows
+ * every one of them, in full, oldest included. This bounds what the BADGE
+ * counts, and nothing else.
+ */
+export const BADGE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface CountableNotification {
+  type: string;
+  read: boolean;
+  /** ISO instant. An unparseable or absent value is treated as too old. */
+  createdAt?: string;
+}
+
+/**
+ * Unread notifications of the types this section owns, within the badge window.
+ *
+ * `nowMs` is passed rather than read from the clock so this stays a pure
+ * function — the same inputs give the same answer, which is what makes it
+ * testable at a fixed instant.
+ */
 export function unreadForSection(
   section: NotificationSection,
-  notifications: readonly { type: string; read: boolean }[],
+  notifications: readonly CountableNotification[],
+  nowMs?: number,
 ): number {
   const types = new Set(SECTION_TYPES[section]);
-  return notifications.filter((n) => !n.read && types.has(n.type)).length;
+  /* No clock supplied means no window — every unread of this type counts. That
+     is the shape the pure tests use, and it keeps the cutoff a decision the
+     caller makes rather than one buried here. */
+  const cutoff = nowMs === undefined ? null : nowMs - BADGE_WINDOW_MS;
+
+  return notifications.filter((n) => {
+    if (n.read || !types.has(n.type)) return false;
+    if (cutoff === null) return true;
+    const at = n.createdAt ? Date.parse(n.createdAt) : Number.NaN;
+    /* An unparseable timestamp is excluded rather than counted. A notification
+       we cannot date is one we cannot claim is recent, and guessing in favour
+       of showing a number is how the permanent `9+` happened. */
+    return Number.isFinite(at) && at >= cutoff;
+  }).length;
 }
 
 /**
