@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { getRepository } from "@/lib/repositories";
+import { subscribeToRepository } from "@/lib/repositories/events";
 import { Button, Chip } from "@/components/ui/Primitives";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
@@ -70,14 +71,22 @@ function writeSeen(keys: string[]): void {
 
 export function NewAssignmentGate() {
   const [notices, setNotices] = useState<AssignmentNotice[] | null>(null);
+  /* True once `load()` has returned a definitive answer — either notices
+     were found and shown, or there are genuinely none to show. Retries stop
+     after this point: re-running on every later mutation would re-announce
+     work the person has already been told about. */
+  const resolvedRef = useRef(false);
 
   /**
-   * Read ONCE per mount, not on a poll.
+   * Read once per mount, retrying whenever the repository changes until a
+   * definitive answer arrives.
    *
    * "When they open Cowork" is the requirement, and a page load is that
-   * moment. Polling would turn a welcome notice into an interruption that
-   * can appear over whatever somebody is in the middle of — and anything
-   * arriving mid-session is already covered by the notification bell.
+   * moment. The retry is not a poll — it fires only on a repository change
+   * event (a mutation or the Firestore task-watch signalling new data), and
+   * stops as soon as `load()` completes without error. This handles the
+   * first-login case where the repository data isn't in the local Firestore
+   * cache yet when the component first mounts.
    */
   useEffect(() => {
     let cancelled = false;
@@ -124,8 +133,11 @@ export function NewAssignmentGate() {
           };
         });
 
-        const unseen = unseenNotices(all, readSeen());
-        if (!cancelled && unseen.length > 0) setNotices(unseen);
+        if (!cancelled) {
+          resolvedRef.current = true;
+          const unseen = unseenNotices(all, readSeen());
+          if (unseen.length > 0) setNotices(unseen);
+        }
       } catch (e) {
         /* A notice that cannot be built is simply not shown. Nothing here is
            load-bearing enough to surface an error over the whole shell. */
@@ -134,8 +146,18 @@ export function NewAssignmentGate() {
     }
 
     void load();
+
+    /* Retry whenever the repository signals new data, but only until we have
+       a definitive result. Covers the first-login case where the Firestore
+       cache was cold on mount and `load()` ran before any tasks were fetched. */
+    const unsubscribe = subscribeToRepository(() => {
+      if (cancelled || resolvedRef.current) return;
+      void load();
+    });
+
     return () => {
       cancelled = true;
+      unsubscribe();
     };
   }, []);
 
