@@ -107,34 +107,43 @@ export function DashboardChrome() {
     /* The reference's header: a display title with the date directly beneath
        it on the left, and a row of pills on the right. Cowork adds one line —
        the brief — because a command centre that states the situation in words
-       is read faster than one that makes you assemble it from four counts. */
-    <div className="mb-5 flex flex-wrap items-end gap-x-6 gap-y-4">
-      <div className="min-w-0">
-        <h1 className="text-[clamp(1.75rem,3.4vw,2.75rem)] leading-none font-light tracking-[-0.035em] text-ink">
+       is read faster than one that makes you assemble it from four counts.
+
+       The controls ride the TITLE line rather than the bottom of the brief.
+       `items-end` across a block whose left side is three lines tall and whose
+       right side is one pinned the pills to the last line of the brief — a
+       baseline they have nothing to do with, and one that moves whenever that
+       sentence rewraps. They act on the whole page, so they sit beside the
+       thing that names the whole page; the date and the brief then run
+       underneath at full width, where the brief can use its own measure. */
+    <div className="mb-6">
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-3">
+        <h1 className="min-w-0 text-[clamp(1.75rem,3.4vw,2.75rem)] leading-none font-light tracking-[-0.035em] text-ink">
           {team ? "Your team" : "Overview"}
         </h1>
-        <p className="mt-2 text-sm text-ink-muted">
-          {date}
-          {!team && me.data ? ` · ${me.data.displayName}` : ""}
-          {team
-            ? ` · ${reports.length} ${reports.length === 1 ? "report" : "reports"}`
-            : ""}
-        </p>
-        <p className="mt-1.5 max-w-[62ch] text-sm leading-relaxed text-ink-muted">
-          {brief}
-        </p>
+
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+          <ScopePills />
+          <Link
+            href="/tasks/new"
+            className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-xs font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90"
+          >
+            <Icon.plus className="h-3.5 w-3.5" />
+            New task
+          </Link>
+        </div>
       </div>
 
-      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-        <ScopePills />
-        <Link
-          href="/tasks/new"
-          className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-xs font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90"
-        >
-          <Icon.plus className="h-3.5 w-3.5" />
-          New task
-        </Link>
-      </div>
+      <p className="mt-3 text-sm text-ink-muted">
+        {date}
+        {!team && me.data ? ` · ${me.data.displayName}` : ""}
+        {team
+          ? ` · ${reports.length} ${reports.length === 1 ? "report" : "reports"}`
+          : ""}
+      </p>
+      <p className="mt-1.5 max-w-[62ch] text-sm leading-relaxed text-ink-muted">
+        {brief}
+      </p>
     </div>
   );
 }

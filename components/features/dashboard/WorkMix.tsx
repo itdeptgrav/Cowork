@@ -157,13 +157,20 @@ export function WorkMix({ className = "" }: { className?: string }) {
       ) : tasks.isLoading ? (
         <SkeletonRows rows={4} />
       ) : total === 0 ? (
-        <EmptyState
-          compact
-          title="Nothing open"
-          body="Every task assigned to you is closed."
-        />
+        <div className="m-auto w-full">
+          <EmptyState
+            compact
+            title="Nothing open"
+            body="Every task assigned to you is closed."
+          />
+        </div>
       ) : (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-4">
+        /* `my-auto` centres the ring in whatever height the band settles on:
+           this card is the shortest of its three by content, so in a stretch
+           row it is the one that receives the slack, and slack pooled under
+           the content reads as a card that failed to fill rather than one
+           given room. */
+        <div className="my-auto flex flex-wrap items-center gap-x-5 gap-y-4">
           {/* The ring, with the total in the middle — the reference's own
               device for "this is the whole, and these are its parts". */}
           <div className="relative shrink-0">
@@ -209,8 +216,15 @@ export function WorkMix({ className = "" }: { className?: string }) {
             </span>
           </div>
 
-          {/* The legend, two columns, as the reference lays it out. */}
-          <ul className="grid min-w-0 flex-1 grid-cols-2 gap-x-4 gap-y-2.5">
+          {/* One column at every width, deliberately.
+              The two-column legend was sized for a card that spanned half the
+              left region (~453px). This card now sits in the narrow support
+              slot — ~335px at `deck`, half a six-column row between `sm` and
+              `deck` — and at those widths two columns leave a label ~65px and
+              "Awaiting a decision" truncates to nothing. Six short rows read
+              fine in one column at every width, which is worth more than a
+              breakpoint dance that is cramped at two of the three. */}
+          <ul className="grid min-w-0 flex-1 grid-cols-1 gap-x-4 gap-y-2.5">
             {parts
               .filter((p) => p.count > 0)
               .map((p) => (

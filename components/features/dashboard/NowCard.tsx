@@ -16,7 +16,6 @@ import { Icon } from "@/components/ui/Icons";
 import { useQuery } from "@/lib/hooks/useRepository";
 import {
   formatDate,
-  formatTimer,
   formatDurationTimer,
 } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
@@ -86,7 +85,11 @@ export function NowCard() {
       ) : tasks.error ? (
         <ErrorState body={tasks.error} onRetry={tasks.refetch} />
       ) : !hero ? (
-        <div className="px-5">
+        /* `m-auto` so an empty card centres what little it has in whatever
+           height the band settles on. An empty state pinned to the top of a
+           stretched card is the state that made this page look broken when
+           every queue was clear. */
+        <div className="m-auto w-full px-5">
           <EmptyState
             title="Nothing is waiting on you"
             body="Every open task is with someone else. This is the good state — check what is coming, or pick up something new."
@@ -107,7 +110,12 @@ export function NowCard() {
           />
 
           {rest.length > 0 && (
-            <div className="mt-4 border-t border-hairline">
+            /* `mt-auto`, not `mt-4`: in a stretch band this card is handed a
+               height rather than choosing one, and a follow-up left floating
+               mid-card with a gap beneath it is the tell. Pinned to the hem it
+               reads as the foot of the card — hero at the top, what comes
+               after at the bottom, the slack between them. */
+            <div className="mt-auto border-t border-hairline">
               <p className="px-5 pt-3 pb-1 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
                 Then
               </p>
@@ -148,6 +156,8 @@ function Hero({
   const viewerId = useViewerId();
   const action = nextAction(view, viewerId ?? "");
   const running = startedAtRealMs !== null;
+  /* Used only for progress-bar percentage; the live elapsed figure comes
+     from TimerControl so there is never a stale vs. live disagreement. */
   const ticked = useTicker(startedAtRealMs);
   const logged = view.loggedSecs + ticked;
   const estimate = view.task.estimatedEffortSecs;
@@ -156,18 +166,6 @@ function Hero({
   return (
     <div className="px-5 pt-1">
       <div className="flex flex-wrap items-center gap-2">
-        {running && (
-          <span className="inline-flex items-center gap-1.5 text-[11px] tracking-[0.09em] text-ink-muted uppercase">
-            <span
-              aria-hidden="true"
-              className="relative flex h-1.5 w-1.5 text-ink"
-            >
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
-            </span>
-            Running
-          </span>
-        )}
         <Chip tone={meta.tone}>{meta.label}</Chip>
         {view.myRank && (
           <span
@@ -177,9 +175,15 @@ function Hero({
             P{view.myRank}
           </span>
         )}
-        <span data-figure className="ml-auto text-lg leading-none text-ink">
-          {formatTimer(logged)}
-        </span>
+        {running && (
+          <span className="ml-auto inline-flex items-center gap-1.5 text-[11px] tracking-[0.05em] text-ink-muted uppercase">
+            <span aria-hidden="true" className="relative flex h-1.5 w-1.5 text-ink">
+              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-current opacity-60" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-current" />
+            </span>
+            Running
+          </span>
+        )}
       </div>
 
       <Link

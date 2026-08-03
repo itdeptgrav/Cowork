@@ -15,17 +15,23 @@
  *     D · E         877 → 1310, → 1420
  *     F1 · F2       962 → 1233, 1268 →   ← starts 85px below D and E
  *
- *   That last pair of facts is the structure, and it is what a two-row grid
- *   cannot express: the right-hand column is ONE stack running the whole height
- *   of the page — list, then gradient card, then the small action card — while
- *   the left eight columns carry two rows beside it. C overhangs row 1 and F
- *   begins below row 2's top edge because they are siblings in that stack, not
- *   cells in a grid. Hence `row-span-2` on the right column.
+ *   The 5/3/4 proportion is kept. The overhang is NOT, and that is a deliberate
+ *   departure from the reference rather than a drift away from it.
  *
- *   Proportions follow the same measurements: the hero is wide and flat (0.46,
- *   not the near-square it had become), the stacked pair is a third of its
- *   width, and the lists are capped so the right column does not tower over the
- *   composition it is supposed to sit inside.
+ *   The reference can afford a right-hand column that overhangs its rows
+ *   because it is 2721px wide: at that measure the stack reads as its own
+ *   panel standing beside the composition. Cowork renders at roughly half of
+ *   it, and there the same overhang stopped reading as a second panel and
+ *   started reading as cards that missed. Measured at 1470: the stack's card
+ *   boundaries fell 16–31px from the left region's, and the interior seam
+ *   moved 117px between row 1 (4/4, edge at 493) and row 2 (5/3, edge at 610).
+ *   A near-miss is the one offset that always reads as an error.
+ *
+ *   So the structure here is two stretch bands across a single twelve-column
+ *   grid at 5 / 3 / 4. Both interior seams hold the full height of the page,
+ *   and every card in a band shares a top and a bottom edge. The reference's
+ *   hierarchy — wide lead, narrow support, rail — is now stated identically in
+ *   both bands instead of being re-improvised per row.
  *
  * OWN-WORLD: "Chrome Under Frost", untouched. Frosted 18px cards on the living
  *   iridescent field, Geist, tabular figures, saturated colour only as C1–C4,
@@ -64,42 +70,68 @@ export function Home() {
 
       <DashboardSearch />
 
-      {/* Two regions, not one grid of cells.
-          A twelve-column grid with a row-spanning cell stretches its other rows
-          to fit that cell, which opened a hole under the stacked pair. The
-          reference has no such hole because its right-hand column is a stack
-          standing beside the left region rather than a member of it. So: eight
-          columns of rows on the left, four columns of stack on the right, each
-          packing to its own content. The module is unchanged — the inner grids
-          resolve to the same 557 / 328 and 443 / 443 the reference measures. */}
-      <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
-        <div className="flex min-w-0 flex-col gap-4 deck:col-span-8">
-          {/* Row 1 — hero 5, stacked pair 3. */}
-          <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-8">
-            <div className="min-w-0 deck:col-span-5">
-              <SignatureGraph />
-            </div>
-            <div className="flex min-w-0 flex-col gap-4 deck:col-span-3">
-              <ScoreStat />
-              <LoadStat />
-            </div>
-          </div>
+      {/* ONE grid of two bands, not two regions with private rhythms.
+          The previous shape — eight columns of rows beside a four-column stack,
+          each packing to its own content — is what made this page read as
+          amateur, and it is measurable rather than a matter of taste:
 
-          {/* Row 2 — two equal cards. */}
-          <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
-            <div className="min-w-0">
-              {team ? <TeamLoadCard /> : <NowCard />}
-            </div>
-            <div className="min-w-0">
-              <WorkMix />
-            </div>
-          </div>
+            · the interior seam MOVED between rows. Row 1 split the left region
+              4/4 (edge at 493) and row 2 split it 5/3 (edge at 610). Two rows
+              stacked directly on each other, drawn against two different
+              column edges, 117px apart. The eye tracks a vertical edge down a
+              page; there was none to track.
+            · row 1's three cards ended at 422 / 535 / 566 — a 144px ragged
+              hem, because `items-start` lets every card pack to its content.
+            · the right stack's card boundaries landed 16–31px off the left
+              region's. Not aligned, and not decisively offset either: a
+              near-miss reads as a mistake, where a large offset reads as
+              intent.
+
+          So: twelve columns, 5 / 3 / 4, and those two seams hold from the top
+          of the page to the bottom. Both bands are stretch rows, so every card
+          in a band shares a top AND a bottom edge. The hierarchy the reference
+          asked for survives — a wide lead slot, a narrow support slot, a rail —
+          but it is now the SAME hierarchy in both bands rather than a fresh
+          improvisation per row.
+
+          Three widths, and the collapse is by PRIORITY rather than by source
+          order. Under `sm` one column: what to do now, where the work sits,
+          what needs you, then the trend. Between `sm` and `deck` six columns —
+          the lead card of each band takes the full width and its two
+          supporting cards halve the row beneath it, so a tablet is not handed
+          a phone layout. At `deck` the twelve-column composition above. */}
+      <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-6 deck:grid-cols-12">
+        {/* ── Band 1 · the situation right now ───────────────────────────── */}
+
+        {/* `grid` on the wrapper rather than `block`: a lone grid child
+            stretches to its row, which is what carries the shared hem down to
+            cards that do not take a className of their own. */}
+        <div className="grid min-w-0 sm:col-span-6 deck:col-span-5">
+          {team ? <TeamLoadCard /> : <NowCard />}
+        </div>
+        <div className="grid min-w-0 sm:col-span-3 deck:col-span-3">
+          <WorkMix />
+        </div>
+        <div className="grid min-w-0 sm:col-span-3 deck:col-span-4">
+          <AttentionCard />
         </div>
 
-        {/* The right-hand stack — list, gradient card, action card — running
-            the height of both rows and overhanging the first, as measured. */}
-        <div className="flex min-w-0 flex-col gap-4 deck:col-span-4">
-          <AttentionCard />
+        {/* ── Band 2 · the trend, and what is coming ─────────────────────── */}
+
+        <div className="grid min-w-0 sm:col-span-6 deck:col-span-5">
+          <SignatureGraph />
+        </div>
+        {/* Two figures of one idea, so they sit tighter than the 16px card
+            gutter — proximity doing the grouping instead of another container.
+            Equal rows, so the pair reads as one divided block rather than two
+            cards that happen to be adjacent. */}
+        <div className="grid min-w-0 grid-rows-2 gap-3 sm:col-span-3 deck:col-span-3">
+          <ScoreStat />
+          <LoadStat />
+        </div>
+        {/* The meeting card takes the slack; handing work over is a small fixed
+            affordance and should not be inflated to match it. */}
+        <div className="grid min-w-0 grid-rows-[1fr_auto] gap-4 sm:col-span-3 deck:col-span-4">
           <NextCard />
           <QuickAssign />
         </div>

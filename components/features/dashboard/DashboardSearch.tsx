@@ -149,7 +149,10 @@ export function DashboardSearch() {
     active && query.trim().length >= 2 && (searching || results.length > 0);
 
   return (
-    <div ref={containerRef} className="relative mb-6 w-full">
+    /* `mb-7` (28px) matches the gap between the two card bands, so the page has
+       one value for "a new region begins here" and a smaller one (24px) for
+       the lines inside the header block. */
+    <div ref={containerRef} className="relative mb-7 w-full">
       {/* Search bar */}
       <div
         role="button"
