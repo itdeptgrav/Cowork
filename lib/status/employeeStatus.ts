@@ -274,7 +274,9 @@ export async function goOnline(
           ? "Screen sharing was cancelled — you are still offline."
           : e instanceof ScreenShareWrongSurface
             ? `${e.message} ${ENTIRE_SCREEN_REQUIREMENT}`
-            : "That browser could not start a screen share.",
+            : (e instanceof Error && e.message)
+              ? e.message
+              : "That browser could not start a screen share.",
     });
     return false;
   }

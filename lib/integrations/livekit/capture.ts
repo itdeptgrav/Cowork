@@ -153,12 +153,23 @@ export async function requestScreenShare(): Promise<MediaStreamTrack> {
     typeof navigator === "undefined" ||
     !navigator.mediaDevices?.getDisplayMedia
   ) {
-    throw new Error("This browser cannot share a screen.");
+    throw new Error(
+      isIOS()
+        ? "Screen sharing on iPhone and iPad requires Safari 16.4 or later. Please open Cowork in Safari."
+        : "This browser cannot share a screen.",
+    );
   }
+
+  /* iOS Safari accepts only a minimal options object — the experimental keys
+     (selfBrowserSurface, surfaceSwitching, monitorTypeSurfaces, systemAudio)
+     are ignored or may cause a NotSupportedError on WebKit. */
+  const options = isIOS()
+    ? { video: { displaySurface: "monitor" }, audio: false }
+    : SCREEN_CAPTURE;
 
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CAPTURE);
+    stream = await navigator.mediaDevices.getDisplayMedia(options);
   } catch (e) {
     const name = (e as Error)?.name;
     // NotAllowedError is both "denied" and "dismissed the picker".
