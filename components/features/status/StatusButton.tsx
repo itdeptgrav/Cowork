@@ -15,6 +15,7 @@ import {
 import {
   ENTIRE_SCREEN_REQUIREMENT,
   SURFACE_LABEL,
+  isIOS,
 } from "@/lib/integrations/livekit/screenShare";
 import { fetchRoomCredentials } from "@/lib/integrations/livekit/credentials";
 import { EmergencyEndDialog } from "./EmergencyEndDialog";
@@ -386,10 +387,17 @@ export function StatusButton() {
               <p className="text-xs font-medium text-ink">
                 Share your entire screen
               </p>
-              <p className="mt-1.5 text-[11px] leading-relaxed text-ink-muted">
-                {ENTIRE_SCREEN_REQUIREMENT} Your browser will ask next — choose{" "}
-                <span className="text-ink">Entire Screen</span>.
-              </p>
+              {isIOS() ? (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-ink-muted">
+                  To go online you must share your entire screen. Tap the
+                  button below — your device will capture your full screen.
+                </p>
+              ) : (
+                <p className="mt-1.5 text-[11px] leading-relaxed text-ink-muted">
+                  {ENTIRE_SCREEN_REQUIREMENT} Your browser will ask next —
+                  choose <span className="text-ink">Entire Screen</span>.
+                </p>
+              )}
               <div className="mt-3 flex items-center gap-2">
                 <button
                   type="button"

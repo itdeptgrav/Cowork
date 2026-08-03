@@ -77,8 +77,27 @@ export function readSurface(track: MediaStreamTrack | null): SharedSurface {
   }
 }
 
+/**
+ * iOS Safari (16.4+) supports getDisplayMedia but never reports displaySurface —
+ * it only offers full-screen capture with no window/tab picker, so "unknown"
+ * from iOS is always an entire screen. Treat it as such so the eligibility
+ * check doesn't reject a compliant iOS share.
+ */
+export function isIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    /* iPadOS 13+ reports MacIntel but has multiple touch points */
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
 export function isEntireScreen(track: MediaStreamTrack | null): boolean {
-  return readSurface(track) === "entire_screen";
+  const surface = readSurface(track);
+  if (surface === "entire_screen") return true;
+  /* iOS never sets displaySurface but only offers full-screen capture. */
+  if (surface === "unknown" && isIOS()) return true;
+  return false;
 }
 
 export class ScreenShareCancelled extends Error {
@@ -152,10 +171,9 @@ export async function requestScreenShare(): Promise<MediaStreamTrack> {
   const track = stream.getVideoTracks()[0];
   if (!track) throw new ScreenShareCancelled();
 
-  const surface = readSurface(track);
-  if (surface !== "entire_screen") {
+  if (!isEntireScreen(track)) {
     for (const t of stream.getTracks()) t.stop();
-    throw new ScreenShareWrongSurface(surface);
+    throw new ScreenShareWrongSurface(readSurface(track));
   }
 
   return track;
