@@ -186,6 +186,7 @@ export async function requestScreenShare(): Promise<MediaStreamTrack> {
     if (name === "NotAllowedError" || name === "AbortError") {
       throw new ScreenShareCancelled();
     }
+    console.error("[requestScreenShare] getDisplayMedia rejected:", name, (e as Error)?.message);
     throw e;
   }
 
