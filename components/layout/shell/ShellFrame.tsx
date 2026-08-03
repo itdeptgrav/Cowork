@@ -14,6 +14,7 @@ import { NotificationPrompt } from "@/components/features/notifications/Notifica
 import { GlobalCommandPalette } from "./GlobalCommandPalette";
 import { SessionProvider, useSession } from "@/components/features/auth/SessionProvider";
 
+
 /**
  * Which shell a route gets.
  *
