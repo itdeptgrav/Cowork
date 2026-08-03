@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { getRepository } from "@/lib/repositories";
-import { subscribeToRepository } from "@/lib/repositories/events";
+import { useSession } from "@/components/features/auth/SessionProvider";
 import { Button, Chip } from "@/components/ui/Primitives";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
@@ -70,58 +70,77 @@ function writeSeen(keys: string[]): void {
 }
 
 export function NewAssignmentGate() {
+  const session = useSession();
   const [notices, setNotices] = useState<AssignmentNotice[] | null>(null);
-  /* True once `load()` has returned a definitive answer — either notices
-     were found and shown, or there are genuinely none to show. Retries stop
-     after this point: re-running on every later mutation would re-announce
-     work the person has already been told about. */
-  const resolvedRef = useRef(false);
+  /* Flip to true once the popup has been shown or we've confirmed there's
+     nothing to show — so the live Firestore listener doesn't re-trigger the
+     popup after the user has already dismissed it. */
+  const shownRef = useRef(false);
 
   /**
-   * Read once per mount, retrying whenever the repository changes until a
-   * definitive answer arrives.
+   * Watch `cowork_tasks` with a live Firestore listener instead of a one-shot
+   * getDocs.
    *
-   * "When they open Cowork" is the requirement, and a page load is that
-   * moment. The retry is not a poll — it fires only on a repository change
-   * event (a mutation or the Firestore task-watch signalling new data), and
-   * stops as soon as `load()` completes without error. This handles the
-   * first-login case where the repository data isn't in the local Firestore
-   * cache yet when the component first mounts.
+   * The previous approach called `repo.listTasks()` once on mount. That fails
+   * silently on first login: Firestore has no local cache yet, and the
+   * `getViewer()` call deep inside `listTasks` triggers `#reportingTree()`
+   * which makes a batch of HTTP calls to the backend — if any of those are
+   * slow or fail, the whole chain errors, the catch block swallows it, and
+   * the popup never shows.
+   *
+   * `onSnapshot` fixes both problems:
+   *   · it fires immediately from cache on refresh, from the network on first
+   *     login — no cold-cache race;
+   *   · it doesn't go through `#reportingTree()` at all.
+   *
+   * When the snapshot tells us there ARE assigned tasks, we call
+   * `repo.listTasks()` once to build the rich notices (owner name, deadline
+   * mode, action label, etc.). That call succeeds reliably because the
+   * Firestore data is already available in the local cache by the time we
+   * make it. The listener is then detached — we never need it again.
    */
   useEffect(() => {
-    let cancelled = false;
+    const employeeId = session.status === "authenticated" ? session.employeeId : null;
+    if (!employeeId) return;
 
-    async function load() {
+    let cancelled = false;
+    let detach: (() => void) | null = null;
+
+    async function buildNotices() {
+      if (shownRef.current || cancelled) return;
       try {
         const repo = getRepository();
-        const viewer = await repo.getViewer();
+        /* employeeId is already known from the session — skip getViewer() so
+           we don't block on #reportingTree() fetching every employee's managers
+           from the backend. */
+        /* employeeId is narrowed to string by the guard at the top of the
+           outer effect, but TypeScript loses that across async closures. */
+        const eid = employeeId as string;
         const page = await repo.listTasks({
           scope: "mine",
           status: ["assigned"],
-          assigneeId: viewer.employeeId,
+          assigneeId: eid,
           limit: 50,
         });
 
+        if (cancelled) return;
+        shownRef.current = true;
+        /* Listener no longer needed — data is in the local cache now. */
+        detach?.();
+
         const all: AssignmentNotice[] = page.items.map((view) => {
-          const mine = view.assignments.find((a) => a.employeeId === viewer.employeeId);
-          /* The same resolver the action inbox uses, so the notice and the
-             inbox can never name different next steps for one task. */
-          const action = actionableFor(view, viewer.employeeId);
+          const mine = view.assignments.find((a) => a.employeeId === eid);
+          const action = actionableFor(view, eid);
           return {
             taskId: view.task.id,
             title: view.task.title,
             reference: view.task.reference,
-            /* The assignment's own stamp, not the task's — being re-assigned
-               later has to read as a new event. Falls back to the task's
-               creation only where no assignment row came back. */
             assignedAt: mine?.assignedAt ?? view.task.createdAt,
             assignedByName: view.owner?.displayName ?? null,
             dueAt: view.task.deadline.dueAt,
             rank: view.myStoredRank ?? mine?.rank ?? null,
             description: view.task.description,
             requirementCount: view.task.requirements.length,
-            /* The proposed window on a budget task, the estimate otherwise —
-               whichever one is the real answer to "how long is this". */
             effortSecs:
               view.task.deadline.mode === "timer"
                 ? (view.task.deadline.currentWindowSecs ?? view.task.estimatedEffortSecs)
@@ -133,33 +152,52 @@ export function NewAssignmentGate() {
           };
         });
 
-        if (!cancelled) {
-          resolvedRef.current = true;
-          const unseen = unseenNotices(all, readSeen());
-          if (unseen.length > 0) setNotices(unseen);
-        }
+        const unseen = unseenNotices(all, readSeen());
+        if (unseen.length > 0) setNotices(unseen);
       } catch (e) {
-        /* A notice that cannot be built is simply not shown. Nothing here is
-           load-bearing enough to surface an error over the whole shell. */
-        console.error("[NewAssignmentGate] load failed:", e);
+        shownRef.current = false; // allow retry on next snapshot
+        console.error("[NewAssignmentGate] buildNotices failed:", e);
       }
     }
 
-    void load();
+    async function startWatch() {
+      const { collection, onSnapshot, query, where } =
+        await import("firebase/firestore");
+      const { legacyDb } = await import("@/lib/legacy/firebase");
 
-    /* Retry whenever the repository signals new data, but only until we have
-       a definitive result. Covers the first-login case where the Firestore
-       cache was cold on mount and `load()` ran before any tasks were fetched. */
-    const unsubscribe = subscribeToRepository(() => {
-      if (cancelled || resolvedRef.current) return;
-      void load();
-    });
+      if (cancelled) return;
+
+      /* Watch only the tasks directly assigned to this person with status
+         "assigned". Firestore delivers the current set immediately (from
+         cache if warm, from the network otherwise), then pushes any changes.
+         The first delivery is exactly the signal we were missing on first
+         login. */
+      const q = query(
+        collection(legacyDb(), "cowork_tasks"),
+        where("assigneeIds", "array-contains", employeeId),
+        where("status", "==", "assigned"),
+      );
+
+      detach = onSnapshot(
+        q,
+        (snap) => {
+          /* Empty snapshot → no assigned tasks → nothing to announce. */
+          if (snap.empty || shownRef.current || cancelled) return;
+          void buildNotices();
+        },
+        (err) => {
+          console.error("[NewAssignmentGate] Firestore watch error:", err.message);
+        },
+      );
+    }
+
+    void startWatch();
 
     return () => {
       cancelled = true;
-      unsubscribe();
+      detach?.();
     };
-  }, []);
+  }, [session.status, session.employeeId]);
 
   if (typeof document === "undefined" || !notices || notices.length === 0) return null;
 
