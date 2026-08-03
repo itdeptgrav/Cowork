@@ -36,6 +36,7 @@ export function SignatureGraph() {
   const flow = useQuery(
     (r) => r.getWorkloadFlow({ scope: team ? "team" : "mine", weeks }),
     [team, weeks],
+    { staleTime: 30_000 },
   );
 
   const data = flow.data ?? null;

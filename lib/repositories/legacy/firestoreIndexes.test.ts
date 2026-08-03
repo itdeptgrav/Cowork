@@ -62,6 +62,12 @@ test("every composite task query has a declared index", () => {
     ["assigneeIds", "updatedAt"],
     ["assignedBy", "updatedAt"],
     ["approverId", "updatedAt"],
+    /* `NewAssignmentGate`'s second listener. Work routed to somebody but still
+       at a gate has an EMPTY `assigneeIds` and its person in
+       `pendingAssigneeId` — `taskForward.js` only writes `assigneeIds` when the
+       task goes to `open` — so the array-contains listener above cannot see
+       that class of work arrive, and the notice needed a page reload. */
+    ["pendingAssigneeId", "updatedAt"],
   ]) {
     assert.ok(
       declared.has(keyOf("cowork_tasks", fields)),
@@ -95,6 +101,7 @@ test("no index is declared with a field the code does not query", () => {
     keyOf("cowork_tasks", ["assigneeIds", "updatedAt"]),
     keyOf("cowork_tasks", ["assignedBy", "updatedAt"]),
     keyOf("cowork_tasks", ["approverId", "updatedAt"]),
+    keyOf("cowork_tasks", ["pendingAssigneeId", "updatedAt"]),
     keyOf("cowork_notifications", ["recipientEmployeeId", "createdAt"]),
   ]);
   for (const d of declared) {

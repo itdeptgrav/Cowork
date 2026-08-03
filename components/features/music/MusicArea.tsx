@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useMusic } from "./MusicContext";
 import { ResultRow } from "./ResultRow";
 import { PlayerControls } from "./PlayerControls";
+import { PlaylistsCard } from "./PlaylistsCard";
 import { Icon } from "@/components/ui/Icons";
 import {
   Chip,
@@ -320,6 +321,10 @@ export function MusicArea({
               </ul>
             )}
           </Card>
+
+          {/* Above Favourites on purpose: a playlist is something somebody
+              built, a favourite is something they ticked. */}
+          <PlaylistsCard />
 
           <Collection
             title="Favourites"

@@ -44,7 +44,17 @@ export type ActionableReason =
   /** Intake: the work cannot start until I accept it. */
   | "intake"
   /** Stuck, and I am one of the people who can unstick it. */
-  | "blocked";
+  | "blocked"
+  /**
+   * I ran the timer on this today and have not filed a report.
+   *
+   * Not decided by `actionableFor` — this one is not a property of the task's
+   * OWN state (status, deadline, approvals) but of TODAY'S timer activity
+   * against it, which lives in `cowork_work_commits` / `cowork_task_timers`,
+   * not on the task. The repository appends these separately; see
+   * `lib/rules/tasks/dailyReport.ts`'s `isReportPending`.
+   */
+  | "daily_report";
 
 export interface ActionableVerdict {
   reason: ActionableReason;

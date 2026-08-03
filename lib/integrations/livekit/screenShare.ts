@@ -26,6 +26,7 @@ export {
   ScreenShareCancelled,
   ScreenShareWrongSurface,
   isEntireScreen,
+  isIOS,
   readSurface,
   requestScreenShare,
   type SharedSurface,

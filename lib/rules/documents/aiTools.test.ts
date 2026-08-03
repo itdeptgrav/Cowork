@@ -173,3 +173,64 @@ test("insert_blocks is additive, so it never asks for confirmation", () => {
   assert.equal(r.ok, true);
   if (r.ok) assert.equal(docsActionRequiresConfirmation(r.action, 5000), false);
 });
+
+/* ── Block styling ─────────────────────────────────────────────────────── */
+
+test("a block's alignment, hex colour and size are carried through", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "heading", text: "Title", level: 1, align: "center", color: "#1a3d6d", size: 24 }],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const b = (r.action as { blocks: Record<string, unknown>[] }).blocks[0]!;
+    assert.equal(b.align, "center");
+    assert.equal(b.color, "#1a3d6d");
+    assert.equal(b.size, 24);
+  }
+});
+
+test("a non-hex colour is dropped, and the rest of the block survives", () => {
+  /* The document keeps its own ink rather than the whole page being refused
+     over a cosmetic field — and arbitrary CSS never reaches a style attr. */
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "paragraph", text: "Body.", color: "red; background: url(x)" }],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const b = (r.action as { blocks: Record<string, unknown>[] }).blocks[0]!;
+    assert.equal(b.color, undefined);
+    assert.equal(b.text, "Body.");
+  }
+});
+
+test("an unusable alignment or size is dropped rather than applied", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [{ type: "paragraph", text: "Body.", align: "middle", size: 400 }],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const b = (r.action as { blocks: Record<string, unknown>[] }).blocks[0]!;
+    assert.equal(b.align, undefined);
+    assert.equal(b.size, undefined);
+  }
+});
+
+test("quote and divider blocks are accepted", () => {
+  const r = validateDocsToolCall("insert_blocks", {
+    blocks: [
+      { type: "quote", text: "A quoted line." },
+      { type: "divider" },
+    ],
+  });
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    const blocks = (r.action as { blocks: { type: string }[] }).blocks;
+    assert.deepEqual(blocks.map((b) => b.type), ["quote", "divider"]);
+  }
+});
+
+test("a divider survives even though it carries no text", () => {
+  /* It has no `text`, so the empty-block filter must not eat it. */
+  const r = validateDocsToolCall("insert_blocks", { blocks: [{ type: "divider" }] });
+  assert.equal(r.ok, true);
+});

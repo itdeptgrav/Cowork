@@ -9,7 +9,7 @@ import { PresenceRoom } from "@/components/features/status/PresenceRoom";
 import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
-import { NotificationPrompt } from "@/components/features/notifications/NotificationPrompt";
+import { NewAssignmentGate } from "@/components/features/tasks/NewAssignmentGate";
 import { GlobalCommandPalette } from "./GlobalCommandPalette";
 import { SessionProvider, useSession } from "@/components/features/auth/SessionProvider";
 
@@ -235,6 +235,13 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
       {/* Blocking acknowledgement for cascaded deadlines — see the component
         for why it cannot be dismissed. */}
       <PriorityAckGate />
+      {/* "You have new work", once, on opening Cowork after being assigned
+        something. Deliberately dismissable, unlike the gate above: new work
+        arriving is not a silent change to something already agreed, and the
+        task is on their list either way. Mounted AFTER the priority gate so
+        that when both are due, the one that cannot be dismissed is the one
+        underneath — clearing it first, then this. */}
+      <NewAssignmentGate />
       {/* Global ⌘K palette — available on every authenticated route.
           On /workspace routes the shortcut is handed off to the workspace's
           own CommandPalette; the two never register at the same time. */}

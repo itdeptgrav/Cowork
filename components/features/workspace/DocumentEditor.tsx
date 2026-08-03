@@ -56,7 +56,7 @@ import {
   ShortcutsDialog,
   WordCountDialog,
 } from "./docs/DocsDialogs";
-import type { DocumentPageSetup, DocumentSummary } from "@/lib/domain";
+import type { DocumentPageSetup, DocumentSummary, TaskId } from "@/lib/domain";
 
 /**
  * The document surface.
@@ -107,6 +107,9 @@ export function DocumentEditor({
   onClose,
   onChanged,
   creating = false,
+  reportTaskId = null,
+  reportTaskTitle = null,
+  reportProgress = null,
 }: {
   documentId: string;
   /** The other documents, for the rail. Empty is a perfectly good rail. */
@@ -117,6 +120,17 @@ export function DocumentEditor({
   /** The list needs re-reading — a rename, a copy or a delete happened. */
   onChanged?: () => void;
   creating?: boolean;
+  /**
+   * Set when this document was opened as the long form of a specific task's
+   * daily report — see `ReportComposer.tsx`'s "Write a doc" link. Renders a
+   * banner offering to finish the report from here, rather than making
+   * someone go back to the composer once they are done writing.
+   */
+  reportTaskId?: string | null;
+  reportTaskTitle?: string | null;
+  /** Carried from the composer's progress selector at the moment the link was
+      opened, so the report this banner files doesn't lose that choice. */
+  reportProgress?: number | null;
 }) {
   const doc = useQuery((r) => r.getDocument(documentId), [documentId]);
   const body = useQuery((r) => r.getDocumentBody(documentId), [documentId]);
@@ -160,6 +174,12 @@ export function DocumentEditor({
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  /** The "submit this as report" banner, present only when `reportTaskId` is set. */
+  const [reportState, setReportState] = useState<
+    "idle" | "submitting" | "submitted" | "error"
+  >("idle");
+  const [reportError, setReportError] = useState<string | null>(null);
 
   /**
    * The page.
@@ -599,6 +619,36 @@ export function DocumentEditor({
 
   const record = doc.data;
 
+  /**
+   * File this document as today's report for `reportTaskId`.
+   *
+   * Flushes first — the report should carry whatever was just typed, not a
+   * stale autosave from a few seconds ago. Progress carries over from
+   * whatever the composer had selected when the link was opened; there is no
+   * progress control here, and re-asking for it would just be a second place
+   * that number can be set.
+   */
+  async function submitAsReport() {
+    if (!reportTaskId) return;
+    setReportState("submitting");
+    setReportError(null);
+    await flush();
+    const r = await getRepository().submitDailyReport({
+      taskId: reportTaskId as TaskId,
+      message: "",
+      progressPercent: reportProgress ?? 50,
+      attachmentIds: [],
+      documentId,
+      documentTitle: record.title,
+    });
+    if (!r.ok) {
+      setReportState("error");
+      setReportError(r.message);
+      return;
+    }
+    setReportState("submitted");
+  }
+
   return (
     /* One shape. The surface this fills is the whole window — the stage owns
        the frame; this owns the document inside it. */
@@ -735,6 +785,57 @@ export function DocumentEditor({
           </button>
         </div>
       </header>
+
+      {/* ── "Submit as report" banner ──────────────────────────────────────
+          Present only when this document was opened as the long form of a
+          specific task's daily report (see ReportComposer.tsx's doc link).
+          A persistent bar rather than a toast: the person may write for a
+          while before they are ready, and a toast that already faded would
+          leave them hunting for how to finish. */}
+      {reportTaskId && (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-hairline bg-[var(--surface-sunken)] px-4 py-2">
+          {reportState === "submitted" ? (
+            <>
+              <Icon.check className="h-4 w-4 shrink-0 text-[var(--state-positive-ink)]" />
+              <span className="text-[12.5px] text-ink">
+                Submitted as today&rsquo;s report for{" "}
+                <strong>{reportTaskTitle ?? "this task"}</strong>.
+              </span>
+              <a
+                href={`/tasks/${reportTaskId}/reports`}
+                className="ml-auto shrink-0 rounded-full bg-ink px-3 py-1 text-[12px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-80"
+              >
+                View report
+              </a>
+            </>
+          ) : (
+            <>
+              <Icon.overview className="h-4 w-4 shrink-0 text-ink-faint" />
+              <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-muted">
+                Writing the report for{" "}
+                <strong className="text-ink">
+                  {reportTaskTitle ?? "a task"}
+                </strong>
+              </span>
+              {reportError && (
+                <span className="shrink-0 text-[11px] text-[var(--state-overdue-ink)]">
+                  {reportError}
+                </span>
+              )}
+              <button
+                type="button"
+                disabled={reportState === "submitting"}
+                onClick={() => void submitAsReport()}
+                className="ml-auto shrink-0 rounded-full bg-ink px-3 py-1 text-[12px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-80 disabled:opacity-40"
+              >
+                {reportState === "submitting"
+                  ? "Submitting…"
+                  : `Submit this as report for ${reportTaskTitle ?? "task"}`}
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {editor && (
         <DocsToolbar

@@ -102,7 +102,7 @@ const blobs: Blob[] = [
 
 export function IridescentField() {
   /*
-   * **Not rendered at all in low mode.**
+   * **Not rendered at all in Plain mode.**
    *
    * The CSS hides it too, but hiding is not enough on its own: these ten nodes
    * each carry `will-change: transform`, which asks the compositor for a layer
@@ -111,10 +111,10 @@ export function IridescentField() {
    * paint, are the cost.
    *
    * Coherent rather than merely cheaper: the field exists so the frosted
-   * surfaces have something to look through, and low mode has no frost.
+   * surfaces have something to look through, and Plain mode has no frost.
    */
   const { profile } = useDeviceMode();
-  if (!profile.animations && !profile.blur) return null;
+  if (profile.backdropField === "none") return null;
 
   return (
     <div className="field" aria-hidden="true">

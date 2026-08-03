@@ -200,10 +200,128 @@ test("the timer is coupled to presence: away stops the clock at once", () => {
      freezes `running` and a paused write is issued from the control itself. */
   const src = code(CONTROL);
   assert.match(src, /const away = isMine && myPresence !== "online"/);
-  assert.match(src, /const running = state === "running" && !away/);
+  /* The engine's own answer, which the auto-pause and the heartbeat read. It
+     carries the `!away` coupling that used to sit on `running`. */
+  assert.match(src, /const serverRunning = state === "running" && !away/);
+  /* `running` gained an optimistic override so the button answers a press
+     without waiting for the write. Presence must still outrank it: `away` is a
+     rule, not a pending request, so it is tested FIRST and short-circuits to
+     false before the override is ever consulted. */
+  assert.match(src, /const running = away\s*\n?\s*\? false/);
   /* And it actually pauses the session, not only the display. */
   assert.match(src, /if \(away && state === "running" && !autoPaused\.current\)/);
   assert.match(src, /void pause\(\)/);
+});
+
+test("the heartbeat follows the engine, never the optimistic flip", () => {
+  /* A heartbeat is a claim about a session the engine holds. Beating on the
+     optimistic state fired a write for a session that did not exist yet. */
+  assert.match(code(CONTROL), /if \(!serverRunning\) return;/);
+});
+
+test("a press is answered before the write lands", () => {
+  /* The lag: `disabled={pending}` plus a "…" label meant the control died for
+     the whole round trip — a write, then a global query invalidation — and
+     people pressed twice. The press now flips the control and the write is
+     reconciled behind it. */
+  const src = code(CONTROL);
+  /* The flip is recorded before anything is awaited. */
+  assert.match(src, /setPressed\(\{\s*\n?\s*kind: wasRunning \? "paused" : "running"/);
+  /* Expired by derivation against the press-time server value, so a spent
+     override cannot be re-asserted by a later change in the other direction. */
+  assert.match(
+    src,
+    /const optimistic = pressed && serverRunning === pressed\.fromServer \? pressed : null/,
+  );
+  /* A refusal puts the button back rather than leaving a clock apparently
+     running. */
+  assert.match(src, /if \(!r\.ok\) \{\s*\n?\s*setPressed\(null\);/);
+  /* And the dead-button branch is gone: neither transport button — the row one
+     nor the detail one — is disabled by its own write. The single remaining
+     `disabled={pending}` belongs to "Close session" on the stale branch, which
+     is a genuine one-shot with no optimistic state behind it. */
+  const disabledByPending = (src.match(/disabled=\{pending\}/g) ?? []).length;
+  assert.equal(
+    disabledByPending,
+    1,
+    "a transport button is disabled during its own write again",
+  );
+  const stale = src.slice(src.indexOf('state === "stale"'));
+  assert.match(stale, /disabled=\{pending\}[\s\S]{0,400}?Close session/);
+  /* The ellipsis label went with it. */
+  assert.equal(
+    /pending\s*\n?\s*\? "…"/.test(src),
+    false,
+    "the toggle is showing an ellipsis instead of its result again",
+  );
+});
+
+/* ── The number only ever counts up ──────────────────────────────────────── */
+
+test("the ticker's figure is keyed to the origin it was measured against", () => {
+  /* "The timer goes back and then suddenly jumps numbers forward." A bare
+     `secs` survives a pause, so a resume rendered the previous run's minutes
+     on top of the banked total until the next interval fired, then dropped
+     back. Keyed, a figure belonging to a previous origin is rebased on the
+     render that notices. */
+  const src = code(CONTROL);
+  assert.match(src, /originMs: startedAtRealMs,\s*\n?\s*secs: elapsedSecs\(startedAtRealMs, Date\.now\(\)\),/);
+  assert.match(src, /rebaseSecs\(tick, startedAtRealMs\)/);
+  assert.equal(
+    /const \[secs, setSecs\] = useState/.test(src),
+    false,
+    "the unkeyed figure is back — a resume will carry the last run's seconds",
+  );
+});
+
+test("a spent optimistic press is discarded, not left to be re-matched", () => {
+  /* Expiry by comparison alone is not expiry: `serverRunning` returning to its
+     press-time value re-arms the override, which then re-asserts a run whose
+     origin is the original press — the clock leaps forward by everything that
+     has happened since. */
+  const src = code(CONTROL);
+  assert.match(
+    src,
+    /if \(pressed && serverRunning !== pressed\.fromServer\) setPressed\(null\)/,
+  );
+});
+
+test("the away figure is per-second, not measured against the coarse clock", () => {
+  /* `useNow` is quantised DOWN to the minute, so a 40-second run measured 0
+     against it: stepping away dropped the clock by up to a minute and banking
+     the real elapsed a moment later threw it forward again. */
+  const src = code(CONTROL);
+  assert.match(src, /const elapsed = away\s*\n?\s*\? banked \+ ticked/);
+  assert.equal(
+    /elapsedSecs\(session\?\.startedAtRealMs \?\? null, nowMs\)/.test(src),
+    false,
+    "the away branch is reading the minute-quantised clock again",
+  );
+  /* `nowMs` keeps its one honest job: a SIXTEEN HOUR threshold, where a minute
+     of resolution is ample. */
+  assert.match(src, /timerDisplayState\(session, banked, nowMs\)/);
+});
+
+test("the pause figure is held, never rolled back", () => {
+  /* On an optimistic pause the banked total does not yet include the run being
+     closed, so falling through to it makes the number jump BACKWARDS. */
+  assert.match(
+    code(CONTROL),
+    /optimistic\?\.kind === "paused"\s*\n?\s*\? optimistic\.heldSecs/,
+  );
+});
+
+test("a successful write is not followed by a duplicate refetch", () => {
+  /* `useAction` calls `notifyRepositoryChanged()` on success, which re-runs
+     every mounted query — including these two. The explicit calls bought a
+     second round trip after the write the person was already waiting on. */
+  const src = code(CONTROL);
+  const toggleBody = src.slice(src.indexOf("async function toggle()"));
+  assert.equal(
+    /timer\.refetch\(\);\s*\n?\s*active\.refetch\(\);/.test(toggleBody),
+    false,
+    "toggle is refetching what the mutation already invalidated",
+  );
 });
 
 test("the control watches the ASSIGNEE's session, not the viewer's", () => {
@@ -230,11 +348,20 @@ test("a previous person's clock cannot linger under a new one", () => {
 test("the control never calls the clock during render", () => {
   /* A render-time `Date.now()` is impure and makes the same props render two
      different figures. The threshold reads `useNow`; the seconds come from the
-     ticker. */
+     ticker.
+
+     An event handler may legitimately read the clock — a press is not a render
+     — so the optimistic flip stamps its origin through `pressMs()`, declared
+     at module scope above the component and therefore outside this slice. That
+     keeps the seam named rather than letting a bare `Date.now()` sit in the
+     component body where it is indistinguishable from the bug. */
   const src = code(CONTROL);
   const renderPart = src.slice(src.indexOf("export function TimerControl("));
   assert.equal(/Date\.now\(\)/.test(renderPart), false);
   assert.match(src, /useNow\(\)/);
+  /* The seam exists and is the only way a press reads the clock. */
+  assert.match(src, /function pressMs\(\): number \{\s*\n?\s*return Date\.now\(\);/);
+  assert.match(renderPart, /atMs: pressMs\(\)/);
 });
 
 test("a stale session is offered a close, not a pause beside a wrong figure", () => {
@@ -270,16 +397,20 @@ test("the old double-counting warning is gone, because it described the mock", (
 /* ── The four states, and what each may offer ─────────────────────────────── */
 
 test("a paused timer offers Resume, never Start", () => {
-  /* "Start timer" over banked time reads as though the work is gone. */
+  /* "Start timer" over banked time reads as though the work is gone.
+
+     Reads `shownState`, which is the session document's state until a press
+     overrides it — so a pressed Pause offers Resume immediately rather than
+     falling back to "Start timer" for the length of the write. */
   const src = code(CONTROL);
-  assert.match(src, /state === "paused"\s*\n?\s*\?\s*"Resume timer"/);
+  assert.match(src, /shownState === "paused"\s*\n?\s*\?\s*"Resume timer"/);
 });
 
 test("the status line is read off the state, not off a figure", () => {
   /* `elapsed > 0` agreed with the state only by accident, and disagreed
      exactly when the banked figure was stale. */
   const src = code(CONTROL);
-  assert.match(src, /state === "paused" \? \(\s*\n?\s*"Paused · total worked"/);
+  assert.match(src, /shownState === "paused" \? \(\s*\n?\s*"Paused · total worked"/);
   assert.equal(
     /\) : elapsed > 0 \? \(\s*\n?\s*"Paused"/.test(src),
     false,

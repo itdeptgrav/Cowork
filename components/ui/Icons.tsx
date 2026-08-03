@@ -141,6 +141,13 @@ export const Icon = {
       <circle cx="12.6" cy="8" r="1" fill="currentColor" stroke="none" />
     </S>
   ),
+  /** RENAME — a nib over a line. Distinct from `more`, which opens a menu. */
+  rename: (p: P) => (
+    <S {...p}>
+      <path d="M10.4 2.9l2.7 2.7-6.6 6.6-3.4.7.7-3.4z" />
+      <path d="M2.6 14h10.8" />
+    </S>
+  ),
   /** A task broken down into subtasks — a project, in the task-detail sense. */
   folder: (p: P) => (
     <S {...p}>

@@ -54,7 +54,7 @@ export function DeviceModeSection() {
               <span className="min-w-0">
                 <span className="flex flex-wrap items-center gap-2 text-sm text-ink">
                   {option.label}
-                  {option.id === "balanced" && <Chip>Default</Chip>}
+                  {option.id === "rich" && <Chip>Default</Chip>}
                 </span>
                 <span className="mt-0.5 block max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
                   {option.hint}
@@ -103,17 +103,24 @@ export function DeviceModeSection() {
           In this mode
         </p>
         <ul className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-ink-muted">
-          <Effect on={profile.blur} label="Frosted surfaces" />
-          <Effect on={profile.animations} label="Animation" />
-          <Effect on={profile.richCharts} label="Charts and graphs" />
+          <Effect state={profile.blur ? "on" : "off"} label="Frosted surfaces" />
           <Effect
-            on={profile.timerTickMs <= 1000}
+            state={profile.backdropField === "animated" ? "on" : "off"}
+            label="Moving background"
+          />
+          <Effect state={profile.animations ? "on" : "off"} label="Animation" />
+          <Effect
+            state={profile.richCharts ? "on" : "off"}
+            label="Charts and graphs"
+          />
+          <Effect
+            state={profile.timerTickMs <= 1000 ? "on" : "off"}
             label="Timer redraws every second"
           />
         </ul>
         <p className="mt-2 max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
           Presence, task timers, deadlines, screen sharing, notifications and
-          every rule behind them work identically in all three modes. A timer
+          every rule behind them work identically in both modes. A timer
           redrawing every two seconds is still counting every second — the figure
           is worked out from when you started, not added up from the redraws.
         </p>
@@ -133,13 +140,21 @@ function Signal({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Effect({ on, label }: { on: boolean; label: string }) {
+/**
+ * One effect, on or off.
+ *
+ * Struck through when it is off, because in Plain mode it genuinely is not on
+ * screen — there is no third state here, and there should not be: a mode that
+ * needed one would be a mode claiming an effect it was not running.
+ */
+function Effect({ state, label }: { state: "on" | "off"; label: string }) {
+  const off = state === "off";
   return (
     <li className="flex items-center gap-1.5">
-      <span aria-hidden className={on ? "text-ink" : "text-ink-faint"}>
-        {on ? "✓" : "—"}
+      <span aria-hidden className={off ? "text-ink-faint" : "text-ink"}>
+        {off ? "—" : "✓"}
       </span>
-      <span className={on ? "text-ink-muted" : "text-ink-faint line-through"}>
+      <span className={off ? "text-ink-faint line-through" : "text-ink-muted"}>
         {label}
       </span>
     </li>
@@ -153,6 +168,15 @@ function Effect({ on, label }: { on: boolean; label: string }) {
  * about the GPU; downgrading somebody's interface on that evidence would be
  * acting on a guess about their hardware. Dismissing it is remembered, and so is
  * choosing to stay where they are.
+ *
+ * ## Why the trade is named rather than softened
+ *
+ * There is one lighter mode and it costs the reader something real — flat
+ * surfaces, no motion. Saying so is what makes the offer answerable: somebody
+ * who reads "everything gets flatter and stiller" and presses the button has
+ * agreed to what they will see. An offer that promised no visible change would
+ * be a better-sounding offer and a worse one, because the screen would then
+ * contradict it.
  */
 export function DeviceModeSuggestion() {
   const { suggestion, setMode, dismissSuggestion } = useDeviceMode();
@@ -161,20 +185,21 @@ export function DeviceModeSuggestion() {
   return (
     <Panel className="mb-4">
       <p className="text-sm text-ink">
-        This browser may run Cowork more smoothly in low-end laptop mode.
+        This browser may run Cowork more smoothly in Plain mode.
       </p>
       <p className="mt-1 max-w-[68ch] text-[11px] leading-relaxed text-ink-faint">
-        {suggestion} Low-end mode drops the frosted surfaces and the animation
-        and keeps everything else exactly as it is — presence, timers, deadlines,
-        screen sharing and notifications are untouched.
+        {suggestion} Plain mode makes the surfaces flat and the background
+        still — no blur, no motion, fewer redraws. Presence, timers, deadlines,
+        screen sharing and notifications are untouched, and you can switch back
+        at any time in Settings.
       </p>
       <div className="mt-3 flex flex-wrap gap-2">
         <button
           type="button"
-          onClick={() => setMode("low")}
+          onClick={() => setMode("plain")}
           className="rounded-full bg-ink px-3 py-1.5 text-xs font-medium text-[var(--body-bg)]"
         >
-          Use low-end mode
+          Use Plain mode
         </button>
         <button
           type="button"

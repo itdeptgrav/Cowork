@@ -76,7 +76,10 @@ export function PerformanceMonitor() {
      no list. */
   const heavy = [
     { label: "Frosted surfaces (backdrop blur)", on: profile.blur },
-    { label: "Animated background field", on: profile.animations && profile.blur },
+    {
+      label: "Animated background field",
+      on: profile.backdropField === "animated",
+    },
     { label: "Interface animation", on: profile.animations },
     { label: "Charts and sparklines", on: profile.richCharts },
     { label: "Live screen preview", on: profile.livePreview },

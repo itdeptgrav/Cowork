@@ -736,10 +736,13 @@
   }
 }
 
-/* ── Low-end device mode ──────────────────────────────────────────────────────
+/* ── Plain device mode ────────────────────────────────────────────────────────
  *
- * `<html data-perf="low">`, set by an inline script before first paint so a weak
- * machine never renders one frosted frame and then drops it.
+ * `<html data-perf="plain">`, set by an inline script before first paint so a
+ * weak machine never renders one frosted frame and then drops it.
+ *
+ * Rich needs no layer of its own: it is the stylesheet as authored above. Only
+ * the mode that TAKES something away has to say what it takes.
  *
  * **Why this lives in CSS rather than in the components.** A component that
  * forgets to read the mode still loses its blur here. The React profile handles
@@ -757,7 +760,7 @@
  *     and `transition-colors` repaints rather than compositing.
  *  3. Long shadows. Cheap alone, additive down a list of forty rows.
  */
-:root[data-perf="low"] {
+:root[data-perf="plain"] {
   /* The frost colours are already near-opaque, so dropping the filter changes
      the look far less than the cost suggests. Raised the last few percent so the
      surface reads as deliberate rather than as a failed effect. */
@@ -766,14 +769,14 @@
   --surface-raised: rgb(250, 250, 252);
 }
 
-:root[data-theme="dark"][data-perf="low"] {
+:root[data-theme="dark"][data-perf="plain"] {
   --frost-bar: rgb(24, 24, 28);
   --frost-panel: rgb(32, 32, 37);
   --surface-raised: rgb(30, 30, 35);
 }
 
-:root[data-perf="low"] .frost-bar,
-:root[data-perf="low"] .frost-panel {
+:root[data-perf="plain"] .frost-bar,
+:root[data-perf="plain"] .frost-panel {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   /* The inset lip goes with the blur — it reads as a glass edge, and without the
@@ -786,7 +789,7 @@
 /* Every Tailwind `backdrop-blur-*` utility, in one place. Utilities are emitted
    with a filter variable, so clearing it disables them all without having to
    name each site. */
-:root[data-perf="low"] * {
+:root[data-perf="plain"] * {
   --tw-backdrop-blur: ;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -794,9 +797,9 @@
 
 /* Motion. Not `display: none` on anything — an element that animates in must
    still arrive, it simply arrives at once. */
-:root[data-perf="low"] *,
-:root[data-perf="low"] *::before,
-:root[data-perf="low"] *::after {
+:root[data-perf="plain"] *,
+:root[data-perf="plain"] *::before,
+:root[data-perf="plain"] *::after {
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
@@ -804,11 +807,11 @@
 }
 
 /* Decorative depth. Controls keep their focus ring — that is not decoration. */
-:root[data-perf="low"] .frost-panel,
-:root[data-perf="low"] [class*="shadow-"] {
+:root[data-perf="plain"] .frost-panel,
+:root[data-perf="plain"] [class*="shadow-"] {
   box-shadow: none;
 }
-:root[data-perf="low"] :where(a, button, input, select, textarea):focus-visible {
+:root[data-perf="plain"] :where(a, button, input, select, textarea):focus-visible {
   box-shadow: var(--focus-ring, 0 0 0 2px currentColor);
 }
 
@@ -821,22 +824,16 @@
  * Removed entirely rather than paused, and that is coherent rather than merely
  * cheaper: the field exists so the frosted surfaces have something to look
  * through — "glass over a flat backdrop is not glass, it is grey". With the blur
- * gone there is no glass, so there is nothing for it to be behind. Low mode is
+ * gone there is no glass, so there is nothing for it to be behind. Plain mode is
  * flat on purpose, top to bottom.
  *
- * The component also skips rendering these nodes in low mode, so the layers are
- * never created. This rule is the backstop for a stale DOM mid-switch. */
-:root[data-perf="low"] .field,
-:root[data-perf="low"] .field-blob,
-:root[data-perf="low"] .field-spec {
+ * The component also skips rendering these nodes in Plain mode, so the layers
+ * are never created. This rule is the backstop for a stale DOM mid-switch. */
+:root[data-perf="plain"] .field,
+:root[data-perf="plain"] .field-blob,
+:root[data-perf="plain"] .field-spec {
   display: none;
 }
-
-/* ── High performance ─────────────────────────────────────────────────────────
- * Nothing to add: it is the stylesheet as authored. Named here so the three
- * modes are legible in one place rather than two being implicit.
- */
-
 
 /* ── The document page ────────────────────────────────────────────────────────
  *

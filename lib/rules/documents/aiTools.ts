@@ -19,19 +19,44 @@
  * for exactly that reason.
  */
 
+import {
+  parseAlign,
+  parseFontSize,
+  parseHexColor,
+  type BlockAlign,
+} from "./richText.ts";
+
 const MAX_TEXT_LENGTH = 20_000;
 const MAX_BLOCKS = 200;
 const MAX_LIST_ITEMS = 200;
 const MAX_TABLE_ROWS = 200;
 const MAX_TABLE_COLS = 20;
 
+/**
+ * Styling any text block may carry.
+ *
+ * Deliberately a small set. A document assistant that can set arbitrary CSS
+ * produces documents nobody can maintain and that print unpredictably; these
+ * four are what actually distinguish a laid-out letter from a wall of text —
+ * where a line sits, how big it is, and what colour it is.
+ */
+export interface BlockStyleAttrs {
+  align?: BlockAlign;
+  /** Hex only — validated, never passed through raw. See `richText.ts`. */
+  color?: string;
+  /** Points. */
+  size?: number;
+}
+
 /** One element of a whole-document body. See `insert_blocks`. */
 export type DocsBlock =
-  | { type: "heading"; text: string; level: 1 | 2 | 3 | 4 }
-  | { type: "paragraph"; text: string }
+  | ({ type: "heading"; text: string; level: 1 | 2 | 3 | 4 } & BlockStyleAttrs)
+  | ({ type: "paragraph"; text: string } & BlockStyleAttrs)
   | { type: "bullets"; items: string[] }
   | { type: "numbered"; items: string[] }
-  | { type: "table"; headers: string[]; rows: string[][] };
+  | { type: "table"; headers: string[]; rows: string[][] }
+  | ({ type: "quote"; text: string } & BlockStyleAttrs)
+  | { type: "divider" };
 
 export type DocsAiAction =
   | { tool: "insert_blocks"; blocks: DocsBlock[] }
@@ -109,6 +134,18 @@ export function validateDocsToolCall(
         if (totalText > MAX_TEXT_LENGTH)
           return { ok: false, message: "That document is too long to insert safely." };
 
+        /* Every styling attribute is parsed, never trusted: an unrecognised
+           alignment, a non-hex colour or an illegible size is dropped and the
+           block keeps the document's own defaults, rather than the whole
+           document being refused over a cosmetic field. */
+        const style: BlockStyleAttrs = {};
+        const align = parseAlign(b["align"]);
+        const color = parseHexColor(b["color"]);
+        const size = parseFontSize(b["size"]);
+        if (align) style.align = align;
+        if (color) style.color = color;
+        if (size) style.size = size;
+
         if (type === "heading") {
           const level = typeof b["level"] === "number" ? Math.round(b["level"] as number) : 1;
           if (!text.trim()) return { ok: false, message: "The assistant returned a heading with no text." };
@@ -116,10 +153,15 @@ export function validateDocsToolCall(
              cosmetic slip in an otherwise good document, and throwing the
              whole page away over it would be the wrong trade. */
           const safe = Math.min(4, Math.max(1, level)) as 1 | 2 | 3 | 4;
-          blocks.push({ type: "heading", text, level: safe });
+          blocks.push({ type: "heading", text, level: safe, ...style });
         } else if (type === "paragraph") {
           if (!text.trim()) continue; /* A blank paragraph is spacing, not content — drop it. */
-          blocks.push({ type: "paragraph", text });
+          blocks.push({ type: "paragraph", text, ...style });
+        } else if (type === "quote") {
+          if (!text.trim()) continue;
+          blocks.push({ type: "quote", text, ...style });
+        } else if (type === "divider") {
+          blocks.push({ type: "divider" });
         } else if (type === "bullets" || type === "numbered") {
           const items = strArray(b, "items")?.filter((i) => i.trim()) ?? [];
           if (items.length === 0) continue;

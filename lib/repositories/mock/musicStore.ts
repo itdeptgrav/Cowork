@@ -1,9 +1,18 @@
 import {
   DEFAULT_MUSIC_PREFERENCES,
+  type MusicPlaylist,
   type MusicPreferences,
   type MusicQueue,
   type MusicResult,
 } from "@/lib/domain";
+import {
+  addTrack,
+  createPlaylist,
+  deletePlaylist,
+  moveTrack,
+  removeTrack,
+  renamePlaylist,
+} from "../../music/playlists.ts";
 
 /**
  * Browser-backed storage for the music module.
@@ -29,6 +38,7 @@ const KEY = {
   searches: `${NS}searches`,
   played: `${NS}played`,
   prefs: `${NS}prefs`,
+  playlists: `${NS}playlists`,
 } as const;
 
 const LIMITS = { favourites: 200, searches: 12, played: 30, queue: 200 };
@@ -69,6 +79,42 @@ function isResult(v: unknown): v is MusicResult {
 
 function readResults(key: string): MusicResult[] {
   return read<unknown[]>(key, []).filter(isResult);
+}
+
+/** Same defensiveness as a result: a stored playlist is untrusted input. */
+function isPlaylist(v: unknown): v is MusicPlaylist {
+  if (!v || typeof v !== "object") return false;
+  const p = v as Record<string, unknown>;
+  return (
+    typeof p.id === "string" &&
+    typeof p.name === "string" &&
+    Array.isArray(p.items)
+  );
+}
+
+function readPlaylists(): MusicPlaylist[] {
+  return read<unknown[]>(KEY.playlists, [])
+    .filter(isPlaylist)
+    .map((p) => ({
+      ...p,
+      /* A track that no longer parses is dropped rather than rendered as a
+         blank row with no title and no way to play it. */
+      items: p.items.filter(isResult),
+      createdAt: typeof p.createdAt === "string" ? p.createdAt : "",
+      updatedAt: typeof p.updatedAt === "string" ? p.updatedAt : "",
+    }));
+}
+
+function savePlaylists(next: MusicPlaylist[]): MusicPlaylist[] {
+  write(KEY.playlists, next);
+  return next;
+}
+
+function newId(): string {
+  const c = typeof crypto !== "undefined" ? crypto : undefined;
+  return c && "randomUUID" in c
+    ? c.randomUUID()
+    : `pl-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 export const musicStore = {
@@ -160,5 +206,56 @@ export const musicStore = {
     const next = { ...musicStore.preferences(), ...patch };
     write(KEY.prefs, next);
     return next;
+  },
+
+  /* ── Playlists ──────────────────────────────────────────────────────────
+     Every rule — naming, duplicates, ordering, limits — lives in
+     `lib/music/playlists.ts` and is tested there. This layer only supplies the
+     two things a pure function cannot have: an id and a clock. */
+
+  playlists(): MusicPlaylist[] {
+    return readPlaylists();
+  },
+
+  createPlaylist(name: string): MusicPlaylist | null {
+    const { playlists, created } = createPlaylist(readPlaylists(), name, {
+      id: newId(),
+      now: new Date().toISOString(),
+    });
+    if (created) savePlaylists(playlists);
+    return created;
+  },
+
+  renamePlaylist(id: string, name: string): MusicPlaylist[] {
+    return savePlaylists(
+      renamePlaylist(readPlaylists(), id, name, new Date().toISOString()),
+    );
+  },
+
+  deletePlaylist(id: string): MusicPlaylist[] {
+    return savePlaylists(deletePlaylist(readPlaylists(), id));
+  },
+
+  addToPlaylist(id: string, item: MusicResult): boolean {
+    const { playlists, added } = addTrack(
+      readPlaylists(),
+      id,
+      item,
+      new Date().toISOString(),
+    );
+    if (added) savePlaylists(playlists);
+    return added;
+  },
+
+  removeFromPlaylist(id: string, trackId: string): MusicPlaylist[] {
+    return savePlaylists(
+      removeTrack(readPlaylists(), id, trackId, new Date().toISOString()),
+    );
+  },
+
+  movePlaylistTrack(id: string, from: number, to: number): MusicPlaylist[] {
+    return savePlaylists(
+      moveTrack(readPlaylists(), id, from, to, new Date().toISOString()),
+    );
   },
 };

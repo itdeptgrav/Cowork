@@ -1,7 +1,9 @@
 "use client";
 
 import Image from "next/image";
+import { useState } from "react";
 import { useMusic } from "./MusicContext";
+import { AddToPlaylistDialog } from "./AddToPlaylistDialog";
 import { Icon } from "@/components/ui/Icons";
 import { Chip } from "@/components/ui/Primitives";
 import type { MusicResult, SourceHint } from "@/lib/domain";
@@ -67,22 +69,33 @@ export function ResultRow({
   item,
   index,
   variant = "result",
+  /** How many rows this list has — reordering needs to know where the end is. */
+  listLength,
   onMove,
   onRemove,
 }: {
   item: MusicResult;
   index?: number;
-  variant?: "result" | "queue";
+  variant?: "result" | "queue" | "playlist";
+  listLength?: number;
   onMove?: (from: number, to: number) => void;
   onRemove?: (index: number) => void;
 }) {
   const music = useMusic();
+  const [picking, setPicking] = useState(false);
   const isCurrent = music.current?.id === item.id;
   const fav = music.isFavourite(item.id);
   const len = duration(item.durationSecs);
   const yr = year(item.publishedAt);
   const played = plays(item.viewCount);
   const chip = HINT_ORDER.find((h) => item.sourceHints.includes(h));
+  const inLists = music.playlistsWith(item.id).size;
+
+  /* The queue and a playlist are both ordered lists somebody arranged, so they
+     get the same controls; what differs is only what "remove" means, and the
+     labels say which. */
+  const ordered = variant === "queue" || variant === "playlist";
+  const last = (listLength ?? music.queue.length) - 1;
 
   return (
     /* The row has to survive two very different widths: the wide results column
@@ -131,7 +144,7 @@ export function ResultRow({
       </span>
 
       <span className="flex w-full shrink-0 items-center justify-end gap-0.5 @[380px]:w-auto">
-        {variant === "queue" && typeof index === "number" && (
+        {ordered && typeof index === "number" && (
           <>
             {/* Keyboard-operable reordering. Drag alone would exclude anyone
                 not using a mouse. */}
@@ -144,7 +157,7 @@ export function ResultRow({
             </Act>
             <Act
               label={`Move ${item.title} down`}
-              disabled={index === music.queue.length - 1}
+              disabled={index === last}
               onClick={() => onMove?.(index, index + 1)}
             >
               <Icon.chevronDown className="h-3.5 w-3.5" />
@@ -156,7 +169,7 @@ export function ResultRow({
           <Icon.play className="h-3.5 w-3.5" />
         </Act>
 
-        {variant === "result" && (
+        {variant !== "queue" && (
           <Act
             label={`Add ${item.title} to the queue`}
             onClick={() => music.enqueue(item)}
@@ -164,6 +177,21 @@ export function ResultRow({
             <Icon.queue className="h-3.5 w-3.5" />
           </Act>
         )}
+
+        {/* Saving to a list is offered wherever a track appears, because the
+            moment somebody decides they like it is not confined to search. The
+            pressed state means "already in at least one of your playlists". */}
+        <Act
+          label={
+            inLists > 0
+              ? `${item.title} is in ${inLists} of your playlists — change that`
+              : `Add ${item.title} to a playlist`
+          }
+          pressed={inLists > 0}
+          onClick={() => setPicking(true)}
+        >
+          <Icon.list className="h-3.5 w-3.5" />
+        </Act>
 
         <Act
           label={
@@ -177,9 +205,11 @@ export function ResultRow({
           <Icon.heart className={`h-3.5 w-3.5 ${fav ? "fill-current" : ""}`} />
         </Act>
 
-        {variant === "queue" && typeof index === "number" && (
+        {ordered && typeof index === "number" && (
           <Act
-            label={`Remove ${item.title} from the queue`}
+            label={`Remove ${item.title} from the ${
+              variant === "queue" ? "queue" : "playlist"
+            }`}
             onClick={() => onRemove?.(index)}
           >
             <Icon.close className="h-3.5 w-3.5" />
@@ -197,6 +227,10 @@ export function ResultRow({
           <Icon.external className="h-3.5 w-3.5" />
         </a>
       </span>
+
+      {picking && (
+        <AddToPlaylistDialog item={item} onClose={() => setPicking(false)} />
+      )}
     </li>
   );
 }

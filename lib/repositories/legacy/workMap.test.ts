@@ -194,6 +194,7 @@ test("every shell-mounted read resolves rather than throwing", async () => {
     "listMusicFavourites",
     "listMusicPlayed",
     "listMusicSearches",
+    "listMusicPlaylists",
     "recordMusicSearch",
     "clearMusicSearches",
     "toggleMusicFavourite",

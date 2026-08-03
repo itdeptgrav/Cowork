@@ -14,6 +14,7 @@ import {
   DEFAULT_MUSIC_PREFERENCES,
   type MusicErrorCode,
   type MusicPage,
+  type MusicPlaylist,
   type MusicPreferences,
   type MusicResult,
 } from "@/lib/domain";
@@ -23,6 +24,7 @@ import {
   autoplayQuery,
   type AutoplaySources,
 } from "@/lib/music/autoplay";
+import { playlistsHolding } from "@/lib/music/playlists";
 
 /**
  * All music state, held above the router so playback survives navigation.
@@ -88,6 +90,34 @@ interface MusicValue {
   toggleFavourite(item: MusicResult): Promise<void>;
   recentlyPlayed: MusicResult[];
 
+  /**
+   * Named lists, newest activity first.
+   *
+   * Separate from favourites on purpose: a favourite is one flat set with no
+   * order, a playlist is a sequence somebody chose. The rules — naming,
+   * duplicates, limits — live in `lib/music/playlists.ts`; this only holds the
+   * state and says what happened.
+   */
+  playlists: MusicPlaylist[];
+  /**
+   * Null when the name was refused. Callers check `nameProblem` from
+   * `lib/music/playlists` first so the reader is told why before they submit;
+   * this returning null is the backstop, not the error channel.
+   */
+  createPlaylist(name: string): Promise<MusicPlaylist | null>;
+  renamePlaylist(id: string, name: string): Promise<boolean>;
+  deletePlaylist(id: string): Promise<void>;
+  /** False when the track was already in that playlist — the UI says so. */
+  addToPlaylist(id: string, item: MusicResult): Promise<boolean>;
+  removeFromPlaylist(id: string, trackId: string): Promise<void>;
+  movePlaylistTrack(id: string, from: number, to: number): Promise<void>;
+  /** Replace the queue with this playlist and start at its first track. */
+  playPlaylist(id: string): void;
+  /** Append this playlist to whatever is already queued. */
+  queuePlaylist(id: string): void;
+  /** Which playlists already hold a given track. */
+  playlistsWith(trackId: string): Set<string>;
+
   queue: MusicResult[];
   currentIndex: number;
   current: MusicResult | null;
@@ -144,6 +174,7 @@ export function MusicProvider({
   const [recentSearches, setRecentSearches] = useState<string[]>([]);
   const [favourites, setFavourites] = useState<MusicResult[]>([]);
   const [recentlyPlayed, setRecentlyPlayed] = useState<MusicResult[]>([]);
+  const [playlists, setPlaylists] = useState<MusicPlaylist[]>([]);
   const [queue, setQueue] = useState<MusicResult[]>([]);
   const [currentIndex, setCurrentIndex] = useState(-1);
   const [prefs, setPrefsState] = useState<MusicPreferences>(
@@ -171,13 +202,24 @@ export function MusicProvider({
     if (!enabled) return;
     let cancelled = false;
     const r = getRepository();
+    /* `Promise.all` is not enough on its own: a repository method that throws
+       SYNCHRONOUSLY throws while the array is being built, before there is a
+       promise to reject, and that escapes the effect and blanks the shell. */
+    const read = <T,>(f: () => Promise<T>, fallback: T): Promise<T> => {
+      try {
+        return Promise.resolve(f()).catch(() => fallback);
+      } catch {
+        return Promise.resolve(fallback);
+      }
+    };
     Promise.all([
-      r.getMusicQueue(),
-      r.listMusicFavourites(),
-      r.listMusicSearches(),
-      r.listMusicPlayed(),
-      r.getMusicPreferences(),
-    ]).then(([q, favs, searches, played, p]) => {
+      read(() => r.getMusicQueue(), { items: [], currentIndex: -1 }),
+      read(() => r.listMusicFavourites(), []),
+      read(() => r.listMusicSearches(), []),
+      read(() => r.listMusicPlayed(), []),
+      read(() => r.getMusicPreferences(), DEFAULT_MUSIC_PREFERENCES),
+      read(() => r.listMusicPlaylists(), []),
+    ]).then(([q, favs, searches, played, p, lists]) => {
       if (cancelled) return;
       setQueue(q.items);
       setCurrentIndex(q.currentIndex);
@@ -185,7 +227,15 @@ export function MusicProvider({
       setRecentSearches(searches);
       setRecentlyPlayed(played);
       setPrefsState(p);
-      seenRef.current = [...q.items, ...favs, ...played];
+      setPlaylists(lists);
+      /* Playlist tracks count as "seen", so Cowork Autoplay can reach for
+         something the person deliberately kept before it spends any quota. */
+      seenRef.current = [
+        ...q.items,
+        ...favs,
+        ...played,
+        ...lists.flatMap((l) => l.items),
+      ];
       setHydrated(true);
     });
     return () => {
@@ -193,10 +243,19 @@ export function MusicProvider({
     };
   }, [enabled]);
 
-  /* ── Persist the queue whenever it settles ───────────────────────────── */
+  /* ── Persist the queue whenever it settles ─────────────────────────────
+     Guarded for the same reason as `markPlayed`: this runs inside an effect,
+     so a repository that throws would take the whole application down rather
+     than lose a saved queue. */
   useEffect(() => {
     if (!hydrated) return;
-    getRepository().saveMusicQueue({ items: queue, currentIndex });
+    try {
+      Promise.resolve(
+        getRepository().saveMusicQueue({ items: queue, currentIndex }),
+      ).catch(() => {});
+    } catch {
+      /* Session-only from here. Better than a blank page. */
+    }
   }, [queue, currentIndex, hydrated]);
 
   /* ── Follow the stage element while it moves ──────────────────────────────
@@ -366,12 +425,29 @@ export function MusicProvider({
   }, []);
 
   /* ── Queue ───────────────────────────────────────────────────────────── */
+  /**
+   * Note that a track was played. Bookkeeping, and nothing else.
+   *
+   * Sealed off from the callers, because it is called from the middle of
+   * `playNow` and `next` — BEFORE the play intent is raised. A repository that
+   * threw here took the intent down with it: the track changed and nothing
+   * ever started, so pressing play looked dead and the queue stopped advancing
+   * at the end of every track. A list of what you listened to is not worth a
+   * silent player, so a failure here costs the history and nothing more.
+   */
   const markPlayed = useCallback((item: MusicResult) => {
     playedIdsRef.current.add(item.id);
-    getRepository()
-      .recordMusicPlayed(item)
-      .then(() => getRepository().listMusicPlayed())
-      .then(setRecentlyPlayed);
+    try {
+      const r = getRepository();
+      Promise.resolve(r.recordMusicPlayed(item))
+        .then(() => r.listMusicPlayed())
+        .then(setRecentlyPlayed)
+        .catch(() => {
+          /* The history is not worth interrupting playback for. */
+        });
+    } catch {
+      /* A repository that throws synchronously must not reach the caller. */
+    }
   }, []);
 
   const playNow = useCallback(
@@ -550,6 +626,115 @@ export function MusicProvider({
     getRepository().saveMusicPreferences(patch);
   }, []);
 
+  /* ── Playlists ───────────────────────────────────────────────────────────
+     Each write goes through the repository and the state is replaced with what
+     came back, rather than patched optimistically. The list is small, the store
+     is local, and the alternative — two copies of the rules, one here and one
+     in `lib/music/playlists.ts` — is exactly the drift that produces a UI
+     showing a playlist the storage refused to create. */
+  const refreshPlaylists = useCallback(async () => {
+    setPlaylists(await getRepository().listMusicPlaylists());
+  }, []);
+
+  /* `r?.ok` rather than `r.ok`: a repository is allowed to answer nothing for
+     a surface it does not implement, and a thrown TypeError inside a click
+     handler is an unhandled rejection with no visible cause. Reading it
+     defensively degrades to "that did not happen" instead. */
+  const createPlaylist = useCallback(
+    async (name: string) => {
+      const r = await getRepository().createMusicPlaylist(name);
+      await refreshPlaylists();
+      return r?.ok ? r.data : null;
+    },
+    [refreshPlaylists],
+  );
+
+  const renamePlaylist = useCallback(
+    async (id: string, name: string) => {
+      const r = await getRepository().renameMusicPlaylist(id, name);
+      await refreshPlaylists();
+      return !!r?.ok;
+    },
+    [refreshPlaylists],
+  );
+
+  const deletePlaylist = useCallback(
+    async (id: string) => {
+      await getRepository().deleteMusicPlaylist(id);
+      await refreshPlaylists();
+    },
+    [refreshPlaylists],
+  );
+
+  const addToPlaylist = useCallback(
+    async (id: string, item: MusicResult) => {
+      remember([item]);
+      const r = await getRepository().addToMusicPlaylist(id, item);
+      await refreshPlaylists();
+      return r?.ok ? r.data : false;
+    },
+    [refreshPlaylists, remember],
+  );
+
+  const removeFromPlaylist = useCallback(
+    async (id: string, trackId: string) => {
+      await getRepository().removeFromMusicPlaylist(id, trackId);
+      await refreshPlaylists();
+    },
+    [refreshPlaylists],
+  );
+
+  const movePlaylistTrack = useCallback(
+    async (id: string, from: number, to: number) => {
+      await getRepository().moveMusicPlaylistTrack(id, from, to);
+      await refreshPlaylists();
+    },
+    [refreshPlaylists],
+  );
+
+  /**
+   * Play a playlist: the queue BECOMES the playlist.
+   *
+   * Not a merge. "Play this playlist" is a statement about what should be
+   * playing now, and appending it under whatever was already queued would make
+   * the chosen list start in twenty minutes' time. Adding to what is there is
+   * the separate, differently-named `queuePlaylist`.
+   */
+  const playPlaylist = useCallback(
+    (id: string) => {
+      const list = playlists.find((p) => p.id === id);
+      if (!list || list.items.length === 0) return;
+      setAutoplayNotice(null);
+      setQueueFinished(false);
+      remember(list.items);
+      setQueue(list.items);
+      setCurrentIndex(0);
+      markPlayed(list.items[0]);
+      setIntent((i) => ({ action: "play", nonce: i.nonce + 1 }));
+    },
+    [markPlayed, playlists, remember],
+  );
+
+  const queuePlaylist = useCallback(
+    (id: string) => {
+      const list = playlists.find((p) => p.id === id);
+      if (!list || list.items.length === 0) return;
+      setQueueFinished(false);
+      remember(list.items);
+      setQueue((q) => {
+        const have = new Set(q.map((x) => x.id));
+        return [...q, ...list.items.filter((t) => !have.has(t.id))];
+      });
+      setCurrentIndex((i) => (i < 0 ? 0 : i));
+    },
+    [playlists, remember],
+  );
+
+  const playlistsWith = useCallback(
+    (trackId: string) => playlistsHolding(playlists, trackId),
+    [playlists],
+  );
+
   const value = useMemo<MusicValue>(
     () => ({
       enabled,
@@ -566,6 +751,16 @@ export function MusicProvider({
       isFavourite,
       toggleFavourite,
       recentlyPlayed,
+      playlists,
+      createPlaylist,
+      renamePlaylist,
+      deletePlaylist,
+      addToPlaylist,
+      removeFromPlaylist,
+      movePlaylistTrack,
+      playPlaylist,
+      queuePlaylist,
+      playlistsWith,
       queue,
       currentIndex,
       current,
@@ -592,11 +787,14 @@ export function MusicProvider({
       registerStage,
     }),
     [
+      addToPlaylist,
       autoplayNotice,
       clearQueue,
       clearSearch,
+      createPlaylist,
       current,
       currentIndex,
+      deletePlaylist,
       enabled,
       enqueue,
       favourites,
@@ -604,17 +802,24 @@ export function MusicProvider({
       isFavourite,
       loadMore,
       moveItem,
+      movePlaylistTrack,
       next,
       playNow,
+      playPlaylist,
       playing,
+      playlists,
+      playlistsWith,
       prefs,
       previous,
       queue,
       queueFinished,
+      queuePlaylist,
       recentSearches,
       recentlyPlayed,
       registerStage,
       removeAt,
+      removeFromPlaylist,
+      renamePlaylist,
       replay,
       runSearch,
       search,

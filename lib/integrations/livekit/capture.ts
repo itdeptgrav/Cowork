@@ -77,8 +77,27 @@ export function readSurface(track: MediaStreamTrack | null): SharedSurface {
   }
 }
 
+/**
+ * iOS Safari (16.4+) supports getDisplayMedia but never reports displaySurface —
+ * it only offers full-screen capture with no window/tab picker, so "unknown"
+ * from iOS is always an entire screen. Treat it as such so the eligibility
+ * check doesn't reject a compliant iOS share.
+ */
+export function isIOS(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    /* iPadOS 13+ reports MacIntel but has multiple touch points */
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
 export function isEntireScreen(track: MediaStreamTrack | null): boolean {
-  return readSurface(track) === "entire_screen";
+  const surface = readSurface(track);
+  if (surface === "entire_screen") return true;
+  /* iOS never sets displaySurface but only offers full-screen capture. */
+  if (surface === "unknown" && isIOS()) return true;
+  return false;
 }
 
 export class ScreenShareCancelled extends Error {
@@ -130,32 +149,53 @@ export const ENTIRE_SCREEN_REQUIREMENT =
  * the guarantee depend on which browser someone happened to open.
  */
 export async function requestScreenShare(): Promise<MediaStreamTrack> {
-  if (
-    typeof navigator === "undefined" ||
-    !navigator.mediaDevices?.getDisplayMedia
-  ) {
-    throw new Error("This browser cannot share a screen.");
+  if (typeof navigator === "undefined") {
+    throw new Error("Screen sharing is not available in this context.");
   }
+
+  /* navigator.mediaDevices is undefined on HTTP pages (insecure context).
+     This is the most common failure on mobile: the device visits the app
+     over HTTP rather than HTTPS. */
+  if (!navigator.mediaDevices) {
+    throw new Error(
+      "Screen sharing requires a secure connection. Please make sure you are opening Cowork over HTTPS.",
+    );
+  }
+
+  if (!navigator.mediaDevices.getDisplayMedia) {
+    throw new Error(
+      isIOS()
+        ? "Screen sharing on iPhone and iPad requires Safari 16.4 or later."
+        : "This browser cannot share a screen.",
+    );
+  }
+
+  /* iOS Safari accepts only a minimal options object — the experimental keys
+     (selfBrowserSurface, surfaceSwitching, monitorTypeSurfaces, systemAudio)
+     are ignored or may cause a NotSupportedError on WebKit. */
+  const options = isIOS()
+    ? { video: { displaySurface: "monitor" }, audio: false }
+    : SCREEN_CAPTURE;
 
   let stream: MediaStream;
   try {
-    stream = await navigator.mediaDevices.getDisplayMedia(SCREEN_CAPTURE);
+    stream = await navigator.mediaDevices.getDisplayMedia(options);
   } catch (e) {
     const name = (e as Error)?.name;
     // NotAllowedError is both "denied" and "dismissed the picker".
     if (name === "NotAllowedError" || name === "AbortError") {
       throw new ScreenShareCancelled();
     }
+    console.error("[requestScreenShare] getDisplayMedia rejected:", name, (e as Error)?.message);
     throw e;
   }
 
   const track = stream.getVideoTracks()[0];
   if (!track) throw new ScreenShareCancelled();
 
-  const surface = readSurface(track);
-  if (surface !== "entire_screen") {
+  if (!isEntireScreen(track)) {
     for (const t of stream.getTracks()) t.stop();
-    throw new ScreenShareWrongSurface(surface);
+    throw new ScreenShareWrongSurface(readSurface(track));
   }
 
   return track;

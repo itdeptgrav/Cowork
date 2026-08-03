@@ -14,6 +14,7 @@ import { formatTimer } from "@/lib/utils/format";
 import {
   displaySecs,
   elapsedSecs,
+  rebaseSecs,
   timerDisplayState,
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
@@ -51,14 +52,41 @@ export function useTicker(startedAtRealMs: number | null): number {
   /* Seeded from the real start on the FIRST render, which is the case that
      needs it: mounting into a session that is already running — a reload, a new
      tab, or navigating back. Counting up from zero instead is what made a
-     running session's elapsed disappear on every remount. Later renders are
-     driven by the interval below; a fresh start is genuinely at zero, so
-     nothing needs reseeding. */
+     running session's elapsed disappear on every remount.
+
+     **The origin is stored WITH the figure.** It used to be a bare number, and
+     the comment here claimed a fresh start needed no reseeding "because it is
+     genuinely at zero" — which is true of the run and false of the state. The
+     held number survives a pause: press resume after a five-minute run and the
+     display read five minutes on top of the banked total for one whole tick,
+     then fell back to zero-plus-banked when the interval next fired. That is
+     the jump forward and the drop back, and it happened on every resume, on
+     every optimistic start handing over to the engine's own timestamp, and on
+     the shell pill whenever the active task changed under it. Keyed like this,
+     a figure belonging to a previous origin is rebased on the render that
+     notices, not a tick later. */
   const { timerTickMs } = usePerformanceProfile();
-  const [secs, setSecs] = useState(() => elapsedSecs(startedAtRealMs, Date.now()));
+  const [tick, setTick] = useState(() => ({
+    originMs: startedAtRealMs,
+    secs: elapsedSecs(startedAtRealMs, Date.now()),
+  }));
 
   useEffect(() => {
     if (startedAtRealMs === null) return;
+    /* Stamped with the origin it was measured against, and left alone when
+       neither has moved — a slow tab must not re-render for an unchanged
+       second. */
+    const setSecs = (secs: number) =>
+      setTick((prev) =>
+        prev.originMs === startedAtRealMs && prev.secs === secs
+          ? prev
+          : { originMs: startedAtRealMs, secs },
+      );
+    /* Re-anchored the moment the origin moves rather than at the next tick.
+       The render below has already rebased the held figure, so this only
+       settles the state onto the real clock — but without it a low-power
+       profile would carry a rebased approximation for a couple of seconds. */
+    setSecs(elapsedSecs(startedAtRealMs, Date.now()));
     /* **The redraw rate, not the count.** `elapsedSecs` derives the figure from
        `startedAtRealMs` and the wall clock on every tick, so a slower interval
        shows a coarser number and never a wrong one. That property is what makes
@@ -71,9 +99,29 @@ export function useTicker(startedAtRealMs: number | null): number {
     return () => clearInterval(id);
   }, [startedAtRealMs, timerTickMs]);
 
-  return startedAtRealMs === null ? 0 : secs;
+  if (startedAtRealMs === null) return 0;
+  /* A figure taken against a previous origin is shifted onto this one rather
+     than shown as-is or blanked to zero — both of which are visible jumps in a
+     number that may only ever count up. */
+  return tick.originMs === startedAtRealMs
+    ? tick.secs
+    : rebaseSecs(tick, startedAtRealMs);
 }
 
+
+/**
+ * The wall clock, for EVENT HANDLERS only.
+ *
+ * Deliberately module-level rather than inline in the component. Reading the
+ * clock during a render is impure — the same props would produce two different
+ * figures — and `timerState.test.ts` enforces that by scanning the component
+ * body for `Date.now()`. A press is not a render, so it genuinely may read the
+ * clock; naming the seam is what keeps that exception explicit instead of
+ * looking like the bug the test exists to catch.
+ */
+function pressMs(): number {
+  return Date.now();
+}
 
 export function TimerControl({
   view,
@@ -102,6 +150,43 @@ export function TimerControl({
   // A confirmed task has to enter `in_progress` before a session can run. That
   // is one press for the person, two writes for the repository.
   const [beginTask, beginState] = useAction((r) => r.startTask(taskId));
+
+  /**
+   * **The press, answered before the network is.**
+   *
+   * `startTimer` and `pauseTimer` are real round trips, and on success
+   * `useAction` bumps the global repository version — which re-runs EVERY
+   * `useQuery` mounted on the page. Until all of that had landed the button was
+   * `disabled` and its label was "…", so the honest description of a press was:
+   * the control dies, several seconds pass, then the clock moves. People
+   * pressed twice.
+   *
+   * So the control now flips on the press and the write is reconciled behind
+   * it. Two things make that safe rather than a lie:
+   *
+   *   - it is dropped the moment the engine's own session document disagrees,
+   *     and on any failed write, so a refused start cannot leave a clock
+   *     apparently running;
+   *   - `heldSecs` freezes the figure where the pause was pressed. Without it
+   *     the display falls back to `banked`, which does not yet include the run
+   *     being closed, and the number visibly jumps BACKWARDS before settling.
+   *
+   * `atMs` is the optimistic run's origin, used only until the real
+   * `startedAtRealMs` arrives. The previous session's start is deliberately not
+   * reused: it belongs to a run that already ended, and reading it would open a
+   * fresh clock at that run's elapsed.
+   */
+  const [pressed, setPressed] = useState<{
+    kind: "running" | "paused";
+    atMs: number;
+    heldSecs: number;
+    /* `serverRunning` as it stood when the press happened. The override expires
+       on the first value that differs from it — see `optimistic` below. */
+    fromServer: boolean;
+  } | null>(null);
+  /* Re-entrancy guard, in a ref rather than `disabled`. The button stays live
+     to the touch — it is the WRITE that must not overlap, not the press. */
+  const inFlight = useRef(false);
 
   /* The assignee's live session is the source of truth. `timer.data` (the
      viewer's own one-shot read) is kept only as the first paint before the
@@ -166,8 +251,80 @@ export function TimerControl({
   const away = isMine && myPresence !== "online" && !reconnecting;
 
   const state = timerDisplayState(session, banked, nowMs);
-  const running = state === "running" && !away;
-  const ticked = useTicker(running ? (session?.startedAtRealMs ?? null) : null);
+  /* What the ENGINE says, kept separate from what the button says. Everything
+     that writes — the auto-pause, the heartbeat — reads this one; only the
+     display reads the optimistic one below. */
+  const serverRunning = state === "running" && !away;
+  /**
+   * The override, expired by DERIVATION rather than by an effect.
+   *
+   * It lives exactly as long as the engine still reports what it reported when
+   * the button was pressed. The first `serverRunning` that differs is the write
+   * landing, and from that instant the engine is authoritative again.
+   *
+   * Expiring on "differs from the press" rather than on "matches what I asked
+   * for" is deliberate: matching would go on holding the override open through
+   * every value that is not the one requested. It is only half the guarantee
+   * though — a comparison against a value that can come back is not an expiry
+   * at all, which is what the effect below exists to finish.
+   *
+   * A refused write never reaches here: `toggle` clears the press itself on
+   * `!ok`, because a refusal moves nothing on the server and there is therefore
+   * no change for this to expire on.
+   */
+  const optimistic = pressed && serverRunning === pressed.fromServer ? pressed : null;
+  /**
+   * And once expired it is THROWN AWAY, not merely ignored.
+   *
+   * Expiry above is a comparison against a value that can come back. A press
+   * to start expires when `serverRunning` goes true — and the session is later
+   * paused by the presence gate, by another tab, or by a stale heartbeat, at
+   * which point `serverRunning` is false again and matches `fromServer` once
+   * more. The spent override then springs back to life and re-asserts a run
+   * whose origin is the ORIGINAL press, so the clock jumps forward by
+   * everything that has happened since — minutes or hours in one frame — and
+   * falls back the moment anything flips again.
+   *
+   * Dropping the record at the instant it expires is what makes the override
+   * live exactly once. The derivation above is kept as well: it is what the
+   * render actually reads, so this cannot flicker whatever order the two run
+   * in.
+   *
+   * Adjusted during the render rather than from an effect, which is React's
+   * own answer for state that must reset when a prop changes: the re-render is
+   * discarded before it is committed, so nothing paints and nothing cascades.
+   * `setPressed(null)` makes the condition false, so it settles at once.
+   */
+  if (pressed && serverRunning !== pressed.fromServer) setPressed(null);
+  /* Away still wins outright: presence stopping the clock is a rule, not a
+     pending request, so an optimistic "running" must not survive it. */
+  const running = away
+    ? false
+    : optimistic
+      ? optimistic.kind === "running"
+      : serverRunning;
+  /* The label and the status line read this rather than `state`, so a pressed
+     Pause does not sit there reading "Working" until the write lands. */
+  const shownState = optimistic
+    ? optimistic.kind === "running"
+      ? ("running" as const)
+      : ("paused" as const)
+    : state;
+  /* While the optimistic run is unconfirmed the origin is the press itself;
+     once the engine confirms, `optimistic` is cleared and this becomes the real
+     `startedAtRealMs`.
+     Read off the ENGINE's state rather than off `running`, so the figure keeps
+     being derived per second while `away` holds the display — see `elapsed`.
+     Null whenever no run is in flight, which is what makes the ticker return 0
+     between sessions. */
+  const runOrigin =
+    optimistic?.kind === "running"
+      ? optimistic.atMs
+      : state === "running"
+        ? (session?.startedAtRealMs ?? null)
+        : null;
+  const ticked = useTicker(runOrigin);
+
   /* `ticked` only re-renders; the FIGURE comes from the rule, so a throttled
      tab or a stale run cannot make the two disagree.
 
@@ -181,17 +338,26 @@ export function TimerControl({
    * case the current run is added. A stale run contributes nothing, which is
    * the whole point of the guard.
    */
-  /* Away freezes the figure at the seconds worked up to the moment they left,
-     rather than letting `displaySecs` keep counting off a session document that
-     is still marked active until the pause below lands. */
+  /* Away holds the figure at the work done up to the moment they left — the
+     auto-pause below lands within a round trip and `banked` then carries the
+     run, so this branch is only ever a fraction of a second long.
+     It reads the SECOND-resolution ticker rather than recomputing against
+     `nowMs`. `useNow` is quantised down to the minute, so a run that had been
+     going for 40 seconds measured 0 against it: stepping away made the clock
+     drop by up to a minute, and banking the real elapsed a moment later threw
+     it forward again. That pair — backwards, then a jump — is the same bug
+     `useLiveNow` was written for elsewhere. */
+  /* The optimistic pause branch holds the figure it was pressed at. Falling
+     through to `displaySecs` would keep counting — the engine's session still
+     says running until the write lands — and falling back to `banked` would
+     drop the run that is being closed. Neither is what the person just did. */
   const elapsed = away
-    ? banked +
-      (state === "running"
-        ? elapsedSecs(session?.startedAtRealMs ?? null, nowMs)
-        : 0)
-    : running
-      ? banked + ticked
-      : displaySecs(session, banked, nowMs);
+    ? banked + ticked
+    : optimistic?.kind === "paused"
+      ? optimistic.heldSecs
+      : running
+        ? banked + ticked
+        : displaySecs(session, banked, nowMs);
 
   const other =
     active.data && active.data.taskId !== taskId ? active.data : null;
@@ -239,13 +405,13 @@ export function TimerControl({
         `[timer] STATUS CHANGED: ${myPresence} · TIMER ACTION: paused`,
         { taskId },
       );
-      void pause().then(() => {
-        timer.refetch();
-        active.refetch();
-      });
+      /* No refetch pair here either: a successful `pause` notifies every
+         mounted query through `useAction`, which is what these two calls were
+         asking for a second time. */
+      void pause();
     }
     if (!away) autoPaused.current = false;
-  }, [away, state, myPresence, taskId, pause, timer, active]);
+  }, [away, state, myPresence, taskId, pause]);
 
   /* **The liveness beat that stops a gap being paid for.**
    *
@@ -259,12 +425,21 @@ export function TimerControl({
    * A beat that finds the previous one already stale reconcile-pauses the
    * session (in the repository), so the refetch here picks the clock up as
    * stopped at the right figure rather than running on the gap. */
+  /* Gated on `serverRunning`, NOT on the optimistic flip: a heartbeat is a
+     claim about a session the engine holds, and there is no such session to
+     beat for until the start has actually landed. Beating on the optimistic
+     state fired a doomed write on every press. */
   useEffect(() => {
-    if (!running) return;
+    if (!serverRunning) return;
     let cancelled = false;
     const beat = async () => {
       await repo.heartbeatTimer(taskId).catch(() => {});
       if (cancelled) return;
+      /* Kept, unlike the pairs removed elsewhere. `heartbeatTimer` is called
+         straight on the repository rather than through `useAction`, so nothing
+         invalidates anything — and a beat that finds the previous one stale
+         reconcile-pauses the session, which is precisely the change these two
+         reads exist to notice. */
       timer.refetch();
       active.refetch();
     };
@@ -274,21 +449,66 @@ export function TimerControl({
       cancelled = true;
       clearInterval(id);
     };
-  }, [running, taskId, repo, timer, active]);
+  }, [serverRunning, taskId, repo, timer, active]);
 
+  /**
+   * One press.
+   *
+   * The optimistic flip happens FIRST, before anything is awaited, so the
+   * control answers in the same frame as the click. Every failure path clears
+   * it again — `useAction` returns a refusal rather than throwing, so a
+   * presence gate or a task-switch conflict lands here as `!ok` and puts the
+   * button back where it was, with `error` rendered below.
+   *
+   * The `timer.refetch()` / `active.refetch()` pair that used to close this
+   * function is gone. It was never needed: `useAction` calls
+   * `notifyRepositoryChanged()` on success, which re-runs every mounted query
+   * INCLUDING these two, so the explicit calls bumped their nonces on top of
+   * that and bought a second, duplicate round trip for each — after the write
+   * the person was already waiting on.
+   */
   async function toggle() {
-    if (running) {
-      await pause();
-    } else {
-      if (needsStart) {
-        const began = await beginTask();
-        if (!began.ok) return;
+    /* Not `disabled`: the guard is on the write, so a second press during a
+       round trip is dropped rather than being able to interleave a start and a
+       pause on one session. */
+    if (inFlight.current) return;
+    inFlight.current = true;
+
+    const wasRunning = running;
+    setPressed({
+      kind: wasRunning ? "paused" : "running",
+      atMs: pressMs(),
+      /* Only a pause needs the figure held; a start begins at the banked
+         total and counts up from `atMs`. */
+      heldSecs: wasRunning ? elapsed : 0,
+      fromServer: serverRunning,
+    });
+
+    try {
+      if (wasRunning) {
+        const r = await pause();
+        if (!r.ok) {
+          setPressed(null);
+          return;
+        }
+      } else {
+        if (needsStart) {
+          const began = await beginTask();
+          if (!began.ok) {
+            setPressed(null);
+            return;
+          }
+        }
+        const r = await start();
+        if (!r.ok) {
+          setPressed(null);
+          return;
+        }
       }
-      await start();
+      onChange?.();
+    } finally {
+      inFlight.current = false;
     }
-    timer.refetch();
-    active.refetch();
-    onChange?.();
   }
 
   /* Away, and it is my work. Legacy withheld the control entirely here —
@@ -398,20 +618,19 @@ export function TimerControl({
       <button
         type="button"
         onClick={toggle}
-        disabled={pending}
         title={
           running
             ? `Pause — ${formatTimer(elapsed)} on the clock`
             : other
               ? `Start — this will pause “${other.taskTitle}”`
-              : state === "paused"
+              : shownState === "paused"
                 ? `Resume — ${formatTimer(elapsed)} worked so far`
                 : "Start timer"
         }
         aria-label={
           running
             ? `Pause timer on ${view.task.title}`
-            : state === "paused"
+            : shownState === "paused"
               ? `Resume timer on ${view.task.title}`
               : `Start timer on ${view.task.title}`
         }
@@ -436,7 +655,6 @@ export function TimerControl({
       <button
         type="button"
         onClick={toggle}
-        disabled={pending}
         className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[15px] font-medium transition-colors disabled:opacity-50 ${
           running
             ? "bg-ink text-[var(--body-bg)]"
@@ -445,17 +663,20 @@ export function TimerControl({
       >
         {running ? <Icon.pause /> : <Icon.play />}
         {/* Never "Start timer" once work is banked — that reads as though the
-            time is gone. `state` comes from the session document, so the label
-            cannot disagree with what the engine holds. */}
-        {pending
-          ? "…"
-          : running
-            ? "Pause"
-            : needsStart
-              ? "Start work"
-              : state === "paused"
-                ? "Resume timer"
-                : "Start timer"}
+            time is gone. `shownState` is the session document's state until a
+            press overrides it, so the label cannot disagree with what the
+            engine holds for longer than the write takes.
+
+            The "…" branch this replaces was the visible face of the lag: the
+            label went to an ellipsis and the button went dead for the whole
+            round trip. The press now shows its own result. */}
+        {running
+          ? "Pause"
+          : needsStart
+            ? "Start work"
+            : shownState === "paused"
+              ? "Resume timer"
+              : "Start timer"}
       </button>
 
       <div className="min-w-0">
@@ -478,7 +699,7 @@ export function TimerControl({
               <LiveDot />
               Working
             </>
-          ) : state === "paused" ? (
+          ) : shownState === "paused" ? (
             "Paused · total worked"
           ) : (
             "Not started"

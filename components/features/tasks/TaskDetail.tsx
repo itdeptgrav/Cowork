@@ -21,13 +21,14 @@ import { DeadlineRevisionCard } from "./DeadlineRevisionCard";
 import { ExtensionTimeline } from "./ExtensionTimeline";
 import { CounterDeadlineCard } from "./CounterDeadlineCard";
 import { ReworkPanel } from "./ReworkPanel";
-import { TaskFiles } from "./TaskFiles";
+import { TaskFilesPanel } from "./TaskFilesPanel";
 import { FeasibilityPreview } from "./FeasibilityPreview";
 import { ExpectedCompletion } from "./ExpectedCompletion";
 import { TaskFlowSection } from "./TaskFlowSection";
 import { RelationshipNote } from "./RelationshipNote";
 import { PriorityDialog } from "./PriorityDialog";
 import { DeadlinePanel } from "./DeadlinePanel";
+import { ReportsPanel } from "./ReportsPanel";
 import { SubmissionPanel } from "./SubmissionPanel";
 import { ReviewPanel } from "./ReviewPanel";
 import { HistoryPanel } from "./HistoryPanel";
@@ -78,7 +79,14 @@ import { REWORK_DEDUCTION } from "@/lib/rules/scoring/engine";
  */
 
 type Tab =
-  "overview" | "deadline" | "submission" | "review" | "history" | "chat";
+  | "overview"
+  | "deadline"
+  | "reports"
+  | "submission"
+  | "review"
+  | "history"
+  | "chat"
+  | "files";
 
 export function TaskDetail({
   taskId,
@@ -156,17 +164,19 @@ export function TaskDetail({
       href: `/tasks/${taskId}`,
       icon: "overview" as const,
     },
-    /* **A project has no deadline, no submission and no review of its own.**
-       Nobody works it, so there is nothing to hand in; and with nothing handed
-       in there is nothing to decide on. Its completion is derived instead — it
-       closes when every completion requirement is satisfied, and each one is
-       satisfied by the subtask that claimed it completing. Each of those
-       subtasks runs its own deadline, submission and review with its own
-       assignee, which is where all three of these tabs actually live.
+    /* **A project has no deadline, no reports, no submission and no review of
+       its own.** Nobody works it, so there is no day to report on and nothing
+       to hand in; and with nothing handed in there is nothing to decide on. Its
+       completion is derived instead — it closes when every completion
+       requirement is satisfied, and each one is satisfied by the subtask that
+       claimed it completing. Each of those subtasks runs its own deadline,
+       daily reports, submission and review with its own assignee, which is
+       where all four of these tabs actually live.
 
        Dropped rather than shown empty: a Submission tab on a project invites
-       somebody to hand in work they did not do, and a Deadline tab invites a
-       date that binds nobody. */
+       somebody to hand in work they did not do, a Deadline tab invites a date
+       that binds nobody, and a Reports tab invites progress on work this
+       document does not carry. */
     ...(isContainer
       ? []
       : [
@@ -175,6 +185,15 @@ export function TaskDetail({
             label: "Deadline",
             href: `/tasks/${taskId}/deadline`,
             icon: "clock" as const,
+          },
+          /* Between the deadline and the submission because that is where it
+             falls in the work: the time is settled, then the days are reported
+             as they pass, then the work is handed in. */
+          {
+            id: "reports",
+            label: "Reports",
+            href: `/tasks/${taskId}/reports`,
+            icon: "timeline" as const,
           },
           {
             id: "submission",
@@ -195,6 +214,16 @@ export function TaskDetail({
       href: `/tasks/${taskId}/chat`,
       icon: "chat" as const,
       count: v.chatCount,
+    },
+    /* Files is offered on a project too, unlike the four above. A project's own
+       reference material — the brief everybody works from — hangs off THIS
+       document, and its chat is where it is discussed, so there is something
+       real here even when nobody works the task itself. */
+    {
+      id: "files",
+      label: "Files",
+      href: `/tasks/${taskId}/files`,
+      icon: "folder" as const,
     },
     {
       id: "history",
@@ -297,8 +326,25 @@ export function TaskDetail({
 
       <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
         <div className="flex flex-col gap-4 deck:col-span-8">
+          {/* The timer, above everything. It is the one control on this page
+              somebody presses repeatedly through a working day — start, pause,
+              start again — where every card below is a decision taken once and
+              a brief read once. It used to sit between the brief and the
+              subtasks, which put it below the fold on any task with a real
+              description, so starting work cost a scroll every time.
+
+              This displaces "the next required action, always first" below.
+              That card still leads the decisions; it no longer leads the page.
+
+              Suppressed on a container for the same reason as the block below:
+              once a task is broken down nobody works the parent, and a Start
+              button here would bank time against a task whose work is somebody
+              else's — counted twice, once on the parent and once on the subtask
+              actually doing it. */}
+          {tab === "overview" && !isContainer && <TimePanel view={v} />}
+
           {/*
-            The next required action, always first.
+            The next required action, first among the decisions.
 
             Suppressed for a department gate the viewer owes a decision on:
             `ApprovalActionCard` below covers exactly that case and covers it
@@ -484,6 +530,7 @@ export function TaskDetail({
               same: the work moved down a level. */}
           {isContainer &&
             (tab === "deadline" ||
+              tab === "reports" ||
               tab === "submission" ||
               tab === "review") && (
               <Panel>
@@ -491,23 +538,26 @@ export function TaskDetail({
                   This task has been broken down
                 </h2>
                 <p className="mt-2 max-w-[62ch] text-sm text-ink-muted">
-                  It is a project now: its deadline, its submission and its
-                  review all live on its subtasks, each negotiated and decided
-                  with the person carrying that piece. This task closes when
-                  every completion requirement is satisfied. Open a subtask to
-                  see or change its time, hand it in, or decide on it.
+                  It is a project now: its deadline, its daily reports, its
+                  submission and its review all live on its subtasks, each
+                  worked and decided with the person carrying that piece. This
+                  task closes when every completion requirement is satisfied.
+                  Open a subtask to see or change its time, read its progress,
+                  hand it in, or decide on it.
                 </p>
               </Panel>
             )}
           {tab === "deadline" && !isContainer && (
             <DeadlinePanel view={v} onChange={refetch} />
           )}
+          {tab === "reports" && !isContainer && <ReportsPanel view={v} />}
           {tab === "submission" && !isContainer && (
             <SubmissionPanel view={v} onChange={refetch} />
           )}
           {tab === "review" && !isContainer && (
             <ReviewPanel view={v} onChange={refetch} />
           )}
+          {tab === "files" && <TaskFilesPanel view={v} />}
           {tab === "history" && <HistoryPanel taskId={taskId} />}
           {tab === "chat" && (
             <ChatPanel taskId={taskId} status={v.task.status} />
@@ -717,6 +767,75 @@ function NextActionCard({
   );
 }
 
+/* ── Time ─────────────────────────────────────────────────────────────────── */
+
+/* The work session, and the commits it has produced. One control, shared with
+   the table rows — the detail variant just states more of it.
+
+   Lifted out of `Overview` so it can be rendered FIRST in the detail column,
+   above the negotiation cards. The timer is the one thing on this page somebody
+   presses repeatedly through a working day; every card above it was a decision
+   made once. Kept as its own component rather than a branch inside `Overview`
+   because it owns a query — the commit list — and nothing else up there needs
+   it.
+
+   The caller gates it on `!isContainer`; the reason lives there, with the rest
+   of the container suppressions. */
+function TimePanel({ view }: { view: import("@/lib/repositories").TaskView }) {
+  const commits = useQuery(
+    (r) => r.listWorkCommits(view.task.id),
+    [view.task.id],
+  );
+
+  return (
+    <Panel padded={false}>
+      <div className="border-b border-hairline px-5 py-3">
+        <div className="mb-3 flex items-center gap-2">
+          <h2 className="text-sm font-medium text-ink">Time</h2>
+          <span className="text-[11px] text-ink-faint">
+            Pausing writes a work commit — that record is what credits worked
+            time.
+          </span>
+        </div>
+        <TimerControl view={view} size="detail" />
+      </div>
+      {commits.data?.length ? (
+        <div className="divide-y divide-hairline">
+          {commits.data.slice(0, 5).map((c) => (
+            <div key={c.id} className="flex items-center gap-3 px-5 py-2">
+              <Icon.clock className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+              <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">
+                {c.message ?? "Work session"}
+              </span>
+              <span data-figure className="shrink-0 text-xs text-ink-faint">
+                {formatDurationTimer(c.durationSecs)}
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : view.loggedSecs > 0 ? (
+        /*
+         * Legacy records no per-run commits — `pauseTimer` only accumulates
+         * into `totalSeconds` — so this list is empty on every real task and
+         * said "No time logged yet" over hours of work. The banked total is
+         * the honest answer where the breakdown does not exist.
+         */
+        <div className="px-5 py-4">
+          <p data-figure className="text-[15px] text-ink">
+            {formatTimer(view.loggedSecs)}
+          </p>
+          <p className="mt-0.5 text-xs text-ink-faint">
+            Total worked. This engine records a running total rather than a
+            run-by-run breakdown.
+          </p>
+        </div>
+      ) : (
+        <p className="px-5 py-4 text-sm text-ink-faint">No time logged yet.</p>
+      )}
+    </Panel>
+  );
+}
+
 /* ── Overview ─────────────────────────────────────────────────────────────── */
 
 function Overview({
@@ -731,25 +850,14 @@ function Overview({
      the panel showing a count the other half no longer supports. */
   onChange: () => void;
 }) {
-  const commits = useQuery(
-    (r) => r.listWorkCommits(view.task.id),
-    [view.task.id],
-  );
-  const reports = useQuery(
-    (r) => r.listDailyReports(view.task.id),
-    [view.task.id],
-  );
-
-  /* Recomputed rather than passed in, from the same module the tab bar reads.
-     Both callers hold `view` and the children already, so the argument would
-     only be a second chance to hand one of them a stale answer. */
-  const isContainer = isProjectContainer({
-    isProject: view.completion.isProject,
-    loadedSubtasks: subtasks.length,
-  });
-
   return (
     <>
+      {/* The Time panel used to sit here, between the brief and the subtasks.
+          It is now `TimePanel`, rendered at the very top of the column — above
+          the negotiation cards, not merely above the brief. Moving it inside
+          this component was not enough: `Overview` is itself the last child of
+          that column, so "first in Overview" was still below a dozen cards. */}
+
       {/* Above the brief on purpose: on a subtask this is the context for
           everything below it, not a footnote to it. Renders nothing on a root
           task. */}
@@ -758,8 +866,12 @@ function Overview({
       {/* Renders nothing when the task has no meetings, which is most of them. */}
       <RelatedMeetings taskId={view.task.id} />
 
-      {/* Reference material, deliverables and correction files, kept apart. */}
-      <TaskFiles view={view} />
+      {/* Files used to be three read-only groups here — reference, each
+          submission attempt, corrections — and the chat's own attachments and
+          anything on a daily report were reachable only by scrolling the
+          surface that carried them. They are all on the Files tab now, pooled
+          and filterable, which is one place instead of four and takes 2+N
+          fetches off this page. */}
 
       <Panel>
         <div className="flex items-start justify-between gap-3">
@@ -776,88 +888,14 @@ function Overview({
             with only one copy able to be ticked. */}
       </Panel>
 
-      {/* The work session, and the commits it has produced. One control, shared
-          with the table rows — the detail variant just states more of it.
-
-          **Absent on a container.** Once a task is broken down, nobody works
-          the parent — the assignees, the budget and the timer are on its
-          children. A Start button here would bank time against a task whose
-          work is somebody else's, and it would be counted twice: once on the
-          parent and once on the subtask actually doing it. */}
-      {!isContainer && (
-        <Panel padded={false}>
-          <div className="border-b border-hairline px-5 py-3">
-            <div className="mb-3 flex items-center gap-2">
-              <h2 className="text-sm font-medium text-ink">Time</h2>
-              <span className="text-[11px] text-ink-faint">
-                Pausing writes a work commit — that record is what credits worked
-                time.
-              </span>
-            </div>
-            <TimerControl view={view} size="detail" />
-          </div>
-          {commits.data?.length ? (
-            <div className="divide-y divide-hairline">
-              {commits.data.slice(0, 5).map((c) => (
-                <div key={c.id} className="flex items-center gap-3 px-5 py-2">
-                  <Icon.clock className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                  <span className="min-w-0 flex-1 truncate text-sm text-ink-muted">
-                    {c.message ?? "Work session"}
-                  </span>
-                  <span data-figure className="shrink-0 text-xs text-ink-faint">
-                    {formatDurationTimer(c.durationSecs)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          ) : view.loggedSecs > 0 ? (
-            /*
-             * Legacy records no per-run commits — `pauseTimer` only accumulates
-             * into `totalSeconds` — so this list is empty on every real task and
-             * said "No time logged yet" over hours of work. The banked total is
-             * the honest answer where the breakdown does not exist.
-             */
-            <div className="px-5 py-4">
-              <p data-figure className="text-[15px] text-ink">
-                {formatTimer(view.loggedSecs)}
-              </p>
-              <p className="mt-0.5 text-xs text-ink-faint">
-                Total worked. This engine records a running total rather than a
-                run-by-run breakdown.
-              </p>
-            </div>
-          ) : (
-            <p className="px-5 py-4 text-sm text-ink-faint">
-              No time logged yet.
-            </p>
-          )}
-        </Panel>
-      )}
-
       <ProjectPanel view={view} subtasks={subtasks} onChange={onChange} />
 
-      {/* Daily reports are progress on work being done, and nobody is doing a
-          project — the reports are on its subtasks. */}
-      {!isContainer && (reports.data?.length ?? 0) > 0 && (
-        <Panel padded={false}>
-          <div className="border-b border-hairline px-5 py-3">
-            <h2 className="text-sm font-medium text-ink">Daily reports</h2>
-          </div>
-          <div className="divide-y divide-hairline">
-            {reports.data?.map((r) => (
-              <div key={r.id} className="px-5 py-2.5">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-ink-faint">{r.reportDate}</span>
-                  <span data-figure className="ml-auto text-xs text-ink">
-                    {r.progressPercent}%
-                  </span>
-                </div>
-                <p className="mt-1 text-sm text-ink-muted">{r.message}</p>
-              </div>
-            ))}
-          </div>
-        </Panel>
-      )}
+      {/* Daily reports used to be the last card here, and only when at least
+          one existed — so on the task where somebody wondered where the
+          progress notes had gone there was nothing on screen to answer them.
+          They have a tab of their own now, `ReportsPanel`. Not repeated here:
+          two lists of one thing is two places to keep right, and the one
+          further down the page loses. */}
     </>
   );
 }

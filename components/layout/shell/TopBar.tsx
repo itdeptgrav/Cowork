@@ -8,7 +8,8 @@ import { useLens } from "./LensContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "@/components/ui/Avatar";
 import { ActiveWorkPill } from "@/components/features/tasks/TimerControl";
-import { useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { useQuery } from "@/lib/hooks/useRepository";
+import { useWheelPan } from "@/lib/hooks/useWheelPan";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { isActive, visibleNavItems } from "@/lib/utils/nav";
@@ -186,7 +187,7 @@ function LensToggle() {
     setLens(options[next].id);
     (e.currentTarget as HTMLElement)
       .querySelectorAll<HTMLButtonElement>("[role=radio]")
-      [next]?.focus();
+    [next]?.focus();
   }
 
   return (
@@ -207,11 +208,10 @@ function LensToggle() {
             tabIndex={active ? 0 : -1}
             title={o.hint}
             onClick={() => setLens(o.id)}
-            className={`rounded-full px-3.5 py-1 text-sm font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
-              active
+            className={`rounded-full px-3.5 py-1 text-sm font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${active
                 ? "bg-ink text-[var(--body-bg)]"
                 : "text-ink-muted hover:text-ink"
-            }`}
+              }`}
           >
             {o.label}
           </button>
@@ -257,11 +257,10 @@ function NavCount({
       /* On the active pill the background is already ink, so a state colour
          would sit on it unreadably. Inverted there and coloured everywhere
          else. */
-      className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-semibold tabular-nums ${
-        onDark
+      className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-semibold tabular-nums ${onDark
           ? "bg-[var(--body-bg)] text-ink"
           : "bg-[var(--state-overdue)] text-white"
-      }`}
+        }`}
     >
       {label}
     </span>
@@ -344,6 +343,7 @@ export function TopBar() {
      team pages themselves ask, so the bar cannot offer a link onto an empty
      page. */
   const viewerForNav = useQuery((r) => r.getViewer(), []);
+  const railRef = useWheelPan<HTMLUListElement>();
   const items = visibleNavItems(
     useMusic().enabled,
     canAccessAdminConsole(useSession()),
@@ -432,8 +432,19 @@ export function TopBar() {
                 controls exceed the row, something has to leave the container.
                 With `min-w-0` it may shrink, and `rail`+`overflow-x-auto` let it
                 scroll inside itself instead of pushing its neighbours out.
-                Identical at any width where it already fitted. */}
-            <ul className="rail mx-auto hidden min-w-0 items-center gap-1 overflow-x-auto deck:flex">
+                Identical at any width where it already fitted.
+
+                `useWheelPan` is what makes that scroll reachable with a wheel
+                mouse. A trackpad swipe emits `deltaX` and the browser applies
+                it; a wheel emits `deltaY` only, which no browser will spend on
+                a horizontal box — so the tabs were reachable on a laptop and
+                stuck on a desk, with `rail` hiding the scrollbar that would at
+                least have said so. It gives the gesture back to the page at
+                either end, so this sticky bar never traps a page scroll. */}
+            <ul
+              ref={railRef}
+              className="rail mx-auto hidden min-w-0 items-center gap-1 overflow-x-auto deck:flex"
+            >
               {items.map((item) => {
                 const active = isActive(item, pathname);
                 return (
@@ -442,11 +453,10 @@ export function TopBar() {
                       href={item.href}
                       onClick={() => visitSection(item.href)}
                       aria-current={active ? "page" : undefined}
-                      className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
-                        active
+                      className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${active
                           ? "bg-ink text-[var(--body-bg)]"
                           : "text-ink-muted hover:bg-[var(--surface-sunken)] hover:text-ink"
-                      }`}
+                        }`}
                     >
                       {item.label}
                       <NavCount
@@ -540,11 +550,10 @@ export function TopBar() {
                           closeMenu();
                         }}
                         aria-current={active ? "page" : undefined}
-                        className={`flex items-center gap-1.5 rounded-full px-4 py-2.5 text-[15px] font-medium tracking-[-0.012em] ${
-                          active
+                        className={`flex items-center gap-1.5 rounded-full px-4 py-2.5 text-[15px] font-medium tracking-[-0.012em] ${active
                             ? "bg-[var(--control)] text-ink"
                             : "text-ink-muted"
-                        }`}
+                          }`}
                       >
                         {item.label}
                         <NavCount

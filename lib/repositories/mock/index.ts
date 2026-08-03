@@ -69,6 +69,7 @@ import type {
   Conversation,
   ConductSeverity,
   DailyReport,
+  ReportAttachment,
   DeadlineCounter,
   DeadlineChangeRequest,
   Attachment,
@@ -213,6 +214,11 @@ import { searchHelp } from "@/lib/help/search";
 import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
+import {
+  istDayKey,
+  isReportPending,
+  workedToday,
+} from "@/lib/rules/tasks/dailyReport";
 import { validateAttendanceRecord } from "@/lib/rules/attendance/record";
 import {
   DEFAULT_TIMER_SOP_CONFIG,
@@ -257,6 +263,7 @@ import {
   memberChangeRefusal,
   writeMembers,
 } from "@/lib/rules/documents/access";
+import { mindmapTreeRefusal } from "@/lib/rules/mindmap/validity";
 import type {
   CoworkDocument,
   CascadeOrderEntry,
@@ -319,6 +326,11 @@ import type {
   MusicPreferences,
   MusicQueue,
   MusicResult,
+  MindMapDetail,
+  MindMapRecord,
+  MindMapRole,
+  MindMapSummary,
+  MindNode,
 } from "@/lib/domain";
 
 const LATENCY_MS = 120;
@@ -4588,9 +4600,17 @@ export class MockRepository implements CoworkRepository {
       fallbackSimElapsedMs: now().getTime() - started.getTime(),
     });
 
-    /* Advance the prototype clock BY the time that really passed, so the
-       commit's own `startedAt`/`endedAt` still bracket `durationSecs` and the
-       store's ordering stays consistent with every other mutation. */
+    /* Capture real-clock timestamps BEFORE clearing the session so we can use
+       them for the commit. Commit timestamps must be real wall-clock time, not
+       the prototype clock: `listDayCommits` is called with the real IST day key
+       (`istDayKey(Date.now())`), and prototype-clock dates (anchored to the seed
+       date, not today) would never match — silently dropping every commit from
+       the daily-report modal, the Reports tab, and the Actionable inbox. */
+    const realEndMs = Date.now();
+    const realStartMs = session.startedAtRealMs != null
+      ? session.startedAtRealMs
+      : realEndMs - durationSecs * 1000;
+
     tick(durationSecs * 1000);
     session.isActive = false;
     session.accumulatedSecs += durationSecs;
@@ -4602,8 +4622,8 @@ export class MockRepository implements CoworkRepository {
       id: nextId("wc"),
       taskId,
       employeeId: actingId(),
-      startedAt: started.toISOString(),
-      endedAt: nowIso(),
+      startedAt: new Date(realStartMs).toISOString(),
+      endedAt: new Date(realEndMs).toISOString(),
       durationSecs,
       message,
       attachmentIds: [],
@@ -4633,7 +4653,19 @@ export class MockRepository implements CoworkRepository {
     const s = getStore();
     return delay(
       s.workCommits
-        .filter((w) => w.startedAt.slice(0, 10) === date)
+        /* Scoped to the acting employee, matching the legacy repository's own
+           `where("employeeId", "==", employeeId)` — this was unscoped, which
+           handed the daily-report flow (end-of-day modal, Reports tab,
+           Actionable inbox) every employee's commits as if they were the
+           viewer's own.
+           Filtered by `endedAt` (not `startedAt`): a session that started just
+           before midnight continues into the next IST day, and the day it is
+           reported against should be the day it ended. Mirrors legacy's own
+           `endedAt` filter. IST-aware so midnight UTC does not split a shift
+           that ran through to 5:30 AM IST. */
+        .filter(
+          (w) => istDayKey(Date.parse(w.endedAt)) === date && w.employeeId === actingId(),
+        )
         .map((w) => ({
           ...w,
           employee: s.employees.find((e) => e.id === w.employeeId)!,
@@ -4752,12 +4784,24 @@ export class MockRepository implements CoworkRepository {
     message: string;
     progressPercent: number;
     attachmentIds: string[];
+    attachments?: ReportAttachment[];
+    documentId?: string | null;
+    documentTitle?: string | null;
   }): Promise<ActionResult<DailyReport>> {
     const g = guard();
     if (g) return g;
-    if (!input.message.trim())
-      return fail("validation_failed", "Write what you did.", "message");
+    /* A document is a report too — the text box is the short form, not the
+       only form. Matches the legacy repository's rule exactly. */
+    if (!input.message.trim() && !input.documentId)
+      return fail(
+        "validation_failed",
+        "Write what you did, or attach a document.",
+        "message",
+      );
     tick();
+    const attachments =
+      input.attachments ??
+      input.attachmentIds.map((url) => ({ url, name: url, mimeType: "" }));
     const r: DailyReport = {
       id: nextId("dr"),
       taskId: input.taskId,
@@ -4765,7 +4809,10 @@ export class MockRepository implements CoworkRepository {
       reportDate: nowIso().slice(0, 10),
       message: input.message.trim(),
       progressPercent: input.progressPercent,
-      attachmentIds: input.attachmentIds,
+      attachmentIds: attachments.map((a) => a.url),
+      attachments,
+      documentId: input.documentId ?? null,
+      documentTitle: input.documentTitle ?? null,
       createdAt: nowIso(),
     };
     getStore().dailyReports.push(r);
@@ -5232,7 +5279,60 @@ export class MockRepository implements CoworkRepository {
       });
     }
 
+    items.push(...(await this.#dailyReportActionable(meId, items)));
     return delay(items);
+  }
+
+  /**
+   * Unfiled daily reports, as inbox items. See the legacy repository's
+   * `#dailyReportActionable` for why this is separate from the loop above:
+   * whether today's timer activity has been reported on lives in the
+   * work-commit/timer store, keyed by employee and day, not on the task
+   * itself, so `actionableFor` (which only ever sees a `TaskView`) cannot
+   * decide it.
+   */
+  async #dailyReportActionable(
+    meId: string,
+    already: ActionableItem[],
+  ): Promise<ActionableItem[]> {
+    const today = istDayKey(Date.now());
+    const commits = await this.listDayCommits(today);
+    const timers = await this.listTimers();
+    const worked = workedToday(
+      commits,
+      timers as Parameters<typeof workedToday>[1],
+      Date.now(),
+    );
+    if (worked.length === 0) return [];
+
+    const seen = new Set(already.map((i) => i.view.task.id));
+    const out: ActionableItem[] = [];
+    for (const w of worked) {
+      if (seen.has(w.taskId as TaskId)) continue;
+      const reports = await this.listDailyReports(w.taskId as TaskId);
+      if (
+        !isReportPending({
+          reports,
+          worked,
+          taskId: w.taskId,
+          employeeId: meId,
+          date: today,
+        })
+      )
+        continue;
+      const view = await this.getTask(w.taskId as TaskId);
+      if (!view) continue;
+      const mins = Math.max(1, Math.round(w.totalSecs / 60));
+      out.push({
+        view,
+        reason: "daily_report",
+        label: "File report",
+        href: `/tasks/${w.taskId}/reports`,
+        subtitle: `${mins}m logged today — no report filed yet`,
+        approvalKind: null,
+      });
+    }
+    return out;
   }
 
   async listReviewDetail() {
@@ -6879,6 +6979,231 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(doc));
   }
 
+  /* ── Mindmaps ────────────────────────────────────────────────────────────
+   *
+   * The real implementation posts to `/cowork/mindmaps` and the ENGINE
+   * validates the card tree. This one validates it here, and that duplication
+   * is deliberate rather than an oversight: the mock is what the UI is
+   * developed and tested against, so a mock that accepted a two-rooted tree
+   * would let a screen be built that only fails against the real backend.
+   *
+   * `mindmapTreeRefusal` is the shared sentence-for-sentence check, so the two
+   * cannot drift into refusing different things.
+   */
+  async listMindMaps(): Promise<MindMapSummary[]> {
+    const me = actingId();
+    return delay(
+      getStore()
+        .mindmaps.filter(
+          (m) => !m.deletedAt && m.memberIds.includes(me),
+        )
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .map((m) => ({ ...m })),
+    );
+  }
+
+  async getMindMap(id: string): Promise<MindMapDetail | null> {
+    const me = actingId();
+    const s = getStore();
+    const mindmap = s.mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    /* Not a member is indistinguishable from not existing, matching the route:
+       a 403 on an id confirms the id is real. */
+    if (!mindmap) return delay(null);
+    const body = s.mindmapNodes.find((b) => b.mindmapId === id);
+    return delay({ mindmap: { ...mindmap }, nodes: [...(body?.nodes ?? [])] });
+  }
+
+  async createMindMap(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+    nodes?: MindNode[];
+  }): Promise<ActionResult<MindMapRecord>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    tick();
+    const now = nowIso();
+    const title = input.title.trim() || "Untitled mindmap";
+
+    /* Supplied cards are validated exactly as a later save is. An import is not
+       a trusted path just because it is the first write. */
+    let nodes: MindNode[];
+    if (input.nodes !== undefined) {
+      const refusal = mindmapTreeRefusal(input.nodes);
+      if (refusal) return fail("validation_failed", refusal);
+      nodes = input.nodes.map((n) => ({ ...n }));
+    } else {
+      /* Created WITH a root. An empty mindmap cannot be drawn and its only
+         possible first action is "add the root", so shipping that state would
+         be shipping a screen whose only exit is one button. */
+      nodes = [
+        {
+          id: "root",
+          parentId: null,
+          title,
+          description: "",
+          links: [],
+          images: [],
+          collapsed: false,
+        },
+      ];
+    }
+
+    const memberIds = [...new Set([me, ...(input.memberIds ?? [])])];
+    const record: MindMapRecord = {
+      organisationId: actingOrganisationId(),
+      id: nextId("mm"),
+      title,
+      createdById: me,
+      lastEditedById: null,
+      members: memberIds.map((employeeId) => ({
+        employeeId,
+        role: employeeId === me ? "owner" : "editor",
+        addedAt: now,
+      })),
+      memberIds,
+      nodeCount: nodes.length,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    const s = getStore();
+    s.mindmaps.push(record);
+    s.mindmapNodes.push({ mindmapId: record.id, nodes, updatedAt: now });
+    persistStore();
+    return delay(ok({ ...record }));
+  }
+
+  async renameMindMap(
+    id: string,
+    title: string,
+  ): Promise<ActionResult<MindMapRecord>> {
+    const g = guard();
+    if (g) return g;
+    const next = title.trim();
+    if (!next) return fail("validation_failed", "Give the mindmap a name.", "title");
+    const me = actingId();
+    const map = getStore().mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (!map.members.some((m) => m.employeeId === me && m.role === "owner"))
+      return fail("permission_denied", "Only an owner can rename this mindmap.");
+    tick();
+    map.title = next;
+    map.updatedAt = nowIso();
+    map.lastEditedById = me;
+    persistStore();
+    return delay(ok({ ...map }));
+  }
+
+  async deleteMindMap(id: string): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const map = getStore().mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (!map.members.some((m) => m.employeeId === me && m.role === "owner"))
+      return fail("permission_denied", "Only an owner can delete this mindmap.");
+    tick();
+    /* Soft, and the cards are left where they are. Reaping them at the same
+       moment would make the record recoverable and the map itself not. */
+    map.deletedAt = nowIso();
+    map.updatedAt = map.deletedAt;
+    persistStore();
+    return delay(ok(undefined));
+  }
+
+  async saveMindMapNodes(
+    id: string,
+    nodes: MindNode[],
+  ): Promise<ActionResult<MindMapDetail>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const s = getStore();
+    const map = s.mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (
+      !map.members.some(
+        (m) => m.employeeId === me && (m.role === "owner" || m.role === "editor"),
+      )
+    )
+      return fail("permission_denied", "You can view this mindmap but not change it.");
+
+    const refusal = mindmapTreeRefusal(nodes);
+    if (refusal) return fail("validation_failed", refusal);
+
+    tick();
+    const now = nowIso();
+    const stored = nodes.map((n) => ({ ...n }));
+    const body = s.mindmapNodes.find((b) => b.mindmapId === id);
+    if (body) {
+      body.nodes = stored;
+      body.updatedAt = now;
+    } else {
+      s.mindmapNodes.push({ mindmapId: id, nodes: stored, updatedAt: now });
+    }
+    /* `nodeCount` is written here, in the one place that writes cards, so the
+       list's figure cannot drift from the tree it describes. */
+    map.nodeCount = stored.length;
+    map.updatedAt = now;
+    map.lastEditedById = me;
+    persistStore();
+    return delay(ok({ mindmap: { ...map }, nodes: [...stored] }));
+  }
+
+  async setMindMapMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: MindMapRole | null,
+  ): Promise<ActionResult<MindMapRecord>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const map = getStore().mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (!map.members.some((m) => m.employeeId === me && m.role === "owner"))
+      return fail(
+        "permission_denied",
+        "Only an owner can change who is on this mindmap.",
+      );
+
+    const existing = map.members.find((m) => m.employeeId === employeeId);
+    const rest = map.members.filter((m) => m.employeeId !== employeeId);
+    const next =
+      role === null
+        ? rest
+        : [
+            ...rest,
+            {
+              employeeId,
+              role,
+              addedAt: existing?.addedAt ?? nowIso(),
+            },
+          ];
+    if (!next.some((m) => m.role === "owner"))
+      return fail(
+        "validation_failed",
+        "A mindmap needs an owner. Make somebody else an owner before removing this one.",
+      );
+
+    tick();
+    map.members = next;
+    map.memberIds = [...new Set(next.map((m) => m.employeeId))];
+    map.updatedAt = nowIso();
+    persistStore();
+    return delay(ok({ ...map }));
+  }
+
   async listMeetings() {
     return delay(
       [...getStore().meetings].sort((a, b) =>
@@ -7651,6 +7976,27 @@ export class MockRepository implements CoworkRepository {
   }
   async saveMusicPreferences(patch: Partial<MusicPreferences>) {
     return delay(ok(musicStore.savePreferences(patch)));
+  }
+  async listMusicPlaylists() {
+    return delay(musicStore.playlists());
+  }
+  async createMusicPlaylist(name: string) {
+    return delay(ok(musicStore.createPlaylist(name)));
+  }
+  async renameMusicPlaylist(id: string, name: string) {
+    return delay(ok(musicStore.renamePlaylist(id, name)));
+  }
+  async deleteMusicPlaylist(id: string) {
+    return delay(ok(musicStore.deletePlaylist(id)));
+  }
+  async addToMusicPlaylist(id: string, item: MusicResult) {
+    return delay(ok(musicStore.addToPlaylist(id, item)));
+  }
+  async removeFromMusicPlaylist(id: string, trackId: string) {
+    return delay(ok(musicStore.removeFromPlaylist(id, trackId)));
+  }
+  async moveMusicPlaylistTrack(id: string, from: number, to: number) {
+    return delay(ok(musicStore.movePlaylistTrack(id, from, to)));
   }
 
   /* ── Live monitoring ────────────────────────────────────────────────────── */

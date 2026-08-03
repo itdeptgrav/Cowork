@@ -55,6 +55,7 @@ function isPublic(pathname: string): boolean {
   return (
     PUBLIC_PATHS.has(pathname) ||
     pathname.startsWith("/join/") ||
+    pathname.startsWith("/meetings/guest/") ||
     pathname === "/privacy" ||
     /* The offline page must render without a session, and for a reason beyond
        the usual one: the service worker precaches it, and a precache fetch
