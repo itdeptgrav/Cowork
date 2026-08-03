@@ -537,132 +537,6 @@
     );
   }
 
-  /* ── The field, painted ───────────────────────────────────────
-     Lightweight mode's stand-in: the same picture as the ten layers
-     above, as one element.
-
-     Why this is a fair likeness rather than a poor one. A blob is a
-     radial gradient inside a circle with `filter: blur(46px)` over
-     it — but the gradient already fades to transparent at 68%, so
-     the blur is refining an edge that is barely there. Painting the
-     gradient straight into a background layer lands within a few
-     percent of it, and costs one rasterisation instead of six
-     permanently-composited, permanently-animating filter layers.
-
-     What is lost, said plainly: the six hues drift TOGETHER here
-     rather than on six independent cycles, so the field's colours no
-     longer recombine over the minute. At 96s and 3% of travel that is
-     not something a reader notices; it is something an author should
-     know before assuming this file is the same effect.               */
-  .field-painted {
-    /* How much of each hue survives into the paint. The animated field
-       carries per-blob opacity plus `saturate()` under a filter; this
-       folds both into one figure per theme. */
-    --field-paint: 80%;
-    background-image:
-      /* Painted in the same order the elements stack: vignette on top,
-         then the specular banding, then the hues. */
-      radial-gradient(
-        120% 90% at 50% 30%,
-        transparent 44%,
-        var(--field-vignette) 100%
-      ),
-      repeating-linear-gradient(
-        104deg,
-        rgba(255, 255, 255, calc(var(--field-spec-light) * 0.55)) 0%,
-        rgba(255, 255, 255, 0) 11%,
-        rgba(0, 0, 0, calc(var(--field-spec-dark) * 0.4)) 20%,
-        rgba(0, 0, 0, 0) 34%
-      ),
-      radial-gradient(
-        30vw 30vw at 26% 42%,
-        color-mix(
-            in srgb,
-            var(--color-field-ivory) var(--field-paint),
-            transparent
-          )
-          0%,
-        transparent 66%
-      ),
-      radial-gradient(
-        25vw 25vw at 40% 68%,
-        color-mix(
-            in srgb,
-            var(--color-field-gold) var(--field-paint),
-            transparent
-          )
-          0%,
-        transparent 68%
-      ),
-      radial-gradient(
-        27vw 27vw at 63% 60%,
-        color-mix(
-            in srgb,
-            var(--color-field-rose) var(--field-paint),
-            transparent
-          )
-          0%,
-        transparent 68%
-      ),
-      radial-gradient(
-        26vw 26vw at 77% 36%,
-        color-mix(
-            in srgb,
-            var(--color-field-mauve) var(--field-paint),
-            transparent
-          )
-          0%,
-        transparent 68%
-      ),
-      radial-gradient(
-        30vw 30vw at 91% 74%,
-        color-mix(
-            in srgb,
-            var(--color-field-slate) var(--field-paint),
-            transparent
-          )
-          0%,
-        transparent 68%
-      ),
-      radial-gradient(
-        32vw 32vw at 55% 88%,
-        color-mix(
-            in srgb,
-            var(--color-field-deep) calc(var(--field-paint) * 0.65),
-            transparent
-          )
-          0%,
-        transparent 70%
-      );
-    /* The specular layer blends into the hues exactly as the elements do
-       with `mix-blend-mode: overlay` — but at paint time, once. */
-    background-blend-mode: normal, overlay, normal, normal, normal, normal,
-      normal, normal;
-    /* The drift. A transform on one already-composited layer is the only
-       animation the compositor carries with no repaint, no filter and no
-       readback — so it is the one that may stay when the rest goes.
-       Slower and shallower than the real cycles, because a single layer
-       moving as a whole reads as motion much sooner than six moving
-       against each other. */
-    will-change: transform;
-    animation: field-painted-drift 96s var(--ease-deck) infinite alternate;
-  }
-
-  :root[data-theme="dark"] .field-painted {
-    /* Matching the animated field, where dark mode drops blob opacity to
-       0.42 and desaturates: a bright field behind dark frost reads as mud. */
-    --field-paint: 34%;
-  }
-
-  @keyframes field-painted-drift {
-    from {
-      transform: translate3d(-1.5%, -1%, 0) scale(1.03);
-    }
-    to {
-      transform: translate3d(1.5%, 1.5%, 0) scale(1.07);
-    }
-  }
-
   @keyframes field-drift {
     from {
       transform: translate3d(0, 0, 0) scale(1);
@@ -862,10 +736,13 @@
   }
 }
 
-/* ── Low-end device mode ──────────────────────────────────────────────────────
+/* ── Plain device mode ────────────────────────────────────────────────────────
  *
- * `<html data-perf="low">`, set by an inline script before first paint so a weak
- * machine never renders one frosted frame and then drops it.
+ * `<html data-perf="plain">`, set by an inline script before first paint so a
+ * weak machine never renders one frosted frame and then drops it.
+ *
+ * Rich needs no layer of its own: it is the stylesheet as authored above. Only
+ * the mode that TAKES something away has to say what it takes.
  *
  * **Why this lives in CSS rather than in the components.** A component that
  * forgets to read the mode still loses its blur here. The React profile handles
@@ -883,7 +760,7 @@
  *     and `transition-colors` repaints rather than compositing.
  *  3. Long shadows. Cheap alone, additive down a list of forty rows.
  */
-:root[data-perf="low"] {
+:root[data-perf="plain"] {
   /* The frost colours are already near-opaque, so dropping the filter changes
      the look far less than the cost suggests. Raised the last few percent so the
      surface reads as deliberate rather than as a failed effect. */
@@ -892,14 +769,14 @@
   --surface-raised: rgb(250, 250, 252);
 }
 
-:root[data-theme="dark"][data-perf="low"] {
+:root[data-theme="dark"][data-perf="plain"] {
   --frost-bar: rgb(24, 24, 28);
   --frost-panel: rgb(32, 32, 37);
   --surface-raised: rgb(30, 30, 35);
 }
 
-:root[data-perf="low"] .frost-bar,
-:root[data-perf="low"] .frost-panel {
+:root[data-perf="plain"] .frost-bar,
+:root[data-perf="plain"] .frost-panel {
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   /* The inset lip goes with the blur — it reads as a glass edge, and without the
@@ -911,10 +788,8 @@
 
 /* Every Tailwind `backdrop-blur-*` utility, in one place. Utilities are emitted
    with a filter variable, so clearing it disables them all without having to
-   name each site. Lightweight mode takes this rule too — it keeps the LOOK of
-   the frost, which is the translucency and the lit edge, not the filter. */
-:root[data-perf="low"] *,
-:root[data-perf="lite"] * {
+   name each site. */
+:root[data-perf="plain"] * {
   --tw-backdrop-blur: ;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
@@ -922,9 +797,9 @@
 
 /* Motion. Not `display: none` on anything — an element that animates in must
    still arrive, it simply arrives at once. */
-:root[data-perf="low"] *,
-:root[data-perf="low"] *::before,
-:root[data-perf="low"] *::after {
+:root[data-perf="plain"] *,
+:root[data-perf="plain"] *::before,
+:root[data-perf="plain"] *::after {
   animation-duration: 0.01ms !important;
   animation-iteration-count: 1 !important;
   transition-duration: 0.01ms !important;
@@ -932,11 +807,11 @@
 }
 
 /* Decorative depth. Controls keep their focus ring — that is not decoration. */
-:root[data-perf="low"] .frost-panel,
-:root[data-perf="low"] [class*="shadow-"] {
+:root[data-perf="plain"] .frost-panel,
+:root[data-perf="plain"] [class*="shadow-"] {
   box-shadow: none;
 }
-:root[data-perf="low"] :where(a, button, input, select, textarea):focus-visible {
+:root[data-perf="plain"] :where(a, button, input, select, textarea):focus-visible {
   box-shadow: var(--focus-ring, 0 0 0 2px currentColor);
 }
 
@@ -949,73 +824,16 @@
  * Removed entirely rather than paused, and that is coherent rather than merely
  * cheaper: the field exists so the frosted surfaces have something to look
  * through — "glass over a flat backdrop is not glass, it is grey". With the blur
- * gone there is no glass, so there is nothing for it to be behind. Low mode is
+ * gone there is no glass, so there is nothing for it to be behind. Plain mode is
  * flat on purpose, top to bottom.
  *
- * The component also skips rendering these nodes in low mode, so the layers are
- * never created. This rule is the backstop for a stale DOM mid-switch. */
-:root[data-perf="low"] .field,
-:root[data-perf="low"] .field-blob,
-:root[data-perf="low"] .field-spec {
+ * The component also skips rendering these nodes in Plain mode, so the layers
+ * are never created. This rule is the backstop for a stale DOM mid-switch. */
+:root[data-perf="plain"] .field,
+:root[data-perf="plain"] .field-blob,
+:root[data-perf="plain"] .field-spec {
   display: none;
 }
-
-/* ── Lightweight mode ─────────────────────────────────────────────────────────
- *
- * `<html data-perf="lite">`. **The picture of Balanced without Balanced's
- * per-frame work**, for the machine that stutters but whose owner should not
- * have to give up the product's appearance to fix it.
- *
- * The two substitutions, and why each is a likeness rather than a compromise:
- *
- *  1. **The frost keeps its translucency and loses its filter.** What sits
- *     behind the bar is the field: gradients so soft that blurring them again
- *     moves a few percent of a few pixels. The surface still shows the field's
- *     colour through itself — the part anybody actually sees — and the lit lip
- *     and the seat shadow stay, which is what makes it read as a pane of glass
- *     rather than as a grey rectangle. Low mode drops all three and is honestly
- *     flat; this one keeps all three and drops only the readback.
- *  2. **The field is painted** — see `.field-painted`. One layer, one
- *     rasterisation, drifted by transform alone.
- *
- * Motion, shadows, charts and the timer's second hand are all untouched: they
- * are Balanced's, not copies of Balanced's.
- */
-:root[data-perf="lite"] {
-  /* Nudged from 0.94 / 0.80. With no blur underneath it, text scrolling beneath
-     the bar would otherwise ghost through as legible-but-wrong rather than
-     dissolving — the one artefact that would give the illusion away. Three
-     percent buys that, and the field's colour still reads through. */
-  --frost-bar: rgba(248, 248, 250, 0.97);
-  --frost-panel: rgba(232, 232, 234, 0.84);
-}
-
-:root[data-theme="dark"][data-perf="lite"] {
-  --frost-bar: rgba(24, 24, 28, 0.96);
-  --frost-panel: rgba(32, 32, 37, 0.8);
-}
-
-/* The lost `saturate(1.6)` put back where it is free: as a paint on the surface
-   rather than as a filter over everything behind it. A single fixed gradient —
-   bright at the top edge where a pane catches light, gone by two-thirds down. */
-:root[data-perf="lite"] .frost-bar,
-:root[data-perf="lite"] .frost-panel {
-  background-image: linear-gradient(
-    to bottom,
-    var(--frost-sheen, rgba(255, 255, 255, 0.1)),
-    rgba(255, 255, 255, 0) 62%
-  );
-}
-
-:root[data-theme="dark"][data-perf="lite"] {
-  --frost-sheen: rgba(255, 255, 255, 0.05);
-}
-
-/* ── High performance ─────────────────────────────────────────────────────────
- * Nothing to add: it is the stylesheet as authored. Named here so the four
- * modes are legible in one place rather than two being implicit.
- */
-
 
 /* ── The document page ────────────────────────────────────────────────────────
  *

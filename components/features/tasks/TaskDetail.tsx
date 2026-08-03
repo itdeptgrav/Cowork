@@ -21,7 +21,7 @@ import { DeadlineRevisionCard } from "./DeadlineRevisionCard";
 import { ExtensionTimeline } from "./ExtensionTimeline";
 import { CounterDeadlineCard } from "./CounterDeadlineCard";
 import { ReworkPanel } from "./ReworkPanel";
-import { TaskFiles } from "./TaskFiles";
+import { TaskFilesPanel } from "./TaskFilesPanel";
 import { FeasibilityPreview } from "./FeasibilityPreview";
 import { ExpectedCompletion } from "./ExpectedCompletion";
 import { TaskFlowSection } from "./TaskFlowSection";
@@ -85,7 +85,8 @@ type Tab =
   | "submission"
   | "review"
   | "history"
-  | "chat";
+  | "chat"
+  | "files";
 
 export function TaskDetail({
   taskId,
@@ -213,6 +214,16 @@ export function TaskDetail({
       href: `/tasks/${taskId}/chat`,
       icon: "chat" as const,
       count: v.chatCount,
+    },
+    /* Files is offered on a project too, unlike the four above. A project's own
+       reference material — the brief everybody works from — hangs off THIS
+       document, and its chat is where it is discussed, so there is something
+       real here even when nobody works the task itself. */
+    {
+      id: "files",
+      label: "Files",
+      href: `/tasks/${taskId}/files`,
+      icon: "folder" as const,
     },
     {
       id: "history",
@@ -546,6 +557,7 @@ export function TaskDetail({
           {tab === "review" && !isContainer && (
             <ReviewPanel view={v} onChange={refetch} />
           )}
+          {tab === "files" && <TaskFilesPanel view={v} />}
           {tab === "history" && <HistoryPanel taskId={taskId} />}
           {tab === "chat" && (
             <ChatPanel taskId={taskId} status={v.task.status} />
@@ -854,8 +866,12 @@ function Overview({
       {/* Renders nothing when the task has no meetings, which is most of them. */}
       <RelatedMeetings taskId={view.task.id} />
 
-      {/* Reference material, deliverables and correction files, kept apart. */}
-      <TaskFiles view={view} />
+      {/* Files used to be three read-only groups here — reference, each
+          submission attempt, corrections — and the chat's own attachments and
+          anything on a daily report were reachable only by scrolling the
+          surface that carried them. They are all on the Files tab now, pooled
+          and filterable, which is one place instead of four and takes 2+N
+          fetches off this page. */}
 
       <Panel>
         <div className="flex items-start justify-between gap-3">

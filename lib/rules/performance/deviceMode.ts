@@ -35,34 +35,30 @@ import {
  * would make it a thing an administrator could set for somebody else. It lives
  * in `localStorage`, so it is a property of the machine in front of you.
  *
- * ## The fourth mode, and why it is not a half-measure
+ * ## Two modes, and why not four
  *
- * Between `balanced` and `low` sits `lite`, and the gap it fills is a real one:
- * somebody whose machine stutters had exactly one remedy, and it cost them the
- * whole look of the product. Most of that look is not the effect — it is the
- * PICTURE the effect produces, and the picture can be painted directly.
+ * There were four: a top mode identical to the default, and a middle one that
+ * imitated the default's picture with cheaper technique. Both were answers to a
+ * question nobody was asking. The top mode differed from the default in nothing
+ * a reader could point at, so choosing it was a placebo; the middle one asked
+ * somebody to reason about the difference between an effect and a picture of
+ * that effect before they could pick a setting.
  *
- * Two substitutions carry it, and both are honest about what they are:
+ * What is left is the only choice that was ever real, and the two names say
+ * which way it runs:
  *
- *  · **The frost.** `backdrop-filter` blurs what is behind the bar. What is
- *    behind the bar is the background field: six radial gradients so soft that
- *    blurring them again moves almost nothing. So the filter goes and the
- *    translucency stays — the surface still shows the field's colour through
- *    itself, which is the part anybody actually sees. Raised a few percent more
- *    opaque so scrolled text underneath cannot ghost through unblurred.
- *  · **The field.** Ten permanently-composited layers, each blurred at 46px and
- *    animating forever, become ONE element whose background is a stack of
- *    gradients — painted once, then drifted with a transform. A transform on an
- *    already-composited layer is the one animation that costs the compositor
- *    nothing per frame: no repaint, no filter, no readback.
+ *  · **Rich** — the interface as designed. Frosted surfaces, the drifting
+ *    field, motion, charts, a timer counting by the second.
+ *  · **Plain** — the same product with the drawing taken out of it. Flat
+ *    surfaces, no blur, no motion, fewer redraws, shorter pages of rows.
  *
- * Calling it an illusion is not a disclaimer, it is the design. `low` mode is
- * the honest surrender of the look; `lite` keeps the look and surrenders the
- * technique. What it may NOT do is surrender anything above — the same refusals
- * apply to it as to every other mode.
+ * Plain is an honest surrender of the look, not a cheaper imitation of it: the
+ * field exists so the frosted surfaces have something to look through, so when
+ * the blur goes the field goes with it. What Plain may NOT surrender is anything
+ * above — the refusals apply to it exactly as they apply to Rich.
  */
 
-export type DeviceMode = "high" | "balanced" | "lite" | "low";
+export type DeviceMode = "rich" | "plain";
 
 export const DEVICE_MODES: {
   id: DeviceMode;
@@ -70,23 +66,13 @@ export const DEVICE_MODES: {
   hint: string;
 }[] = [
   {
-    id: "high",
-    label: "High performance",
-    hint: "Full animation and the frosted deck. For a machine with a discrete GPU or recent integrated graphics.",
+    id: "rich",
+    label: "Rich",
+    hint: "The default. The interface as designed — frosted surfaces, the drifting background, animation and charts.",
   },
   {
-    id: "balanced",
-    label: "Balanced",
-    hint: "The default. Full visuals, with the most expensive effects trimmed under load.",
-  },
-  {
-    id: "lite",
-    label: "Lightweight",
-    hint: "Looks like Balanced, painted rather than computed. The frost and the drifting background are drawn once instead of recalculated every frame — the same picture, without the per-frame cost. Everything still works.",
-  },
-  {
-    id: "low",
-    label: "Low-end laptop",
+    id: "plain",
+    label: "Plain",
     hint: "Flat surfaces, no blur, fewer redraws. Everything still works — presence, timers, deadlines, screen sharing and notifications are untouched.",
   },
 ];
@@ -108,26 +94,15 @@ export interface PerformanceProfile {
    */
   blur: boolean;
   /**
-   * Paint the frosted look WITHOUT the filter.
-   *
-   * True only where `blur` is false but the surface should still read as glass:
-   * translucency and the lit lip are kept, the per-frame blur is not. Named as
-   * an illusion rather than as "cheap blur" because the settings screen says so
-   * to the reader too — a mode that quietly redefines "frosted" would be a mode
-   * somebody cannot check against their own screen.
-   */
-  paintedFrost: boolean;
-  /**
-   * How the background field is drawn.
+   * Whether the background field is drawn.
    *
    *  · `animated` — ten composited layers, blurred and drifting. The only thing
    *    in the product that costs anything AT REST.
-   *  · `painted` — one element, a stack of gradients, drifted by transform
-   *    alone. Reads as the same field; costs one paint and no per-frame work.
-   *  · `none` — not rendered. Coherent only where there is no frost for it to
-   *    sit behind.
+   *  · `none` — not rendered. Coherent rather than merely cheaper: the field
+   *    exists so the frost has something to look through, and Plain has no
+   *    frost for it to sit behind.
    */
-  backdropField: "animated" | "painted" | "none";
+  backdropField: "animated" | "none";
   /** Long shadows and the inset lip. Cheap individually, additive in a list. */
   decorativeShadows: boolean;
   /**
@@ -156,10 +131,9 @@ export interface PerformanceProfile {
   previewFps: number;
 }
 
-const HIGH: PerformanceProfile = {
+const RICH: PerformanceProfile = {
   animations: true,
   blur: true,
-  paintedFrost: false,
   backdropField: "animated",
   decorativeShadows: true,
   timerTickMs: 1_000,
@@ -170,41 +144,9 @@ const HIGH: PerformanceProfile = {
   previewFps: 30,
 };
 
-const BALANCED: PerformanceProfile = {
-  ...HIGH,
-  /* The one trim the default takes: the always-on bar blur, which costs a
-     composite per frame to reveal 6% of what is behind it. Everything else that
-     blurs is a dialog, and a dialog is transient. */
-  blur: true,
-  listChunkSize: 50,
-};
-
-/**
- * Balanced's picture, none of Balanced's per-frame work.
- *
- * Spread from `BALANCED` rather than written out, and that is the point: every
- * field a reader would check to ask "does this still look like the default?" —
- * animation, charts, shadows, the timer's second hand, how many rows a table
- * gives you — is literally the same value, not a copy that can drift from it.
- * The three fields that differ are the three that are illusions.
- */
-const LITE: PerformanceProfile = {
-  ...BALANCED,
-  /* The filter goes; the translucency and the lit lip stay. */
-  blur: false,
-  paintedFrost: true,
-  backdropField: "painted",
-  /* The one non-cosmetic trim, and it is the watcher's own preview only: 24 is
-     below the 30 the publisher sends and above anything a reader would call
-     choppy. The captured stream is untouched — it is somebody's evidence of
-     work and its quality is not a local preference. */
-  previewFps: 24,
-};
-
-const LOW: PerformanceProfile = {
+const PLAIN: PerformanceProfile = {
   animations: false,
   blur: false,
-  paintedFrost: false,
   backdropField: "none",
   decorativeShadows: false,
   /* Two seconds rather than one. A running timer still reads correctly; it
@@ -219,15 +161,11 @@ const LOW: PerformanceProfile = {
 
 export function performanceProfile(mode: DeviceMode): PerformanceProfile {
   switch (mode) {
-    case "high":
-      return HIGH;
-    case "lite":
-      return LITE;
-    case "low":
-      return LOW;
-    case "balanced":
+    case "plain":
+      return PLAIN;
+    case "rich":
     default:
-      return BALANCED;
+      return RICH;
   }
 }
 
@@ -290,7 +228,7 @@ export interface DeviceSignals {
  * Every field is optional because every field is optional in practice: Safari
  * reports no `deviceMemory`, Firefox no `connection`. A missing signal is
  * **unknown, never zero** — treating an absent core count as a slow machine
- * would put half of Safari into low mode on no evidence.
+ * would put half of Safari into plain mode on no evidence.
  */
 export function readDeviceSignals(): DeviceSignals {
   if (typeof navigator === "undefined") {
@@ -320,7 +258,7 @@ export function readDeviceSignals(): DeviceSignals {
 }
 
 /**
- * Should low mode be SUGGESTED?
+ * Should plain mode be SUGGESTED?
  *
  * Suggested, never imposed. These signals are coarse — `deviceMemory` is
  * bucketed and caps at 8 regardless of how much is fitted, and a core count says
@@ -329,7 +267,7 @@ export function readDeviceSignals(): DeviceSignals {
  *
  * So the product offers, and the person decides. A dismissal is remembered.
  */
-export function shouldSuggestLowMode(signals: DeviceSignals): boolean {
+export function shouldSuggestPlainMode(signals: DeviceSignals): boolean {
   /* An explicit accessibility preference is a decision somebody already made,
      and honouring it is not a guess. */
   if (signals.prefersReducedMotion) return true;
@@ -344,7 +282,7 @@ export function shouldSuggestLowMode(signals: DeviceSignals): boolean {
 
 /** One sentence saying WHY the suggestion appeared, so it is not a mystery. */
 export function suggestionReason(signals: DeviceSignals): string | null {
-  if (!shouldSuggestLowMode(signals)) return null;
+  if (!shouldSuggestPlainMode(signals)) return null;
   if (signals.prefersReducedMotion) {
     return "Your system is set to reduce motion.";
   }
@@ -363,14 +301,34 @@ export function suggestionReason(signals: DeviceSignals): string | null {
 export const DEVICE_MODE_KEY = "cowork.deviceMode";
 export const DEVICE_MODE_DISMISSED_KEY = "cowork.deviceMode.suggestionDismissed";
 
-/** A stored value, or null where nothing valid is stored. */
+/**
+ * A stored value, or null where nothing valid is stored.
+ *
+ * **The four old names still resolve**, because the value lives in somebody's
+ * browser and shipping a rename does not reach into it. Dropping them would not
+ * fail loudly — it would silently return null, and a person who had chosen the
+ * lightest interface available would be handed the heaviest one on their next
+ * load, on the machine that made them choose in the first place.
+ *
+ * The mapping runs by INTENT rather than by position: `high` and `balanced` were
+ * the same picture, so both land on Rich. `lite` and `low` were both chosen by
+ * somebody whose machine was struggling — `lite` kept the look, but the reason
+ * for picking it was the cost — so both land on Plain.
+ */
 export function readStoredMode(raw: string | null): DeviceMode | null {
-  return raw === "high" ||
-    raw === "balanced" ||
-    raw === "lite" ||
-    raw === "low"
-    ? raw
-    : null;
+  switch (raw) {
+    case "rich":
+    case "plain":
+      return raw;
+    case "high":
+    case "balanced":
+      return "rich";
+    case "lite":
+    case "low":
+      return "plain";
+    default:
+      return null;
+  }
 }
 
 /**

@@ -82,6 +82,11 @@ import type {
   DocumentPageSetup,
   DocumentRole,
   DocumentSummary,
+  MindMapDetail,
+  MindMapRecord,
+  MindMapRole,
+  MindMapSummary,
+  MindNode,
   MailAttachment,
   MailFolder,
   MailMessage,
@@ -1675,6 +1680,69 @@ export interface CoworkRepository {
     employeeId: EmployeeId,
     role: DocumentRole | null,
   ): Promise<ActionResult<CoworkDocument>>;
+
+  /* ── Mindmaps ───────────────────────────────────────────────────────────
+   *
+   * The same record/body shape as documents, for the same reason: a list of
+   * thirty maps must not read thirty card trees to draw a table of names. The
+   * card count is on the record so the list can say how big a map is without
+   * opening it.
+   *
+   * **These go over the engine, not browser-direct to the store, and that is
+   * the one place this differs from documents.** A document body is opaque
+   * text and cannot be malformed. A card tree can be — two roots, a parent
+   * that is not in the map, a cycle — and none of those look wrong, they fail
+   * to draw at all, for every member of that map. The validation therefore
+   * lives in `grav-cms-backend` where a request cannot skip it, rather than in
+   * the browser where it can. See `routes/task_routes/coworkMindmaps.js`. */
+  listMindMaps(): Promise<MindMapSummary[]>;
+  /** The map AND its cards — the only mindmap read that touches a body. */
+  getMindMap(id: string): Promise<MindMapDetail | null>;
+  /**
+   * Make one.
+   *
+   * `nodes` is how a map kept in a browser is lifted onto the server. Omitted,
+   * the server seeds a root card: an empty mindmap cannot be drawn and its only
+   * possible first action is "add the root", so shipping that state would be
+   * shipping a screen whose only exit is one button.
+   */
+  createMindMap(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+    nodes?: MindNode[];
+  }): Promise<ActionResult<MindMapRecord>>;
+  renameMindMap(id: string, title: string): Promise<ActionResult<MindMapRecord>>;
+  /** Soft. A deleted map is recoverable until something reaps it. */
+  deleteMindMap(id: string): Promise<ActionResult<void>>;
+  /**
+   * Write the cards. **The whole tree, every time.**
+   *
+   * Not a patch, and that is the correct shape rather than a lazy one: a
+   * mindmap edit is frequently structural — reparenting a branch changes one
+   * field on one card and the meaning of every card beneath it — so a per-card
+   * protocol would have to describe moves, and two clients applying different
+   * moves would produce a tree neither of them authored. Replacing the tree
+   * makes the last writer's map the map, which is a rule a person can predict.
+   *
+   * A refusal here is a real answer and must be shown: the server rejects a
+   * tree it cannot lay out, and it names the card that is wrong.
+   */
+  saveMindMapNodes(
+    id: string,
+    nodes: MindNode[],
+  ): Promise<ActionResult<MindMapDetail>>;
+  /**
+   * Add somebody, or change what they may do. Owners only.
+   *
+   * `null` removes them. The server refuses anything that would leave the map
+   * with no owner — a map nobody can rename, delete or share is one nothing
+   * should be able to create.
+   */
+  setMindMapMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: MindMapRole | null,
+  ): Promise<ActionResult<MindMapRecord>>;
 
   listMeetings(): Promise<Meeting[]>;
   /* Meeting lifecycle. The organiser drives all of it; `manageRefusal` gates. */

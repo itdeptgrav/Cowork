@@ -401,18 +401,22 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "new work notice",
       "stop the popup",
       "assigned to me",
+      "popup not showing",
+      "have to refresh to see new tasks",
+      "notice is late",
     ],
     examples: [
       "What is the popup about new tasks?",
       "Why did I see 'you have new tasks'?",
       "Why did that popup appear again on my laptop?",
       "How do I get rid of the new task popup?",
+      "Do I have to refresh to see a new task?",
     ],
     answer:
-      "When somebody assigns you work, the next time you open Cowork you get a notice listing what arrived. Each task shows its priority, its reference, the first couple of lines of its description, how long it is expected to take, when it is due, how many requirements it carries, the project it belongs to, whether it is part of a larger task, who assigned it, and a button for the one thing to do about it next — “Confirm receipt”, “Accept or discuss the time” or “Propose a deadline”, whichever genuinely applies, going straight to the screen that does it. Where the tasks carry time figures the heading adds them up, and says how many of them the total actually covers rather than implying it covers all. A time BUDGET and an ESTIMATE are labelled differently on purpose: a budget is time you will schedule and its deadline appears once you accept it, an estimate is the assignor's figure on a task that already has a date. It is a notice, not a gate: Later closes it, Escape closes it, clicking outside closes it, and the work is on your task list either way. Clicking a task in the list opens it so you can confirm it or discuss the deadline. It lists at most five and says how many more there are, so coming back from leave to twenty new tasks does not produce a modal you have to scroll. What it shows is work that is still waiting for you to confirm it — once you confirm a task it stops counting as new, and confirming is the thing that actually moves it into your queue. Cowork remembers that it has shown you a notice in the browser you are using, not on your account, so signing in on a second machine can show you the same one once more. That is deliberate: the alternative is a device you no longer use marking work as seen and you never hearing about it. Being assigned the same task again later counts as new again, because it is.",
+      "When somebody assigns you work you get a notice listing what arrived. It appears while you are working — you do not have to reload the page or open Cowork again, and it also shows on arrival if the work came in while you were away. Each task shows its priority, its reference, the first couple of lines of its description, how long it is expected to take, when it is due, how many requirements it carries, the project it belongs to, whether it is part of a larger task, who assigned it, and a button for the one thing to do about it next — “Confirm receipt”, “Accept or discuss the time” or “Propose a deadline”, whichever genuinely applies, going straight to the screen that does it. Where the tasks carry time figures the heading adds them up, and says how many of them the total actually covers rather than implying it covers all. A time BUDGET and an ESTIMATE are labelled differently on purpose: a budget is time you will schedule and its deadline appears once you accept it, an estimate is the assignor's figure on a task that already has a date. It is a notice, not a gate: Later closes it, Escape closes it, clicking outside closes it, and the work is on your task list either way. Clicking a task in the list opens it so you can confirm it or discuss the deadline. It lists at most five and says how many more there are, so coming back from leave to twenty new tasks does not produce a modal you have to scroll. What it shows is work that is still waiting for you to confirm it — once you confirm a task it stops counting as new, and confirming is the thing that actually moves it into your queue. Cowork remembers that it has shown you a notice in the browser you are using, not on your account, so signing in on a second machine can show you the same one once more. That is deliberate: the alternative is a device you no longer use marking work as seen and you never hearing about it. Being assigned the same task again later counts as new again, because it is.",
     related: ["task-who-can-assign", "task-priority", "task-budget-vs-deadline-rights"],
     source:
-      "components/features/tasks/NewAssignmentGate.tsx; lib/rules/tasks/newAssignments.ts; TaskStatus 'assigned' is the server-side record of not-yet-confirmed",
+      "components/features/tasks/NewAssignmentGate.tsx (session-long cowork_tasks onSnapshot); lib/rules/tasks/newAssignments.ts; TaskStatus 'assigned' is the server-side record of not-yet-confirmed",
   },
   {
     id: "task-break-down",
@@ -1680,19 +1684,20 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "stutter",
       "blur",
       "frosted",
-      "lightweight mode",
-      "low-end laptop",
+      "rich mode",
+      "plain mode",
       "performance mode",
       "fan spinning",
     ],
     examples: [
       "Cowork feels slow on my laptop.",
       "How do I turn off the blur?",
-      "What is lightweight mode?",
-      "Can I make the interface lighter without it looking worse?",
+      "What is Plain mode?",
+      "What happened to lightweight mode?",
+      "Can I make the interface lighter?",
     ],
     answer:
-      "Settings, then Performance. Device mode decides how much work this browser does to draw the interface, and it is kept on the machine in front of you rather than on your account — one person may use a fast desktop and a slow laptop, and nobody else, administrator included, can set it for you. There are four. High performance runs everything as designed. Balanced is the default: the same picture, with the most expensive effects trimmed under load. Lightweight looks exactly like Balanced — the frosted surfaces and the drifting background are painted once and then left alone instead of being worked out again for every frame, so the screen looks the same while the machine stops recomputing it as you scroll. Low-end laptop gives the look up on purpose: flat surfaces, no blur, no motion, fewer redraws and shorter pages of rows. Whichever you pick, nothing stops working. Presence, task timers, deadlines, screen sharing, notifications and every rule behind them behave identically in all four modes. A timer redrawing every two seconds is still counting every second, because the figure is worked out from when you started rather than added up from the redraws — and no mode slows the signal that keeps you Online, because a performance setting that marked you away would not be one. If your browser reports few processor cores, little memory, reduced motion or data saving, Cowork offers you a lighter mode once and says which of those prompted it. It never switches for you: those figures are coarse and say nothing about the graphics chip, which is what actually struggles with the frosted surfaces. Sharing your screen to go online costs more than every visual effect combined, and no mode changes that — if the machine struggles while you are online, weigh that first.",
+      "Settings, then Performance. Device mode decides how much work this browser does to draw the interface, and it is kept on the machine in front of you rather than on your account — one person may use a fast desktop and a slow laptop, and nobody else, administrator included, can set it for you. There are two. Rich is the default: the interface as designed, with the frosted surfaces, the drifting background, animation and charts. Plain takes the drawing out of it — flat surfaces, no blur, no motion, fewer redraws and shorter pages of rows. There were four modes until recently. High performance did nothing the default did not already do, and Lightweight imitated the default's appearance with cheaper technique, which asked you to reason about the difference between an effect and a picture of that effect before you could pick a setting. If you had chosen either of those, you now have Rich; if you had chosen Lightweight or Low-end laptop, you now have Plain, because the reason for picking either was the cost. Whichever you pick, nothing stops working. Presence, task timers, deadlines, screen sharing, notifications and every rule behind them behave identically in both modes. A timer redrawing every two seconds is still counting every second, because the figure is worked out from when you started rather than added up from the redraws — and no mode slows the signal that keeps you Online, because a performance setting that marked you away would not be one. If your browser reports few processor cores, little memory, reduced motion or data saving, Cowork offers you Plain mode once and says which of those prompted it. It never switches for you: those figures are coarse and say nothing about the graphics chip, which is what actually struggles with the frosted surfaces. Sharing your screen to go online costs more than every visual effect combined, and no mode changes that — if the machine struggles while you are online, weigh that first.",
     related: ["status-online", "general-what-is-cowork"],
     source:
       "DEVICE_MODES and performanceProfile in lib/rules/performance/deviceMode.ts; the data-perf layers in app/globals.css",
@@ -1934,6 +1939,35 @@ export const HELP_ARTICLES: HelpArticle[] = [
     related: ["general-documents", "general-what-is-cowork"],
     source:
       "lib/rules/documents/access.ts (roleOf, editRefusal, memberChangeRefusal); ShareMenu; useCollabSession",
+  },
+  {
+    id: "general-mindmaps",
+    category: "general",
+    title: "Mindmaps",
+    keywords: [
+      "mindmap",
+      "mind map",
+      "mindmaps",
+      "workspace",
+      "cards",
+      "branch",
+      "root card",
+      "map not saving",
+      "where did my mindmap go",
+      "share mindmap",
+    ],
+    examples: [
+      "How do I make a mindmap?",
+      "Where did my old mindmap go?",
+      "Why does my mindmap say I can only view it?",
+      "Why won't my mindmap save?",
+      "Can somebody else see my mindmap?",
+    ],
+    answer:
+      "Workspace, then Mindmaps. It works the way Documents does: the first screen is a list of the maps you can open, and choosing one opens it on the whole screen — Back returns you to the list. New mindmap makes another, so you can keep as many as you like rather than one. Each map is a tree of cards drawn from a single root; the + on a card adds a child, and the panel beside the canvas is where a card gets its description, pictures and links. Mindmaps are stored with your account now, not in the browser. That is a change: there used to be exactly one map per browser, it did not follow you to another machine, nobody else could see it, and clearing your browser data threw it away. None of that is true any more — a map is shared with the people you add to it, and each of them is an owner, an editor or a viewer, exactly as on a document. Owners can rename, delete and change who is on it; editors can change the cards; a viewer sees “View only” and “You can view this mindmap but not change it.” The last owner cannot be removed, because a map with no owner is one nobody could rename, delete or share again. Changes save on their own a moment after you stop; the header says “Saving…” and then “Saved”. Some shapes are refused rather than stored, because they cannot be drawn: a map has exactly one root card, no card may hang off a card that is not in the map, and no card may be its own ancestor. The message names the card that is wrong. A picture that was pasted into the old browser-only map is refused with “is stored in this browser rather than uploaded” — remove it and attach it again, and it will then follow the map to everybody who can see it.",
+    related: ["general-documents", "general-document-access", "general-what-is-cowork"],
+    source:
+      "MindMapsArea and MindMapWorkbench; lib/rules/mindmap/validity.ts and access.ts; grav-cms-backend routes/task_routes/coworkMindmaps.js",
   },
   {
     id: "general-music-playlists",

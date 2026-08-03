@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { getRepository } from "@/lib/repositories";
@@ -8,9 +8,12 @@ import { useSession } from "@/components/features/auth/SessionProvider";
 import { Button, Chip } from "@/components/ui/Primitives";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
+import { readTask, type LegacyTaskDoc } from "@/lib/legacy/tasks";
+import { toTaskStatus } from "@/lib/repositories/legacy/taskMap";
 import {
   committedEffort,
   MAX_SHOWN,
+  noticeKey,
   rememberSeen,
   unseenNotices,
   type AssignmentNotice,
@@ -72,32 +75,40 @@ function writeSeen(keys: string[]): void {
 export function NewAssignmentGate() {
   const session = useSession();
   const [notices, setNotices] = useState<AssignmentNotice[] | null>(null);
-  /* Flip to true once the popup has been shown or we've confirmed there's
-     nothing to show — so the live Firestore listener doesn't re-trigger the
-     popup after the user has already dismissed it. */
-  const shownRef = useRef(false);
 
   /**
-   * Watch `cowork_tasks` with a live Firestore listener instead of a one-shot
-   * getDocs.
+   * Watch `cowork_tasks` with a live Firestore listener, **for the whole
+   * session**.
    *
-   * The previous approach called `repo.listTasks()` once on mount. That fails
-   * silently on first login: Firestore has no local cache yet, and the
-   * `getViewer()` call deep inside `listTasks` triggers `#reportingTree()`
-   * which makes a batch of HTTP calls to the backend — if any of those are
-   * slow or fail, the whole chain errors, the catch block swallows it, and
-   * the popup never shows.
+   * ## Why a listener rather than a read on mount
    *
-   * `onSnapshot` fixes both problems:
-   *   · it fires immediately from cache on refresh, from the network on first
-   *     login — no cold-cache race;
-   *   · it doesn't go through `#reportingTree()` at all.
+   * A one-shot `repo.listTasks()` on mount fails silently on first login:
+   * Firestore has no local cache yet, and the `getViewer()` call deep inside
+   * `listTasks` triggers `#reportingTree()`, a batch of HTTP calls to the
+   * backend — if any are slow or fail, the chain errors, the catch swallows
+   * it, and the popup never shows. `onSnapshot` fires immediately from cache on
+   * refresh and from the network on first login, and goes nowhere near
+   * `#reportingTree()`.
    *
-   * When the snapshot tells us there ARE assigned tasks, we call
-   * `repo.listTasks()` once to build the rich notices (owner name, deadline
-   * mode, action label, etc.). That call succeeds reliably because the
-   * Firestore data is already available in the local cache by the time we
-   * make it. The listener is then detached — we never need it again.
+   * ## Why it is no longer detached after the first snapshot
+   *
+   * **This was the bug that made the popup need a refresh.** The listener used
+   * to tear itself down the moment it saw any assigned task — before checking
+   * whether that task was one the person had already been told about. So the
+   * ordinary case killed it instantly: somebody with one outstanding assigned
+   * task from yesterday loads Cowork, the first snapshot fires, the listener
+   * detaches, and every assignment made for the rest of that session arrives to
+   * a page with nothing watching. Reloading re-attached it, which is exactly
+   * the symptom — work only appearing after a refresh.
+   *
+   * Nothing about the cold-start reasoning required detaching; that was about
+   * the FIRST snapshot arriving, not about the last. So the listener now lives
+   * as long as the session does, which is what makes this notice live at all.
+   *
+   * A snapshot that brings a new assigned id triggers one `listTasks()` to
+   * build the rich notices — owner name, deadline mode, action label. That call
+   * is reliable here because the Firestore data is already in the local cache
+   * by the time it runs.
    */
   useEffect(() => {
     const employeeId = session.status === "authenticated" ? session.employeeId : null;
@@ -106,8 +117,35 @@ export function NewAssignmentGate() {
     let cancelled = false;
     let detach: (() => void) | null = null;
 
+    /**
+     * The assigned ids this listener has already built for, and whether a build
+     * is running.
+     *
+     * **Effect-local, and that is load-bearing rather than tidy.** These were
+     * `useRef`s, which survive a remount — and React StrictMode deliberately
+     * mounts every effect twice in development. The first mount's snapshot
+     * recorded the task id and started a build; the unmount cancelled that
+     * build; the second mount's snapshot then saw the id already recorded, took
+     * the "nothing new" path, and never built. The notice never appeared at
+     * all. Scoped to the effect, each listener starts with its own empty set,
+     * so a cancelled build leaves nothing behind that can suppress its
+     * replacement.
+     *
+     * The set is a COST guard — it stops every unrelated task edit, which bumps
+     * `updatedAt` and re-fires the snapshot, from costing a full `listTasks()`
+     * to discover there is nothing new to say. Whether the person has SEEN a
+     * notice is a different question, answered by the stored seen-list through
+     * `unseenNotices`, which is the authority. Conflating those two is what
+     * made this notice one-shot in the first place.
+     */
+    const builtFor = new Set<string>();
+    /* One build at a time. Two snapshots landing together would otherwise issue
+       two `listTasks()` calls and race to set the same popup. */
+    let building = false;
+
     async function buildNotices() {
-      if (shownRef.current || cancelled) return;
+      if (cancelled || building) return;
+      building = true;
       try {
         const repo = getRepository();
         /* employeeId is already known from the session — skip getViewer() so
@@ -124,9 +162,6 @@ export function NewAssignmentGate() {
         });
 
         if (cancelled) return;
-        shownRef.current = true;
-        /* Listener no longer needed — data is in the local cache now. */
-        detach?.();
 
         const all: AssignmentNotice[] = page.items.map((view) => {
           const mine = view.assignments.find((a) => a.employeeId === eid);
@@ -153,10 +188,25 @@ export function NewAssignmentGate() {
         });
 
         const unseen = unseenNotices(all, readSeen());
-        if (unseen.length > 0) setNotices(unseen);
+        if (unseen.length === 0) return;
+        /* Merged into whatever is already on screen rather than replacing it.
+           A second assignment arriving while the notice is open should join the
+           list — swapping the contents underneath somebody mid-read would lose
+           the one they were about to click, and dismissing marks everything
+           shown as seen, so a replaced notice would be marked read unread. */
+        setNotices((prev) => {
+          if (!prev || prev.length === 0) return unseen;
+          const have = new Set(prev.map(noticeKey));
+          const added = unseen.filter((n) => !have.has(noticeKey(n)));
+          return added.length === 0 ? prev : [...added, ...prev];
+        });
       } catch (e) {
-        shownRef.current = false; // allow retry on next snapshot
+        /* Forget what this attempt covered so the next snapshot retries rather
+           than treating a failed build as done. */
+        builtFor.clear();
         console.error("[NewAssignmentGate] buildNotices failed:", e);
+      } finally {
+        building = false;
       }
     }
 
@@ -167,31 +217,115 @@ export function NewAssignmentGate() {
 
       if (cancelled) return;
 
-      /* Watch tasks assigned to this person using the existing
-         (assigneeIds, updatedAt) index — adding a status == filter would
-         require a new composite index that isn't in firestore.indexes.json.
-         Status is checked in-memory in the callback instead. */
-      const q = query(
-        collection(legacyDb(), "cowork_tasks"),
-        where("assigneeIds", "array-contains", employeeId),
-        orderBy("updatedAt", "desc"),
-        limit(50),
+      /**
+       * TWO listeners, because "assigned to me" is two fields in legacy.
+       *
+       * **This is what left the notice needing a refresh.** A task that is
+       * still at a gate — cross-department approval, TL hours — has an EMPTY
+       * `assigneeIds` and its person in `pendingAssigneeId`; `taskForward.js`
+       * only writes `assigneeIds` at the moment the task goes to `open`, and
+       * `pendingAssigneeId` is never cleared afterwards. So a single
+       * `array-contains` listener cannot see that whole class of work arriving.
+       *
+       * It looked like it worked on reload only because of an accident: on
+       * mount the trigger set is empty, so ANY of this person's existing tasks
+       * counts as fresh and starts a build — and the build reads `listTasks`,
+       * which resolves holders through `holdersOf` and therefore DOES include
+       * pending assignees. The new task was found by the rebuild, never by the
+       * listener. With nothing else assigned, even that accident stopped
+       * working.
+       *
+       * So the trigger watches the same two fields `holdersOf` reads. Matching
+       * the domain's own definition rather than picking one field is the same
+       * rule that fixed the status comparison above: a trigger that disagrees
+       * with the build is a notice that fires for work it cannot find, or —
+       * here — never fires for work that is there.
+       */
+      const tasks = collection(legacyDb(), "cowork_tasks");
+      const sources = [
+        query(
+          tasks,
+          where("assigneeIds", "array-contains", employeeId),
+          orderBy("updatedAt", "desc"),
+          limit(50),
+        ),
+        /* Needs the (pendingAssigneeId, updatedAt) index, declared in
+           firestore.indexes.json. Bounded and ordered rather than a bare
+           equality because `pendingAssigneeId` is never cleared — every
+           cross-department task ever routed to this person keeps it set, so an
+           unordered query would grow without limit and an unordered `limit`
+           would return the 50 oldest document ids rather than the newest work. */
+        query(
+          tasks,
+          where("pendingAssigneeId", "==", employeeId),
+          orderBy("updatedAt", "desc"),
+          limit(50),
+        ),
+      ];
+
+      /** The latest ids each listener reported, unioned on every snapshot. */
+      const latest: string[][] = sources.map(() => []);
+
+      const detachers = sources.map((q, index) =>
+        onSnapshot(
+          q,
+          (snap) => {
+            if (cancelled) return;
+            /**
+             * Status is checked in memory rather than in the query — a
+             * `status ==` filter would need yet another composite index — and
+             * it is checked THROUGH `toTaskStatus`.
+             *
+             * **This is what stopped the notice appearing at all.** The filter
+             * was `d.data().status === "assigned"`, comparing the raw legacy
+             * field against a DOMAIN status name. `assigned` is something the
+             * domain computes; legacy's own word for the same state is `open`
+             * — plus `pending_deadline_approval`, `deadline_approved`, and
+             * anything unrecognised, which `toTaskStatus` maps to `assigned`
+             * as its neutral default. Almost every real assignment is written
+             * `status: "open"` by `taskForward.js`, so the filter matched
+             * nothing and no build ever ran.
+             */
+            latest[index] = snap.docs
+              .map((d) => readTask({ ...(d.data() as LegacyTaskDoc), id: d.id }))
+              .filter((t): t is NonNullable<typeof t> => t !== null)
+              .filter((t) => toTaskStatus(t) === "assigned")
+              .map((t) => t.id);
+
+            const assignedIds = [...new Set(latest.flat())];
+            if (assignedIds.length === 0) return;
+
+            /* An id that is no longer assigned is forgotten, so a task
+               confirmed and then assigned again later reads as new work rather
+               than as one already built for. Harmless when a task merely falls
+               out of the 50-row window: the stored seen-list still suppresses
+               the notice. */
+            const assigned = new Set(assignedIds);
+            for (const id of [...builtFor])
+              if (!assigned.has(id)) builtFor.delete(id);
+
+            /* Rebuild only when an assigned id is one we have not built for.
+               Without this, every edit to any of this person's tasks bumps
+               `updatedAt`, re-fires a snapshot, and costs a full `listTasks()`
+               to discover there is nothing new to say. */
+            const fresh = assignedIds.filter((id) => !builtFor.has(id));
+            if (fresh.length === 0) return;
+            for (const id of assignedIds) builtFor.add(id);
+            void buildNotices();
+          },
+          (err) => {
+            /* Named loudly, because the commonest cause is a composite index
+               that has not been deployed — and the symptom of that is silence,
+               which reads exactly like "no new work". */
+            console.error(
+              `[NewAssignmentGate] Firestore watch ${index === 0 ? "(assigneeIds)" : "(pendingAssigneeId)"} failed:`,
+              err.message,
+            );
+          },
+        ),
       );
 
-      detach = onSnapshot(
-        q,
-        (snap) => {
-          if (shownRef.current || cancelled) return;
-          /* Check in-memory whether any of the returned tasks are actually
-             in the "assigned" state — only those warrant the popup. */
-          const hasAssigned = snap.docs.some((d) => d.data().status === "assigned");
-          if (!hasAssigned) return;
-          void buildNotices();
-        },
-        (err) => {
-          console.error("[NewAssignmentGate] Firestore watch error:", err.message);
-        },
-      );
+      detach = () => detachers.forEach((d) => d());
     }
 
     void startWatch();

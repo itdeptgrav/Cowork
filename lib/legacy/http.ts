@@ -19,7 +19,16 @@ import { PUBLIC_ENV } from "./publicEnv.ts";
 export interface LegacyRequest {
   /** Path under the legacy base URL, e.g. `/cowork/me`. */
   path: string;
-  method?: "GET" | "POST" | "PATCH" | "DELETE";
+  /**
+   * `PUT` is here for REPLACEMENT, and only that.
+   *
+   * Legacy answers almost everything with POST or PATCH. The one caller that
+   * needs PUT is the mindmap card tree, which is replaced whole on every save
+   * rather than patched — see `saveMindMapNodes`. Widening the union is the
+   * honest fix; sending a replacement as a PATCH would describe it as a
+   * partial update to anybody reading the network tab.
+   */
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** JSON body. Omit for GET. */
   body?: unknown;
   query?: Record<string, string | number | undefined>;

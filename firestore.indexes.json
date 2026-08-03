@@ -1,13 +1,34 @@
 {
-  "//": "Composite indexes for every Cowork query this app issues. Deployed with `firebase deploy --only firestore:indexes` against project grav-cms-38f45 — see firebase.json and .firebaserc, without which this file is documentation nothing reads. That is exactly how a declared index came to be missing in production: writing it down is not deploying it. Firestore creates single-field indexes automatically, so only multi-field queries appear here.",
+  "//": "Composite indexes for every Cowork query this app issues. Deployed with `firebase deploy --only firestore:indexes` against project grav-cms-38f45 \u2014 see firebase.json and .firebaserc, without which this file is documentation nothing reads. That is exactly how a declared index came to be missing in production: writing it down is not deploying it. Firestore creates single-field indexes automatically, so only multi-field queries appear here.",
   "indexes": [
     {
       "//": "Employee, TL and CEO: tasks assigned to me. Verified present in the project.",
       "collectionGroup": "cowork_tasks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "assigneeIds", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "assigneeIds",
+          "arrayConfig": "CONTAINS"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "//": "NewAssignmentGate: work routed to somebody but still at a gate. A task awaiting cross-department or TL approval has an EMPTY assigneeIds and its person here, so the array-contains listener above cannot see it arrive.",
+      "collectionGroup": "cowork_tasks",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "pendingAssigneeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -15,17 +36,29 @@
       "collectionGroup": "cowork_tasks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "assignedBy", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "assignedBy",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
-      "//": "CEO: self-assign tasks awaiting my approval. MISSING IN THE PROJECT — this is the query that failed on /tasks. Legacy issues an identical one (app/coworking/tasks/page.js:3927) but passes an empty error callback to onSnapshot, so there the same fault silently drops the listener instead of surfacing.",
+      "//": "CEO: self-assign tasks awaiting my approval. MISSING IN THE PROJECT \u2014 this is the query that failed on /tasks. Legacy issues an identical one (app/coworking/tasks/page.js:3927) but passes an empty error callback to onSnapshot, so there the same fault silently drops the listener instead of surfacing.",
       "collectionGroup": "cowork_tasks",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "approverId", "order": "ASCENDING" },
-        { "fieldPath": "updatedAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "approverId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "updatedAt",
+          "order": "DESCENDING"
+        }
       ]
     },
     {
@@ -33,8 +66,14 @@
       "collectionGroup": "cowork_notifications",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "recipientEmployeeId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
+        {
+          "fieldPath": "recipientEmployeeId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
       ]
     }
   ],

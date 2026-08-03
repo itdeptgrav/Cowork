@@ -263,6 +263,7 @@ import {
   memberChangeRefusal,
   writeMembers,
 } from "@/lib/rules/documents/access";
+import { mindmapTreeRefusal } from "@/lib/rules/mindmap/validity";
 import type {
   CoworkDocument,
   CascadeOrderEntry,
@@ -325,6 +326,11 @@ import type {
   MusicPreferences,
   MusicQueue,
   MusicResult,
+  MindMapDetail,
+  MindMapRecord,
+  MindMapRole,
+  MindMapSummary,
+  MindNode,
 } from "@/lib/domain";
 
 const LATENCY_MS = 120;
@@ -6971,6 +6977,231 @@ export class MockRepository implements CoworkRepository {
     doc.updatedAt = nowIso();
     persistStore();
     return delay(ok(doc));
+  }
+
+  /* ── Mindmaps ────────────────────────────────────────────────────────────
+   *
+   * The real implementation posts to `/cowork/mindmaps` and the ENGINE
+   * validates the card tree. This one validates it here, and that duplication
+   * is deliberate rather than an oversight: the mock is what the UI is
+   * developed and tested against, so a mock that accepted a two-rooted tree
+   * would let a screen be built that only fails against the real backend.
+   *
+   * `mindmapTreeRefusal` is the shared sentence-for-sentence check, so the two
+   * cannot drift into refusing different things.
+   */
+  async listMindMaps(): Promise<MindMapSummary[]> {
+    const me = actingId();
+    return delay(
+      getStore()
+        .mindmaps.filter(
+          (m) => !m.deletedAt && m.memberIds.includes(me),
+        )
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+        .map((m) => ({ ...m })),
+    );
+  }
+
+  async getMindMap(id: string): Promise<MindMapDetail | null> {
+    const me = actingId();
+    const s = getStore();
+    const mindmap = s.mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    /* Not a member is indistinguishable from not existing, matching the route:
+       a 403 on an id confirms the id is real. */
+    if (!mindmap) return delay(null);
+    const body = s.mindmapNodes.find((b) => b.mindmapId === id);
+    return delay({ mindmap: { ...mindmap }, nodes: [...(body?.nodes ?? [])] });
+  }
+
+  async createMindMap(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+    nodes?: MindNode[];
+  }): Promise<ActionResult<MindMapRecord>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    tick();
+    const now = nowIso();
+    const title = input.title.trim() || "Untitled mindmap";
+
+    /* Supplied cards are validated exactly as a later save is. An import is not
+       a trusted path just because it is the first write. */
+    let nodes: MindNode[];
+    if (input.nodes !== undefined) {
+      const refusal = mindmapTreeRefusal(input.nodes);
+      if (refusal) return fail("validation_failed", refusal);
+      nodes = input.nodes.map((n) => ({ ...n }));
+    } else {
+      /* Created WITH a root. An empty mindmap cannot be drawn and its only
+         possible first action is "add the root", so shipping that state would
+         be shipping a screen whose only exit is one button. */
+      nodes = [
+        {
+          id: "root",
+          parentId: null,
+          title,
+          description: "",
+          links: [],
+          images: [],
+          collapsed: false,
+        },
+      ];
+    }
+
+    const memberIds = [...new Set([me, ...(input.memberIds ?? [])])];
+    const record: MindMapRecord = {
+      organisationId: actingOrganisationId(),
+      id: nextId("mm"),
+      title,
+      createdById: me,
+      lastEditedById: null,
+      members: memberIds.map((employeeId) => ({
+        employeeId,
+        role: employeeId === me ? "owner" : "editor",
+        addedAt: now,
+      })),
+      memberIds,
+      nodeCount: nodes.length,
+      createdAt: now,
+      updatedAt: now,
+      deletedAt: null,
+    };
+    const s = getStore();
+    s.mindmaps.push(record);
+    s.mindmapNodes.push({ mindmapId: record.id, nodes, updatedAt: now });
+    persistStore();
+    return delay(ok({ ...record }));
+  }
+
+  async renameMindMap(
+    id: string,
+    title: string,
+  ): Promise<ActionResult<MindMapRecord>> {
+    const g = guard();
+    if (g) return g;
+    const next = title.trim();
+    if (!next) return fail("validation_failed", "Give the mindmap a name.", "title");
+    const me = actingId();
+    const map = getStore().mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (!map.members.some((m) => m.employeeId === me && m.role === "owner"))
+      return fail("permission_denied", "Only an owner can rename this mindmap.");
+    tick();
+    map.title = next;
+    map.updatedAt = nowIso();
+    map.lastEditedById = me;
+    persistStore();
+    return delay(ok({ ...map }));
+  }
+
+  async deleteMindMap(id: string): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const map = getStore().mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (!map.members.some((m) => m.employeeId === me && m.role === "owner"))
+      return fail("permission_denied", "Only an owner can delete this mindmap.");
+    tick();
+    /* Soft, and the cards are left where they are. Reaping them at the same
+       moment would make the record recoverable and the map itself not. */
+    map.deletedAt = nowIso();
+    map.updatedAt = map.deletedAt;
+    persistStore();
+    return delay(ok(undefined));
+  }
+
+  async saveMindMapNodes(
+    id: string,
+    nodes: MindNode[],
+  ): Promise<ActionResult<MindMapDetail>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const s = getStore();
+    const map = s.mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (
+      !map.members.some(
+        (m) => m.employeeId === me && (m.role === "owner" || m.role === "editor"),
+      )
+    )
+      return fail("permission_denied", "You can view this mindmap but not change it.");
+
+    const refusal = mindmapTreeRefusal(nodes);
+    if (refusal) return fail("validation_failed", refusal);
+
+    tick();
+    const now = nowIso();
+    const stored = nodes.map((n) => ({ ...n }));
+    const body = s.mindmapNodes.find((b) => b.mindmapId === id);
+    if (body) {
+      body.nodes = stored;
+      body.updatedAt = now;
+    } else {
+      s.mindmapNodes.push({ mindmapId: id, nodes: stored, updatedAt: now });
+    }
+    /* `nodeCount` is written here, in the one place that writes cards, so the
+       list's figure cannot drift from the tree it describes. */
+    map.nodeCount = stored.length;
+    map.updatedAt = now;
+    map.lastEditedById = me;
+    persistStore();
+    return delay(ok({ mindmap: { ...map }, nodes: [...stored] }));
+  }
+
+  async setMindMapMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: MindMapRole | null,
+  ): Promise<ActionResult<MindMapRecord>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const map = getStore().mindmaps.find(
+      (m) => m.id === id && !m.deletedAt && m.memberIds.includes(me),
+    );
+    if (!map) return fail("not_found", "Mindmap not found.");
+    if (!map.members.some((m) => m.employeeId === me && m.role === "owner"))
+      return fail(
+        "permission_denied",
+        "Only an owner can change who is on this mindmap.",
+      );
+
+    const existing = map.members.find((m) => m.employeeId === employeeId);
+    const rest = map.members.filter((m) => m.employeeId !== employeeId);
+    const next =
+      role === null
+        ? rest
+        : [
+            ...rest,
+            {
+              employeeId,
+              role,
+              addedAt: existing?.addedAt ?? nowIso(),
+            },
+          ];
+    if (!next.some((m) => m.role === "owner"))
+      return fail(
+        "validation_failed",
+        "A mindmap needs an owner. Make somebody else an owner before removing this one.",
+      );
+
+    tick();
+    map.members = next;
+    map.memberIds = [...new Set(next.map((m) => m.employeeId))];
+    map.updatedAt = nowIso();
+    persistStore();
+    return delay(ok({ ...map }));
   }
 
   async listMeetings() {

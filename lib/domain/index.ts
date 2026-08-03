@@ -18,6 +18,7 @@ export * from "./scoring";
 export * from "./work";
 export * from "./mrf";
 export * from "./documents";
+export * from "./mindmap";
 export * from "./music";
 export * from "./mail";
 export * from "./office";

@@ -237,7 +237,7 @@ export function navigationCommands(
   onMode: (next: "map" | "docs" | "sheets") => void,
 ): PaletteCommand[] {
   const all: { id: "map" | "docs" | "sheets"; label: string; icon: IconName }[] = [
-    { id: "map", label: "Go to Mindmap", icon: "projects" },
+    { id: "map", label: "Go to Mindmaps", icon: "projects" },
     { id: "docs", label: "Go to Documents", icon: "list" },
     { id: "sheets", label: "Go to Sheets", icon: "board" },
   ];

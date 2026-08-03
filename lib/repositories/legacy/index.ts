@@ -67,13 +67,13 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, TaskQuery, TaskScope, TaskView, TimerSopStatus } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -179,6 +179,10 @@ import {
   documentBody as documentRecordFields,
   readDocument,
 } from "./documents.ts";
+import {
+  readMindMapRecord,
+  readMindNodes,
+} from "../../legacy/mindmaps.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
 import { pageSetupRefusal, readPageSetup } from "../../rules/documents/pageSetup.ts";
 import {
@@ -6603,6 +6607,203 @@ export class LegacyRepository {
       ok: true,
       data: { ...record, members: next.members, memberIds: next.memberIds, updatedAt: now },
     };
+  }
+
+  /* ── Mindmaps ────────────────────────────────────────────────────────────
+   *
+   * `/cowork/mindmaps`, through the engine.
+   *
+   * **The one place this deliberately differs from documents**, which write
+   * browser-direct to Firestore. A document body is opaque text and cannot be
+   * malformed; a card tree can be — two roots, a parent that is not in the
+   * map, a cycle — and none of those render wrong, they fail to render at all,
+   * for every member of that map. A check that lives in this file is one an
+   * edited request skips, so it lives in `coworkMindmaps.js` instead.
+   *
+   * Every refusal below is the SERVER's sentence, passed through unchanged.
+   * The route names the card that is wrong; replacing that with a generic
+   * "could not save" here would throw away the only part a person can act on.
+   */
+  async listMindMaps(): Promise<MindMapSummary[]> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mindmaps?: unknown[] }>({
+      path: "/cowork/mindmaps",
+      token,
+    });
+    if (!r.ok) throw new Error(r.error.message);
+    return (r.data.mindmaps ?? [])
+      .map(readMindMapRecord)
+      .filter((m): m is MindMapRecord => m !== null);
+  }
+
+  async getMindMap(id: string): Promise<MindMapDetail | null> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mindmap?: unknown; nodes?: unknown }>({
+      path: `/cowork/mindmaps/${encodeURIComponent(id)}`,
+      token,
+    });
+    /* A map you are not a member of answers 404, exactly as one that does not
+       exist does — so "not found" is the whole answer here and there is
+       nothing to distinguish. */
+    if (!r.ok) {
+      if (r.error.status === 404) return null;
+      throw new Error(r.error.message);
+    }
+    const mindmap = readMindMapRecord(r.data.mindmap);
+    if (!mindmap) return null;
+    const nodes = readMindNodes(r.data.nodes);
+    /* A tree that cannot be laid out is a failure, not an empty map. Returning
+       `[]` would draw "this map has no cards" over a map that has plenty, and
+       the next save would make that true. */
+    if (nodes === null)
+      throw new Error(
+        "This mindmap's cards could not be read — the map is stored but its shape is not one that can be drawn.",
+      );
+    return { mindmap, nodes };
+  }
+
+  async createMindMap(input: {
+    title: string;
+    memberIds?: EmployeeId[];
+    nodes?: MindNode[];
+  }): Promise<ActionResult<MindMapRecord>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mindmap?: unknown }>({
+      path: "/cowork/mindmaps",
+      method: "POST",
+      token,
+      body: {
+        title: input.title,
+        ...(input.memberIds ? { memberIds: input.memberIds.map(String) } : {}),
+        ...(input.nodes ? { nodes: input.nodes } : {}),
+      },
+    });
+    if (!r.ok)
+      return {
+        ok: false,
+        code: r.error.status === 400 ? "validation_failed" : "offline",
+        message: r.error.message,
+      };
+    const record = readMindMapRecord(r.data.mindmap);
+    if (!record)
+      return {
+        ok: false,
+        code: "offline",
+        message: "The mindmap was created but not returned.",
+      };
+    return { ok: true, data: record };
+  }
+
+  async renameMindMap(
+    id: string,
+    title: string,
+  ): Promise<ActionResult<MindMapRecord>> {
+    const next = title.trim();
+    if (!next)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Give the mindmap a name.",
+        field: "title",
+      };
+    const token = await this.#token();
+    const r = await legacyFetch<{ mindmap?: unknown }>({
+      path: `/cowork/mindmaps/${encodeURIComponent(id)}`,
+      method: "PATCH",
+      token,
+      body: { title: next },
+    });
+    if (!r.ok) return this.#mindMapRefusal(r.error);
+    const record = readMindMapRecord(r.data.mindmap);
+    if (!record)
+      return {
+        ok: false,
+        code: "offline",
+        message: "The mindmap was renamed but not returned.",
+      };
+    return { ok: true, data: record };
+  }
+
+  async deleteMindMap(id: string): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await legacyFetch<unknown>({
+      path: `/cowork/mindmaps/${encodeURIComponent(id)}`,
+      method: "DELETE",
+      token,
+    });
+    if (!r.ok) return this.#mindMapRefusal(r.error);
+    return { ok: true, data: undefined };
+  }
+
+  async saveMindMapNodes(
+    id: string,
+    nodes: MindNode[],
+  ): Promise<ActionResult<MindMapDetail>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mindmap?: unknown; nodes?: unknown }>({
+      path: `/cowork/mindmaps/${encodeURIComponent(id)}/nodes`,
+      /* `legacyFetch` speaks GET/POST/PATCH/DELETE. The route accepts PUT
+         because replacing the whole tree is what PUT means, and POST is
+         reserved for creating a map — so the method is widened there rather
+         than the shape bent here. */
+      method: "PUT",
+      token,
+      body: { nodes },
+    });
+    if (!r.ok) return this.#mindMapRefusal(r.error);
+    const mindmap = readMindMapRecord(r.data.mindmap);
+    const saved = readMindNodes(r.data.nodes);
+    if (!mindmap || saved === null)
+      return {
+        ok: false,
+        code: "offline",
+        message: "The mindmap was saved but not returned.",
+      };
+    return { ok: true, data: { mindmap, nodes: saved } };
+  }
+
+  async setMindMapMember(
+    id: string,
+    employeeId: EmployeeId,
+    role: MindMapRole | null,
+  ): Promise<ActionResult<MindMapRecord>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mindmap?: unknown }>({
+      path: `/cowork/mindmaps/${encodeURIComponent(id)}/members/${encodeURIComponent(String(employeeId))}`,
+      method: "PUT",
+      token,
+      body: { role },
+    });
+    if (!r.ok) return this.#mindMapRefusal(r.error);
+    const record = readMindMapRecord(r.data.mindmap);
+    if (!record)
+      return {
+        ok: false,
+        code: "offline",
+        message: "The change was made but the mindmap was not returned.",
+      };
+    return { ok: true, data: record };
+  }
+
+  /**
+   * An engine refusal, as an `ActionResult` the UI can branch on.
+   *
+   * The status decides the CODE and the engine decides the SENTENCE. That
+   * split matters: the codes are what the product switches on, and the
+   * messages are the only part that knows which card is malformed or which
+   * owner cannot be removed.
+   */
+  #mindMapRefusal(error: {
+    status: number;
+    message: string;
+  }): ActionResult<never> {
+    if (error.status === 404)
+      return { ok: false, code: "not_found", message: "Mindmap not found." };
+    if (error.status === 403)
+      return { ok: false, code: "permission_denied", message: error.message };
+    if (error.status === 400)
+      return { ok: false, code: "validation_failed", message: error.message };
+    return { ok: false, code: "offline", message: error.message };
   }
 
   /** Scheduled meetings. `GET /cowork/schedule-meet/list`. */

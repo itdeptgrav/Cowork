@@ -18,56 +18,33 @@
  * would let somebody produce a picture whose layout contradicts its structure.
  */
 
-export type MindNodeId = string;
+/**
+ * The card types live in `lib/domain/mindmap.ts` and are re-exported here.
+ *
+ * They moved when the map became a server record: a shape the repository, the
+ * route and the canvas all speak is a DOMAIN type, and rules import domain
+ * rather than the other way round. Re-exported rather than relocated silently
+ * so every existing `from "@/lib/rules/mindmap/tree"` import still resolves —
+ * this file is where the tree is reasoned about, and that is where an author
+ * looks for its types.
+ */
+export type {
+  MindImage,
+  MindLink,
+  MindNode,
+  MindNodeId,
+} from "../../domain/mindmap.ts";
 
-/** A link on a card. `label` is optional — a bare URL is a normal thing to paste. */
-export interface MindLink {
-  id: string;
-  url: string;
-  label: string;
-}
+import type { MindNode, MindNodeId } from "../../domain/mindmap.ts";
 
 /**
- * An attached image.
+ * A map as the canvas works with it.
  *
- * **`fileId` is where the bytes are: Google Drive, the same store every other
- * attachment in this product uses.** They used to be here, as a base64
- * `dataUrl`, justified by "the mindmap persists to `localStorage` and there is
- * no storage service in the path". The second half was wrong — the engine has
- * had a Drive upload route since the old application, and `uploadDriveFile`
- * reaches it — and the first half was the actual problem rather than the
- * excuse: a picture on a card lived in one browser, so a map shared with a
- * colleague arrived with holes in it, and clearing site data threw the pictures
- * away. The 512 KB cap existed only to keep the quota from filling.
- *
- * `dataUrl` is kept and OPTIONAL, because maps written before this exist in
- * people's browsers and their pictures still have to draw. Nothing writes it any
- * more. A card image has one or the other, never neither.
+ * The record's fields the canvas has no use for — members, timestamps, who
+ * edited last — are deliberately absent: this is the thing laid out and drawn,
+ * and giving the layout functions a member list to ignore would invite one of
+ * them to start reading it.
  */
-export interface MindImage {
-  id: string;
-  name: string;
-  /** The Drive file id. Null only on a picture stored before the upload path. */
-  fileId?: string | null;
-  /** What the store returned, kept so a record still means something on its own. */
-  url?: string | null;
-  /** Legacy in-browser bytes. Read, never written. */
-  dataUrl?: string;
-  sizeBytes: number;
-}
-
-export interface MindNode {
-  id: MindNodeId;
-  /** Null for the root. Every other node has exactly one parent. */
-  parentId: MindNodeId | null;
-  title: string;
-  description: string;
-  links: MindLink[];
-  images: MindImage[];
-  /** Children hidden. The node itself stays visible, carrying a count. */
-  collapsed: boolean;
-}
-
 export interface MindMap {
   id: string;
   title: string;

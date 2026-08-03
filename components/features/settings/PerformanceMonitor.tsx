@@ -142,16 +142,6 @@ export function PerformanceMonitor() {
             </li>
           ))}
         </ul>
-        {/* Otherwise this list contradicts the screen: the frost is plainly
-            still there while the line above says it is off. It is off as a
-            COST, which is what this panel measures. */}
-        {(profile.paintedFrost || profile.backdropField === "painted") && (
-          <p className="mt-2.5 max-w-[70ch] text-[11px] leading-relaxed text-ink-faint">
-            The frosted surfaces and the background are still on screen in this
-            mode — they are painted once rather than recomputed each frame, so
-            they cost nothing per frame and are counted as off here.
-          </p>
-        )}
         {/* The one thing that outweighs everything above, and it is a feature
             rather than chrome — so it belongs in the reckoning even though no
             mode turns it off. */}

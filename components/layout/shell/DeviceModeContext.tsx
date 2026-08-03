@@ -15,7 +15,7 @@ import {
   performanceProfile,
   readDeviceSignals,
   readStoredMode,
-  shouldSuggestLowMode,
+  shouldSuggestPlainMode,
   suggestionReason,
   type DeviceMode,
   type DeviceSignals,
@@ -32,7 +32,7 @@ import {
  *
  * ## The attribute is what does most of the work
  *
- * `<html data-perf="low">` is set here, and `globals.css` keys off it. That
+ * `<html data-perf="plain">` is set here, and `globals.css` keys off it. That
  * matters more than the React flags: a component that never asks the context
  * still loses its blur and its transitions, so the saving does not depend on
  * every author remembering. The flags are for the cases CSS cannot express —
@@ -41,7 +41,7 @@ import {
  * ## Written before paint
  *
  * The attribute is applied in a `useLayoutEffect`-equivalent position — the
- * inline script in the document head — so a low-end machine never renders one
+ * inline script in the document head — so a struggling machine never renders one
  * frosted frame before the mode lands. Doing it in a normal effect would cost
  * exactly the frame the mode exists to avoid.
  */
@@ -52,14 +52,14 @@ interface DeviceModeState {
   setMode: (mode: DeviceMode) => void;
   /** Signals read from the browser, for the settings screen and the monitor. */
   signals: DeviceSignals;
-  /** Whether to offer low mode, and why. Null once dismissed or acted on. */
+  /** Whether to offer plain mode, and why. Null once dismissed or acted on. */
   suggestion: string | null;
   dismissSuggestion: () => void;
 }
 
 const Ctx = createContext<DeviceModeState>({
-  mode: "balanced",
-  profile: performanceProfile("balanced"),
+  mode: "rich",
+  profile: performanceProfile("rich"),
   setMode: () => {},
   signals: {
     cores: null,
@@ -81,15 +81,15 @@ export function usePerformanceProfile(): PerformanceProfile {
 }
 
 export function DeviceModeProvider({ children }: { children: ReactNode }) {
-  /* `balanced` until storage is read. Matching the inline script's default, so
-     the first React render agrees with the attribute already on the document and
+  /* `rich` until storage is read. Matching the inline script's default, so the
+     first React render agrees with the attribute already on the document and
      nothing re-paints. */
   const [boot, setBoot] = useState<{
     mode: DeviceMode;
     signals: DeviceSignals;
     dismissed: boolean;
   }>(() => ({
-    mode: "balanced",
+    mode: "rich",
     signals: {
       cores: null,
       memoryGb: null,
@@ -125,10 +125,10 @@ export function DeviceModeProvider({ children }: { children: ReactNode }) {
         alreadyAnswered =
           window.localStorage.getItem(DEVICE_MODE_DISMISSED_KEY) === "1";
       } catch {
-        /* Private browsing. Balanced applies, nothing is remembered. */
+        /* Private browsing. Rich applies, nothing is remembered. */
       }
       setBoot({
-        mode: stored ?? "balanced",
+        mode: stored ?? "rich",
         signals: readDeviceSignals(),
         /* A stored choice IS an answer to the suggestion — somebody who has
            picked a mode has considered the question, and re-asking on every load
@@ -144,8 +144,8 @@ export function DeviceModeProvider({ children }: { children: ReactNode }) {
     try {
       window.localStorage.setItem(DEVICE_MODE_KEY, next);
       /* Choosing any mode answers the suggestion, including choosing to stay on
-         balanced — otherwise the prompt returns on every load to somebody who
-         has already considered it. */
+         Rich — otherwise the prompt returns on every load to somebody who has
+         already considered it. */
       window.localStorage.setItem(DEVICE_MODE_DISMISSED_KEY, "1");
     } catch {
       /* Private browsing, or storage full. The mode still applies for this
@@ -177,7 +177,7 @@ export function DeviceModeProvider({ children }: { children: ReactNode }) {
       setMode,
       signals,
       suggestion:
-        !dismissed && shouldSuggestLowMode(signals)
+        !dismissed && shouldSuggestPlainMode(signals)
           ? suggestionReason(signals)
           : null,
       dismissSuggestion,
@@ -191,12 +191,17 @@ export function DeviceModeProvider({ children }: { children: ReactNode }) {
 /**
  * The inline script that sets the attribute before first paint.
  *
- * Rendered into the document head. Without it a low-end machine paints one
+ * Rendered into the document head. Without it a struggling machine paints one
  * frosted, animated frame and then drops it — which is the most expensive frame
  * in the session and the one the mode exists to avoid.
  *
- * Deliberately tiny and dependency-free: it runs before any bundle.
+ * Deliberately tiny and dependency-free: it runs before any bundle. It carries
+ * the same migration as `readStoredMode` — the two retired names, `lite` and
+ * `low`, still land on Plain — and it has to, because this runs first: reading
+ * `low` as unrecognised here would paint the full interface for one frame on
+ * the machine that chose not to have it, which is precisely the frame this
+ * script exists to prevent.
  */
 export const DEVICE_MODE_BOOT_SCRIPT = `(function(){try{var m=localStorage.getItem(${JSON.stringify(
   DEVICE_MODE_KEY,
-)});document.documentElement.dataset.perf=(m==="high"||m==="low"||m==="lite"||m==="balanced")?m:"balanced";}catch(e){document.documentElement.dataset.perf="balanced";}})();`;
+)});document.documentElement.dataset.perf=(m==="plain"||m==="low"||m==="lite")?"plain":"rich";}catch(e){document.documentElement.dataset.perf="rich";}})();`;

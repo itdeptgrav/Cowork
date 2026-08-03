@@ -9,6 +9,7 @@ import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "@/components/ui/Avatar";
 import { ActiveWorkPill } from "@/components/features/tasks/TimerControl";
 import { useQuery } from "@/lib/hooks/useRepository";
+import { useWheelPan } from "@/lib/hooks/useWheelPan";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { isActive, visibleNavItems } from "@/lib/utils/nav";
@@ -261,6 +262,7 @@ export function TopBar() {
      team pages themselves ask, so the bar cannot offer a link onto an empty
      page. */
   const viewerForNav = useQuery((r) => r.getViewer(), []);
+  const railRef = useWheelPan<HTMLUListElement>();
   const items = visibleNavItems(
     useMusic().enabled,
     canAccessAdminConsole(useSession()),
@@ -310,8 +312,19 @@ export function TopBar() {
                 controls exceed the row, something has to leave the container.
                 With `min-w-0` it may shrink, and `rail`+`overflow-x-auto` let it
                 scroll inside itself instead of pushing its neighbours out.
-                Identical at any width where it already fitted. */}
-            <ul className="rail mx-auto hidden min-w-0 items-center gap-1 overflow-x-auto deck:flex">
+                Identical at any width where it already fitted.
+
+                `useWheelPan` is what makes that scroll reachable with a wheel
+                mouse. A trackpad swipe emits `deltaX` and the browser applies
+                it; a wheel emits `deltaY` only, which no browser will spend on
+                a horizontal box — so the tabs were reachable on a laptop and
+                stuck on a desk, with `rail` hiding the scrollbar that would at
+                least have said so. It gives the gesture back to the page at
+                either end, so this sticky bar never traps a page scroll. */}
+            <ul
+              ref={railRef}
+              className="rail mx-auto hidden min-w-0 items-center gap-1 overflow-x-auto deck:flex"
+            >
               {items.map((item) => {
                 const active = isActive(item, pathname);
                 return (

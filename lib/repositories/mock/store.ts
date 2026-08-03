@@ -12,6 +12,8 @@
 import type {
   CoworkDocument,
   CoworkDocumentBody,
+  MindMapRecord,
+  MindNode,
   Approval,
   Attachment,
   AttendanceDay,
@@ -215,6 +217,9 @@ export interface Store {
   mailAttachments: MailAttachment[];
   documents: CoworkDocument[];
   documentBodies: CoworkDocumentBody[];
+  mindmaps: MindMapRecord[];
+  /** Cards, keyed by map id — the record/body split the real store uses. */
+  mindmapNodes: { mindmapId: string; nodes: MindNode[]; updatedAt: string }[];
   meetingParticipants: MeetingParticipant[];
   meetingEvents: MeetingEvent[];
   notifications: Notification[];
@@ -358,6 +363,8 @@ function build(): Store {
     mailAttachments: [],
     documents: [],
     documentBodies: [],
+    mindmaps: [],
+    mindmapNodes: [],
     meetingParticipants: [],
     meetingEvents: [],
     notifications: clone(seed.notifications),
