@@ -149,13 +149,23 @@ export const ENTIRE_SCREEN_REQUIREMENT =
  * the guarantee depend on which browser someone happened to open.
  */
 export async function requestScreenShare(): Promise<MediaStreamTrack> {
-  if (
-    typeof navigator === "undefined" ||
-    !navigator.mediaDevices?.getDisplayMedia
-  ) {
+  if (typeof navigator === "undefined") {
+    throw new Error("Screen sharing is not available in this context.");
+  }
+
+  /* navigator.mediaDevices is undefined on HTTP pages (insecure context).
+     This is the most common failure on mobile: the device visits the app
+     over HTTP rather than HTTPS. */
+  if (!navigator.mediaDevices) {
+    throw new Error(
+      "Screen sharing requires a secure connection. Please make sure you are opening Cowork over HTTPS.",
+    );
+  }
+
+  if (!navigator.mediaDevices.getDisplayMedia) {
     throw new Error(
       isIOS()
-        ? "Screen sharing on iPhone and iPad requires Safari 16.4 or later. Please open Cowork in Safari."
+        ? "Screen sharing on iPhone and iPad requires Safari 16.4 or later."
         : "This browser cannot share a screen.",
     );
   }
