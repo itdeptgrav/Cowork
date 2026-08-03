@@ -463,18 +463,68 @@ function Thread({
   /* Opening a thread is what marks it read — the list's badge is a fact about
      the reader, so it clears where the reading happens rather than on a query
      somebody might mount twice. `onRead` refreshes the list so the badge goes
-     at the same moment the messages appear. */
+     at the same moment the messages appear.
+
+     **Only while the tab is actually visible.** This fired on any change to
+     `unreadCount`, and a thread stays mounted when the tab is in the
+     background — so a message arriving while somebody was in another tab, or
+     had the window minimised, marked itself read on arrival. The badge
+     appeared and vanished on its own, and the message was never seen. A thread
+     being open is not the same as a person looking at it.
+
+     The listener is what makes the deferred case work: the badge survives
+     until they come back, and clears the moment they do. */
+  /* The live unread count, read at FIRE time rather than captured.
+     The effect below depends on `c.id` alone, so anything closed over is the
+     value from when the thread opened — which for a count that changes as
+     messages arrive is the one value guaranteed to be wrong by the time it is
+     used. */
+  const unreadRef = useRef(c.unreadCount);
   useEffect(() => {
-    if (c.unreadCount === 0) return;
+    unreadRef.current = c.unreadCount;
+  });
+
+  useEffect(() => {
     let cancelled = false;
-    repo.markConversationRead(c.id).then((r) => {
-      if (!cancelled && r.ok) onRead();
-    });
+
+    const markIfVisible = () => {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.visibilityState !== "visible")
+        return;
+      /* Nothing unread means nothing to write. Checked here so a focus event on
+         an already-read thread costs no round trip. */
+      if (unreadRef.current === 0) return;
+      repo.markConversationRead(c.id).then((r) => {
+        if (!cancelled && r.ok) onRead();
+      });
+    };
+
+    markIfVisible();
+    document.addEventListener("visibilitychange", markIfVisible);
+    window.addEventListener("focus", markIfVisible);
     return () => {
       cancelled = true;
+      document.removeEventListener("visibilitychange", markIfVisible);
+      window.removeEventListener("focus", markIfVisible);
     };
+    /* **`c.unreadCount` is deliberately NOT a dependency.**
+     *
+     * With it here, the effect re-ran every time a message ARRIVED — so a
+     * message landing in an already-open thread marked itself read the instant
+     * it appeared. The badge showed 1 and cleared itself a moment later,
+     * whether or not anybody had looked. That is the reported fault.
+     *
+     * Depending on the conversation id alone means read is a consequence of
+     * OPENING the thread — the WhatsApp rule. A message that arrives while the
+     * thread sits open in a background tab, or while you are reading a
+     * different one, keeps its badge until you come back to it, which is what
+     * the two listeners above are for.
+     *
+     * `onRead` and `repo` are omitted for the same reason: including them would
+     * re-run this on every parent render and restore the behaviour being fixed.
+     */
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [c.id, c.unreadCount]);
+  }, [c.id]);
 
   /* Live: new, edited, or deleted messages in THIS thread stream in without a
      refresh. Optional on the repository, so a backend with no live channel leaves

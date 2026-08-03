@@ -9,6 +9,7 @@ import { PresenceRoom } from "@/components/features/status/PresenceRoom";
 import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
+import { NotificationPrompt } from "@/components/features/notifications/NotificationPrompt";
 import { GlobalCommandPalette } from "./GlobalCommandPalette";
 import { SessionProvider, useSession } from "@/components/features/auth/SessionProvider";
 
@@ -27,7 +28,20 @@ import { SessionProvider, useSession } from "@/components/features/auth/SessionP
  * a large mechanical move; this is one file and reversible.
  */
 
-const AUTH_ROUTES = new Set(["/signin", "/signup", "/reset-password"]);
+/**
+ * `/offline` is here for a different reason than the others.
+ *
+ * It is served by the service worker when the network is gone. Under
+ * `SessionProvider` it would try to resolve a session — three network calls
+ * that cannot succeed — and sit on "Signing you in…" forever, which is the one
+ * thing an offline page must never do.
+ */
+const AUTH_ROUTES = new Set([
+  "/signin",
+  "/signup",
+  "/reset-password",
+  "/offline",
+]);
 
 /**
  * Route prefixes that must render without a session.
@@ -186,7 +200,14 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
           id="main"
           className="flex-1 px-[clamp(12px,3vw,32px)] pt-[clamp(14px,2vw,22px)] pb-[clamp(32px,5vw,64px)]"
         >
-          <div className="mx-auto max-w-[1360px]">{children}</div>
+          <div className="mx-auto max-w-[1360px]">
+            {/* Asked once, on whichever page they happen to be on, and never
+                again once answered. In the shell rather than on one route
+                because the first visit is not reliably to /notifications —
+                somebody who never opens that page would never be asked. */}
+            <NotificationPrompt />
+            {children}
+          </div>
         </main>
         <DemoBar />
       </div>

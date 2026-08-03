@@ -24,6 +24,8 @@ import {
   notificationHref,
   notificationTarget,
 } from "@/lib/rules/notifications/target";
+import { usePushRegistration } from "@/lib/hooks/useFCMToken";
+import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 
 /* ── Goals ────────────────────────────────────────────────────────────────── */
 
@@ -401,17 +403,114 @@ function Row({ label, value }: { label: string; value: string }) {
 
 /* ── Notifications ────────────────────────────────────────────────────────── */
 
+/**
+ * Push, as a thing you can switch on and see the state of.
+ *
+ * ## Why a button rather than only asking on load
+ *
+ * Browsers honour a permission request that came from a click and quietly
+ * ignore one that did not. Chrome's "quieter permissions" suppresses an
+ * automatic request on a low-engagement origin — `localhost` above all — and
+ * when it does, `requestPermission()` resolves without showing anything. The
+ * automatic attempt then ended silently and no token was ever written, which
+ * from outside looks exactly like a broken save: the symptom is "the token is
+ * not stored" and the cause is a prompt nobody saw.
+ *
+ * So this states which of those it is. Registered, blocked, dismissed,
+ * unsupported or failed each read differently, because only some of them are
+ * something the person can do anything about.
+ *
+ * Hidden once push is on. A control that only ever says "working" is furniture.
+ */
+function PushPanel() {
+  const viewerId = useViewerId();
+  const { state, detail, enable } = usePushRegistration(viewerId ?? null);
+
+  /**
+   * Hidden ONLY once push is confirmed on.
+   *
+   * This also hid on `idle` — and `idle` is precisely "permission is still
+   * `default`": never asked, or asked and silently suppressed by the browser.
+   * That is the one state where somebody needs this control, so the button
+   * that fixes the problem was invisible in exactly the case it exists for,
+   * and the page looked as though it had nothing to say.
+   */
+  if (state === "on") return null;
+
+  const working = state === "working";
+  const canRetry = state !== "unsupported" && state !== "working";
+
+  return (
+    <Panel className="mb-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm text-ink">
+            {state === "blocked"
+              ? "Notifications are blocked on this device"
+              : state === "unsupported"
+                ? "This device cannot show notifications"
+                : "Notifications are off on this device"}
+          </p>
+          <p className="mt-1 text-xs text-ink-muted">
+            {detail ??
+              "Turn them on to be told about task, deadline and score changes when Cowork is not open."}{" "}
+            Everything still arrives in this list either way.
+          </p>
+        </div>
+        {canRetry && (
+          <Button size="sm" disabled={working} onClick={enable}>
+            {working ? "Turning on…" : "Turn on notifications"}
+          </Button>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export function NotificationsPage() {
-  const notifications = useQuery((r) => r.listNotifications(), []);
-  const { data, isLoading, refetch } = notifications;
+  /**
+   * **Live, via the same `onSnapshot` hook the old app uses.**
+   *
+   * This read `listNotifications()`, a one-shot `getDocs` that only re-ran when
+   * some unrelated mutation invalidated the query. So a notification arriving
+   * while somebody sat on this page did not appear — on the one page in the
+   * product whose entire job is showing notifications as they arrive. The bell
+   * in the top bar was already live off this hook, so the badge could count
+   * something the list beneath it did not show.
+   *
+   * `useCoworkNotifications` is `cowork-old-frontend`'s own hook, ported here
+   * byte for byte. It owns the subscription, the unread counts and the
+   * per-type sounds; the reason a notification already makes a noise today is
+   * that `TopBar` mounts it on every route.
+   */
+  const viewerId = useViewerId();
+  const { notifications: live, unread } = useCoworkNotifications(
+    viewerId ?? null,
+  );
   const [markRead] = useAction((r, id: string) => r.markNotificationRead(id));
   const [markAll, allState] = useAction((r) => r.markAllNotificationsRead());
   const [filter, setFilter] = useState<"all" | "unread">("all");
 
-  const list = (data ?? []).filter((n) =>
-    filter === "unread" ? !n.readAt : true,
-  );
-  const unread = (data ?? []).filter((n) => !n.readAt).length;
+  /* The engine's shape, as the row renders it. `readAt` carries the empty
+     string for "read, time unknown" — legacy stores a boolean and no
+     timestamp, and inventing one would be worse than admitting it. */
+  const data = live.map((n) => ({
+    id: n.id,
+    type: n.type,
+    title: n.title,
+    body: n.body,
+    data: (n.data ?? {}) as Record<string, unknown>,
+    createdAt: n.createdAt,
+    readAt: n.read ? "" : null,
+    channels: ["in_app"] as const,
+  }));
+
+  /* No `refetch`: the listener delivers the change itself, so marking one read
+     updates the row without asking for anything. */
+  const refetch = () => {};
+  const isLoading = false;
+
+  const list = data.filter((n) => (filter === "unread" ? !n.readAt : true));
 
   return (
     <>
@@ -447,12 +546,13 @@ export function NotificationsPage() {
           </Button>
         }
       />
-      {notifications.error ? (
-        <QueryError
-          queries={[notifications]}
-          message="Your notifications could not be loaded."
-        />
-      ) : isLoading ? (
+      <PushPanel />
+      {/* No error branch: a live listener does not fail the way a fetch does.
+          It either delivers or stays silent, and the hook logs a subscription
+          failure rather than surfacing one — the same behaviour the old app
+          has, where a dropped listener leaves the last good list on screen
+          instead of replacing it with an error. */}
+      {isLoading ? (
         <SkeletonRows rows={6} />
       ) : !list.length ? (
         <Panel>

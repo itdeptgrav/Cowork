@@ -1,12 +1,16 @@
 {
-  "name": "Cowork",
+  "name": "Cowork — Ray&Co workspace",
   "short_name": "Cowork",
-  "description": "Cowork — Ray&Co internal workspace",
+  "description": "Tasks, projects, meetings, messages and documents — where the work gets done and where it gets measured.",
+  "id": "/",
   "start_url": "/home",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "any",
   "background_color": "#0b0b0c",
   "theme_color": "#1e40af",
+  "categories": ["productivity", "business"],
   "icons": [
     {
       "src": "/icon-192.png",
@@ -18,7 +22,49 @@
       "src": "/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/apple-icon.png",
+      "sizes": "180x180",
+      "type": "image/png",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Tasks",
+      "short_name": "Tasks",
+      "description": "Your queue, in priority order",
+      "url": "/tasks",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Messages",
+      "short_name": "Messages",
+      "description": "Direct messages and groups",
+      "url": "/messages",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Notifications",
+      "short_name": "Alerts",
+      "description": "Everything you have been told about",
+      "url": "/notifications",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "Score",
+      "short_name": "Score",
+      "description": "Your score and how it decomposes",
+      "url": "/score",
+      "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }]
     }
   ]
 }

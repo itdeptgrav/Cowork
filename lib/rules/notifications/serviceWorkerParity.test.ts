@@ -97,3 +97,63 @@ test("the worker never falls back to the old app's route", () => {
     "the worker reads data.url, which the sender hard-codes to the old app's route",
   );
 });
+
+test("the worker unwraps both payload shapes", () => {
+  /* Two senders, two shapes:
+       FCM  (admin.messaging) → { notification: { title, body }, data }
+       raw  (web-push, iOS)   → { title, body, data }
+     Reading `payload.title` off an FCM envelope yields undefined. This handler
+     is now the only thing rendering either, so it has to unwrap the nested
+     form — getting it wrong shows a notification titled "Cowork" with an empty
+     body, which is the "+1 notifications, no content" in the Windows tray. */
+  const code = SW.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.match(
+    code,
+    /payload\.notification \|\| payload/,
+    "the push handler does not unwrap FCM's nested notification, so an FCM push would render with no title or body",
+  );
+});
+
+test("the worker has no third-party dependency", () => {
+  /* A service worker that fails to evaluate registers NO handlers — there is
+     no partial success. Fetching the Firebase SDK from gstatic at the top of
+     this file meant a blocked request (Edge tracking prevention, a proxy, an
+     offline cold start) left the browser with a worker that handled nothing,
+     silently. Displaying a push needs no SDK. */
+  const code = SW.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.ok(
+    !/importScripts/.test(code),
+    "the worker imports a remote script — if that fetch fails it registers no handlers at all",
+  );
+  /* Matched on USE, not on the word. The worker's own filename is
+     `firebase-messaging-sw.js` and it compares `url.pathname` against it to
+     avoid intercepting itself, so a bare `/firebase/` test flags correct
+     code. */
+  assert.ok(
+    !/firebase\.\w|\bmessaging\.\w|firebase\.initializeApp/.test(code),
+    "the worker still calls into the Firebase SDK",
+  );
+});
+
+test("the worker never shows a notification with no title", () => {
+  const code = SW.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.match(
+    code,
+    /if \(!title\) return;/,
+    "a missing title must suppress the notification — an empty one interrupts and says nothing",
+  );
+  assert.ok(
+    !/title\s*=\s*payload\.title\s*\|\|\s*['"]Cowork['"]/.test(code),
+    "the handler falls back to a constant title, which is how a contentless notification gets shown",
+  );
+});
+
+test("a changed worker takes over instead of waiting for every tab to close", () => {
+  /* Without these, a new worker installs and sits in `waiting` until every tab
+     on the origin is CLOSED — reloading is not enough. The previous version
+     keeps handling pushes, so a fix to this file appears to do nothing. That is
+     what made the empty-notification fix look like it had not worked. */
+  const code = SW.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.match(code, /skipWaiting\(\)/, "the worker never calls skipWaiting, so changes to it do not take effect until every tab is closed");
+  assert.match(code, /clients\.claim\(\)/, "the worker never claims open pages, so they stay on the previous version");
+});

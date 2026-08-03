@@ -56,6 +56,12 @@ function isPublic(pathname: string): boolean {
     PUBLIC_PATHS.has(pathname) ||
     pathname.startsWith("/join/") ||
     pathname === "/privacy" ||
+    /* The offline page must render without a session, and for a reason beyond
+       the usual one: the service worker precaches it, and a precache fetch
+       carries no credentials. Gated, it would cache the sign-in redirect and
+       every offline navigation would land there instead — a page that itself
+       needs the network to be useful. */
+    pathname === "/offline" ||
     isLegacyOperatorSurface(pathname)
   );
 }

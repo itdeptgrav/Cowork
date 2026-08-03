@@ -64,3 +64,22 @@ test("the token is invalidated at FCM, not only removed from Firestore", () => {
     "the per-device field is not cleared, leaving a dead token pointing at this machine",
   );
 });
+
+test("the push control hides only once push is confirmed on", () => {
+  /* It hid on `idle` too — and `idle` is exactly "permission is still
+     `default`": never asked, or asked and silently suppressed by the browser.
+     So the button that turns push on was invisible in the one state it exists
+     for, and the page looked as though it had nothing to say. Anything other
+     than `on` must render it. */
+  const src = readFileSync(
+    "components/features/notifications/WorkAreas.tsx",
+    "utf8",
+  );
+  const guard = /if \(state === "on"([^)]*)\) return null;/.exec(src);
+  assert.ok(guard, "the push panel's visibility guard was not found");
+  assert.equal(
+    guard[1].trim(),
+    "",
+    `the panel hides on more than "on" (${guard[1].trim()}) — it must stay visible while push is off, which is when somebody needs the button`,
+  );
+});

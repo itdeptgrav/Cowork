@@ -10,6 +10,7 @@ import {
   DeviceModeSection,
   DeviceModeSuggestion,
 } from "./DeviceModeSection";
+import { WebAppSection } from "./WebAppSection";
 import { PerformanceMonitor } from "./PerformanceMonitor";
 import { ThemeToggle } from "@/components/layout/shell/ThemeToggle";
 import {
@@ -54,6 +55,10 @@ export function SettingsPage() {
             </span>
           </div>
         </Panel>
+
+        {/* The web app: install state, version, updates, offline cache and
+            push, all read from the running application rather than claimed. */}
+        <WebAppSection />
 
         {/* Performance sits beside Appearance because it is the same kind of
             choice — how this machine draws the product — and separating them

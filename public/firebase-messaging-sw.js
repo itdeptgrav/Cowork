@@ -1,31 +1,221 @@
 // public/firebase-messaging-sw.js
 //
-// Background push for Cowork. Ported from the old app's service worker, with
-// one deliberate difference — see ROUTING below.
+// Background push for Cowork.
 //
-// ## Why this file hard-codes the Firebase config
+// ## No Firebase SDK, and that is the point
 //
-// A service worker is served as a static file and never sees `process.env`, so
-// there is nothing to interpolate at runtime. These are the same six values as
-// `NEXT_PUBLIC_FIREBASE_*` in `.env.local`, verified identical, and every one of
-// them is public by design: the Firebase web `apiKey` identifies a project, it
-// does not authorise anything. Access is decided by the ID token the app sends
-// and by Firestore rules, neither of which is here.
+// This used to begin with two `importScripts` calls to `gstatic.com` and let
+// `firebase-messaging-compat` render the notification. Three problems, and the
+// first is why it did not work in every browser:
+//
+//  1. **A service worker that fails to evaluate registers NO handlers.** If
+//     either fetch is blocked — Edge's tracking prevention, a corporate proxy,
+//     an offline cold start, a CDN blip — the whole file throws at line one and
+//     the browser is left with a worker that handles nothing. There is no
+//     partial success and nothing on screen says so.
+//  2. **It put a network round trip on the notification hot path.** Every push
+//     wakes the worker, which re-runs this file top to bottom before anything
+//     can be shown.
+//  3. **Two things wanted to render the same push.** The SDK's own listener and
+//     the one below, which is how an empty "Cowork" notification ended up
+//     stacked on top of the real one.
+//
+// A push is a `push` event carrying JSON. Displaying it needs no SDK, so this
+// file has no dependencies, no network, and one code path for both senders.
+//
+// **`getToken()` still works.** The Firebase SDK on the PAGE takes this
+// registration and calls `pushManager.subscribe()` on it — what the worker
+// imports is irrelevant to that. The only thing given up is foreground
+// `onMessage`, which this product deliberately ignores anyway: the bell reads
+// the same Firestore row the push was built from, so rendering a system
+// notification over an app that is already showing it is the double this
+// avoids.
 
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js');
-importScripts('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js');
+// ── Version ──────────────────────────────────────────────────────────────────
+//
+// Bumped by hand when this file changes in a way that must invalidate the
+// caches below. The browser already reinstalls the worker on any byte change;
+// this is what decides whether the OLD caches survive that reinstall, and it is
+// also what `/settings` reports as the installed version.
+const SW_VERSION = "1.0.0";
+const STATIC_CACHE = `cowork-static-v${SW_VERSION}`;
+const ASSET_CACHE = `cowork-assets-v${SW_VERSION}`;
+const OFFLINE_URL = "/offline";
 
-firebase.initializeApp({
-    apiKey: "AIzaSyDpswQ3pSlbxtmc-yWDgJD2GQWjfpK3ZXs",
-    authDomain: "grav-cms-38f45.firebaseapp.com",
-    projectId: "grav-cms-38f45",
-    storageBucket: "grav-cms-38f45.firebasestorage.app",
-    messagingSenderId: "51268280312",
-    appId: "1:51268280312:web:1667f085583f9fe4b6c00d",
-    databaseURL: "https://grav-cms-38f45-default-rtdb.firebaseio.com",
+/* Precached on install: the one page that must render when the network is
+   gone, and the icons it and every notification refer to. Deliberately short —
+   a precache listing app routes would go stale on every deploy. */
+const PRECACHE = [OFFLINE_URL, "/icon-192.png", "/icon-512.png", "/manifest.json"];
+
+// ── Take over immediately on change ──────────────────────────────────────────
+//
+// Without these two, a changed worker installs and then sits in `waiting` until
+// every tab on this origin is closed — not reloaded, CLOSED. The previous
+// version keeps handling pushes in the meantime, so a fix to this file appears
+// to do nothing, which is exactly what happened to the empty-notification fix
+// below: it shipped, the page was reloaded, and the old worker was still the
+// one rendering.
+//
+// `skipWaiting` promotes the new worker as soon as it installs; `clients.claim`
+// puts already-open pages under it rather than leaving them with the old one
+// until they navigate.
+self.addEventListener('install', (event) => {
+    event.waitUntil(
+        caches
+            .open(STATIC_CACHE)
+            // `reload` bypasses the HTTP cache, so a reinstall genuinely refetches
+            // rather than precaching whatever the browser already held.
+            .then((cache) => cache.addAll(PRECACHE.map((u) => new Request(u, { cache: 'reload' }))))
+            // A precache miss must not abort the install. Push and navigation
+            // still work without the offline page; refusing to install would
+            // leave the previous worker in charge of everything.
+            .catch((e) => console.warn('[SW] precache incomplete:', e && e.message))
+            .then(() => self.skipWaiting())
+    );
 });
 
-const messaging = firebase.messaging();
+self.addEventListener('activate', (event) => {
+    event.waitUntil(
+        (async () => {
+            // Drop caches from previous versions. Without this every deploy
+            // leaves its own copy behind and storage grows without bound.
+            const keep = new Set([STATIC_CACHE, ASSET_CACHE]);
+            const names = await caches.keys();
+            await Promise.all(
+                names.filter((n) => n.startsWith('cowork-') && !keep.has(n)).map((n) => caches.delete(n))
+            );
+            // Navigation preload lets the browser start the network request in
+            // parallel with booting this worker, which removes the startup cost
+            // this file would otherwise add to every navigation.
+            if (self.registration.navigationPreload) {
+                await self.registration.navigationPreload.enable().catch(() => {});
+            }
+            await self.clients.claim();
+        })()
+    );
+});
+
+// ── Fetch ────────────────────────────────────────────────────────────────────
+//
+// **What is deliberately NOT cached, and why it matters more than what is.**
+//
+// Every page in this product is behind a session, and a cached HTML response is
+// a document rendered for whoever fetched it. Serving that from cache on a
+// shared desk would show one person another person's workspace. So navigations
+// are network-first and their responses are never stored — the only fallback is
+// the offline page, which contains nobody's data.
+//
+// API and auth responses are not cached for the same reason, and neither is
+// anything cross-origin: Firestore and the engine both answer per-identity and
+// a stale answer there is worse than no answer.
+//
+// What IS cached is content-addressed or public: Next's hashed build output,
+// which cannot change under a given URL, and the icons and fonts in /public.
+self.addEventListener('fetch', (event) => {
+    const request = event.request;
+    if (request.method !== 'GET') return;
+
+    const url = new URL(request.url);
+    if (url.origin !== self.location.origin) return;
+    // Never intercept the auth or API surface, nor the worker itself.
+    if (url.pathname.startsWith('/api/')) return;
+    if (url.pathname === '/firebase-messaging-sw.js') return;
+
+    // ── Navigations: network first, offline page as the floor ────────────────
+    if (request.mode === 'navigate') {
+        event.respondWith(
+            (async () => {
+                try {
+                    const preloaded = await event.preloadResponse;
+                    if (preloaded) return preloaded;
+                    return await fetch(request);
+                } catch (_) {
+                    // Offline. Show our own page rather than the browser's
+                    // dinosaur, which tells somebody nothing about whether their
+                    // work was saved.
+                    const cached = await caches.match(OFFLINE_URL);
+                    return (
+                        cached ||
+                        new Response('<h1>Offline</h1>', {
+                            status: 503,
+                            headers: { 'Content-Type': 'text/html; charset=utf-8' },
+                        })
+                    );
+                }
+            })()
+        );
+        return;
+    }
+
+    // ── Build output: cache first, because the URL contains the hash ─────────
+    if (url.pathname.startsWith('/_next/static/')) {
+        event.respondWith(
+            caches.match(request).then(
+                (hit) =>
+                    hit ||
+                    fetch(request).then((res) => {
+                        if (res.ok) {
+                            const copy = res.clone();
+                            caches.open(ASSET_CACHE).then((c) => c.put(request, copy));
+                        }
+                        return res;
+                    })
+            )
+        );
+        return;
+    }
+
+    // ── Public assets: serve cached, refresh in the background ───────────────
+    if (/\.(png|jpe?g|svg|gif|webp|ico|woff2?|ttf|otf)$/i.test(url.pathname)) {
+        event.respondWith(
+            caches.match(request).then((hit) => {
+                const network = fetch(request)
+                    .then((res) => {
+                        if (res.ok) {
+                            const copy = res.clone();
+                            caches.open(ASSET_CACHE).then((c) => c.put(request, copy));
+                        }
+                        return res;
+                    })
+                    .catch(() => hit);
+                // Cached first when there is one: an icon that is one deploy old
+                // is not worth a blocking round trip.
+                return hit || network;
+            })
+        );
+    }
+});
+
+// ── Messages from the page ───────────────────────────────────────────────────
+//
+// The Settings screen drives the worker through these rather than reaching into
+// `caches` itself, so the naming scheme lives in exactly one file.
+self.addEventListener('message', (event) => {
+    const data = event.data || {};
+    if (data.type === 'SKIP_WAITING') {
+        self.skipWaiting();
+        return;
+    }
+    if (data.type === 'GET_VERSION') {
+        event.ports[0] && event.ports[0].postMessage({ version: SW_VERSION });
+        return;
+    }
+    if (data.type === 'CLEAR_CACHES') {
+        event.waitUntil(
+            caches
+                .keys()
+                .then((names) =>
+                    Promise.all(names.filter((n) => n.startsWith('cowork-')).map((n) => caches.delete(n)))
+                )
+                .then(() => {
+                    event.ports[0] && event.ports[0].postMessage({ cleared: true });
+                })
+                .catch(() => {
+                    event.ports[0] && event.ports[0].postMessage({ cleared: false });
+                })
+        );
+    }
+});
 
 // ── ROUTING ──────────────────────────────────────────────────────────────────
 //
@@ -86,47 +276,48 @@ function urlFor(data) {
     return '/notifications';
 }
 
-// ── Background message (FCM path — Chrome, Firefox, Edge, Android) ───────────
+// ── Push — BOTH senders, one handler ─────────────────────────────────────────
 //
-// Deliberately empty, and it has to stay that way. `fcmPush.service.js` sets
-// `webpush.notification`, so Chrome renders the notification itself. Calling
-// `showNotification` here as well is how you get every push twice.
-messaging.onBackgroundMessage(() => { });
-
-// ── Raw Web Push (iOS/iPadOS Safari, installed to Home Screen) ───────────────
+// The two backends deliver different shapes and this is now the only thing
+// rendering either, so both are unwrapped here:
 //
-// **This is a separate delivery path and FCM never sees it.** iOS subscriptions
-// are `PushSubscription` JSON, and `fcmPush.service.js` splits them out of the
-// token list and sends them through `web-push` — signed with the VAPID pair,
-// not through Firebase. `onBackgroundMessage` above is an FCM SDK callback and
-// does not fire for these, so without this handler an iPhone receives the push
-// and displays nothing.
+//   FCM  (admin.messaging)   { notification: { title, body }, data: {…} }
+//   raw  (web-push, iOS)     { title, body, data: {…} }
 //
-// Unlike the FCM path, nothing renders it for us: `web-push` delivers a raw
-// payload, so `showNotification` here is required rather than a double.
+// Reading `payload.title` off an FCM envelope yields `undefined`. When the SDK
+// was still loaded and also rendering, that produced a second notification
+// titled "Cowork" with an empty body stacked on the real one — the "+1
+// notifications, no content" in the Windows tray. Unwrapping both shapes is
+// what makes one handler correct for both.
 self.addEventListener('push', (event) => {
     if (!event.data) return;
 
-    let payload = {};
+    let payload = null;
     try {
         payload = event.data.json();
     } catch (_) {
-        payload = { title: 'Cowork', body: event.data.text() };
+        return; // Not JSON. Nothing here can render it honestly.
     }
+    if (!payload || typeof payload !== 'object') return;
 
-    // `sendIOSWebPush` sends the flat `dataPayload`, which carries `title`,
-    // `body`, `type` and whatever ids the notification was built with.
-    const title = payload.title || 'Cowork';
-    const body = payload.body || '';
+    // FCM nests it; web-push does not. `data` carries the ids either way.
+    const notification = payload.notification || payload;
+    const data = { ...(payload.data || {}), ...(payload.fcmOptions || {}) };
+
+    const title = notification.title;
+    const body = notification.body || '';
+    // No title means nothing worth showing. An empty notification is worse
+    // than a missing one: it interrupts and says nothing.
+    if (!title) return;
 
     event.waitUntil(
         self.registration.showNotification(title, {
             body,
             icon: '/icon-192.png',
             badge: '/icon-192.png',
-            tag: 'cowork-' + (payload.type || 'notif'),
+            tag: 'cowork-' + (data.type || 'notif'),
             renotify: true,
-            data: payload,
+            data,
         })
     );
 });

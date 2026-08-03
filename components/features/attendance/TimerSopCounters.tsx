@@ -68,20 +68,23 @@ export function TimerSopCounters({ employeeId }: { employeeId?: string }) {
   /* One fold, at the top. Everything below reads the same numbers. */
   const today = data.today ? withLiveRun(data.today, liveSecs) : null;
 
-  if (result.paused && !today) {
-    return (
-      <Panel className="mb-4">
-        <div className="flex items-center gap-2">
-          <h2 className="text-sm font-medium text-ink">Today&rsquo;s Work</h2>
-          <ProvisionalBadge decisionId="O5" label="Timer SOP" />
-        </div>
-        <p className="mt-2 text-xs text-ink-muted">
-          The Timer SOP engine is paused. Deficit and overtime are not being
-          counted, and no points are being cut or added.
-        </p>
-      </Panel>
-    );
-  }
+  /**
+   * **The engine off means the card is gone, not that it explains itself.**
+   *
+   * This used to render a panel saying "The Timer SOP engine is paused" — a
+   * box that occupies the top of everybody's score page, every day, to announce
+   * that a feature they may never have seen is not running. It is a statement
+   * about administrative configuration standing where a person's own figures
+   * belong, and there is nothing they can do about it: only an administrator
+   * can switch it back on, and an administrator finds out from the switch, not
+   * from this.
+   *
+   * `config.enabled` rather than `result.paused`, even though the two agree
+   * today. `paused` is the ENGINE's word for "I did not evaluate anything",
+   * which a future transport failure could also produce; `enabled` is the
+   * administrator's setting, and the setting is what this is about.
+   */
+  if (!config.enabled) return null;
 
   return (
     <Panel padded={false} className="mb-4 overflow-hidden">

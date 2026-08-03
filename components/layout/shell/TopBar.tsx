@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Mark } from "./Mark";
@@ -8,10 +8,17 @@ import { useLens } from "./LensContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "@/components/ui/Avatar";
 import { ActiveWorkPill } from "@/components/features/tasks/TimerControl";
-import { useQuery } from "@/lib/hooks/useRepository";
+import { useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { isActive, visibleNavItems } from "@/lib/utils/nav";
+import {
+  SECTION_TYPES,
+  MESSAGE_COUNT_IS_READ_BASED,
+  badgeLabel,
+  unreadForSection,
+  type NotificationSection,
+} from "@/lib/rules/notifications/sections";
 import { managesAnyone } from "@/lib/rules/team/visibility";
 import { useSession } from "@/components/features/auth/SessionProvider";
 import { canAccessAdminConsole } from "@/lib/rules/admin/access";
@@ -214,7 +221,86 @@ function LensToggle() {
   );
 }
 
-function NotificationBell() {
+/**
+ * The count on a nav entry — `1`, `2`, `3`, `9+`, `99+`.
+ *
+ * Ported from `CoworkingShell.js`'s badge, thresholds included. Which types
+ * feed which entry lives in `SECTION_TYPES`, shared with the mark-read on
+ * click, so a badge can always be cleared by visiting the section it points at.
+ *
+ * Rendered inside the link rather than beside it, so the count moves with the
+ * label and the whole pill stays one target.
+ */
+function NavCount({
+  href,
+  notifications,
+  extra = 0,
+  onDark = false,
+}: {
+  href: string;
+  notifications: readonly { type: string; read: boolean }[];
+  /** Counted alongside the notifications — see MESSAGE_COUNT_IS_READ_BASED. */
+  extra?: number;
+  onDark?: boolean;
+}) {
+  const section = SECTION_TYPES[href as NotificationSection]
+    ? (href as NotificationSection)
+    : null;
+  const fromNotifications = section
+    ? unreadForSection(section, notifications)
+    : 0;
+  const label = badgeLabel(fromNotifications + extra);
+  if (!label) return null;
+
+  return (
+    <span
+      /* On the active pill the background is already ink, so a state colour
+         would sit on it unreadably. Inverted there and coloured everywhere
+         else. */
+      className={`grid h-4 min-w-4 place-items-center rounded-full px-1 text-[10px] font-semibold tabular-nums ${
+        onDark
+          ? "bg-[var(--body-bg)] text-ink"
+          : "bg-[var(--state-overdue)] text-white"
+      }`}
+    >
+      {label}
+    </span>
+  );
+}
+
+/**
+ * Messages, with the unread-direct-message count the old app shows.
+ *
+ * `unreadDm` has been computed by the hook since it was ported and read by
+ * nothing, so a direct message arriving raised the BELL badge and left the
+ * Messages icon beside it unchanged — the notification pointing at a
+ * conversation and the icon that opens conversations disagreeing about whether
+ * anything had happened.
+ *
+ * The hook is mounted a second time here rather than lifted into context: it
+ * subscribes through the same `onSnapshot` and Firestore de-duplicates
+ * identical listeners, so this costs a second callback and no second read.
+ * Lifting it would mean a provider around the whole shell for two numbers.
+ */
+function MessagesLink({ unreadDm }: { unreadDm: number }) {
+
+  return (
+    <Link
+      href="/messages"
+      aria-label={
+        unreadDm ? `Messages, ${unreadDm} unread` : "Messages"
+      }
+      className="relative hidden h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink sm:grid"
+    >
+      <InboxIcon />
+      {unreadDm > 0 && (
+        <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-[var(--state-overdue)]" />
+      )}
+    </Link>
+  );
+}
+
+function NotificationBell({ unread }: { unread: number }) {
   /**
    * Live from Firestore, via the hook copied from `cowork-old-frontend`.
    *
@@ -229,9 +315,6 @@ function NotificationBell() {
    * recomputing the count here would eventually disagree with the badge the old
    * app shows.
    */
-  const viewerId = useViewerId();
-  const { unread } = useCoworkNotifications(viewerId ?? null);
-
   return (
     <Link
       href="/notifications"
@@ -265,6 +348,45 @@ export function TopBar() {
     useMusic().enabled,
     canAccessAdminConsole(useSession()),
     managesAnyone(viewerForNav.data ?? null),
+  );
+
+  /* **One subscription for the whole bar.**
+     The bell, the Messages icon and every nav count are the same fact about
+     the same person, so they read one `onSnapshot` and are handed down. Each
+     component calling the hook itself would open a listener per badge and let
+     them disagree for a frame.
+
+     Navigating to a section marks that section's types read — `SECTION_TYPES`
+     is the same table the counts come from, so a badge can always be cleared
+     by visiting the thing it points at. */
+  const viewerId = useViewerId();
+  const { notifications, unread, markSectionRead } =
+    useCoworkNotifications(viewerId ?? null);
+
+  /* **The message count comes from the conversations, not from notifications.**
+     Sending a message writes no `cowork_notifications` row — `/direct-message/
+     notify` pushes and emails and nothing else — so a notification-based count
+     here is permanently zero, which is exactly what the Messages badge showed.
+     `unreadDm` from the hook has the same problem and is deliberately unused.
+
+     `#conversationUnread` already computes the old app's rule for each thread
+     — sent by somebody else, my id not in `readBy` — so the badge is the sum
+     of those. `watchConversations` bumps the repository version when any
+     thread changes, which is what refetches this. */
+  const repo = useRepo();
+  useEffect(() => repo.watchConversations?.(), [repo]);
+  const conversations = useQuery((r) => r.listConversations(), []);
+  const messageUnread = (conversations.data ?? []).reduce(
+    (sum, c) => sum + (c.unreadCount || 0),
+    0,
+  );
+
+  const visitSection = useCallback(
+    (href: string) => {
+      const types = SECTION_TYPES[href as NotificationSection];
+      if (types) void markSectionRead([...types]);
+    },
+    [markSectionRead],
   );
 
   // Escape closes the sheet and returns focus to the control that opened it.
@@ -318,14 +440,25 @@ export function TopBar() {
                   <li key={item.href}>
                     <Link
                       href={item.href}
+                      onClick={() => visitSection(item.href)}
                       aria-current={active ? "page" : undefined}
-                      className={`block rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
+                      className={`flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
                         active
                           ? "bg-ink text-[var(--body-bg)]"
                           : "text-ink-muted hover:bg-[var(--surface-sunken)] hover:text-ink"
                       }`}
                     >
                       {item.label}
+                      <NavCount
+                        href={item.href}
+                        notifications={notifications}
+                        extra={
+                          item.href === MESSAGE_COUNT_IS_READ_BASED
+                            ? messageUnread
+                            : 0
+                        }
+                        onDark={active}
+                      />
                     </Link>
                   </li>
                 );
@@ -355,15 +488,9 @@ export function TopBar() {
                 <ThemeToggle />
               </div>
 
-              <Link
-                href="/messages"
-                aria-label="Messages"
-                className="hidden h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink sm:grid"
-              >
-                <InboxIcon />
-              </Link>
+              <MessagesLink unreadDm={messageUnread} />
 
-              <NotificationBell />
+              <NotificationBell unread={unread} />
 
               <span className="ml-0.5 hidden sm:block">
                 {me && (
@@ -408,15 +535,27 @@ export function TopBar() {
                     <li key={item.href}>
                       <Link
                         href={item.href}
-                        onClick={closeMenu}
+                        onClick={() => {
+                          visitSection(item.href);
+                          closeMenu();
+                        }}
                         aria-current={active ? "page" : undefined}
-                        className={`block rounded-full px-4 py-2.5 text-[15px] font-medium tracking-[-0.012em] ${
+                        className={`flex items-center gap-1.5 rounded-full px-4 py-2.5 text-[15px] font-medium tracking-[-0.012em] ${
                           active
                             ? "bg-[var(--control)] text-ink"
                             : "text-ink-muted"
                         }`}
                       >
                         {item.label}
+                        <NavCount
+                          href={item.href}
+                          notifications={notifications}
+                          extra={
+                            item.href === MESSAGE_COUNT_IS_READ_BASED
+                              ? messageUnread
+                              : 0
+                          }
+                        />
                       </Link>
                     </li>
                   );
