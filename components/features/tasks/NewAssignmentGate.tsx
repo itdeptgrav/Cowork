@@ -126,9 +126,10 @@ export function NewAssignmentGate() {
 
         const unseen = unseenNotices(all, readSeen());
         if (!cancelled && unseen.length > 0) setNotices(unseen);
-      } catch {
+      } catch (e) {
         /* A notice that cannot be built is simply not shown. Nothing here is
            load-bearing enough to surface an error over the whole shell. */
+        console.error("[NewAssignmentGate] load failed:", e);
       }
     }
 

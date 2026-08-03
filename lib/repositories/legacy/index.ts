@@ -1295,8 +1295,11 @@ export class LegacyRepository {
     }
     if (q.assigneeId) {
       const wanted = String(q.assigneeId);
+      /* `v.assignees` is resolved against the employee directory and may be
+         empty when the directory lookup misses; `v.assignments` is built
+         directly from the task document and is always authoritative. */
       views = views.filter((v) =>
-        v.assignees.some((a) => a.id === wanted) ||
+        v.assignments.some((a) => a.employeeId === wanted) ||
         v.task.createdById === wanted,
       );
     }
