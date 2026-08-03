@@ -5702,8 +5702,10 @@ export class LegacyRepository {
       if (endedAtMs === null) continue;
       /* Filtered in memory rather than by query: legacy stores no day key, and
          adding a composite index for a range read of one person's commits is a
-         deploy this does not need. */
-      if (new Date(endedAtMs).toISOString().slice(0, 10) !== date) continue;
+         deploy this does not need. IST-aware: UTC midnight ≠ IST midnight, so a
+         session that runs until after 18:30 IST must not be dropped by a UTC
+         date comparison. */
+      if (istDayKey(endedAtMs) !== date) continue;
       const startedAtMs = readInstant(c.startedAt) ?? endedAtMs;
       const taskId = typeof c.taskId === "string" ? c.taskId : "";
       out.push({
@@ -6199,13 +6201,11 @@ export class LegacyRepository {
         this.listDayCommits(today),
         this.listTimers(),
       ]);
-      console.info("[actionable:dr] today=%s commits=%d timers=%d", today, commits.length, (timers as unknown[]).length);
       const worked = workedToday(
         commits,
         timers as Parameters<typeof workedToday>[1],
         Date.now(),
       );
-      console.info("[actionable:dr] worked=%o", worked);
       if (worked.length === 0) return [];
 
       const seen = new Set(already.map((i) => i.view.task.id));

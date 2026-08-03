@@ -4594,9 +4594,17 @@ export class MockRepository implements CoworkRepository {
       fallbackSimElapsedMs: now().getTime() - started.getTime(),
     });
 
-    /* Advance the prototype clock BY the time that really passed, so the
-       commit's own `startedAt`/`endedAt` still bracket `durationSecs` and the
-       store's ordering stays consistent with every other mutation. */
+    /* Capture real-clock timestamps BEFORE clearing the session so we can use
+       them for the commit. Commit timestamps must be real wall-clock time, not
+       the prototype clock: `listDayCommits` is called with the real IST day key
+       (`istDayKey(Date.now())`), and prototype-clock dates (anchored to the seed
+       date, not today) would never match — silently dropping every commit from
+       the daily-report modal, the Reports tab, and the Actionable inbox. */
+    const realEndMs = Date.now();
+    const realStartMs = session.startedAtRealMs != null
+      ? session.startedAtRealMs
+      : realEndMs - durationSecs * 1000;
+
     tick(durationSecs * 1000);
     session.isActive = false;
     session.accumulatedSecs += durationSecs;
@@ -4608,8 +4616,8 @@ export class MockRepository implements CoworkRepository {
       id: nextId("wc"),
       taskId,
       employeeId: actingId(),
-      startedAt: started.toISOString(),
-      endedAt: nowIso(),
+      startedAt: new Date(realStartMs).toISOString(),
+      endedAt: new Date(realEndMs).toISOString(),
       durationSecs,
       message,
       attachmentIds: [],
@@ -4643,9 +4651,14 @@ export class MockRepository implements CoworkRepository {
            `where("employeeId", "==", employeeId)` — this was unscoped, which
            handed the daily-report flow (end-of-day modal, Reports tab,
            Actionable inbox) every employee's commits as if they were the
-           viewer's own. */
+           viewer's own.
+           Filtered by `endedAt` (not `startedAt`): a session that started just
+           before midnight continues into the next IST day, and the day it is
+           reported against should be the day it ended. Mirrors legacy's own
+           `endedAt` filter. IST-aware so midnight UTC does not split a shift
+           that ran through to 5:30 AM IST. */
         .filter(
-          (w) => w.startedAt.slice(0, 10) === date && w.employeeId === actingId(),
+          (w) => istDayKey(Date.parse(w.endedAt)) === date && w.employeeId === actingId(),
         )
         .map((w) => ({
           ...w,
