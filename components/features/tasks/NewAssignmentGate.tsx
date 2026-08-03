@@ -161,28 +161,31 @@ export function NewAssignmentGate() {
     }
 
     async function startWatch() {
-      const { collection, onSnapshot, query, where } =
+      const { collection, limit, onSnapshot, orderBy, query, where } =
         await import("firebase/firestore");
       const { legacyDb } = await import("@/lib/legacy/firebase");
 
       if (cancelled) return;
 
-      /* Watch only the tasks directly assigned to this person with status
-         "assigned". Firestore delivers the current set immediately (from
-         cache if warm, from the network otherwise), then pushes any changes.
-         The first delivery is exactly the signal we were missing on first
-         login. */
+      /* Watch tasks assigned to this person using the existing
+         (assigneeIds, updatedAt) index — adding a status == filter would
+         require a new composite index that isn't in firestore.indexes.json.
+         Status is checked in-memory in the callback instead. */
       const q = query(
         collection(legacyDb(), "cowork_tasks"),
         where("assigneeIds", "array-contains", employeeId),
-        where("status", "==", "assigned"),
+        orderBy("updatedAt", "desc"),
+        limit(50),
       );
 
       detach = onSnapshot(
         q,
         (snap) => {
-          /* Empty snapshot → no assigned tasks → nothing to announce. */
-          if (snap.empty || shownRef.current || cancelled) return;
+          if (shownRef.current || cancelled) return;
+          /* Check in-memory whether any of the returned tasks are actually
+             in the "assigned" state — only those warrant the popup. */
+          const hasAssigned = snap.docs.some((d) => d.data().status === "assigned");
+          if (!hasAssigned) return;
           void buildNotices();
         },
         (err) => {
