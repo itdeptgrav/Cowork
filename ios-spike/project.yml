@@ -1,0 +1,138 @@
+name: CoworkSpike
+options:
+  bundleIdPrefix: in.grav
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+# Without an explicit config map xcodegen emits neither the debug nor the
+# release preset — which is how this project ended up with DEBUG undefined and
+# every `#if DEBUG` block silently compiled out of the Debug build too.
+configs:
+  Debug: debug
+  Release: release
+
+settings:
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1 $(inherited)"
+
+packages:
+  LiveKit:
+    url: https://github.com/livekit/client-sdk-swift
+    # Pinned to the exact commit already recorded in Package.resolved — the
+    # revision the working screen-share build was actually tested against.
+    # Do not move this to a newer tag/branch without re-testing screen share.
+    revision: 1d711a811fd4e0e7bfd1600c5c1dbd71ad0cf564
+
+targets:
+  CoworkSpikeHost:
+    type: application
+    platform: iOS
+    sources:
+      - path: CoworkSpikeHost
+      - path: Shared
+    dependencies:
+      - package: LiveKit
+        product: LiveKit
+      - target: CoworkSpikeBroadcast
+        embed: true
+    info:
+      path: CoworkSpikeHost/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+        CFBundleDisplayName: Cowork
+        NSCameraUsageDescription: Cowork uses the camera for video in meetings.
+        NSMicrophoneUsageDescription: Cowork uses the microphone for meetings and voice notes.
+        # ATS stays on — the app talks to https://cowork.grav.in. This exception
+        # covers plain-HTTP LAN literals only (a local dev server); it grants
+        # nothing to the public internet.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+    entitlements:
+      path: CoworkSpikeHost/CoworkSpikeHost.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.in.grav.cowork
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.grav.cowork
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        # Kept here, not left to Xcode's GUI: regenerating this project wipes
+        # anything only the GUI knew, which is how the build lost its team and
+        # its runpath before.
+        DEVELOPMENT_TEAM: NN9NBX2V82
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        ENABLE_PREVIEWS: YES
+
+  CoworkSpikeBroadcast:
+    type: app-extension
+    platform: iOS
+    sources:
+      - path: CoworkSpikeBroadcast
+      - path: Shared
+    dependencies:
+      - package: LiveKit
+        product: LiveKit
+    info:
+      path: CoworkSpikeBroadcast/Info.plist
+      properties:
+        CFBundleDisplayName: Cowork
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.broadcast-services-upload
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).SampleHandler
+          RPBroadcastProcessMode: RPBroadcastProcessModeSampleBuffer
+    entitlements:
+      path: CoworkSpikeBroadcast/CoworkSpikeBroadcast.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.in.grav.cowork
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: in.grav.cowork.broadcast
+        PRODUCT_NAME: "$(TARGET_NAME)"
+        DEVELOPMENT_TEAM: NN9NBX2V82
+        # An appex sits in PlugIns/, so the app's Frameworks/ is two levels up.
+        LD_RUNPATH_SEARCH_PATHS: "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SKIP_INSTALL: YES
+
+schemes:
+  CoworkSpikeHost:
+    build:
+      targets:
+        CoworkSpikeHost:
+          build: true
+          run: true
+          test: true
+          profile: true
+          analyze: true
+          archive: true
+        CoworkSpikeBroadcast:
+          build: true
+          run: false
+          test: false
+          profile: false
+          analyze: false
+          archive: false
+    run:
+      config: Debug
+      executable: CoworkSpikeHost
