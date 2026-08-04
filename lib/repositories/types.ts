@@ -24,7 +24,7 @@ import type {
 } from "@/lib/help/types";
 import type { ActionableReason } from "@/lib/rules/tasks/actionable";
 import type { CompletionState } from "@/lib/rules/tasks/completion";
-import type { DutyMode } from "@/lib/rules/presence/duty";
+import type { DutyMode, DutyHistoryEntry } from "@/lib/rules/presence/duty";
 import type { OfficePolicy } from "@/lib/legacy/officePolicy";
 import type {
   TimerSopConfig,
@@ -988,6 +988,17 @@ export interface CoworkRepository {
     employeeIds: EmployeeId[],
     onChange: (modes: Map<EmployeeId, DutyMode>) => void,
   ): () => void;
+  /**
+   * The acting employee's status changes for one day, newest first.
+   *
+   * `dayKey` defaults to today (`dutyDayKey`, UTC — the same convention the
+   * duty document's own daily accumulator uses). This is the trail
+   * `getDutyMode` cannot answer, because the duty document holds only the
+   * current mode: what time they went online, when they took a break, when
+   * that break ended, when they went offline — one entry per transition,
+   * written alongside it.
+   */
+  listDutyHistory(dayKey?: string): Promise<DutyHistoryEntry[]>;
 
   /* Break Mode */
   /** Today's allowance and what is left of it, for the acting employee. */

@@ -6,6 +6,7 @@ import { presenceIdentityFor } from "../../integrations/livekit/identity.ts";
 import {
   STALE_AFTER_MS,
   dailyHoursSecs,
+  dutyDayKey,
   dutyTransition,
   heartbeatPatch,
   ownsClaim,
@@ -13,6 +14,7 @@ import {
   readDutyMode,
   storedMode,
   type DutyDocument,
+  type DutyHistoryEntry,
   type DutyMode,
 } from "../../rules/presence/duty.ts";
 import { bankableRunSecs } from "../../rules/tasks/timer.ts";
@@ -4341,8 +4343,28 @@ export class LegacyRepository {
         bankEvenWhenRaising: false,
       });
 
-    const { setDoc } = await import("firebase/firestore");
+    const { setDoc, addDoc, collection } = await import("firebase/firestore");
     await setDoc(await this.#dutyDoc(employeeId), { employeeId, ...patch }, { merge: true });
+
+    /* **The history entry — append-only, alongside the document patch.**
+     *
+     * `cowork_duty_status` is overwritten on every transition and remembers
+     * only the current mode; nothing else records what a day actually looked
+     * like. Written here rather than derived from the document later because
+     * by the time anyone asks, the earlier modes are already gone — this is
+     * the only place that ever sees the transition happen. Not awaited into
+     * the caller's success: a person's presence changing is real the moment
+     * the document above is written, and a history write failing must not
+     * turn that into an error on screen. */
+    void (async () => {
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await addDoc(collection(legacyDb(), "cowork_duty_history"), {
+        employeeId,
+        mode: input.mode,
+        at: now,
+        reason: input.mode === "emergency" ? (input.reason ?? null) : null,
+      });
+    })().catch((error) => console.error("[duty] history write failed:", error));
 
     /* **Deadline compensation: the ONE event that moves a deadline.**
      *
@@ -4665,6 +4687,47 @@ export class LegacyRepository {
       clearInterval(sweep);
       for (const unsub of unsubscribers) unsub();
     };
+  }
+
+  /**
+   * The acting employee's status changes for one day — see `DutyHistoryEntry`.
+   *
+   * `where("employeeId", "==", …)` bounds the read to one person rather than
+   * scanning the whole collection, which is every employee's every transition
+   * ever made; the day filter and the sort both happen in memory afterwards,
+   * because a composite index on `employeeId` + `at` is not worth requiring
+   * for a query this small.
+   */
+  async listDutyHistory(dayKey?: string): Promise<DutyHistoryEntry[]> {
+    const employeeId = String(this.#ctx.employeeId);
+    const key = dayKey ?? dutyDayKey(Date.now());
+    const { collection, getDocs, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), "cowork_duty_history"),
+        where("employeeId", "==", employeeId),
+      ),
+    );
+    const out: DutyHistoryEntry[] = [];
+    for (const d of snap.docs) {
+      const data = d.data() as {
+        mode?: DutyMode;
+        at?: number;
+        reason?: string | null;
+      };
+      if (typeof data.at !== "number" || !data.mode) continue;
+      if (dutyDayKey(data.at) !== key) continue;
+      out.push({
+        id: d.id,
+        mode: data.mode,
+        at: data.at,
+        reason: data.reason ?? null,
+      });
+    }
+    return out.sort((a, b) => b.at - a.at);
   }
 
   /**

@@ -152,12 +152,14 @@ import {
 } from "./store";
 import {
   STALE_AFTER_MS,
+  dutyDayKey,
   dutyTransition,
   heartbeatPatch,
   ownsClaim,
   readDutyMode,
   storedMode,
   type DutyDocument,
+  type DutyHistoryEntry,
   type DutyMode,
 } from "@/lib/rules/presence/duty";
 import { presenceWriteRefusal } from "@/lib/rules/presence/taskGate";
@@ -3725,6 +3727,8 @@ export class MockRepository implements CoworkRepository {
    */
   #duty = new Map<string, DutyDocument>();
   #dutyWatchers = new Set<() => void>();
+  /** The append-only trail behind `#duty` — see `listDutyHistory`. */
+  #dutyHistory = new Map<string, DutyHistoryEntry[]>();
 
   async getDutyMode(employeeId?: EmployeeId): Promise<DutyMode> {
     const id = String(employeeId ?? actingId());
@@ -3753,6 +3757,14 @@ export class MockRepository implements CoworkRepository {
         reason: input.reason ?? null,
       });
     this.#duty.set(id, { ...(previous ?? {}), ...patch });
+    const history = this.#dutyHistory.get(id) ?? [];
+    history.push({
+      id: nextId("dh"),
+      mode: input.mode,
+      at: now,
+      reason: input.mode === "emergency" ? (input.reason ?? null) : null,
+    });
+    this.#dutyHistory.set(id, history);
 
     /* The demo CAN act on these, unlike the legacy build — `endBreak` and
        `createEmergencyRequest` are both implemented here. So the spans are
@@ -3838,6 +3850,15 @@ export class MockRepository implements CoworkRepository {
       this.#dutyWatchers.delete(emit);
       clearInterval(sweep);
     };
+  }
+
+  async listDutyHistory(dayKey?: string): Promise<DutyHistoryEntry[]> {
+    const id = String(actingId());
+    const key = dayKey ?? dutyDayKey(Date.now());
+    const entries = this.#dutyHistory.get(id) ?? [];
+    return entries
+      .filter((e) => dutyDayKey(e.at) === key)
+      .sort((a, b) => b.at - a.at);
   }
 
   /* ── Break Mode ─────────────────────────────────────────────────────────── */
