@@ -229,6 +229,33 @@ export function StatusButton() {
     return () => clearInterval(id);
   }, [breakStartedAt]);
 
+  /**
+   * Open straight to "resume sharing" the moment a reconnect is offered,
+   * rather than waiting for someone to notice a small pill in the top bar.
+   *
+   * **Why this exists.** A browser refresh always drops the screen-share
+   * track — nothing can reassert `getDisplayMedia()` without a fresh click,
+   * that is the browser's own security rule, not a choice this app makes. So
+   * a refresh can never look fully "still online" the way signing back in
+   * does. What it CAN do is make the one remaining step unmissable: without
+   * this, the claim sits quietly alive on a 120-second grace window while
+   * the pill just says "Reconnecting", and someone who does not spot it in
+   * time watches their status lapse to Offline with no idea why — which is
+   * exactly the "refreshed and got logged out" report this answers. Firing
+   * the picker immediately turns a state somebody has to notice into one
+   * they cannot avoid seeing.
+   *
+   * Once per mount: a person who dismisses it with Cancel gets their pill
+   * back, not a dialog that keeps reopening under them.
+   */
+  const autoPrompted = useRef(false);
+  useEffect(() => {
+    if (!reconnectingShare || autoPrompted.current) return;
+    autoPrompted.current = true;
+    setOpen(true);
+    setConfirming(true);
+  }, [reconnectingShare]);
+
   /* Keeps the menu on screen. Runs once on open (before paint, so there is no
      flash at the wrong position) and again on resize/rotate, since the same
      pill can end up in a different spot relative to the viewport. */

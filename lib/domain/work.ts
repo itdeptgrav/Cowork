@@ -239,6 +239,17 @@ export interface MessageReply {
   text: string;
 }
 
+/**
+ * How many messages a thread shows before somebody has to ask for more.
+ *
+ * Opening a long-running conversation used to read every message it had ever
+ * held in one query — fine for a new thread, and an ever-growing cost for an
+ * old one that nobody was about to scroll back through anyway. The default
+ * `listMessages` window; scrolling to the top of the loaded page asks for a
+ * bigger one.
+ */
+export const MESSAGE_PAGE_SIZE = 50;
+
 export interface Message {
   id: string;
   conversationId: string;

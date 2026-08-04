@@ -1,4 +1,5 @@
 import type { AttendanceDay, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import { mrfApprovalStats, mrfStats, type NewMrfInput } from "@/lib/rules/mrf/lifecycle";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
@@ -10777,22 +10778,36 @@ export class LegacyRepository {
     return resolved;
   }
 
-  async listMessages(conversationId: string): Promise<Message[]> {
-    const { collection, getDocs, orderBy, query } = await import(
-      "firebase/firestore"
-    );
+  async listMessages(
+    conversationId: string,
+    opts?: { limit?: number },
+  ): Promise<{ messages: Message[]; hasMore: boolean }> {
+    const { collection, getDocs, limit: fsLimit, orderBy, query } =
+      await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const coll = await this.#conversationCollection(conversationId);
+    const pageSize = Math.max(1, opts?.limit ?? MESSAGE_PAGE_SIZE);
+    /* One extra row, asked for but never shown: its PRESENCE is the answer to
+       `hasMore`, without a second count query. */
     const snap = await getDocs(
       query(
         collection(legacyDb(), coll, conversationId, "messages"),
-        orderBy("createdAt", "asc"),
+        orderBy("createdAt", "desc"),
+        fsLimit(pageSize + 1),
       ),
     ).catch(() => null);
-    if (!snap) return [];
-    return snap.docs.map((d) =>
-      readMessageDoc(d.id, conversationId, d.data() as Record<string, unknown>),
-    );
+    if (!snap) return { messages: [], hasMore: false };
+    const hasMore = snap.docs.length > pageSize;
+    /* Fetched newest-first so `limit` keeps the RIGHT end of a long thread —
+       the recent messages, not the oldest ones — then reversed once here so
+       every reader downstream still sees ascending order. */
+    const messages = snap.docs
+      .slice(0, pageSize)
+      .map((d) =>
+        readMessageDoc(d.id, conversationId, d.data() as Record<string, unknown>),
+      )
+      .reverse();
+    return { messages, hasMore };
   }
 
   /**
@@ -11084,6 +11099,7 @@ export class LegacyRepository {
    */
   async uploadMessageAttachment(
     file: File,
+    onProgress?: (fraction: number) => void,
   ): Promise<ActionResult<MessageAttachment>> {
     const mime = file.type || "";
     const kind: MessageAttachment["kind"] = mime.startsWith("image/")
@@ -11094,7 +11110,7 @@ export class LegacyRepository {
           ? "pdf"
           : "file";
 
-    const r = await this.uploadDriveFile(file);
+    const r = await this.uploadDriveFile(file, onProgress);
     if (!r.ok) return r;
 
     return {

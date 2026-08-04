@@ -24,8 +24,10 @@ import {
   formatBytes,
   mediaUrl,
 } from "./MessageAttachments";
-import { formatRelative } from "@/lib/utils/format";
+import { formatClock, formatDate, formatRelative, istDayKey } from "@/lib/utils/format";
+import { linkify } from "@/lib/utils/linkify";
 import { useNow } from "@/lib/hooks/useNow";
+import { MESSAGE_PAGE_SIZE } from "@/lib/domain";
 import type {
   Conversation,
   Employee,
@@ -424,6 +426,10 @@ function Thread({
   const [pending, setPending] = useState<MessageAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  /** One entry per file in the batch currently uploading — see `handleFiles`. */
+  const [uploadProgress, setUploadProgress] = useState<
+    { id: string; name: string; sizeBytes: number; fraction: number }[]
+  >([]);
   const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = editingId !== null;
@@ -436,7 +442,20 @@ function Thread({
      the in-memory prototype omits `uploadMessageAttachment`, so it stays off
      rather than failing silently. */
   const canUpload = typeof repo.uploadMessageAttachment === "function";
-  const messages = useQuery((r) => r.listMessages(c.id), [c.id]);
+  /* The window grows rather than pages: a scroll to the top asks for a
+     BIGGER limit on the same query rather than a second, separately-fetched
+     page. See `listMessages`'s own note — this is what keeps the thread
+     correct for free under `watchConversationMessages`'s live refetch,
+     where two independently-merged pages would need reconciling by hand on
+     every one of those refreshes. */
+  /* No reset-on-conversation-change effect needed: `Thread` is mounted with
+     `key={activeConversation.id}` by its caller, so switching threads already
+     remounts this component and every one of its `useState`s starts fresh. */
+  const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE_SIZE);
+  const messages = useQuery(
+    (r) => r.listMessages(c.id, { limit: visibleCount }),
+    [c.id, visibleCount],
+  );
   const [send, state] = useAction((r) =>
     r.sendMessage(c.id, text, pending.length ? pending : undefined, replyingTo),
   );
@@ -444,9 +463,32 @@ function Thread({
     r.editMessage(c.id, editingId ?? "", text),
   );
   const scrollRef = useRef<HTMLDivElement>(null);
+  /* Set right before asking for a bigger window, and read (then cleared) by
+     the scroll-pinning effect below — together they decide whether a new,
+     bigger `list` means "someone typed" (pin to the bottom) or "someone
+     scrolled up for history" (hold the reader's place instead). */
+  const loadingOlderRef = useRef(false);
+  const prevScrollHeightRef = useRef<number | null>(null);
 
   const others = c.participants.filter((p) => p.id !== viewerId);
-  const list = messages.data ?? [];
+  const list = messages.data?.messages ?? [];
+  const hasMoreHistory = messages.data?.hasMore ?? false;
+
+  /* Scrolling within ~80px of the top asks for another window's worth of
+     history — the "on scroll up, load the next 50" behaviour. Guarded by
+     the ref rather than `messages.isLoading`: a growing-window refetch keeps
+     showing the last good answer while it resolves (see `useQuery`), so
+     `isLoading` never actually flips true here, and re-entering this on
+     every scroll tick before the bump lands would ask for a bigger window
+     over and over. */
+  function onThreadScroll() {
+    const el = scrollRef.current;
+    if (!el || loadingOlderRef.current || !hasMoreHistory) return;
+    if (el.scrollTop > 80) return;
+    loadingOlderRef.current = true;
+    prevScrollHeightRef.current = el.scrollHeight;
+    setVisibleCount((v) => v + MESSAGE_PAGE_SIZE);
+  }
 
   const typingNames = typingIds
     .map((id) => c.participants.find((p) => p.id === id)?.firstName)
@@ -548,11 +590,31 @@ function Thread({
 
   /* Pinned to the newest message, the way every thread in every messaging
      product opens. Without this a long conversation opens at its oldest line
-     and the composer sits below content nobody asked to re-read. */
+     and the composer sits below content nobody asked to re-read.
+     Keyed on `messages.data` rather than `list.length`: a settled query
+     result changes identity exactly once per fetch, whether or not the
+     count changed, so `loadingOlderRef` can never be left stuck `true` by a
+     fetch that happened to land the same length.
+
+     The one exception is `onThreadScroll` asking for more history — that
+     grows `list` from the TOP, and pinning to the bottom on every one of
+     those would fling the reader back to "now" the moment they tried to look
+     at anything older. It restores their place instead, by exactly the
+     height the newly-prepended messages added. */
   useEffect(() => {
     const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [list.length, c.id]);
+    if (!el) return;
+    if (loadingOlderRef.current) {
+      if (prevScrollHeightRef.current !== null) {
+        el.scrollTop = el.scrollHeight - prevScrollHeightRef.current;
+      }
+      loadingOlderRef.current = false;
+      prevScrollHeightRef.current = null;
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages.data, c.id]);
 
   async function submit() {
     if (uploading || state.isPending || editState.isPending) return;
@@ -620,12 +682,34 @@ function Thread({
     const list = picked.slice(0, MAX_ATTACHMENTS);
     setUploadError(null);
     setUploading(true);
+    /* One id per file, stable for the life of this batch — the progress
+       callback closes over it rather than an index, since the batch's own
+       order never changes but a re-render could otherwise recompute one. */
+    const batch = list.map((file) => ({
+      id: `${file.name}-${file.size}-${file.lastModified}-${Math.random().toString(36).slice(2)}`,
+      file,
+    }));
+    setUploadProgress(
+      batch.map((b) => ({
+        id: b.id,
+        name: b.file.name,
+        sizeBytes: b.file.size,
+        fraction: 0,
+      })),
+    );
     /* Upload the batch in parallel; each result is independent, so a single bad
        file only drops itself and the rest still stage. */
     const results = await Promise.all(
-      list.map((f) => repo.uploadMessageAttachment!(f)),
+      batch.map(({ id, file }) =>
+        repo.uploadMessageAttachment!(file, (fraction) =>
+          setUploadProgress((prev) =>
+            prev.map((p) => (p.id === id ? { ...p, fraction } : p)),
+          ),
+        ),
+      ),
     );
     setUploading(false);
+    setUploadProgress([]);
     const ready = results
       .filter((r): r is { ok: true; data: MessageAttachment } => r.ok)
       .map((r) => r.data);
@@ -715,6 +799,7 @@ function Thread({
 
       <div
         ref={scrollRef}
+        onScroll={onThreadScroll}
         className="min-h-0 flex-1 overflow-y-auto px-4 py-4 scroll-slim"
       >
         {messages.error ? (
@@ -739,15 +824,22 @@ function Thread({
             </div>
           </div>
         ) : (
-          <MessageList
-            messages={list}
-            participants={c.participants}
-            viewerId={viewerId}
-            group={c.kind === "group"}
-            onReply={startReply}
-            onEdit={startEdit}
-            onDelete={removeMessage}
-          />
+          <>
+            {hasMoreHistory && (
+              <div className="pb-3 text-center text-[11px] text-ink-faint">
+                Scroll up for earlier messages
+              </div>
+            )}
+            <MessageList
+              messages={list}
+              participants={c.participants}
+              viewerId={viewerId}
+              group={c.kind === "group"}
+              onReply={startReply}
+              onEdit={startEdit}
+              onDelete={removeMessage}
+            />
+          </>
         )}
       </div>
 
@@ -855,13 +947,28 @@ function Thread({
           </div>
         )}
         {uploading && (
-          <div className="mb-2 flex items-center gap-2 text-xs text-ink-muted">
-            <span className="flex gap-0.5" aria-hidden>
-              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-200ms]" />
-              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-100ms]" />
-              <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint" />
-            </span>
-            Uploading…
+          <div className="mb-2 flex flex-col gap-1.5">
+            {uploadProgress.map((p) => (
+              <div key={p.id} className="flex items-center gap-2 text-xs text-ink-muted">
+                <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                <div
+                  role="progressbar"
+                  aria-label={`Uploading ${p.name}`}
+                  aria-valuenow={Math.round(p.fraction * 100)}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--control)]"
+                >
+                  <div
+                    className="h-full rounded-full bg-ink transition-[width] duration-150 ease-out"
+                    style={{ width: `${Math.round(p.fraction * 100)}%` }}
+                  />
+                </div>
+                <span data-figure className="w-8 shrink-0 text-right text-[11px]">
+                  {Math.round(p.fraction * 100)}%
+                </span>
+              </div>
+            ))}
           </div>
         )}
         <div className="flex items-end gap-2">
@@ -1021,7 +1128,7 @@ function MessageList({
                   data-figure
                   className="shrink-0 text-[11px] tracking-[0.02em] text-ink-faint"
                 >
-                  {dayLabel(m.createdAt)}
+                  {formatDate(m.createdAt)}
                 </span>
                 <span className="h-px flex-1 bg-hairline" />
               </div>
@@ -1095,7 +1202,19 @@ function MessageList({
                     <span
                       className={`whitespace-pre-wrap ${deleted ? "italic opacity-60" : ""}`}
                     >
-                      {m.text}
+                      {deleted
+                        ? m.text
+                        : linkify(
+                            m.text,
+                            /* A link needs to read as a link on both bubble
+                               colours — the deep ink fill of your own message
+                               and the raised surface of everyone else's — so
+                               it gets its own shade on each rather than one
+                               colour that would wash out against one of them. */
+                            mine
+                              ? "text-[#8ab4ff] underline decoration-[#8ab4ff]/40 underline-offset-2 hover:decoration-[#8ab4ff]"
+                              : "text-[#2563eb] underline decoration-[#2563eb]/40 underline-offset-2 hover:decoration-[#2563eb]",
+                          )}
                     </span>
                   )}
                 </span>
@@ -1183,28 +1302,17 @@ function sortByRecency(list: ConversationView[]): ConversationView[] {
 }
 
 /**
- * All the time formatting below reads UTC, matching `lib/format.ts`.
+ * Every timestamp in the thread is read in IST, via `lib/utils/format.ts`'s
+ * shared offset — the same zone the task list, deadlines and everything else
+ * in the product already renders in.
  *
- * That is a deliberate consistency rather than an oversight: the product
- * renders every timestamp in one zone so server and client agree, and a message
- * list that disagreed with the task list about what "14:03" means would be the
- * worse bug.
+ * This file used to read `getUTCHours()` etc. straight off the instant with
+ * no offset applied at all, which is genuinely UTC rather than IST despite a
+ * comment here once claiming the two were "consistent" — every message
+ * showed five and a half hours early. `formatClock`/`istDayKey` are the fix.
  */
-function clock(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
-}
-
-const MONTHS = [
-  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-function dayKey(iso: string): string {
-  const d = new Date(iso);
-  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
-}
+const clock = formatClock;
+const dayKey = istDayKey;
 
 function sameDay(a: string, b: string): boolean {
   return dayKey(a) === dayKey(b);
@@ -1231,12 +1339,6 @@ function minutesBetween(a: string, b: string): number {
   return Math.abs(new Date(b).getTime() - new Date(a).getTime()) / 60000;
 }
 
-function dayLabel(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
-}
-
 /**
  * How long ago, against the PROTOTYPE clock rather than the wall clock.
  *
@@ -1254,7 +1356,7 @@ function relativeTime(iso: string, now: Date | null): string {
   if (Number.isNaN(then)) return "";
   /* No clock yet (server render). The absolute day is always true, so it is the
      honest fallback — a relative interval needs a "now" to be relative to. */
-  if (!now) return dayLabel(iso);
-  if (Math.abs(now.getTime() - then) > 7 * 86400000) return dayLabel(iso);
+  if (!now) return formatDate(iso);
+  if (Math.abs(now.getTime() - then) > 7 * 86400000) return formatDate(iso);
   return formatRelative(iso, now).replace(/ ago$/, "");
 }

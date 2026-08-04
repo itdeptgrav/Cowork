@@ -49,6 +49,22 @@ export function formatDate(iso: string | null | undefined): string {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`;
 }
 
+/** Just the clock face, IST, no suffix — for a bubble already read as "today": `14:03`. */
+export function formatClock(iso: string | null | undefined): string {
+  const d = ist(iso);
+  if (!d) return "";
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/** Which IST calendar day an instant falls on — a grouping key, not a display string. */
+export function istDayKey(iso: string | null | undefined): string {
+  const d = ist(iso);
+  if (!d) return "";
+  return `${d.getUTCFullYear()}-${d.getUTCMonth()}-${d.getUTCDate()}`;
+}
+
 /**
  * Hour of the IST day as a decimal — 14:30 IST is 14.5.
  *

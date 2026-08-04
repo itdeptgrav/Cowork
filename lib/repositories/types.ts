@@ -1482,7 +1482,23 @@ export interface CoworkRepository {
 
   /* Collaboration */
   listConversations(): Promise<(Conversation & { participants: Employee[] })[]>;
-  listMessages(conversationId: string): Promise<Message[]>;
+  /**
+   * A page of one conversation's messages, newest end first in the window but
+   * ASCENDING within it — the order `MessageList` renders in.
+   *
+   * `limit` is how many are visible, not how many exist: opening a thread
+   * asks for `MESSAGE_PAGE_SIZE`, and scrolling to the top asks for a bigger
+   * `limit` on the next call rather than a second, separately-merged page.
+   * That is deliberate — this conversation is also re-read on every live
+   * update (`watchConversationMessages`), and a growing single window stays
+   * correct under that refetch for free, where two independently-fetched
+   * pages would have to be reconciled by hand on every one of those refreshes.
+   * `hasMore` says whether an even bigger `limit` would return more.
+   */
+  listMessages(
+    conversationId: string,
+    opts?: { limit?: number },
+  ): Promise<{ messages: Message[]; hasMore: boolean }>;
   sendMessage(
     conversationId: string,
     text: string,
@@ -1513,6 +1529,8 @@ export interface CoworkRepository {
    */
   uploadMessageAttachment?(
     file: File,
+    /** 0–1 across the byte transfer, where the backend can report it. */
+    onProgress?: (fraction: number) => void,
   ): Promise<ActionResult<MessageAttachment>>;
   /**
    * Upload one file to shared media storage and return where it lives.

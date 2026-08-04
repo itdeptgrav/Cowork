@@ -214,7 +214,7 @@ import { FLOW_CHANNELS, MONTHS_SHORT } from "./flow";
 import { HELP_ARTICLES } from "@/lib/help/knowledge";
 import { searchHelp } from "@/lib/help/search";
 import type { HelpCategory } from "@/lib/help/types";
-import { directConversationKey } from "@/lib/domain";
+import { directConversationKey, MESSAGE_PAGE_SIZE } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
 import {
   istDayKey,
@@ -6482,12 +6482,16 @@ export class MockRepository implements CoworkRepository {
     );
   }
 
-  async listMessages(conversationId: string) {
-    return delay(
-      getStore()
-        .messages.filter((m) => m.conversationId === conversationId)
-        .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
-    );
+  async listMessages(conversationId: string, opts?: { limit?: number }) {
+    const pageSize = Math.max(1, opts?.limit ?? MESSAGE_PAGE_SIZE);
+    const all = getStore()
+      .messages.filter((m) => m.conversationId === conversationId)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    const hasMore = all.length > pageSize;
+    return delay({
+      messages: hasMore ? all.slice(all.length - pageSize) : all,
+      hasMore,
+    });
   }
 
   async sendMessage(
