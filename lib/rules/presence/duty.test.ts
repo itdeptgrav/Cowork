@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   HEARTBEAT_INTERVAL_MS,
-  STALE_AFTER_MS,
+  PRESENCE_STALE_AFTER_MS,
   dailyHoursSecs,
   dutyDayKey,
   dutyTransition,
@@ -59,8 +59,12 @@ test("an unrecognised mode withholds rather than grants", () => {
 test("a heartbeat older than the window stops being believed", () => {
   const doc: DutyDocument = { mode: "online", heartbeatAt: T0 };
   assert.equal(readDutyMode(doc, T0 + 1_000), "online");
-  assert.equal(readDutyMode(doc, T0 + STALE_AFTER_MS), "online", "the edge is inclusive");
-  assert.equal(readDutyMode(doc, T0 + STALE_AFTER_MS + 1), "offline");
+  assert.equal(
+    readDutyMode(doc, T0 + PRESENCE_STALE_AFTER_MS),
+    "online",
+    "the edge is inclusive",
+  );
+  assert.equal(readDutyMode(doc, T0 + PRESENCE_STALE_AFTER_MS + 1), "offline");
 });
 
 test("the window survives a missed beat, so a throttled tab is not reported away", () => {
@@ -68,7 +72,7 @@ test("the window survives a missed beat, so a throttled tab is not reported away
      clamped. A window that only just cleared one interval would read an
      ordinary throttle as a disconnection. */
   assert.ok(
-    STALE_AFTER_MS > HEARTBEAT_INTERVAL_MS * 2,
+    PRESENCE_STALE_AFTER_MS > HEARTBEAT_INTERVAL_MS * 2,
     "the staleness window must tolerate two missed beats",
   );
 });
@@ -86,7 +90,7 @@ test("a break and an emergency never expire", () => {
      their laptop mid-break is still on a break — expiring it would resume their
      deadlines silently and credit them nothing. Legacy carries an unfinished
      one across sessions in `pendingBreakGapMs` for exactly this reason. */
-  const old = T0 - STALE_AFTER_MS * 100;
+  const old = T0 - PRESENCE_STALE_AFTER_MS * 100;
   assert.equal(readDutyMode({ mode: "break", heartbeatAt: old }, T0), "break");
   assert.equal(readDutyMode({ mode: "emergency", heartbeatAt: null }, T0), "emergency");
   assert.equal(isStale({ mode: "break" }, T0), false);
@@ -109,7 +113,7 @@ test("a tab without the claim cannot put its own user offline", () => {
 test("a stale claim belongs to nobody and any tab may clear it", () => {
   const abandoned: DutyDocument = {
     mode: "online",
-    heartbeatAt: T0 - STALE_AFTER_MS - 1,
+    heartbeatAt: T0 - PRESENCE_STALE_AFTER_MS - 1,
     presenceConnectionId: "dead-tab",
   };
   assert.equal(ownsClaim(abandoned, "tab-b", T0), true);
@@ -350,7 +354,7 @@ test("a stale online claim is not frozen at whenever they were last here", () =>
      projection at a time that is no longer true. */
   const doc: DutyDocument & { updatedAt: number } = {
     mode: "online",
-    heartbeatAt: T0 - (STALE_AFTER_MS + 60_000),
+    heartbeatAt: T0 - (PRESENCE_STALE_AFTER_MS + 60_000),
     updatedAt: T0 - 7_200_000,
   };
   assert.equal(queueAnchorMs(doc, T0), T0);

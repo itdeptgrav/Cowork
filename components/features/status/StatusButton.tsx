@@ -18,6 +18,10 @@ import {
   isIOS,
 } from "@/lib/integrations/livekit/screenShare";
 import { fetchRoomCredentials } from "@/lib/integrations/livekit/credentials";
+import {
+  isNativeShell,
+  setNativeResumeHandler,
+} from "@/lib/integrations/livekit/nativeBridge";
 import { EmergencyEndDialog } from "./EmergencyEndDialog";
 import { DailyReportModal } from "./DailyReportModal";
 import { useQuery } from "@/lib/hooks/useRepository";
@@ -341,6 +345,19 @@ export function StatusButton() {
 
     applyTransition(id);
   }
+
+  /* The native shell cannot restart a broadcast by itself — ReplayKit only
+     starts from a user tap — so after the phone is unlocked it shows its own
+     "resume" prompt and calls back here. Going through `startSharing` means
+     the resume path is the same path as going online: fresh credentials, same
+     publish, no second implementation to drift. */
+  useEffect(() => {
+    if (!isNativeShell()) return;
+    setNativeResumeHandler(() => {
+      void startSharing();
+    });
+    return () => setNativeResumeHandler(null);
+  });
 
   async function startSharing() {
     /* The picker opens inside this click. Nothing is awaited before it, or the

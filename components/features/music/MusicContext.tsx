@@ -56,6 +56,13 @@ function searchFailure(e: unknown): { code: MusicErrorCode; message: string } {
       };
 }
 
+interface StartHereState {
+  status: "idle" | "loading" | "ready" | "error";
+  items: MusicResult[];
+}
+
+const EMPTY_START_HERE: StartHereState = { status: "idle", items: [] };
+
 interface SearchState {
   query: string;
   status: "idle" | "searching" | "loading_more" | "ready" | "empty" | "error";
@@ -85,6 +92,20 @@ interface MusicValue {
 
   recentSearches: string[];
   clearRecentSearches(): void;
+
+  /**
+   * Real thumbnail cards for the "Start here" panel, rather than plain text
+   * prompts. Loaded on demand — never on mount — because each distinct query
+   * is a real 100-unit search; `loadStartHere` is a no-op if it already
+   * fetched the exact same query set, so navigating away and back doesn't
+   * re-spend quota. Results are shared across everyone hitting this Node
+   * process for 30 minutes by the same `searchCache` every other search uses
+   * (`lib/music/youtube.ts`), so a fixed preset only ever costs quota once
+   * per window regardless of how many people load the page.
+   */
+  startHere: StartHereState;
+  loadStartHere(queries: string[]): Promise<void>;
+
   favourites: MusicResult[];
   isFavourite(id: string): boolean;
   toggleFavourite(item: MusicResult): Promise<void>;
@@ -189,6 +210,11 @@ export function MusicProvider({
   }>({ action: "none", nonce: 0 });
   const [hydrated, setHydrated] = useState(false);
   const [stage, setStage] = useState<DOMRect | null>(null);
+  const [startHere, setStartHere] = useState<StartHereState>(EMPTY_START_HERE);
+  /* The query set already fetched (or in flight), so `loadStartHere` called
+     again with the same set — e.g. a remount from switching /music ↔ /yt —
+     is a no-op rather than a second round of 100-unit searches. */
+  const startHereKeyRef = useRef<string | null>(null);
 
   /* Everything the session has seen, for Cowork Autoplay's free tiers. */
   const seenRef = useRef<MusicResult[]>([]);
@@ -362,6 +388,57 @@ export function MusicProvider({
     [],
   );
 
+  /**
+   * A standalone fetch for `loadStartHere` — deliberately NOT `fetchPage`.
+   * `fetchPage` cancels whatever it previously started via the shared
+   * `abortRef`, which is correct for search-as-you-submit (a new query should
+   * kill the old one) but wrong here: fetching several preset queries in
+   * sequence must not abort the person's own in-progress search if they
+   * start typing while the grid is still loading.
+   */
+  const fetchPreview = useCallback(async (q: string): Promise<MusicPage> => {
+    const url = new URL("/api/music/search", window.location.origin);
+    url.searchParams.set("q", q);
+    const res = await fetch(url);
+    const body: unknown = await res.json().catch(() => null);
+    if (!res.ok) {
+      const e = (body ?? {}) as { message?: string };
+      throw new Error(e.message ?? "Search failed");
+    }
+    return body as MusicPage;
+  }, []);
+
+  const loadStartHere = useCallback(
+    async (queries: string[]) => {
+      const key = queries.join("|");
+      if (startHereKeyRef.current === key) return;
+      startHereKeyRef.current = key;
+      setStartHere({ status: "loading", items: [] });
+
+      /* One at a time — not `Promise.all` — so this never touches the shared
+         abort controller `fetchPage` uses and can never race it. Each preset
+         is a real search (cached for 30 minutes across everyone, so a fixed
+         set only ever costs quota once per window), so there is no reason to
+         rush them concurrently either. */
+      const collected: MusicResult[] = [];
+      for (const q of queries) {
+        try {
+          const page = await fetchPreview(q);
+          collected.push(...page.items.slice(0, 3));
+        } catch {
+          // One preset failing shouldn't blank the whole grid.
+        }
+        if (startHereKeyRef.current !== key) return; // superseded mid-flight
+      }
+      remember(collected);
+      setStartHere({
+        status: collected.length ? "ready" : "error",
+        items: collected,
+      });
+    },
+    [fetchPreview, remember],
+  );
+
   const runSearch = useCallback(
     async (q: string) => {
       const term = q.trim();
@@ -531,6 +608,7 @@ export function MusicProvider({
       seen: seenRef.current,
       favourites,
       recentlyPlayed,
+      recentSearches,
       playedIds: playedIdsRef.current,
     };
     const pick = pickLocally(current, sources);
@@ -587,6 +665,7 @@ export function MusicProvider({
     markPlayed,
     prefs.autoplay,
     queue,
+    recentSearches,
     recentlyPlayed,
     remember,
   ]);
@@ -747,6 +826,8 @@ export function MusicProvider({
         getRepository().clearMusicSearches();
         setRecentSearches([]);
       },
+      startHere,
+      loadStartHere,
       favourites,
       isFavourite,
       toggleFavourite,
@@ -801,6 +882,7 @@ export function MusicProvider({
       intent,
       isFavourite,
       loadMore,
+      loadStartHere,
       moveItem,
       movePlaylistTrack,
       next,
@@ -825,6 +907,7 @@ export function MusicProvider({
       search,
       setPrefs,
       stage,
+      startHere,
       toggleFavourite,
     ],
   );

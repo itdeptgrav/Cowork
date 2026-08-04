@@ -47,6 +47,10 @@ export function PlayerEngine() {
     volume: music.prefs.volume,
     muted: music.prefs.muted,
     onEnded: music.next,
+    /* A blocked/removed/never-loading track is "done" the same way a track
+       that finished playing is — the queue (and Cowork Autoplay, once the
+       queue runs out) should move past it rather than sit on the error. */
+    onFailed: music.next,
     onPlayingChange: music.reportPlaying,
     /* The guard only makes sense while the player is meant to be seen. */
     enforceVisibility: music.stage !== null,

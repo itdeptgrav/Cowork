@@ -21,6 +21,13 @@ import { artistOf } from "./rank";
  * When none of those yields a track it STOPS. Silence is the correct answer to
  * "I have nothing reliable to play", and inventing something is worse than
  * ending cleanly.
+ *
+ * Tier 4's search still has to be built from something. A listener who has no
+ * favourites and no play history yet (first session) previously left it with
+ * nothing to name, so autoplay stopped before it ever got to search. Their own
+ * past search terms are exactly the same kind of "material this listener
+ * already chose" the free tiers use, so they are now the last fallback that
+ * search term is built from, tried before giving up.
  */
 
 export interface AutoplaySources {
@@ -28,6 +35,8 @@ export interface AutoplaySources {
   seen: MusicResult[];
   favourites: MusicResult[];
   recentlyPlayed: MusicResult[];
+  /** Most-recent-first. Used only to name tier 4's search when there is nothing else to name it from. */
+  recentSearches: string[];
   /** Ids already played this session, so autoplay does not loop on one track. */
   playedIds: Set<string>;
 }
@@ -120,5 +129,7 @@ export function autoplayQuery(
   if (artist) return artist;
   const fromFav = sources.favourites[0] ? artistOf(sources.favourites[0]) : "";
   if (fromFav) return fromFav;
+  const fromSearch = sources.recentSearches[0]?.trim();
+  if (fromSearch) return fromSearch;
   return null;
 }
