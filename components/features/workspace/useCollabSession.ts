@@ -10,7 +10,7 @@ import { idToken } from "@/lib/legacy/firebase";
 import type { Employee } from "@/lib/domain";
 
 /**
- * A live session for one document, or nothing.
+ * A live session for one ROOM, or nothing.
  *
  * **Nothing is a supported outcome, not a failure.** The mock backend has no
  * Socket.IO server, the engine may be unreachable, and a person may have no
@@ -22,9 +22,17 @@ import type { Employee } from "@/lib/domain";
  * `connected` is reported separately from `session` because they are different
  * facts: a session exists the moment the provider is constructed, and the
  * socket is up some time later. The banner reads the second.
+ *
+ * ## Why the parameter is a room rather than a document id
+ *
+ * Mindmaps collaborate through this same hook, and a mindmap is not a document —
+ * it is a different collection with its own membership. The room name carries
+ * which, so the server authorises against the right record. Build one with
+ * `documentRoom` / `mindmapRoom` rather than passing a bare id: see
+ * `lib/rules/workspace/collabRoom.ts` for why a bare id is now ambiguous.
  */
 export function useCollabSession(
-  documentId: string,
+  roomId: string,
   me: Employee | null,
 ): {
   session: CollabSession | null;
@@ -53,7 +61,7 @@ export function useCollabSession(
     /* No setState here — the "waiting" message is DERIVED below. Setting it in
        the effect is a synchronous cascade, and it would also race the real
        reason a failed connection reports a moment later. */
-    if (!documentId || !me) return;
+    if (!roomId || !me) return;
     let cancelled = false;
     let opened: CollabSession | null = null;
 
@@ -65,7 +73,7 @@ export function useCollabSession(
         return;
       }
       try {
-        opened = openCollabSession({ documentId, token });
+        opened = openCollabSession({ roomId, token });
       } catch (e) {
         setReason(
           e instanceof Error ? e.message : "The collaboration server could not be reached.",
@@ -114,7 +122,7 @@ export function useCollabSession(
       setPeers(0);
       opened?.destroy();
     };
-  }, [documentId, me, identity.name, identity.color]);
+  }, [roomId, me, identity.name, identity.color]);
 
   /* Derived, not stored: while the employee record is still loading there is
      nothing to report except that. */

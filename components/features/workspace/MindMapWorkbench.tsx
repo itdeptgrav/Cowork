@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Button, Chip, EmptyState, InlineError, Panel } from "@/components/ui/Primitives";
+import { useQuery } from "@/lib/hooks/useRepository";
+import { canManage } from "@/lib/rules/mindmap/access";
 import {
   addChild,
   deleteNode,
@@ -11,10 +13,14 @@ import {
   type MindNode,
   type MindNodeId,
 } from "@/lib/rules/mindmap/tree";
+import { mindmapRoom } from "@/lib/rules/workspace/collabRoom";
 import { DocIcon } from "./docs/DocsIcons";
 import { MindMapCanvas } from "./MindMapCanvas";
 import { NodeInspector } from "./NodeInspector";
+import { Presence } from "./Presence";
+import { ShareMenu } from "./ShareMenu";
 import { StageError, StageSkeleton } from "./WorkspaceStage";
+import { useCollabSession } from "./useCollabSession";
 import { nextNodeId, useMindMap } from "./useMindMap";
 
 /**
@@ -49,6 +55,11 @@ export function MindMapWorkbench({
   onNew: () => void;
   creating?: boolean;
 }) {
+  const me = useQuery((r) => r.getCurrentEmployee(), []);
+  /* `mindmapRoom`, not the bare id: the room name tells the engine which
+     collection to authorise against, and a document and a mindmap can hold the
+     same id. See `lib/rules/workspace/collabRoom.ts`. */
+  const collab = useCollabSession(mindmapRoom(mindmapId), me.data ?? null);
   const {
     map,
     record,
@@ -59,7 +70,7 @@ export function MindMapWorkbench({
     saveError,
     update,
     reload,
-  } = useMindMap(mindmapId);
+  } = useMindMap(mindmapId, collab.session);
   const [selectedId, setSelectedId] = useState<MindNodeId | null>(null);
 
   if (loading && !map) return <StageSkeleton onClose={onClose} />;
@@ -127,6 +138,20 @@ export function MindMapWorkbench({
           )}
 
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
+            {collab.connected && <Presence peers={collab.peers} />}
+            {/* Owners only. Everybody else is not offered a control the engine
+                would refuse — and it WOULD refuse it: `mayManage` runs again on
+                the route, because a hidden button is courtesy, not a
+                permission. */}
+            {record && canManage(record, me.data?.id ?? null) && (
+              <ShareMenu
+                target={{ kind: "mindmap", id: record.id, noun: "mindmap" }}
+                members={record.members}
+                /* The record carries the member list this panel edits, so it
+                   has to be re-read for the panel to show what it just did. */
+                onChanged={reload}
+              />
+            )}
             {root && !readOnly && (
               <Button size="sm" onClick={() => handleAddChild(root.id)}>
                 Add card
@@ -148,6 +173,21 @@ export function MindMapWorkbench({
             <InlineError message={saveError} onRetry={reload} />
           </div>
         )}
+
+        {/* Which mode is ACTUALLY in force, rather than a claim that the
+            feature exists. A live session that quietly fell back to
+            single-writer is the one failure people must not be left guessing
+            about — two of them would overwrite each other's branches believing
+            they were collaborating. Mirrors the same line in `DocumentEditor`,
+            deliberately in the same words. */}
+        <p className="mb-2 text-[10px] leading-snug text-ink-faint">
+          {readOnly
+            ? (readOnlyReason ?? "You have view access.")
+            : collab.connected
+              ? "Edits are shared live. Everyone on this mindmap sees them as you draw."
+              : (collab.reason ??
+                "Working offline — edits are saved to this mindmap, but nobody else sees them live.")}
+        </p>
 
         {!root ? (
           <Panel>

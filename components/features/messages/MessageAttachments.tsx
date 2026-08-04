@@ -26,14 +26,39 @@ import {
   driveFileIdFrom,
   driveImageSrc,
   driveProxySrc,
+  driveViewUrl,
 } from "@/lib/rules/media/driveUrls";
 
 export const MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
 
-/** Where to actually fetch an attachment. Drive-hosted media (`fileId` set)
- *  streams through the backend proxy that loads; anything else serves its own URL. */
+/** Where to actually fetch an attachment's BYTES. Drive-hosted media (`fileId`
+ *  set) streams through the backend proxy that loads; anything else serves its
+ *  own URL. This is the right URL for an `<img>`, an `<audio>` and a download —
+ *  and the wrong one for "open this in a tab", which is {@link mediaOpenUrl}. */
 export function mediaUrl(a: MessageAttachment): string {
   return (a.fileId && driveProxySrc(MEDIA_BASE, a.fileId)) || a.url;
+}
+
+/**
+ * Where "open this document" should go: Drive's own page.
+ *
+ * ## Why this is not `mediaUrl`
+ *
+ * `mediaUrl` answers with the byte proxy, and for a PDF that meant clicking a
+ * file in a thread opened `backend.grav.in/cowork/media/view/<id>` — the right
+ * bytes under a URL that reads as though the file lives on our server. It does
+ * not; it is in Drive, and the id in that path is the Drive id. Sending the
+ * reader to Drive says so, and hands them a viewer with pagination, print and
+ * download rather than a bare stream.
+ *
+ * **Bytes still come from the proxy.** This is only ever an `href` for a human
+ * to follow. An `<img>`, an `<audio>` and the download all keep `mediaUrl`,
+ * because Drive's page is HTML — pointing a tag that expects bytes at it is what
+ * produced the 85 KB "PDF" that was actually Google's markup.
+ */
+export function mediaOpenUrl(a: MessageAttachment): string {
+  const id = a.fileId || driveFileIdFrom(a.url);
+  return id ? driveViewUrl(id) : a.url;
 }
 
 /**
@@ -226,7 +251,10 @@ export function MessageAttachments({
         return (
           <a
             key={i}
-            href={src}
+            /* Drive's own page, not the byte proxy: this is a link a person
+               follows, and Drive reads a PDF better than a raw stream does.
+               The `<audio>` above keeps `src` because it needs bytes. */
+            href={mediaOpenUrl(a)}
             target="_blank"
             rel="noopener noreferrer"
             className={`flex w-full items-center gap-2.5 rounded-[10px] p-2 ${

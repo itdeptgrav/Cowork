@@ -42,6 +42,8 @@ import { PageBreak } from "@/lib/documents/extensions/pageBreak";
 import { SearchHighlight } from "@/lib/documents/extensions/searchHighlight";
 import { ShareMenu } from "./ShareMenu";
 import { useCollabSession } from "./useCollabSession";
+import { Presence } from "./Presence";
+import { documentRoom } from "@/lib/rules/workspace/collabRoom";
 import { caretRender, caretSelection } from "./collabCaret";
 import { DocIcon } from "./docs/DocsIcons";
 import { DocsAssistant } from "./ai/DocsAssistant";
@@ -135,7 +137,7 @@ export function DocumentEditor({
   const doc = useQuery((r) => r.getDocument(documentId), [documentId]);
   const body = useQuery((r) => r.getDocumentBody(documentId), [documentId]);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
-  const collab = useCollabSession(documentId, me.data ?? null);
+  const collab = useCollabSession(documentRoom(documentId), me.data ?? null);
 
   const myRole = doc.data ? roleOf(doc.data, me.data?.id ?? null) : null;
   const refusal = doc.data ? editRefusal(doc.data, me.data?.id ?? null) : null;
@@ -751,7 +753,11 @@ export function DocumentEditor({
         <div className="flex shrink-0 items-center gap-1.5 pt-1">
           {collab.connected && <Presence peers={collab.peers} />}
           {canManage(record, me.data?.id ?? null) && (
-            <ShareMenu document={record} onChanged={doc.refetch} />
+            <ShareMenu
+              target={{ kind: "document", id: record.id, noun: "document" }}
+              members={record.members}
+              onChanged={doc.refetch}
+            />
           )}
           {mayEdit && (
             <button
@@ -1065,34 +1071,6 @@ export function DocumentEditor({
   );
 }
 
-/**
- * How many people are in the document.
- *
- * The count and not the names: awareness carries a display name per caret and
- * the carets already show them where the work is happening. A second list of
- * the same names in the header is the same fact twice.
- */
-function Presence({ peers }: { peers: number }) {
-  return (
-    <span
-      className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted"
-      title="Live collaboration is on"
-    >
-      <span
-        aria-hidden="true"
-        className="h-1.5 w-1.5 rounded-full"
-        style={{ background: "var(--state-positive)" }}
-      />
-      {peers > 0 ? (
-        <>
-          <span data-figure>{peers + 1}</span> editing
-        </>
-      ) : (
-        "Live"
-      )}
-    </span>
-  );
-}
 
 function SaveState({
   status,
