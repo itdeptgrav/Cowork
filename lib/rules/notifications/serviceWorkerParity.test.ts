@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import { notificationHref, notificationTarget } from "./target.ts";
 
+
+
 /**
  * The service worker routes push clicks, and it cannot import this rule.
  *
