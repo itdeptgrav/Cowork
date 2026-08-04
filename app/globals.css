@@ -104,6 +104,9 @@
   --slab-screen: rgba(0, 0, 0, 0.34);
 
   --frost-bar: rgba(248, 248, 250, 0.94);
+  /* The opaque twin, for panels that land on top of a form control. Same value
+     `[data-perf="plain"]` uses when it drops the blur. */
+  --frost-bar-solid: rgb(248, 248, 250);
   --frost-panel: rgba(232, 232, 234, 0.8);
   --hairline: rgba(10, 10, 10, 0.12);
   --hairline-slab: rgba(255, 255, 255, 0.1);
@@ -261,6 +264,7 @@
   --slab-screen: rgba(255, 255, 255, 0.16);
 
   --frost-bar: rgba(24, 24, 28, 0.92);
+  --frost-bar-solid: rgb(24, 24, 28);
   --frost-panel: rgba(32, 32, 37, 0.74);
   --hairline: rgba(255, 255, 255, 0.11);
   --hairline-slab: rgba(255, 255, 255, 0.09);
@@ -391,6 +395,27 @@
     background-color: var(--color-frost-bar);
     backdrop-filter: blur(28px) saturate(1.6);
     -webkit-backdrop-filter: blur(28px) saturate(1.6);
+    box-shadow:
+      var(--shadow-deck-seat),
+      inset 0 1px 0 var(--frost-lip, rgba(255, 255, 255, 0.6));
+  }
+
+  /**
+   * The same deck surface, but OPAQUE.
+   *
+   * Frost is right over the page — it says "this floats above what you were
+   * reading". It is wrong over a FORM CONTROL: at 0.92 alpha the field's own
+   * border and corner show through, and the panel stops reading as a thing on
+   * top and starts reading as part of the input underneath. That is what made
+   * the AI assist popover over the Description field look like one broken
+   * widget rather than two separate ones.
+   *
+   * The colours are the ones `[data-perf="plain"]` already uses when it drops
+   * the filter, so this is the system's own opaque frost rather than a new
+   * shade invented for one popover.
+   */
+  .frost-bar-solid {
+    background-color: var(--frost-bar-solid);
     box-shadow:
       var(--shadow-deck-seat),
       inset 0 1px 0 var(--frost-lip, rgba(255, 255, 255, 0.6));

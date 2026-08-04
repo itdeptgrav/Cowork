@@ -70,6 +70,12 @@ export function AiTextAssistButton({
     <Popover
       label={label}
       align="right"
+      /* Opaque: this lands on the field BELOW, and frost at 0.92 alpha let that
+         field's border through so the two read as one broken box. */
+      solid
+      /* Clear of the sparkle column, so the next field's button stays clickable
+         in one click while this is open. See `insetEnd`. */
+      insetEnd
       trigger={({ open, toggle }) => (
         <button
           type="button"

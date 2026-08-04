@@ -409,18 +409,35 @@ function WithdrawConfirm({
       className="fixed inset-0 z-[95] grid place-items-center p-4"
     >
       {/* The scrim is a button so Escape-less dismissal works by click and is
-          reachable by keyboard, matching the other dialogs in this product. */}
+          reachable by keyboard, matching the other dialogs in this product.
+          `--body-bg`/60 with a 4px blur is what every other dialog uses; the
+          flat `bg-black/50` this had instead read as a different product. */}
       <button
         type="button"
         aria-label="Keep this request"
         onClick={() => !pending && onCancel()}
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 cursor-default bg-[var(--body-bg)]/60 backdrop-blur-[4px]"
       />
-      <div className="relative w-full max-w-[42ch] rounded-inset bg-[var(--surface)] p-5 shadow-lg">
-        <h2 id="mrf-withdraw-title" className="text-sm font-medium text-ink">
+      {/**
+       * `frost-panel`, the surface every other dialog in this product uses.
+       *
+       * This said `bg-[var(--surface)]`, and **there is no such token** — the
+       * system defines `--surface-raised` and `--surface-sunken` and nothing
+       * called `--surface`. An undefined custom property with no fallback makes
+       * the declaration invalid at computed-value time, so `background-color`
+       * fell back to `transparent`: the panel had no surface at all and the
+       * scrim showed straight through it. The dialog was rendering correctly
+       * and was simply invisible, which is why it read as washed-out page
+       * rather than as a broken dialog.
+       */}
+      <div className="frost-panel relative w-[min(460px,96vw)] rounded-panel px-6 py-5">
+        <h2
+          id="mrf-withdraw-title"
+          className="text-[22px] leading-tight font-light tracking-[-0.03em] text-ink"
+        >
           Withdraw {request.mrfNumber}?
         </h2>
-        <p className="mt-2 text-xs leading-relaxed text-ink-muted">
+        <p className="mt-1.5 max-w-[56ch] text-sm leading-relaxed text-ink-muted">
           {request.items.length === 1
             ? `“${request.items[0].name}” will be withdrawn.`
             : `${request.items.length} items will be withdrawn.`}{" "}

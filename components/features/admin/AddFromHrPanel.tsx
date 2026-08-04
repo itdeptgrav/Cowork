@@ -196,14 +196,14 @@ export function AddFromHrPanel() {
             value={search}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search name, email or ID…"
-            className="w-full rounded-inset border border-hairline bg-[var(--surface)] py-1.5 pr-3 pl-8 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-ink/20"
+            className="w-full rounded-inset border border-hairline bg-[var(--surface-sunken)] py-1.5 pr-3 pl-8 text-[13px] text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-ink/20"
           />
         </div>
 
         <select
           value={dept}
           onChange={(e) => onDept(e.target.value)}
-          className="rounded-inset border border-hairline bg-[var(--surface)] px-2.5 py-1.5 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-ink/20"
+          className="rounded-inset border border-hairline bg-[var(--surface-sunken)] px-2.5 py-1.5 text-[13px] text-ink focus:outline-none focus:ring-1 focus:ring-ink/20"
         >
           <option value="all">All departments</option>
           {departments.map((d) => (
