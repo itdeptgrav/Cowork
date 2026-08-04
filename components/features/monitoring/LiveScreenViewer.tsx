@@ -105,9 +105,19 @@ function ViewerFrame({
       </header>
 
       {match ? (
+        /* `absolute inset-0` rather than a normal flow child with `h-full`:
+           a screen shared from a phone or an iPad in portrait has a native
+           resolution far taller than it is wide, and a plain `<video>` sized
+           by `height: 100%` inside a container whose own height derives from
+           its content falls back to the video's OWN intrinsic aspect ratio —
+           which then dictates this section's height instead of the other way
+           around, turning one portrait share into a tile hundreds of pixels
+           taller than every other. Taking it out of flow entirely means it
+           can only ever fill whatever box this section already has (from
+           `min-h-[320px]` / `flex-1` above), for any source aspect ratio. */
         <VideoTrack
           trackRef={match}
-          className="h-full w-full flex-1 object-contain"
+          className="absolute inset-0 h-full w-full object-contain"
         />
       ) : (
         <ViewerPlaceholder

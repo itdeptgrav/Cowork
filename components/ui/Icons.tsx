@@ -315,6 +315,16 @@ export const Icon = {
       <path d="M2.6 11.4v1a1.4 1.4 0 0 0 1.4 1.4h8a1.4 1.4 0 0 0 1.4-1.4v-1" />
     </S>
   ),
+  /** SPARKLE — the AI-assist glyph. Filled, unlike the rest of this outline set. */
+  sparkle: (p: P) => (
+    <S {...p}>
+      <path
+        d="M8 2.2c.35 2.05 1.05 3.4 2.05 4.4s2.35 1.7 4.4 2.05c-2.05.35-3.4 1.05-4.4 2.05s-1.7 2.35-2.05 4.4c-.35-2.05-1.05-3.4-2.05-4.4S3.6 9.6 1.55 9.25c2.05-.35 3.4-1.05 4.4-2.05S7.65 4.25 8 2.2Z"
+        fill="currentColor"
+        stroke="none"
+      />
+    </S>
+  ),
 };
 
 export type IconName = keyof typeof Icon;

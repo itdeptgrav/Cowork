@@ -10,6 +10,7 @@ import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
 import { NewAssignmentGate } from "@/components/features/tasks/NewAssignmentGate";
+import { NotificationPrompt } from "@/components/features/notifications/NotificationPrompt";
 import { GlobalCommandPalette } from "./GlobalCommandPalette";
 import { SessionProvider, useSession } from "@/components/features/auth/SessionProvider";
 

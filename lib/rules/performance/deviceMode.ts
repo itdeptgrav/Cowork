@@ -178,10 +178,12 @@ export function performanceProfile(mode: DeviceMode): PerformanceProfile {
  * greppable: somebody adding `heartbeatMs` to the profile above will find this
  * and the reason.
  *
- * `readDutyMode` treats a beat older than `STALE_AFTER_MS` (120s) as offline.
- * The interval is 45s, which gives two chances to land inside the window before
- * anybody is marked away. Slowing it to save a request would mark working people
- * as offline — and the offline gate then refuses to start their timer.
+ * `readDutyMode` treats a beat older than `PRESENCE_STALE_AFTER_MS` (600s) as
+ * offline. The interval is 45s, which lands well inside that window. Slowing it
+ * to save a request would mark working people as offline — and the offline gate
+ * then refuses to start their timer. The clamp below still divides the tighter
+ * `STALE_AFTER_MS` on purpose: beating inside the shorter window costs nothing
+ * and is what keeps the timer's own bankable grace honest.
  */
 export function heartbeatIntervalMs(_mode: DeviceMode): number {
   void _mode;

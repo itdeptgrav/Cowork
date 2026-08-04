@@ -5,6 +5,7 @@ import { ScreenShareBridge } from "./ScreenShareBridge";
 import { ScreenSharePublisher } from "./ScreenSharePublisher";
 import { useEmployeeStatus } from "./useEmployeeStatus";
 import { endSession } from "@/lib/status/employeeStatus";
+import { isNativeShell } from "@/lib/integrations/livekit/nativeBridge";
 
 /**
  * Cowork's LiveKit room, mounted once by the shell.
@@ -30,6 +31,12 @@ import { endSession } from "@/lib/status/employeeStatus";
  */
 export function PresenceRoom() {
   const { token, url } = useEmployeeStatus();
+
+  /* In the native shell, the Swift `Room` already holds this identity's only
+     connection — publishing the ReplayKit capture and reporting share state
+     over the bridge. A second connection here, as the same participant,
+     would be rejected by LiveKit as a duplicate identity. */
+  if (isNativeShell()) return null;
 
   if (!token || !url) return null;
 

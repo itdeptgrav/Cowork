@@ -8,7 +8,7 @@ import { useLens } from "./LensContext";
 import { ThemeToggle } from "./ThemeToggle";
 import { Avatar } from "@/components/ui/Avatar";
 import { ActiveWorkPill } from "@/components/features/tasks/TimerControl";
-import { useQuery } from "@/lib/hooks/useRepository";
+import { useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { useWheelPan } from "@/lib/hooks/useWheelPan";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
 import { useViewerId } from "@/lib/hooks/usePermissions";

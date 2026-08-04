@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import { FileUploader } from "@/components/features/attachments/Attachments";
+import { AiTextAssistButton } from "@/components/ui/AiTextAssist";
 import { DurationField } from "./DurationField";
 import { Breadcrumb } from "@/components/ui/Workspace";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@/lib/auth/assignment";
 import { RELATIONSHIP_COPY } from "./relationshipCopy";
 import { allowsMultipleAssignees } from "@/lib/rules/tasks/assignment";
+import { improveText, textSignature } from "@/lib/workspace/ai/textAssist";
 import type { TaskType } from "@/lib/domain";
 
 /**
@@ -132,6 +134,63 @@ export function NewTaskForm({
   const [description, setDescription] = useState("");
   const [requirements, setRequirements] = useState<string[]>([]);
   const [reqDraft, setReqDraft] = useState("");
+
+  /**
+   * The mandatory spelling/grammar gate on Title + Description.
+   *
+   * `grammarCheckedFor` holds the signature of the title+description pair the
+   * check last ran against. "Checked" means the pass ran and its findings
+   * were looked at — not that its suggestions were accepted, because a person
+   * is always allowed to keep their own wording once they've seen what the
+   * assistant would change. Editing either field afterward changes the
+   * signature and re-engages the gate. Same pattern as `MailCompose.tsx`'s
+   * send gate, sharing `textSignature` from `lib/workspace/ai/textAssist.ts`.
+   */
+  const [grammarCheckedFor, setGrammarCheckedFor] = useState<string | null>(null);
+  const [checkingGrammar, setCheckingGrammar] = useState(false);
+  const [grammarError, setGrammarError] = useState<string | null>(null);
+  const [grammarSuggestions, setGrammarSuggestions] = useState<{
+    title?: string;
+    description?: string;
+    signature: string;
+  } | null>(null);
+  const grammarChecked = grammarCheckedFor === textSignature(title, description);
+
+  async function runGrammarCheck() {
+    const sig = textSignature(title, description);
+    setCheckingGrammar(true);
+    setGrammarError(null);
+    const [titleRes, descRes] = await Promise.all([
+      title.trim()
+        ? improveText({ text: title, mode: "grammar", surface: "task-title" })
+        : Promise.resolve(null),
+      description.trim()
+        ? improveText({ text: description, mode: "grammar", surface: "task-description" })
+        : Promise.resolve(null),
+    ]);
+    setCheckingGrammar(false);
+
+    if (titleRes && !titleRes.ok) return setGrammarError(titleRes.message);
+    if (descRes && !descRes.ok) return setGrammarError(descRes.message);
+
+    const titleFix =
+      titleRes && titleRes.ok && titleRes.text.trim() !== title.trim()
+        ? titleRes.text
+        : undefined;
+    const descriptionFix =
+      descRes && descRes.ok && descRes.text.trim() !== description.trim()
+        ? descRes.text
+        : undefined;
+
+    if (!titleFix && !descriptionFix) {
+      // Nothing to flag — the check ran and passed clean.
+      setGrammarCheckedFor(sig);
+      setGrammarSuggestions(null);
+      return;
+    }
+    setGrammarSuggestions({ title: titleFix, description: descriptionFix, signature: sig });
+  }
+
   const [assignees, setAssignees] = useState<string[]>([]);
   const [projectId, setProjectId] = useState(presetProjectId ?? "");
   const [parentTaskId, setParentTaskId] = useState(presetParentTaskId ?? "");
@@ -504,12 +563,23 @@ export function NewTaskForm({
               className="mt-3"
               error={state.errorField === "title" ? state.error : null}
             >
-              <Input
-                value={title}
-                onChange={(e) => setTitle(e.target.value)}
-                placeholder="What needs doing"
-                data-help="task-title-field"
-              />
+              <div className="relative">
+                <Input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="What needs doing"
+                  data-help="task-title-field"
+                  className="pr-9"
+                />
+                <div className="absolute top-1/2 right-1.5 -translate-y-1/2">
+                  <AiTextAssistButton
+                    value={title}
+                    onApply={setTitle}
+                    fieldLabel="Title"
+                    surface="task-title"
+                  />
+                </div>
+              </div>
             </Field>
             {/* No owning-department field. It is derived from the creator in
                 the repository and never asked for here: it decides whether the
@@ -520,11 +590,22 @@ export function NewTaskForm({
                 which is where filing work you are not part of belongs. */}
 
             <Field label="Description" className="mt-3">
-              <Textarea
-                rows={3}
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-              />
+              <div className="relative">
+                <Textarea
+                  rows={3}
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  className="pr-9"
+                />
+                <div className="absolute top-1.5 right-1.5">
+                  <AiTextAssistButton
+                    value={description}
+                    onApply={setDescription}
+                    fieldLabel="Description"
+                    surface="task-description"
+                  />
+                </div>
+              </div>
             </Field>
 
             <div className="mt-3">
@@ -555,18 +636,29 @@ export function NewTaskForm({
                 </ul>
               )}
               <div className="flex gap-2">
-                <Input
-                  value={reqDraft}
-                  onChange={(e) => setReqDraft(e.target.value)}
-                  placeholder="Add a criterion"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && reqDraft.trim()) {
-                      e.preventDefault();
-                      setRequirements((c) => [...c, reqDraft.trim()]);
-                      setReqDraft("");
-                    }
-                  }}
-                />
+                <div className="relative flex-1">
+                  <Input
+                    value={reqDraft}
+                    onChange={(e) => setReqDraft(e.target.value)}
+                    placeholder="Add a criterion"
+                    className="pr-9"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && reqDraft.trim()) {
+                        e.preventDefault();
+                        setRequirements((c) => [...c, reqDraft.trim()]);
+                        setReqDraft("");
+                      }
+                    }}
+                  />
+                  <div className="absolute top-1/2 right-1.5 -translate-y-1/2">
+                    <AiTextAssistButton
+                      value={reqDraft}
+                      onApply={setReqDraft}
+                      fieldLabel="Acceptance criterion"
+                      surface="task-criterion"
+                    />
+                  </div>
+                </div>
                 <Button
                   onClick={() => {
                     if (!reqDraft.trim()) return;
@@ -578,6 +670,99 @@ export function NewTaskForm({
                 </Button>
               </div>
             </div>
+
+            {/* The mandatory spelling/grammar gate — see `grammarChecked`
+                above and its use in the submit button's `disabled`. "Checked"
+                means the pass ran and was reviewed, not that its suggestions
+                were accepted: a person can always keep their own wording. */}
+            {(title.trim() || description.trim()) && (
+              <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-medium text-ink">
+                    {grammarChecked
+                      ? "✓ Spelling & grammar checked"
+                      : "Spelling & grammar check required before creating"}
+                  </p>
+                  <Button
+                    size="sm"
+                    tone="secondary"
+                    disabled={checkingGrammar}
+                    onClick={runGrammarCheck}
+                  >
+                    {checkingGrammar
+                      ? "Checking…"
+                      : grammarChecked
+                        ? "Re-check"
+                        : "Check now"}
+                  </Button>
+                </div>
+                {grammarError && (
+                  <p className="mt-1.5 text-[11px] text-[var(--state-overdue-ink)]">
+                    {grammarError}
+                  </p>
+                )}
+                {grammarSuggestions && (
+                  <div className="mt-2.5 space-y-2 border-t border-hairline pt-2.5">
+                    {grammarSuggestions.title && (
+                      <div>
+                        <p className="mb-1 text-[11px] text-ink-faint">
+                          Suggested title
+                        </p>
+                        <p className="rounded-inset bg-[var(--surface-raised)] p-2 text-sm text-ink">
+                          {grammarSuggestions.title}
+                        </p>
+                      </div>
+                    )}
+                    {grammarSuggestions.description && (
+                      <div>
+                        <p className="mb-1 text-[11px] text-ink-faint">
+                          Suggested description
+                        </p>
+                        <p className="max-h-32 overflow-y-auto rounded-inset bg-[var(--surface-raised)] p-2 text-sm whitespace-pre-wrap text-ink">
+                          {grammarSuggestions.description}
+                        </p>
+                      </div>
+                    )}
+                    <div className="flex flex-wrap justify-end gap-1.5">
+                      <Button
+                        size="sm"
+                        tone="ghost"
+                        onClick={() => setGrammarSuggestions(null)}
+                      >
+                        Keep editing
+                      </Button>
+                      <Button
+                        size="sm"
+                        tone="secondary"
+                        onClick={() => {
+                          setGrammarCheckedFor(grammarSuggestions.signature);
+                          setGrammarSuggestions(null);
+                        }}
+                      >
+                        Keep as written
+                      </Button>
+                      <Button
+                        size="sm"
+                        tone="primary"
+                        onClick={() => {
+                          const nextTitle = grammarSuggestions.title ?? title;
+                          const nextDescription =
+                            grammarSuggestions.description ?? description;
+                          setTitle(nextTitle);
+                          setDescription(nextDescription);
+                          setGrammarCheckedFor(
+                            textSignature(nextTitle, nextDescription),
+                          );
+                          setGrammarSuggestions(null);
+                        }}
+                      >
+                        Apply corrections
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </Panel>
 
           {/* 3 — people. */}
@@ -933,6 +1118,12 @@ export function NewTaskForm({
             <InlineError message={state.error} code={state.errorCode} />
           )}
 
+          {title.trim() && !grammarChecked && (
+            <p className="mb-2 text-[11px] text-ink-faint">
+              Run the spelling &amp; grammar check on Title/Description before creating this task.
+            </p>
+          )}
+
           <div className="flex justify-end gap-2">
             <Button onClick={() => router.back()}>Cancel</Button>
             <Button
@@ -943,6 +1134,7 @@ export function NewTaskForm({
                 !title.trim() ||
                 hasForbidden ||
                 needsAssignee ||
+                !grammarChecked ||
                 /* The claim the repository refuses without. Checked here so the
                    button is honest before the round trip, and there too so the
                    form can never permit what the engine rejects. */

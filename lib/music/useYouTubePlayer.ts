@@ -105,6 +105,7 @@ export function useYouTubePlayer({
   volume,
   muted,
   onEnded,
+  onFailed,
   onPlayingChange,
   enforceVisibility = true,
 }: {
@@ -122,6 +123,15 @@ export function useYouTubePlayer({
   volume: number;
   muted: boolean;
   onEnded: () => void;
+  /**
+   * The current track turned out to be unplayable — blocked, removed, a bad
+   * id, or simply never loading (the stall watchdog below). Called at most
+   * once per failure, same as `onEnded`, so the caller can advance past it
+   * the same way it advances past a track that finished normally. Without
+   * this a broken track just sits on its error message forever: nothing
+   * downstream currently treats "won't play" as a reason to move on.
+   */
+  onFailed?: () => void;
   onPlayingChange?: (playing: boolean) => void;
   /**
    * Whether the visibility guard is armed.
@@ -200,11 +210,13 @@ export function useYouTubePlayer({
   // Callbacks change every render; the API callbacks are registered once, so
   // they read through refs rather than capturing a stale closure.
   const endedRef = useRef(onEnded);
+  const failedRef = useRef(onFailed);
   const playingRef = useRef(onPlayingChange);
   useEffect(() => {
     endedRef.current = onEnded;
+    failedRef.current = onFailed;
     playingRef.current = onPlayingChange;
-  }, [onEnded, onPlayingChange]);
+  }, [onEnded, onFailed, onPlayingChange]);
 
   /* ── Create the player once per host element ─────────────────────────── */
   useEffect(() => {
@@ -296,6 +308,7 @@ export function useYouTubePlayer({
                   setPhase("error");
                   setMessage("The player could not start this track.");
               }
+              failedRef.current?.();
             },
           },
         });
@@ -405,6 +418,7 @@ export function useYouTubePlayer({
       setMessage(
         "This track is not loading. Your network or a regional restriction may be blocking it.",
       );
+      failedRef.current?.();
     }, 20_000);
     return () => clearTimeout(id);
     // `position` is read once when buffering begins, deliberately: adding it as
