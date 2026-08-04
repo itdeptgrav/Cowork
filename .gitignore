@@ -17,3 +17,8 @@ out/
 # records it as a gitlink with no .gitmodules entry, which is what "Failed to
 # fetch one or more git submodules" during a Vercel clone was coming from.
 .claude/worktrees/
+
+# Xcode per-user UI state — not shared, noisy in diffs
+ios-spike/**/xcuserdata/
+ios-spike/**/*.xcuserstate
+ios-spike/DerivedData/
