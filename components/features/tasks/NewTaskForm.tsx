@@ -138,7 +138,6 @@ export function NewTaskForm({
   const [description, setDescription] = useState("");
   const [requirements, setRequirements] = useState<string[]>([]);
   const [reqDraft, setReqDraft] = useState("");
-<<<<<<< HEAD
   /**
    * Which criterion is being edited, and the text as it is being typed.
    *
@@ -188,7 +187,6 @@ export function NewTaskForm({
       (i) => removeCriterion(requirements, index, i).editingIndex,
     );
   }
-=======
 
   /**
    * The mandatory spelling/grammar gate on Title + Description.
@@ -246,7 +244,6 @@ export function NewTaskForm({
     setGrammarSuggestions({ title: titleFix, description: descriptionFix, signature: sig });
   }
 
->>>>>>> origin/risheecf
   const [assignees, setAssignees] = useState<string[]>([]);
   const [projectId, setProjectId] = useState(presetProjectId ?? "");
   const [parentTaskId, setParentTaskId] = useState(presetParentTaskId ?? "");
