@@ -1,3 +1,7 @@
+/* Relative, not `@/lib`: this is a VALUE import, so it has to resolve at
+   runtime, and `node --test` runs these files without the tsconfig alias. The
+   type-only imports below are erased and can use either form. */
+import { SHARE_ROLE_LABEL, shareRoleHints } from "../workspace/sharing.ts";
 import type {
   CoworkDocument,
   DocumentMember,
@@ -32,17 +36,13 @@ const RANK: Record<DocumentRole, number> = {
   owner: 3,
 };
 
-export const ROLE_LABEL: Record<DocumentRole, string> = {
-  owner: "Owner",
-  editor: "Editor",
-  viewer: "Viewer",
-};
+/* The words themselves now live in `lib/rules/workspace/sharing.ts`, because
+   mindmaps grant the same three roles and show the same sharing panel. Re-
+   exported here under their original names so every existing reader of "a
+   document's role labels" still finds them where it looks. */
+export const ROLE_LABEL: Record<DocumentRole, string> = SHARE_ROLE_LABEL;
 
-export const ROLE_HINT: Record<DocumentRole, string> = {
-  owner: "Can edit, share and delete.",
-  editor: "Can edit the document.",
-  viewer: "Can read it. Cannot change anything.",
-};
+export const ROLE_HINT: Record<DocumentRole, string> = shareRoleHints("document");
 
 /** This person's role, or null if they are not in the document. */
 export function roleOf(

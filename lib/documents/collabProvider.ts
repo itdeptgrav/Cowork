@@ -4,7 +4,7 @@ import { readConfig } from "@/lib/legacy/config";
 import { PUBLIC_ENV } from "@/lib/legacy/publicEnv";
 
 /**
- * The live connection for one document.
+ * The live connection for one room — a document, a sheet or a mindmap.
  *
  * `y-socket.io` claims `/yjs|<room>` on the engine's existing Socket.IO server,
  * so this reaches the SAME origin every other engine call does — there is no
@@ -65,7 +65,14 @@ export interface CollabSession {
  * for somebody who has closed the document.
  */
 export function openCollabSession(input: {
-  documentId: string;
+  /**
+   * The room, NOT a bare record id.
+   *
+   * Build it with `documentRoom` / `mindmapRoom` — the name carries which kind
+   * of record it is, and the server authorises against that collection. See
+   * `lib/rules/workspace/collabRoom.ts`.
+   */
+  roomId: string;
   token: string;
   env?: Record<string, string | undefined>;
 }): CollabSession {
@@ -74,7 +81,7 @@ export function openCollabSession(input: {
 
   const provider = new SocketIOProvider(
     apiUrl,
-    input.documentId,
+    input.roomId,
     doc,
     {},
     /* `autoConnect` is on; the token travels in `auth`, which is the only

@@ -37,7 +37,12 @@
 // caches below. The browser already reinstalls the worker on any byte change;
 // this is what decides whether the OLD caches survive that reinstall, and it is
 // also what `/settings` reports as the installed version.
-const SW_VERSION = "1.0.0";
+// 1.1.0 — the bump is the RECOVERY, not bookkeeping. v1.0.0 cache-first'd
+// `/_next/static/` on dev hosts and pinned stale chunks in Cache Storage; the
+// activate handler below deletes every `cowork-*` cache that is not in `keep`,
+// so installing this version is what evicts the poisoned copies. Without the
+// bump the fix would ship and the bad bytes would stay.
+const SW_VERSION = "1.1.0";
 const STATIC_CACHE = `cowork-static-v${SW_VERSION}`;
 const ASSET_CACHE = `cowork-assets-v${SW_VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -94,6 +99,34 @@ self.addEventListener('activate', (event) => {
         })()
     );
 });
+
+/**
+ * Whether this is a development server.
+ *
+ * A worker has no build-time environment — it is a static file served as-is —
+ * so the host is the only signal available at runtime. These three are the ones
+ * `next dev` binds, and a production deployment is never reached at any of them.
+ */
+const DEV_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]', '::1']);
+function isDevHost() {
+    return DEV_HOSTS.has(self.location.hostname);
+}
+
+/**
+ * Whether the server has promised this URL's bytes will never change.
+ *
+ * The only condition under which cache-first is correct. `immutable`, or a
+ * max-age long enough that it can only mean a content-addressed asset — Next
+ * sends `max-age=31536000, immutable` for real build output, and `no-store` or
+ * a short max-age for anything it may re-emit.
+ */
+function isImmutable(res) {
+    const cc = res.headers.get('Cache-Control') || '';
+    if (/no-store|no-cache/i.test(cc)) return false;
+    if (/immutable/i.test(cc)) return true;
+    const maxAge = /max-age\s*=\s*(\d+)/i.exec(cc);
+    return maxAge ? Number(maxAge[1]) >= 86400 : false;
+}
 
 // ── Fetch ────────────────────────────────────────────────────────────────────
 //
@@ -160,14 +193,39 @@ self.addEventListener('fetch', (event) => {
         return;
     }
 
-    // ── Build output: cache first, because the URL contains the hash ─────────
+    // ── Build output ─────────────────────────────────────────────────────────
+    //
+    // **Cache-first here is only safe because the URL is content-addressed —
+    // and in development it is NOT.**
+    //
+    // This branch used to be unconditionally cache-first, justified by "the URL
+    // contains the hash, so it cannot change". That is true of `next build`, and
+    // false of `next dev`: Turbopack reuses stable chunk names
+    // (`components_1h3b84h._.js`) across edits, so one URL serves different
+    // bytes every time a file is saved. Cache-first pinned whichever version the
+    // browser saw FIRST, and served it forever.
+    //
+    // The result was a tab running code that existed in no build: the source was
+    // correct, the dev server was serving correct bytes, and the browser threw
+    // `useRepo is not defined` from a module that had not called it in days.
+    // Nothing fixed it, because the stale copy was in Cache Storage — it
+    // survived reloads, a deleted `.next`, and server restarts alike.
+    //
+    // So development is left entirely alone: no `respondWith`, so the browser
+    // fetches normally and nothing is stored. There is nothing to gain by
+    // caching dev output anyway — the server is on this machine.
     if (url.pathname.startsWith('/_next/static/')) {
+        if (isDevHost()) return;
         event.respondWith(
             caches.match(request).then(
                 (hit) =>
                     hit ||
                     fetch(request).then((res) => {
-                        if (res.ok) {
+                        // Stored only when the SERVER says the URL is immutable.
+                        // Belt and braces with the host check above: an asset
+                        // that is not content-addressed must never be pinned,
+                        // whatever host is serving it.
+                        if (res.ok && isImmutable(res)) {
                             const copy = res.clone();
                             caches.open(ASSET_CACHE).then((c) => c.put(request, copy));
                         }

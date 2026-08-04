@@ -5,6 +5,11 @@ import {
   requestScreenShare,
   type SharedSurface,
 } from "../integrations/livekit/capture.ts";
+import {
+  isNativeShell,
+  nativeStartScreenShare,
+  setNativeScreenShareListener,
+} from "../integrations/livekit/nativeBridge";
 
 /**
  * Employee presence, for the whole of Cowork.
@@ -258,6 +263,50 @@ export async function goOnline(
 
   commit({ ...state, session: "requesting", notice: null });
 
+  if (isNativeShell()) {
+    try {
+      const { token, url } = await fetchCredentials();
+      if (!token || !url) throw new Error("no credentials");
+
+      /* The native Room reports its own state changes (e.g. the system
+         "Stop Broadcast" bar) for as long as this session lasts — mirroring
+         what `ScreenShareBridge` does by watching the web room directly. */
+      setNativeScreenShareListener((isSharing) => {
+        if (isSharing) {
+          reportShare({
+            sharing: true,
+            connected: true,
+            surface: "entire_screen",
+            detail: "Sharing your entire screen.",
+          });
+        } else {
+          /* Not `endSession()`: on iOS this fires every time the phone locks,
+             and ending the session would publish offline instantly. Suspending
+             it keeps the durable claim alive for the grace window instead —
+             see `shareInterrupted`. */
+          shareInterrupted();
+        }
+      });
+
+      await nativeStartScreenShare(url, token);
+      commit({ ...state, session: "live", manual: null, breakStartedAt: null, emergencyStartedAt: null, token, url, notice: null });
+      reportShare({
+        sharing: true,
+        connected: true,
+        surface: "entire_screen",
+        detail: "Sharing your entire screen.",
+      });
+      return true;
+    } catch (e) {
+      commit({
+        ...state,
+        session: "idle",
+        notice: e instanceof Error ? e.message : "That app could not start a screen share.",
+      });
+      return false;
+    }
+  }
+
   let track: MediaStreamTrack;
   try {
     track = await requestScreenShare();
@@ -362,6 +411,37 @@ export function goOffline(): void {
 export function endSession(): void {
   pendingTrack = null;
   commit({ ...state, ...IDLE_SESSION, notice: null });
+}
+
+/**
+ * The share DIED rather than being given up — the phone locked, the broadcast
+ * was torn down by iOS, the connection dropped.
+ *
+ * Distinct from `endSession` in exactly one respect, and it is the whole point:
+ * it leaves `reconnecting` set. `DutySync` publishes nothing while that flag is
+ * up, so the durable `cowork_duty_status` claim is neither renewed nor revoked
+ * — it simply keeps its last heartbeat and lapses on its own once
+ * `PRESENCE_STALE_AFTER_MS` has passed. Resume inside that window and the claim
+ * was never broken; stay away and it expires without anybody writing anything.
+ *
+ * **Why not just write offline immediately.** On iOS a locked screen kills the
+ * broadcast every single time, and ReplayKit will not restart without a fresh
+ * tap. Publishing offline the instant it dies marked people absent for putting
+ * their phone in a pocket. Presence is not local here — it is what a manager
+ * reads — so the flap was visible to everyone.
+ *
+ * The person is still OFFLINE locally (`derive` is unmoved: online is a live
+ * share and nothing else). This governs only how long the shared claim outlives
+ * the share.
+ */
+export function shareInterrupted(): void {
+  pendingTrack = null;
+  commit({
+    ...state,
+    ...IDLE_SESSION,
+    reconnecting: true,
+    notice: "Screen sharing stopped. Resume to stay online.",
+  });
 }
 
 /* ── Manual states ────────────────────────────────────────────────────────── */

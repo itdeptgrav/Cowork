@@ -77,6 +77,31 @@ export function driveProxySrc(
 }
 
 /**
+ * Drive's own page for a file — where "open this" should actually go.
+ *
+ * ## Why this exists alongside the proxy
+ *
+ * The proxy streams BYTES, which is what an `<img>`, an `<audio>` and a download
+ * need. Opening a document in a new tab is a different job: the person wants to
+ * READ a PDF, and Drive's viewer does that better than a raw byte stream — it
+ * paginates, it has a thumbnail rail, print and download, and it is the page
+ * they already recognise. Sending them to `backend.grav.in/cowork/media/view/<id>`
+ * instead shows the same bytes under a URL that looks like the file is stored on
+ * our server, which is the thing this product had to keep explaining.
+ *
+ * **Only for files that are public.** `finalizeDriveFile` grants
+ * `role: reader, type: anyone` to chat and message attachments, document images
+ * and mind-map pictures, so this link works for the people who can already see
+ * the record. **Task attachments are stored privately with no grant at all** —
+ * handing one of those to this function produces a link that shows Google's
+ * "you need access" page, so those keep streaming through the authenticated
+ * proxy. The same boundary `driveImageSrc` observes, for the same reason.
+ */
+export function driveViewUrl(fileId: string): string {
+  return `https://drive.google.com/file/d/${fileId}/view`;
+}
+
+/**
  * The Drive file id inside a URL, or null.
  *
  * Every shape the two systems have ever stored, because the field they are read

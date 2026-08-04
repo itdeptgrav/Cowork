@@ -11,6 +11,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useMusic } from "./MusicContext";
 import { ResultRow } from "./ResultRow";
+import { StartHereGrid, StartHereGridSkeleton } from "./StartHereGrid";
 import { PlayerControls } from "./PlayerControls";
 import { PlaylistsCard } from "./PlaylistsCard";
 import { Icon } from "@/components/ui/Icons";
@@ -71,6 +72,27 @@ export function MusicArea({
     setSyncedQuery(music.search.query);
     setDraft(music.search.query);
   }
+
+  /* Curated per listener rather than five fixed genres for everyone: their own
+     recent searches lead (free — the same local history the inline search
+     suggestions above already use), and the generic presets fill whatever's
+     left so the panel is never thin for someone who hasn't searched yet. */
+  const personalHistory = music.recentSearches.filter((r) => r.trim().length > 0);
+  const startHerePresets = [
+    ...personalHistory.slice(0, 3),
+    ...FOCUS_PRESETS.filter(
+      (p) => !personalHistory.some((r) => r.toLowerCase() === p.toLowerCase()),
+    ),
+  ].slice(0, 5);
+
+  /* Real thumbnail cards for "Start here" instead of plain text prompts.
+     Fetched once per distinct preset set — `loadStartHere` no-ops on a
+     repeat — and only while the panel that shows them is mounted at all. */
+  useEffect(() => {
+    if (!enabled) return;
+    music.loadStartHere(startHerePresets.slice(0, 3));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, startHerePresets.join("|")]);
 
   if (!enabled) {
     return (
@@ -204,27 +226,42 @@ export function MusicArea({
           >
             {s.status === "idle" ? (
               <div className="px-5 pb-2">
-                <EmptyState
-                  compact
-                  title="Search for something to play"
-                  body="Cowork searches music only — songs, artists and albums. Suggestions below are a starting point."
-                />
-                <ul className="mt-1 flex flex-wrap gap-1.5 pb-2">
-                  {FOCUS_PRESETS.map((p) => (
-                    <li key={p}>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDraft(p);
-                          music.runSearch(p);
-                        }}
-                        className="rounded-full bg-[var(--control)] px-3 py-1.5 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
-                      >
-                        {p}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
+                {/* A caption, not another `EmptyState` — the Card's own title
+                    already says "Start here", so a second, bigger one here
+                    (plus `EmptyState`'s 32px-a-side padding, sized for a
+                    genuinely empty placeholder) was pure dead space sitting
+                    above a panel that's about to be full of thumbnails. */}
+                <p className="pt-3 pb-2 text-xs text-ink-faint">
+                  {personalHistory.length > 0
+                    ? "A few of these are from your own recent searches."
+                    : "Cowork searches music only — songs, artists and albums."}
+                </p>
+                {music.startHere.status === "loading" ? (
+                  <StartHereGridSkeleton />
+                ) : music.startHere.status === "ready" &&
+                  music.startHere.items.length > 0 ? (
+                  <StartHereGrid items={music.startHere.items} />
+                ) : (
+                  /* The grid found nothing (or the search failed) — the plain
+                     query chips still work as a fallback so the panel is
+                     never a dead end. */
+                  <ul className="mt-1 flex flex-wrap gap-1.5 pb-2">
+                    {startHerePresets.map((p) => (
+                      <li key={p}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDraft(p);
+                            music.runSearch(p);
+                          }}
+                          className="rounded-full bg-[var(--control)] px-3 py-1.5 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+                        >
+                          {p}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
             ) : s.status === "searching" ? (
               <div className="px-5 py-3">
@@ -423,7 +460,13 @@ function NowPlaying({ mode }: { mode: "audio" | "video" }) {
   }
 
   return (
-    <div className="deck:sticky deck:top-[84px]">
+    /* `z-10` matters here, not just visually — without a stacking context of
+       its own, this sticky panel is painted UNDER whatever normal-flow
+       sibling (the Queue list) scrolls up into the same screen region,
+       because later DOM order wins ties when neither element is positioned
+       with a z-index. That reads as the Queue's rows overlapping this card's
+       own text rather than scrolling politely behind it. */
+    <div className="deck:sticky deck:top-[84px] deck:z-10">
       <Card title="Now playing" padded={false}>
         <div className="px-4 pb-4">
           {mode === "video" ? (
@@ -512,13 +555,7 @@ function NowPlaying({ mode }: { mode: "audio" | "video" }) {
                 is the audio-only surface.
               </>
             ) : (
-              <>
-                Audio only — no video on this page.{" "}
-                <Link href="/yt" className="underline underline-offset-2">
-                  Open in YouTube view
-                </Link>{" "}
-                to watch.
-              </>
+              "Audio only — no video on this page."
             )}
           </p>
         </div>

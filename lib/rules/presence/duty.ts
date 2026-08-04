@@ -56,6 +56,32 @@ export const HEARTBEAT_INTERVAL_MS = 45_000;
 export const STALE_AFTER_MS = 120_000;
 
 /**
+ * How old a heartbeat may be before **presence** stops believing "online".
+ *
+ * Deliberately LONGER than `STALE_AFTER_MS`, and deliberately a separate
+ * constant rather than a wider value for that one — the two answer different
+ * questions and only one of them is safe to loosen:
+ *
+ *  · `STALE_AFTER_MS` also caps how much of a running timer is BANKABLE
+ *    (`graceMs` in `pauseTimer`). Widening it would credit up to this long of
+ *    unworked time every time a device slept, which is the "1:59:39 for a
+ *    five-minute run" fault its own comment describes. It stays at two minutes.
+ *  · This one only decides how long a dot stays green after the beats stop.
+ *    Nothing is paid, credited or gated on it.
+ *
+ * Ten minutes, because a phone that locks kills the ReplayKit broadcast
+ * immediately and iOS will not let it restart without a fresh tap — so a
+ * screen going dark for a moment is a routine event, not evidence somebody
+ * left. Two minutes turned every pocket-lock into a departure.
+ *
+ * **The cost is stated rather than hidden**: for up to this long, a manager can
+ * read someone as online and find no live screen if they open it. That is a
+ * real widening of the rule `derive()` states — online is a live share — and it
+ * is accepted here only because the alternative marked present people absent.
+ */
+export const PRESENCE_STALE_AFTER_MS = 600_000;
+
+/**
  * The presence document, as legacy stores it.
  *
  * Field names are legacy's and are not up for tidying — the old app reads and
@@ -134,7 +160,7 @@ export function isStale(doc: DutyDocument | null, nowMs: number): boolean {
   if (storedMode(doc) !== "online") return false;
   const beat = typeof doc.heartbeatAt === "number" ? doc.heartbeatAt : null;
   if (beat === null) return true;
-  return nowMs - beat > STALE_AFTER_MS;
+  return nowMs - beat > PRESENCE_STALE_AFTER_MS;
 }
 
 /**

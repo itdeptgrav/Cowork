@@ -10,10 +10,12 @@ import {
   Input,
   Textarea,
 } from "@/components/ui/Primitives";
+import { AiTextAssistButton } from "@/components/ui/AiTextAssist";
 import { RecipientField } from "./RecipientField";
 import { recipientRefusal } from "@/lib/rules/mail/blindCopy";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { sendRefusal, transportNotice } from "@/lib/integrations/mail/transport";
+import { improveText, textSignature } from "@/lib/workspace/ai/textAssist";
 import type { MailMessage, MailParty } from "@/lib/domain";
 
 /**
@@ -91,6 +93,59 @@ export function MailCompose({
       : "",
   );
 
+  /**
+   * The mandatory spelling/grammar gate.
+   *
+   * `grammarCheckedFor` holds the signature of the subject+body pair the
+   * check last ran against. "Checked" means the pass ran and its findings
+   * were looked at — not that its suggestions were accepted, because a
+   * person is always allowed to send their own wording once they've seen
+   * what the assistant would change. Editing either field afterward changes
+   * the signature and re-engages the gate.
+   */
+  const [grammarCheckedFor, setGrammarCheckedFor] = useState<string | null>(null);
+  const [checkingGrammar, setCheckingGrammar] = useState(false);
+  const [grammarError, setGrammarError] = useState<string | null>(null);
+  const [grammarSuggestions, setGrammarSuggestions] = useState<{
+    subject?: string;
+    body?: string;
+    signature: string;
+  } | null>(null);
+  const grammarChecked = grammarCheckedFor === textSignature(subject, body);
+
+  async function runGrammarCheck() {
+    const sig = textSignature(subject, body);
+    setCheckingGrammar(true);
+    setGrammarError(null);
+    const [subjectRes, bodyRes] = await Promise.all([
+      subject.trim()
+        ? improveText({ text: subject, mode: "grammar", surface: "mail-subject" })
+        : Promise.resolve(null),
+      body.trim()
+        ? improveText({ text: body, mode: "grammar", surface: "mail-body" })
+        : Promise.resolve(null),
+    ]);
+    setCheckingGrammar(false);
+
+    if (subjectRes && !subjectRes.ok) return setGrammarError(subjectRes.message);
+    if (bodyRes && !bodyRes.ok) return setGrammarError(bodyRes.message);
+
+    const subjectFix =
+      subjectRes && subjectRes.ok && subjectRes.text.trim() !== subject.trim()
+        ? subjectRes.text
+        : undefined;
+    const bodyFix =
+      bodyRes && bodyRes.ok && bodyRes.text.trim() !== body.trim() ? bodyRes.text : undefined;
+
+    if (!subjectFix && !bodyFix) {
+      // Nothing to flag — the check ran and passed clean.
+      setGrammarCheckedFor(sig);
+      setGrammarSuggestions(null);
+      return;
+    }
+    setGrammarSuggestions({ subject: subjectFix, body: bodyFix, signature: sig });
+  }
+
   const everyone = [...recipients, ...cc, ...bcc];
   const taken = new Set(everyone.map((p) => p.address));
   /* All three fields decide the transport. One external address in Bcc takes
@@ -107,7 +162,8 @@ export function MailCompose({
       recipients: everyone,
       subject,
       gmailAvailable: gmail.data?.connected ?? false,
-    });
+    }) ??
+    (!grammarChecked ? "Run the spelling & grammar check before sending." : null);
 
   /**
    * Send.
@@ -263,12 +319,134 @@ export function MailCompose({
           )}
 
           <Field label="Subject" required className="mt-4">
-            <Input value={subject} onChange={(e) => setSubject(e.target.value)} />
+            <div className="relative">
+              <Input
+                value={subject}
+                onChange={(e) => setSubject(e.target.value)}
+                className="pr-9"
+              />
+              <div className="absolute top-1/2 right-1.5 -translate-y-1/2">
+                <AiTextAssistButton
+                  value={subject}
+                  onApply={setSubject}
+                  fieldLabel="Subject"
+                  surface="mail-subject"
+                />
+              </div>
+            </div>
           </Field>
 
           <Field label="Message" className="mt-4">
-            <Textarea rows={8} value={body} onChange={(e) => setBody(e.target.value)} />
+            <div className="relative">
+              <Textarea
+                rows={8}
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                className="pr-9"
+              />
+              <div className="absolute top-1.5 right-1.5">
+                <AiTextAssistButton
+                  value={body}
+                  onApply={setBody}
+                  fieldLabel="Message"
+                  surface="mail-body"
+                />
+              </div>
+            </div>
           </Field>
+
+          {/* A grammar/spelling pass is mandatory before send — see `refusal`
+              below, which folds `grammarRefusal` into the same one-reason
+              gate as the recipient and transport checks. This panel is where
+              that check actually runs and where its findings are reviewed;
+              "checked" means the pass ran and was looked at, not that its
+              suggestions were accepted — a person is always allowed to send
+              their own wording. */}
+          {(subject.trim() || body.trim()) && (
+            <div className="mt-4 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-xs font-medium text-ink">
+                  {grammarChecked
+                    ? "✓ Spelling & grammar checked"
+                    : "Spelling & grammar check required before sending"}
+                </p>
+                <Button
+                  size="sm"
+                  tone="secondary"
+                  disabled={checkingGrammar}
+                  onClick={runGrammarCheck}
+                >
+                  {checkingGrammar
+                    ? "Checking…"
+                    : grammarChecked
+                      ? "Re-check"
+                      : "Check now"}
+                </Button>
+              </div>
+              {grammarError && (
+                <p className="mt-1.5 text-[11px] text-[var(--state-overdue-ink)]">
+                  {grammarError}
+                </p>
+              )}
+              {grammarSuggestions && (
+                <div className="mt-2.5 space-y-2 border-t border-hairline pt-2.5">
+                  {grammarSuggestions.subject && (
+                    <div>
+                      <p className="mb-1 text-[11px] text-ink-faint">
+                        Suggested subject
+                      </p>
+                      <p className="rounded-inset bg-[var(--surface-raised)] p-2 text-sm text-ink">
+                        {grammarSuggestions.subject}
+                      </p>
+                    </div>
+                  )}
+                  {grammarSuggestions.body && (
+                    <div>
+                      <p className="mb-1 text-[11px] text-ink-faint">
+                        Suggested message
+                      </p>
+                      <p className="max-h-32 overflow-y-auto rounded-inset bg-[var(--surface-raised)] p-2 text-sm whitespace-pre-wrap text-ink">
+                        {grammarSuggestions.body}
+                      </p>
+                    </div>
+                  )}
+                  <div className="flex flex-wrap justify-end gap-1.5">
+                    <Button
+                      size="sm"
+                      tone="ghost"
+                      onClick={() => setGrammarSuggestions(null)}
+                    >
+                      Keep editing
+                    </Button>
+                    <Button
+                      size="sm"
+                      tone="secondary"
+                      onClick={() => {
+                        setGrammarCheckedFor(grammarSuggestions.signature);
+                        setGrammarSuggestions(null);
+                      }}
+                    >
+                      Send as written
+                    </Button>
+                    <Button
+                      size="sm"
+                      tone="primary"
+                      onClick={() => {
+                        const nextSubject = grammarSuggestions.subject ?? subject;
+                        const nextBody = grammarSuggestions.body ?? body;
+                        setSubject(nextSubject);
+                        setBody(nextBody);
+                        setGrammarCheckedFor(textSignature(nextSubject, nextBody));
+                        setGrammarSuggestions(null);
+                      }}
+                    >
+                      Apply corrections
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="border-t border-hairline px-6 py-4">

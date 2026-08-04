@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getRepository } from "@/lib/repositories";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { editRefusal } from "@/lib/rules/mindmap/access";
+import { crdtOf, isEmpty, readNodes, writeNodes } from "@/lib/rules/mindmap/collab";
 import { mindmapTreeRefusal } from "@/lib/rules/mindmap/validity";
+import type { CollabSession } from "@/lib/documents/collabProvider";
 import type { MindMap } from "@/lib/rules/mindmap/tree";
 import type { MindMapRecord, MindNode } from "@/lib/domain";
 
@@ -36,13 +38,34 @@ import type { MindMapRecord, MindNode } from "@/lib/domain";
  * `DocumentEditor`. A refused save marks the work dirty again rather than
  * treating it as landed, so the next flush retries instead of quietly dropping
  * somebody's branch.
+ *
+ * ## When a live session is passed, the CRDT is the tree
+ *
+ * With a session the cards live in the shared document and every edit — anybody's
+ * — arrives through it, which is what makes the canvas update while somebody
+ * else is drawing on it. Without one, nothing changes: local state, debounced
+ * save, exactly as before. **That fallback is load-bearing rather than
+ * defensive** — the collaboration server can be unreachable and the mock backend
+ * has none at all, and a mindmap that would not open in either case would be a
+ * worse product than one that does not sync.
+ *
+ * The server write stays either way, and it is not redundant with the CRDT.
+ * `GET /mindmaps/:id` returns `nodes`, the list reads `nodeCount`, and the
+ * engine validates the tree on the way in — none of which the Yjs state
+ * satisfies. It is the same division `DocumentEditor` uses when it writes `html`
+ * beside the document's CRDT: the CRDT is how people collaborate, the projection
+ * is what everything else reads.
  */
 
 const SAVE_DEBOUNCE_MS = 1200;
 
 export type SaveStatus = "idle" | "saving" | "saved" | "error";
 
-export function useMindMap(mindmapId: string | null): {
+export function useMindMap(
+  mindmapId: string | null,
+  /** The live session, when there is one. Null keeps the single-writer path. */
+  session: CollabSession | null = null,
+): {
   /** The working copy the canvas draws. Null until it has loaded. */
   map: MindMap | null;
   record: MindMapRecord | null;
@@ -62,9 +85,14 @@ export function useMindMap(mindmapId: string | null): {
   );
   const me = useQuery((r) => r.getCurrentEmployee(), []);
 
-  const [nodes, setNodes] = useState<MindNode[] | null>(null);
+  const [localNodes, setLocalNodes] = useState<MindNode[] | null>(null);
   const [status, setStatus] = useState<SaveStatus>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+  /* Bumped by the CRDT observers so the tree below can name it as a dependency
+     rather than depending on a render side effect. Mirrors `SheetGrid`. */
+  const [version, setVersion] = useState(0);
+
+  const crdt = useMemo(() => (session ? crdtOf(session.doc) : null), [session]);
 
   const dirty = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,6 +110,10 @@ export function useMindMap(mindmapId: string | null): {
     : null;
   const adopted = useRef<string | null>(null);
   useEffect(() => {
+    /* The CRDT owns the tree once there is a session — adopting the server's
+       cards over it would stamp on whatever the room already holds, including
+       edits made while this tab was loading. Seeding is the effect below. */
+    if (crdt) return;
     if (!detail.data || loadedStamp === null) return;
     if (adopted.current === loadedStamp) return;
     /* Local work not yet saved wins over a re-read of the same map: adopting
@@ -89,12 +121,55 @@ export function useMindMap(mindmapId: string | null): {
     if (dirty.current && adopted.current?.startsWith(`${detail.data.mindmap.id}:`))
       return;
     adopted.current = loadedStamp;
-    setNodes(detail.data.nodes);
+    setLocalNodes(detail.data.nodes);
     latest.current = detail.data.nodes;
     savingId.current = detail.data.mindmap.id;
     setStatus("idle");
     setSaveError(null);
-  }, [detail.data, loadedStamp]);
+  }, [crdt, detail.data, loadedStamp]);
+
+  /**
+   * Carry the stored map into the room, ONCE, and only if the room is empty.
+   *
+   * The emptiness check is what stops the second person to open a map writing a
+   * copy of the server's cards over the live ones. Waiting for `synced` is what
+   * makes that check meaningful: before the first sync a joined room always
+   * looks empty, so seeding early would do exactly the damage the check exists
+   * to prevent.
+   */
+  const seeded = useRef(false);
+  useEffect(() => {
+    if (!crdt || !session || !detail.data || seeded.current) return;
+    const nodes = detail.data.nodes;
+    const apply = () => {
+      if (seeded.current) return;
+      seeded.current = true;
+      if (!isEmpty(crdt)) return;
+      writeNodes(crdt, nodes);
+    };
+    if (session.provider.synced) apply();
+    else session.provider.once("sync", apply);
+  }, [crdt, session, detail.data]);
+
+  /* Anybody's change, including this client's own. */
+  useEffect(() => {
+    if (!crdt) return;
+    const bump = () => setVersion((n) => n + 1);
+    crdt.nodes.observe(bump);
+    crdt.order.observe(bump);
+    return () => {
+      crdt.nodes.unobserve(bump);
+      crdt.order.unobserve(bump);
+    };
+  }, [crdt]);
+
+  /** The authoritative tree: the CRDT when live, local state otherwise. */
+  const nodes = useMemo(
+    () => (crdt ? readNodes(crdt) : localNodes),
+    /* `version` is the CRDT's change signal — it has no value of its own here. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [crdt, localNodes, version],
+  );
 
   const record = detail.data?.mindmap ?? null;
   const readOnlyReason = record ? editRefusal(record, me.data?.id ?? null) : null;
@@ -149,7 +224,13 @@ export function useMindMap(mindmapId: string | null): {
         return;
       }
 
-      setNodes(next.nodes);
+      /* Through the CRDT when live, so every other person on this map sees it
+         now rather than after a save-and-reload round trip. The observer above
+         is what turns it back into a render, for this client too — there is no
+         separate local apply, so what this tab draws is what the room holds. */
+      if (crdt) writeNodes(crdt, next.nodes);
+      else setLocalNodes(next.nodes);
+
       latest.current = next.nodes;
       savingId.current = record.id;
       dirty.current = true;
@@ -158,8 +239,30 @@ export function useMindMap(mindmapId: string | null): {
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => void flush(), SAVE_DEBOUNCE_MS);
     },
-    [record, readOnlyReason, nodes, flush],
+    [record, readOnlyReason, nodes, flush, crdt],
   );
+
+  /**
+   * A collaborator's change, written through to the server too.
+   *
+   * The room keeps everybody's canvas in step, but nothing outside it reads the
+   * CRDT: `GET /mindmaps/:id` returns `nodes` and the list reads `nodeCount`. If
+   * only the person who typed saved, a map edited entirely by somebody else
+   * would sit in the list with a stale card count and would open stale for
+   * anybody who joined without a live session.
+   *
+   * Guarded on `readOnlyReason` because a viewer watching an editor work would
+   * otherwise fire a request per change that the engine answers 403 — a viewer
+   * has nothing to save, and saying so quietly is the whole of it.
+   */
+  useEffect(() => {
+    if (!crdt || !record || readOnlyReason || version === 0) return;
+    latest.current = readNodes(crdt);
+    savingId.current = record.id;
+    dirty.current = true;
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => void flush(), SAVE_DEBOUNCE_MS);
+  }, [version, crdt, record, readOnlyReason, flush]);
 
   /* The two paths a debounce alone loses: the tab being hidden — on a phone
      often the last event before the process dies — and leaving this map. */

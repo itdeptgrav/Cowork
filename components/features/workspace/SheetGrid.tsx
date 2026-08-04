@@ -48,6 +48,7 @@ import {
   type SheetData,
 } from "@/lib/rules/sheets/grid";
 import { useCollabSession } from "./useCollabSession";
+import { documentRoom } from "@/lib/rules/workspace/collabRoom";
 import { ShareMenu } from "./ShareMenu";
 import {
   SheetChartObject,
@@ -121,7 +122,7 @@ export function SheetGrid({
   const doc = useQuery((r) => r.getDocument(documentId), [documentId]);
   const body = useQuery((r) => r.getDocumentBody(documentId), [documentId]);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
-  const collab = useCollabSession(documentId, me.data ?? null);
+  const collab = useCollabSession(documentRoom(documentId), me.data ?? null);
 
   const readOnly = doc.data
     ? editRefusal(doc.data, me.data?.id ?? null) !== null
@@ -1414,7 +1415,11 @@ export function SheetGrid({
           </span>
         )}
         {canManage(doc.data, me.data?.id ?? null) && (
-          <ShareMenu document={doc.data} onChanged={doc.refetch} />
+          <ShareMenu
+            target={{ kind: "document", id: doc.data.id, noun: "document" }}
+            members={doc.data.members}
+            onChanged={doc.refetch}
+          />
         )}
         {!readOnly && sheet.hidden && sheet.hidden.length > 0 && (
           <button

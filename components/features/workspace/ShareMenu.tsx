@@ -4,40 +4,75 @@ import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import { Button, InlineError, Panel } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
-import { ROLE_HINT, ROLE_LABEL } from "@/lib/rules/documents/access";
-import type { CoworkDocument, DocumentRole } from "@/lib/domain";
+import type { ActionResult } from "@/lib/repositories";
+import {
+  SHARE_ROLES,
+  SHARE_ROLE_LABEL,
+  shareRoleHints,
+  sortByRole,
+  type ShareRole,
+} from "@/lib/rules/workspace/sharing";
 
 /**
- * Who has access, and as what.
+ * Who has access, and as what. Documents, sheets and mindmaps.
  *
  * Owners only — the button that opens this is not rendered for anybody else, and
  * every change is authorised again in the repository, because a hidden control
  * is courtesy and the refusal is the permission.
  *
  * **The last owner cannot be demoted or removed here**, and the rule says so
- * rather than the control silently doing nothing: a document with no owner
- * cannot be shared, renamed or deleted by anybody, and there is no screen
- * anywhere in the product that could repair it.
+ * rather than the control silently doing nothing: a record with no owner cannot
+ * be shared, renamed or deleted by anybody, and there is no screen anywhere in
+ * the product that could repair it.
+ *
+ * ## Why this takes a target rather than a document
+ *
+ * It used to take a `CoworkDocument` and call `setDocumentMember`. Mindmaps
+ * grant the same three roles through the same panel, and the alternative was a
+ * second copy of this file — which is the version where one of them grows a fix
+ * the other never gets. What differs between the two is a collection and a verb,
+ * so those are the parameters and everything else is shared.
+ *
+ * The repository call still happens HERE rather than being passed in, so
+ * `useAction` keeps owning the pending state and a caller cannot forget to
+ * disable the controls mid-write.
  */
-const ROLES: DocumentRole[] = ["owner", "editor", "viewer"];
+export type ShareTarget =
+  | { kind: "document"; id: string; noun: "document" }
+  | { kind: "mindmap"; id: string; noun: "mindmap" };
 
 export function ShareMenu({
-  document,
+  target,
+  members: memberList,
   onChanged,
 }: {
-  document: CoworkDocument;
+  target: ShareTarget;
+  /** Who is on it now. Read from the record the caller already holds. */
+  members: readonly { employeeId: string; role: ShareRole }[];
   onChanged: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const people = useQuery((r) => r.listEmployees(), []);
+  const hints = shareRoleHints(target.noun);
 
   const [setMember, state] = useAction(
-    (r, employeeId: string, role: DocumentRole | null) =>
-      r.setDocumentMember(document.id, employeeId, role),
+    /* `ActionResult<unknown>` because the two calls return different records —
+       a `MindMapRecord` and a `CoworkDocument` — and this panel reads neither.
+       It uses `ok` and `message`, which every result carries. Without the
+       annotation `useAction` infers its type from whichever branch it sees
+       first and rejects the other. */
+    (
+      r,
+      employeeId: string,
+      role: ShareRole | null,
+    ): Promise<ActionResult<unknown>> =>
+      target.kind === "mindmap"
+        ? r.setMindMapMember(target.id, employeeId, role)
+        : r.setDocumentMember(target.id, employeeId, role),
   );
 
-  const apply = async (employeeId: string, role: DocumentRole | null) => {
+  const apply = async (employeeId: string, role: ShareRole | null) => {
     setError(null);
     const result = await setMember(employeeId, role);
     if (result.ok) onChanged();
@@ -45,16 +80,13 @@ export function ShareMenu({
   };
 
   const directory = people.data ?? [];
-  const members = document.members
-    .map((m) => ({
-      ...m,
-      person: directory.find((p) => p.id === m.employeeId) ?? null,
-    }))
-    /* Owners first, then editors, then viewers — the order people scan for. */
-    .sort((a, b) => ROLES.indexOf(a.role) - ROLES.indexOf(b.role));
+  const members = sortByRole(memberList).map((m) => ({
+    ...m,
+    person: directory.find((p) => p.id === m.employeeId) ?? null,
+  }));
 
   const candidates = directory.filter(
-    (p) => !document.members.some((m) => m.employeeId === p.id),
+    (p) => !memberList.some((m) => m.employeeId === p.id),
   );
 
   return (
@@ -68,7 +100,7 @@ export function ShareMenu({
       >
         <Icon.team className="h-3 w-3" />
         Share
-        <span data-figure>{document.members.length}</span>
+        <span data-figure>{memberList.length}</span>
       </button>
 
       {open && (
@@ -98,13 +130,13 @@ export function ShareMenu({
                       value={m.role}
                       disabled={state.isPending}
                       onChange={(e) =>
-                        void apply(m.employeeId, e.target.value as DocumentRole)
+                        void apply(m.employeeId, e.target.value as ShareRole)
                       }
                       className="h-6 rounded-inset bg-[var(--control)] px-1 text-[11px] text-ink-muted"
                     >
-                      {ROLES.map((r) => (
+                      {SHARE_ROLES.map((r) => (
                         <option key={r} value={r}>
-                          {ROLE_LABEL[r]}
+                          {SHARE_ROLE_LABEL[r]}
                         </option>
                       ))}
                     </select>
@@ -131,7 +163,7 @@ export function ShareMenu({
                 <div className="mt-3 border-t border-hairline pt-3">
                   <p className="text-[11px] text-ink-faint">Add somebody</p>
                   <select
-                    aria-label="Add somebody to this document"
+                    aria-label={`Add somebody to this ${target.noun}`}
                     value=""
                     disabled={state.isPending}
                     onChange={(e) => {
@@ -156,13 +188,13 @@ export function ShareMenu({
               )}
 
               <dl className="mt-3 border-t border-hairline pt-2">
-                {ROLES.map((r) => (
+                {SHARE_ROLES.map((r) => (
                   <div key={r} className="flex gap-2 py-0.5">
                     <dt className="w-14 shrink-0 text-[10px] text-ink">
-                      {ROLE_LABEL[r]}
+                      {SHARE_ROLE_LABEL[r]}
                     </dt>
                     <dd className="text-[10px] leading-relaxed text-ink-faint">
-                      {ROLE_HINT[r]}
+                      {hints[r]}
                     </dd>
                   </div>
                 ))}

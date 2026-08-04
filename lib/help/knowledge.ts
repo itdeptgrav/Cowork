@@ -2027,6 +2027,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "map not saving",
       "where did my mindmap go",
       "share mindmap",
+      "mindmap live",
+      "edit mindmap together",
+      "mindmap collaboration",
+      "who else is on this mindmap",
     ],
     examples: [
       "How do I make a mindmap?",
@@ -2034,12 +2038,15 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why does my mindmap say I can only view it?",
       "Why won't my mindmap save?",
       "Can somebody else see my mindmap?",
+      "How do I share a mindmap?",
+      "Can two people edit a mindmap at the same time?",
+      "Why does my mindmap say it is working offline?",
     ],
     answer:
-      "Workspace, then Mindmaps. It works the way Documents does: the first screen is a list of the maps you can open, and choosing one opens it on the whole screen — Back returns you to the list. New mindmap makes another, so you can keep as many as you like rather than one. Each map is a tree of cards drawn from a single root; the + on a card adds a child, and the panel beside the canvas is where a card gets its description, pictures and links. Mindmaps are stored with your account now, not in the browser. That is a change: there used to be exactly one map per browser, it did not follow you to another machine, nobody else could see it, and clearing your browser data threw it away. None of that is true any more — a map is shared with the people you add to it, and each of them is an owner, an editor or a viewer, exactly as on a document. Owners can rename, delete and change who is on it; editors can change the cards; a viewer sees “View only” and “You can view this mindmap but not change it.” The last owner cannot be removed, because a map with no owner is one nobody could rename, delete or share again. Changes save on their own a moment after you stop; the header says “Saving…” and then “Saved”. Some shapes are refused rather than stored, because they cannot be drawn: a map has exactly one root card, no card may hang off a card that is not in the map, and no card may be its own ancestor. The message names the card that is wrong. A picture that was pasted into the old browser-only map is refused with “is stored in this browser rather than uploaded” — remove it and attach it again, and it will then follow the map to everybody who can see it.",
+      "Workspace, then Mindmaps. It works the way Documents does: the first screen is a list of the maps you can open, and choosing one opens it on the whole screen — Back returns you to the list. New mindmap makes another, so you can keep as many as you like rather than one. Each map is a tree of cards drawn from a single root; the + on a card adds a child, and the panel beside the canvas is where a card gets its description, pictures and links. Mindmaps are stored with your account now, not in the browser. That is a change: there used to be exactly one map per browser, it did not follow you to another machine, nobody else could see it, and clearing your browser data threw it away. None of that is true any more — a map is shared with the people you add to it, and each of them is an owner, an editor or a viewer, exactly as on a document. Share is in the header of an open map, and only an owner sees it — it lists who has access, lets you change anybody between owner, editor and viewer, and adds a colleague as an editor. Owners can rename, delete and change who is on it; editors can change the cards; a viewer sees “View only” and “You can view this mindmap but not change it.” The last owner cannot be removed, because a map with no owner is one nobody could rename, delete or share again. Anybody you share it with sees your changes as you make them, and you see theirs — a mindmap is edited live, the way a document or a sheet is. When that is working the header shows a green “Live”, or “2 editing” when somebody else is on it, and the line above the canvas reads “Edits are shared live. Everyone on this mindmap sees them as you draw.” If it cannot reach the live connection it says so instead — “Working offline — edits are saved to this mindmap, but nobody else sees them live” — and the map still opens and still saves; you are simply the only one seeing the change until they reload. Two people typing in the same card at the same time is the one case where the later change replaces the earlier one whole, rather than the two being merged; two people working on different cards never collide. Changes save on their own a moment after you stop; the header says “Saving…” and then “Saved”. Some shapes are refused rather than stored, because they cannot be drawn: a map has exactly one root card, no card may hang off a card that is not in the map, and no card may be its own ancestor. The message names the card that is wrong. A picture that was pasted into the old browser-only map is refused with “is stored in this browser rather than uploaded” — remove it and attach it again, and it will then follow the map to everybody who can see it.",
     related: ["general-documents", "general-document-access", "general-what-is-cowork"],
     source:
-      "MindMapsArea and MindMapWorkbench; lib/rules/mindmap/validity.ts and access.ts; grav-cms-backend routes/task_routes/coworkMindmaps.js",
+      "MindMapsArea and MindMapWorkbench; lib/rules/mindmap/validity.ts, access.ts and collab.ts; lib/rules/workspace/collabRoom.ts and sharing.ts; grav-cms-backend routes/task_routes/coworkMindmaps.js and services/documentCollab.service.js",
   },
   {
     id: "general-music-playlists",
