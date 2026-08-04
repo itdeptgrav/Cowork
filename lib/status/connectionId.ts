@@ -40,3 +40,50 @@ export function connectionId(): string {
 export function resetConnectionId(): void {
   id = null;
 }
+
+/**
+ * Did THIS DEVICE most recently claim `online`?
+ *
+ * **Why this exists, separate from `connectionId()`.** The presence document
+ * is one shared answer, read by every device a person owns. Opening it on a
+ * phone while a laptop is sharing must not make the phone think it has a
+ * reconnect of its own to offer — there was never a share here to resume. But
+ * `connectionId()` is deliberately fresh on every load (see above), so it
+ * cannot answer "was it THIS device" after a reload of the very tab that WAS
+ * sharing. This is a second, PERSISTED flag for exactly that question — not a
+ * claim of ownership over the live document, just this browser's memory of
+ * whether it was the one that last put itself online.
+ *
+ * `localStorage` rather than the module scope: it must survive the reload
+ * `restorePresence` exists to handle, and it must NOT be visible to any other
+ * device — which is what makes a phone and a laptop answer this differently
+ * for the same person.
+ */
+const CLAIMED_ONLINE_KEY = "cowork:presence:claimedOnlineHere";
+
+/** Record that this device just published `online` for itself. */
+export function markClaimedOnlineHere(): void {
+  try {
+    window.localStorage.setItem(CLAIMED_ONLINE_KEY, "1");
+  } catch {
+    /* Private browsing, storage disabled — worst case this device stops
+       offering a reconnect prompt it would have been entitled to. */
+  }
+}
+
+/** Record that this device deliberately left `online` (break/emergency/offline). */
+export function clearClaimedOnlineHere(): void {
+  try {
+    window.localStorage.removeItem(CLAIMED_ONLINE_KEY);
+  } catch {
+    /* See markClaimedOnlineHere. */
+  }
+}
+
+export function claimedOnlineHere(): boolean {
+  try {
+    return window.localStorage.getItem(CLAIMED_ONLINE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}

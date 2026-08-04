@@ -4,7 +4,12 @@ import { useEffect, useRef } from "react";
 import { useEmployeeStatus } from "./useEmployeeStatus";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { getRepository } from "@/lib/repositories";
-import { connectionId } from "@/lib/status/connectionId";
+import {
+  connectionId,
+  claimedOnlineHere,
+  markClaimedOnlineHere,
+  clearClaimedOnlineHere,
+} from "@/lib/status/connectionId";
 import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
 import { restorePresence } from "@/lib/status/employeeStatus";
 import type { EmployeeStatus } from "@/lib/status/employeeStatus";
@@ -61,8 +66,20 @@ export function DutySync() {
           durableMode: mode,
         });
         /* `getDutyMode` has already applied the staleness window, so a genuinely
-           dead claim comes back as offline and restores nothing. */
-        if (mode !== "offline") restorePresence({ mode });
+           dead claim comes back as offline and restores nothing.
+
+           An `online` claim is restored ONLY on the device that put itself
+           online — `claimedOnlineHere()`, a per-browser flag distinct from the
+           per-tab `connectionId()`. Without this check, opening Cowork on a
+           phone while a laptop is sharing reads the same "online" mode and
+           offers a "resume sharing" prompt for a share that phone never had.
+           break/emergency are NOT gated: they are claims about the person, not
+           a device, so every device restores them identically. */
+        if (mode === "break" || mode === "emergency") {
+          restorePresence({ mode });
+        } else if (mode === "online" && claimedOnlineHere()) {
+          restorePresence({ mode });
+        }
       } catch (error) {
         console.error("[presence] SESSION RESTORE failed:", error);
       }
@@ -117,6 +134,14 @@ export function DutySync() {
            rather than what we sent stops us retrying a write that was correctly
            declined. */
         published.current = result.ok ? result.data : null;
+        /* This device's own memory of whether IT is the one online — see
+           connectionId.ts. Only touched when the write actually took hold:
+           a decline (another device still owns the claim) must not overwrite
+           what this device remembers about itself. */
+        if (result.ok) {
+          if (result.data === "online") markClaimedOnlineHere();
+          else clearClaimedOnlineHere();
+        }
       } catch (error) {
         /* Presence is not worth breaking a page over. The store is still
            correct locally, and the next change retries. */

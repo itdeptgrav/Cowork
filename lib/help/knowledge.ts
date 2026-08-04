@@ -999,15 +999,16 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why does it ask to share my screen?",
     ],
     answer:
-      "Online is not something you set — it is a consequence of sharing your screen. Choose Go online in the status menu and your browser asks for a screen; once that share is live and connected, your status becomes Online on its own. Cancelling the picker costs nothing: no session is created and you stay Offline. If sharing stops for any reason, including closing the browser's own sharing bar, you return to Offline automatically. Your status is published for everyone, so your colleagues, your manager and your own record all read the same thing rather than each guessing. Being online is also what unlocks your own task actions — see “Task actions while you are away”.",
+      "Online is not something you set — it is a consequence of sharing your screen. Choose Go online in the status menu and your browser asks for a screen; once that share is live and connected, your status becomes Online on its own. Cancelling the picker costs nothing: no session is created and you stay Offline. If sharing stops for any reason, including closing the browser's own sharing bar, you return to Offline automatically. Your status is published for everyone, so your colleagues, your manager and your own record all read the same thing rather than each guessing — and that includes your own other devices: if you go online on one computer and then open Cowork on your phone, the phone shows the same Online status straight away rather than asking you to reconnect anything, because only the device that is actually sharing is ever asked to resume the share. Being online is also what unlocks your own task actions — see “Task actions while you are away”. Every change to your status is kept in a log for the day — see “Your status history”.",
     related: [
       "status-entire-screen",
       "status-break",
       "status-offline",
       "status-task-actions",
+      "status-history",
     ],
     source:
-      "employeeStatus derive(); Online requires a live share plus a connected room; published to cowork_duty_status by DutySync",
+      "employeeStatus derive(); Online requires a live share plus a connected room; published to cowork_duty_status by DutySync; restorePresence's online branch is gated by claimedOnlineHere() in lib/status/connectionId.ts so only the device that shared offers to reconnect",
   },
   {
     id: "status-entire-screen",
@@ -1048,6 +1049,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "status-break-allowance",
       "status-emergency-approval",
       "status-task-actions",
+      "status-history",
     ],
     source: "derive() priority order: emergency > break > share state",
   },
@@ -1123,9 +1125,35 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "status-entire-screen",
       "status-task-actions",
       "task-daily-reports",
+      "status-history",
     ],
     source:
       "ScreenShareBridge reportShare detail; onDisconnected goes offline; STALE_AFTER_MS heartbeat window in rules/presence/duty.ts",
+  },
+
+  {
+    id: "status-history",
+    category: "status",
+    title: "Your status history",
+    keywords: [
+      "status history",
+      "history button",
+      "when did i go online",
+      "status log",
+      "past status",
+      "today's status changes",
+      "what time did i take a break",
+    ],
+    examples: [
+      "Where can I see my status history?",
+      "What time did I go on a break today?",
+      "How do I see when I went offline?",
+    ],
+    answer:
+      "The status menu has a History button that opens today's log of your own status changes — every time you went Online, took a Break, declared an Emergency or went Offline, with the time each one began and how long it lasted. It covers today only; nothing from earlier days is kept there. The most recent entry is marked as still going rather than given a length, because it has not ended yet. The pill in the top bar only ever shows what your status is right now — History is where you go to see what it has already been today, on any device, since it reads the same record every device publishes to.",
+    related: ["status-online", "status-break", "status-offline"],
+    source:
+      "listDutyHistory in both repositories; entries written inside setDutyMode alongside the presence document patch; StatusHistoryModal opened from the History item in StatusButton's menu",
   },
 
   {

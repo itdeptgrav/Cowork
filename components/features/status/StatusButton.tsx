@@ -24,6 +24,7 @@ import {
 } from "@/lib/integrations/livekit/nativeBridge";
 import { EmergencyEndDialog } from "./EmergencyEndDialog";
 import { DailyReportModal } from "./DailyReportModal";
+import { StatusHistoryModal } from "./StatusHistoryModal";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useMyDutyMode } from "@/lib/hooks/useDutyMode";
 import { breakBudgetWarning } from "@/lib/rules/tasks/breakMode";
@@ -170,6 +171,7 @@ export function StatusButton() {
   const [reportOpen, setReportOpen] = useState<"offline" | "standalone" | null>(
     null,
   );
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [open, setOpen] = useState(false);
   /* The requirement step. Separate from `open` so dismissing the menu also
      abandons a half-started attempt rather than remembering it. */
@@ -189,11 +191,29 @@ export function StatusButton() {
   const [menuWidth, setMenuWidth] = useState(MENU_WIDTH);
   const [menuShift, setMenuShift] = useState(0);
 
-  const meta = STATUS_META[status];
+  /**
+   * What the pill actually shows.
+   *
+   * `status` is only ever what THIS device can prove about itself — a live
+   * share, or a manual state restored from the duty document. A device that
+   * is not the one sharing has nothing of its own to prove and sits at
+   * `offline` regardless of what is really happening elsewhere, so showing
+   * `status` alone is how a phone ends up displaying "Offline" — or, before
+   * this, wrongly offering to reconnect — while a laptop across the room is
+   * plainly Online. `legacyMode` is the same document everybody else reads,
+   * live via `watchDutyModes`, so falling back to it here is what makes this
+   * device's pill agree with every other screen watching the same person.
+   * Only a fallback: this device's own proof always wins when it has one.
+   */
+  const displayStatus: EmployeeStatus =
+    status !== "offline" ? status : (legacyMode ?? "offline");
+  const meta = STATUS_META[displayStatus];
   const busy = session === "requesting" || session === "connecting";
   /* After a refresh the share is gone and cannot be reasserted without a click,
      so presence is honestly offline — but rather than a cold "Offline" we show a
-     "Reconnecting" prompt whose one purpose is a one-click resume of sharing. */
+     "Reconnecting" prompt whose one purpose is a one-click resume of sharing.
+     Gated upstream (DutySync's claimedOnlineHere check) so only the device that
+     was actually sharing ever reaches this state. */
   const reconnectingShare = reconnecting && status === "offline";
   const pillLabel = reconnectingShare ? "Reconnecting" : meta.label;
   const pillDot = reconnectingShare ? "var(--state-risk)" : meta.dot;
@@ -391,11 +411,13 @@ export function StatusButton() {
         className="inline-flex items-center gap-2 rounded-full bg-[var(--control)] py-1.5 pr-3 pl-2.5 transition-colors duration-[180ms] hover:bg-[var(--control-hover)] focus-visible:ring-2 focus-visible:ring-ink focus-visible:outline-none"
       >
         <span className="relative grid h-2.5 w-2.5 place-items-center">
-          {(status !== "offline" || reconnectingShare) && (
+          {(displayStatus !== "offline" || reconnectingShare) && (
             <span
               aria-hidden="true"
               className={`absolute h-2.5 w-2.5 rounded-full ${
-                status === "emergency" || reconnectingShare ? "animate-ping" : ""
+                displayStatus === "emergency" || reconnectingShare
+                  ? "animate-ping"
+                  : ""
               }`}
               style={{ backgroundColor: pillGlow, opacity: 0.9 }}
             />
@@ -406,7 +428,7 @@ export function StatusButton() {
             style={{
               backgroundColor: pillDot,
               boxShadow:
-                status === "offline" && !reconnectingShare
+                displayStatus === "offline" && !reconnectingShare
                   ? "none"
                   : `0 0 8px 1px ${pillGlow}`,
             }}
@@ -531,9 +553,9 @@ export function StatusButton() {
                 const cm = STATUS_META[c.id];
                 const current =
                   c.id === "online"
-                    ? status === "online"
+                    ? displayStatus === "online"
                     : c.id === "offline"
-                      ? status === "offline"
+                      ? displayStatus === "offline"
                       : manual === c.id;
                 return (
                   <button
@@ -594,6 +616,33 @@ export function StatusButton() {
                   </span>
                   <span className="mt-0.5 block text-[11px] text-ink-faint">
                     Write up today&rsquo;s work without going offline
+                  </span>
+                </span>
+              </button>
+
+              {/* Today's log — when each status began, and for how long. Its
+                  own entry point rather than folded into the menu items above:
+                  it is a look BACK at the day, not a way to change it now. */}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setOpen(false);
+                  setConfirming(false);
+                  setHistoryOpen(true);
+                }}
+                className="mt-0.5 flex w-full items-center gap-2.5 rounded-inset px-2.5 py-2 text-left transition-colors hover:bg-[var(--control)]"
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-2 w-2 shrink-0 rounded-full bg-[var(--ink-faint)]"
+                />
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-medium text-ink">
+                    History
+                  </span>
+                  <span className="mt-0.5 block text-[11px] text-ink-faint">
+                    See today&rsquo;s status changes
                   </span>
                 </span>
               </button>
@@ -685,6 +734,10 @@ export function StatusButton() {
             if (wasOffline) goOffline();
           }}
         />
+      )}
+
+      {historyOpen && (
+        <StatusHistoryModal onClose={() => setHistoryOpen(false)} />
       )}
 
       {endedEmergency && (

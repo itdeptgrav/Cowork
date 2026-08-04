@@ -79,6 +79,16 @@ export function formatDateFull(iso: string | null | undefined): string {
   return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }
 
+/** Just the clock face, for a list already scoped to one day: `15:15 IST`. */
+export function formatTimeOfDay(ms: number | null | undefined): string {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "—";
+  const d = ist(new Date(ms).toISOString());
+  if (!d) return "—";
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${hh}:${mm} IST`;
+}
+
 export function formatDateTime(iso: string | null | undefined): string {
   const d = ist(iso);
   if (!d) return "—";

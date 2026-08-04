@@ -441,6 +441,27 @@ export function dailyHoursSecs(
   return Math.round(hours * 3600);
 }
 
+/**
+ * One entry in the status history log — a mode this person was in, and when
+ * it began.
+ *
+ * Not the presence document itself, which is overwritten on every transition
+ * and so remembers only the current mode. This is the append-only trail
+ * behind it: what somebody's day actually looked like — when they came
+ * online, when they took a break, when they went offline — the thing the
+ * duty document was never designed to answer because it only ever holds one
+ * mode at a time. Written once per transition, alongside the document patch,
+ * and never edited afterwards.
+ */
+export interface DutyHistoryEntry {
+  id: string;
+  mode: DutyMode;
+  /** Epoch ms this mode began. */
+  at: number;
+  /** The reason text, for an emergency entry. */
+  reason?: string | null;
+}
+
 /** A heartbeat is a claim restated, never a mode change. */
 export function heartbeatPatch(nowMs: number, connectionId: string | null) {
   return { heartbeatAt: nowMs, presenceConnectionId: connectionId };
