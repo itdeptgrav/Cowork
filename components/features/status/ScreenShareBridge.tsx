@@ -8,7 +8,8 @@ import {
   Track,
   type LocalTrackPublication,
 } from "livekit-client";
-import { reportShare } from "@/lib/status/employeeStatus";
+import { getSnapshot, reportShare } from "@/lib/status/employeeStatus";
+import { shareFactsFor, type RoomPhase } from "@/lib/rules/status/reconnect";
 import {
   ENTIRE_SCREEN_REQUIREMENT,
   SURFACE_LABEL,
@@ -62,7 +63,27 @@ export function ScreenShareBridge() {
     const watched = new Map<MediaStreamTrack, () => void>();
 
     function sync() {
-      const connected = room.state === ConnectionState.Connected;
+      /**
+       * Three phases, not two — and `reconnecting` being its own case is the
+       * whole point.
+       *
+       * This read `connected = room.state === Connected` and reported
+       * `sharing: !!live && connected`. `Reconnecting` is not `Connected`, so a
+       * wifi blip, a VPN hop or a laptop sleeping for a second took the person
+       * Offline — and `DutySync` published that to the duty record every
+       * manager reads, then published Online again a second later when LiveKit
+       * resumed. Presence flapped all day with nobody touching anything.
+       *
+       * `shareFactsFor` holds the last known facts through a reconnect. A real
+       * disconnection still reports offline, because LiveKit leaves
+       * `Reconnecting` when it gives up.
+       */
+      const phase: RoomPhase =
+        room.state === ConnectionState.Connected
+          ? "connected"
+          : room.state === ConnectionState.Reconnecting
+            ? "reconnecting"
+            : "disconnected";
       const live = findLiveShare();
 
       // Watch this track's own `ended` — the native stop button's only signal.
@@ -88,20 +109,19 @@ export function ScreenShareBridge() {
         (live ?? any)?.track?.mediaStreamTrack ?? null,
       );
 
-      reportShare({
-        sharing: !!live && connected,
-        connected,
-        surface: live || any ? surface : null,
-        detail: !connected
-          ? room.state === ConnectionState.Reconnecting
-            ? "Reconnecting to the room…"
-            : "Not connected to a room."
-          : live
-            ? "Sharing your entire screen."
-            : any
-              ? `${SURFACE_LABEL[surface]} sharing is not accepted. ${ENTIRE_SCREEN_REQUIREMENT}`
-              : "Connected, but nothing is being shared.",
-      });
+      reportShare(
+        shareFactsFor({
+          /* Read at call time, not closed over: `sync` is registered once and
+             fires for the whole session, so a captured snapshot would hold the
+             facts from whenever the effect last ran. */
+          previous: getSnapshot().share,
+          phase,
+          live: !!live,
+          any: !!any,
+          surface,
+          wrongSurfaceDetail: `${SURFACE_LABEL[surface]} sharing is not accepted. ${ENTIRE_SCREEN_REQUIREMENT}`,
+        }),
+      );
     }
 
     const events: RoomEvent[] = [

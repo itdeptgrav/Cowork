@@ -157,13 +157,16 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
       <div className="grid min-h-dvh place-items-center px-6">
         <div className="max-w-[42ch] text-center">
           <p className="text-[15px] font-medium text-ink">
-            Signing you in did not finish
+            {session.stallKind === "network"
+              ? "Could not reach the workspace"
+              : "Signing you in did not finish"}
           </p>
           <p className="mt-1.5 text-xs leading-relaxed text-ink-muted">
             {session.stallReason ??
               "The workspace could not confirm who you are."}{" "}
-            Your work is safe — this is about this browser&rsquo;s saved
-            sign-in, not about your account.
+            {session.stallKind === "network"
+              ? "This will retry on its own as soon as the connection is back."
+              : "Your work is safe — this is about this browser’s saved sign-in, not about your account."}
           </p>
           <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
             <button
@@ -173,13 +176,22 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
             >
               Try again
             </button>
-            <button
-              type="button"
-              onClick={() => void session.signOut()}
-              className="rounded-full bg-[var(--control)] px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-[var(--control-hover)]"
-            >
-              Sign in again
-            </button>
+            {/* **Not offered for a network fault.** Signing out throws away
+                the Firebase credential, the mirrored cookie and the per-browser
+                identity keys — and when the only problem was an unreachable
+                server, that destroys a perfectly good session and makes the
+                person type their password to fix somebody else's outage. It
+                stays for a genuinely stale stored session, which is the case it
+                actually repairs. */}
+            {session.stallKind !== "network" && (
+              <button
+                type="button"
+                onClick={() => void session.signOut()}
+                className="rounded-full bg-[var(--control)] px-3.5 py-1.5 text-xs font-medium text-ink transition-colors hover:bg-[var(--control-hover)]"
+              >
+                Sign in again
+              </button>
+            )}
           </div>
         </div>
       </div>

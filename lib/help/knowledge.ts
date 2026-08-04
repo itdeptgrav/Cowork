@@ -1113,13 +1113,24 @@ export const HELP_ARTICLES: HelpArticle[] = [
     id: "status-offline",
     category: "status",
     title: "Why you went offline",
-    keywords: ["went offline", "offline", "disconnected", "lost status"],
+    keywords: [
+      "went offline",
+      "offline",
+      "disconnected",
+      "lost status",
+      "reconnecting",
+      "status keeps changing",
+      "offline by itself",
+      "wifi dropped",
+    ],
     examples: [
       "Why did I go offline?",
       "I didn't change anything and I'm offline.",
+      "My status keeps flicking between Online and Offline.",
+      "What does “Reconnecting to the room” mean?",
     ],
     answer:
-      "Offline is never chosen for you arbitrarily — it is what happens when the thing that made you Online stops. Stopping the share from the browser's own bar, losing the room connection, closing the tab, or a share that stops being a whole screen all return you to Offline. The status menu always states the reason underneath, so Offline is never left to be inferred. If your computer crashes, sleeps or is closed without a chance to sign out, your status goes offline on its own shortly afterwards — a live session keeps proving it is there, and one that stops proving it stops counting as online. That is why nobody is left showing as online overnight. Having several tabs open is fine: the one holding the share keeps you online, and closing any of the others changes nothing. Choosing Offline yourself is the one case that asks you for something first: it opens the end-of-day report over the tasks your timer ran on that day, and you go offline whether you fill it in or skip it.",
+      "Offline is never chosen for you arbitrarily — it is what happens when the thing that made you Online stops. Stopping the share from the browser's own bar, losing the room connection for good, closing the tab, or a share that stops being a whole screen all return you to Offline. A brief network wobble does not: if your connection drops for a moment — wifi blinking, switching network, a laptop sleeping for a second — the status menu says “Reconnecting to the room…” and you stay as you were, because the screen share has not actually stopped and nobody has observed you leave. It reconnects on its own and the message clears. Only when the connection is genuinely lost, rather than briefly interrupted, do you go Offline. That is a change: a momentary drop used to show you as Offline and then Online again a second later, which everyone watching could see. The status menu always states the reason underneath, so Offline is never left to be inferred. If your computer crashes, sleeps or is closed without a chance to sign out, your status goes offline on its own shortly afterwards — a live session keeps proving it is there, and one that stops proving it stops counting as online. That is why nobody is left showing as online overnight. Having several tabs open is fine: the one holding the share keeps you online, and closing any of the others changes nothing. Choosing Offline yourself is the one case that asks you for something first: it opens the end-of-day report over the tasks your timer ran on that day, and you go offline whether you fill it in or skip it.",
     related: [
       "status-online",
       "status-entire-screen",
@@ -1128,7 +1139,32 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "status-history",
     ],
     source:
-      "ScreenShareBridge reportShare detail; onDisconnected goes offline; STALE_AFTER_MS heartbeat window in rules/presence/duty.ts",
+      "ScreenShareBridge reportShare detail; lib/rules/status/reconnect.ts holds presence through a reconnect; onDisconnected goes offline; STALE_AFTER_MS heartbeat window in rules/presence/duty.ts",
+  },
+
+  {
+    id: "general-sign-in-did-not-finish",
+    category: "general",
+    title: "“Could not reach the workspace” after signing in",
+    keywords: [
+      "sign in again",
+      "signing you in did not finish",
+      "could not reach the workspace",
+      "stuck signing in",
+      "signed in but asked to sign in",
+      "session expired",
+    ],
+    examples: [
+      "I just signed in and it says sign in again.",
+      "Why does it say signing you in did not finish?",
+      "It says it could not reach the workspace.",
+      "Do I need to sign in again?",
+    ],
+    answer:
+      "Two different things can interrupt signing in, and Cowork now names which. “Could not reach the workspace” means the connection to the server failed — your sign-in is almost certainly fine, and nothing is wrong with your account. It retries on its own as soon as the connection is back, and it also retries the moment you return to the tab, so usually you do nothing at all; Try again asks immediately if you would rather not wait. There is deliberately no Sign in again button on that message, because signing out would throw away a session that was never broken and make you type your password to fix a network problem. “Signing you in did not finish” is the other case: the sign-in saved in this browser did not restore. That one does offer Sign in again, which clears the saved session and starts fresh, and it is the thing that repairs it. Either way your work is safe — neither message means anything was lost. Previously both cases showed the same wording and both offered to sign you out, so a brief connection drop just after signing in read as a broken account.",
+    related: ["general-what-is-cowork", "status-offline"],
+    source:
+      "SessionProvider WorkspaceUnreachable and stallKind; ShellFrame stalled screen",
   },
 
   {

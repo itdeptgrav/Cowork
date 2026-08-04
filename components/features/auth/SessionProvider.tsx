@@ -81,6 +81,15 @@ export interface SessionState {
   signOut: () => Promise<void>;
   /** Why the resolution stalled, for the screen that offers a way out. */
   stallReason: string | null;
+  /**
+   * WHAT stalled, so the way out can match it.
+   *
+   * `network` means the workspace could not be reached — the saved session is
+   * very probably fine, and signing out would destroy a good one. `session`
+   * means the stored sign-in itself did not restore. The two need different
+   * advice, and offering "Sign in again" for the first is actively harmful.
+   */
+  stallKind: "network" | "session" | null;
 }
 
 const Ctx = createContext<SessionState>({
@@ -93,6 +102,7 @@ const Ctx = createContext<SessionState>({
   refresh: async () => {},
   signOut: async () => {},
   stallReason: null,
+  stallKind: null,
 });
 
 export function useSession(): SessionState {
@@ -139,12 +149,32 @@ interface Payload {
 /**
  * How many times a failed resolution is retried before the app says so.
  *
- * Three, with backoff, covers the overwhelmingly common cause — a request that
- * lost a race with a sleeping laptop's network coming back — without leaving
- * somebody watching a spinner through a genuine outage.
+ * Was three, which with this backoff gave up after about four seconds — far too
+ * eager for the overwhelmingly common cause, a request that lost a race with a
+ * sleeping laptop's network coming back. Five spans roughly eighteen seconds,
+ * and a network stall now also heals itself when the connection returns, so
+ * running out of attempts is no longer a dead end.
  */
-const MAX_LOAD_ATTEMPTS = 3;
+const MAX_LOAD_ATTEMPTS = 5;
 const RETRY_BASE_MS = 1_200;
+
+/**
+ * The workspace could not be REACHED — as opposed to refusing us.
+ *
+ * `/cowork/me` answering 401 or 403 is an answer: this person is not an employee
+ * here, and the session resolves to anonymous. A transport failure is not an
+ * answer at all, and the two were previously indistinguishable by the time they
+ * reached `load` — both arrived as a bare `Error`, so a signed-in person whose
+ * connection blinked was told their saved sign-in was stale and offered a button
+ * that signs them out.
+ *
+ * That is the "Sign in again straight after signing in" report: three quick
+ * failures inside about four seconds and the session went terminal, even though
+ * nothing was wrong with it.
+ */
+class WorkspaceUnreachable extends Error {
+  readonly kind = "network" as const;
+}
 
 
 /**
@@ -181,6 +211,7 @@ export function SessionProvider({
       archetype: null,
       landing: null,
       stallReason: null,
+      stallKind: null,
     },
   );
 
@@ -209,6 +240,7 @@ export function SessionProvider({
           archetype: null,
           landing: null,
           stallReason: null,
+          stallKind: null,
         });
         return;
       }
@@ -356,6 +388,7 @@ export function SessionProvider({
         archetype: data.archetype ?? null,
         landing: data.landing ?? "/home",
         stallReason: null,
+        stallKind: null,
       });
       notifyRepositoryChanged();
     } catch (error) {
@@ -376,11 +409,14 @@ export function SessionProvider({
         retryTimer.current = setTimeout(() => void load(), backoffMs);
         return;
       }
+      const unreachable = error instanceof WorkspaceUnreachable;
       setState((prev) => ({
         ...prev,
         status: "stalled",
-        stallReason:
-          error instanceof Error
+        stallKind: unreachable ? "network" : "session",
+        stallReason: unreachable
+          ? "The workspace could not be reached. Your sign-in is almost certainly fine — this is the connection."
+          : error instanceof Error
             ? error.message
             : "The workspace could not confirm who you are.",
       }));
@@ -495,6 +531,7 @@ export function SessionProvider({
           ? {
               ...prev,
               status: "stalled",
+              stallKind: "session",
               stallReason:
                 "Your saved sign-in did not finish restoring. This usually means the stored session is stale.",
             }
@@ -528,11 +565,45 @@ export function SessionProvider({
     attempts.current = 0;
     setState((prev) =>
       prev.status === "stalled"
-        ? { ...prev, status: "loading", stallReason: null }
+        ? { ...prev, status: "loading", stallReason: null, stallKind: null }
         : prev,
     );
     await load();
   }, [load]);
+
+  /**
+   * A network stall heals itself when the connection comes back.
+   *
+   * Without this, running out of attempts was terminal: the person sat on
+   * "Signing you in did not finish" until they pressed a button, even after
+   * their wifi returned seconds later. Worse, the button most likely to be
+   * pressed was "Sign in again", which throws away a session that was never
+   * broken.
+   *
+   * Only for `network` stalls. A genuinely stale stored session will fail again
+   * the same way, and retrying it on every tab focus would be a loop that never
+   * reaches the screen offering the real way out.
+   */
+  useEffect(() => {
+    if (anonymous) return;
+    if (state.status !== "stalled" || state.stallKind !== "network") return;
+
+    const again = () => {
+      /* Asking while still offline just spends an attempt and re-stalls. */
+      if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+      void retry();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") again();
+    };
+
+    window.addEventListener("online", again);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.removeEventListener("online", again);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [anonymous, state.status, state.stallKind, retry]);
 
   const signOut = useCallback(async () => {
     /* Firebase holds the identity now, so this is what actually ends the
@@ -639,6 +710,11 @@ async function readIdentityPayload(): Promise<Payload> {
        it throws, and `load`'s catch leaves the session in `loading`. */
     if (result.error.kind === "auth" || result.error.kind === "permission") {
       return { authenticated: false };
+    }
+    /* Tagged, so `load` can tell "we could not reach it" from "the saved
+       sign-in is stale" — they need opposite advice. */
+    if (result.error.kind === "network") {
+      throw new WorkspaceUnreachable(result.error.message);
     }
     throw new Error(result.error.message);
   }

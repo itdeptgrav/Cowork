@@ -9,7 +9,10 @@ import {
   isNativeShell,
   nativeStartScreenShare,
   setNativeScreenShareListener,
-} from "../integrations/livekit/nativeBridge";
+  /* `.ts`, like `capture.ts` above. Without it `node --test` cannot resolve the
+     module, so every test that reaches this file failed to load at all — which
+     is why `employeeStatus.test.ts` was among the suite's standing failures. */
+} from "../integrations/livekit/nativeBridge.ts";
 
 /**
  * Employee presence, for the whole of Cowork.
