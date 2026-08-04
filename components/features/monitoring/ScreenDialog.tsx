@@ -64,7 +64,27 @@ export function ScreenDialog({
         onClick={onClose}
         className="absolute inset-0 cursor-default bg-[var(--body-bg)]/70 backdrop-blur-[4px]"
       />
-      <div className="relative flex max-h-[90vh] w-[min(1100px,96vw)] flex-col">
+      {/**
+       * A DEFINITE height, and that is the whole fix.
+       *
+       * This was `max-h-[90vh]` with no height, so the column sized itself to
+       * its content. `LiveScreenViewer` asks for `flex-1`, but flex distributes
+       * FREE SPACE and an auto-height column has none — so the viewer fell back
+       * to its own floor, `min-h-[320px]`. That left a 1100×320 slot, roughly
+       * 3.4:1, and `object-contain` fits a 16:9 screen share to the shorter
+       * axis: about 569px of picture with wide black bars either side.
+       *
+       * `h-[92vh]` gives the column real space to hand down, so the viewer
+       * fills the dialog and the picture is as large as the screen allows. The
+       * fix is here rather than in `LiveScreenViewer` deliberately — its other
+       * caller, `PersonMonitor`, sits in a stretched grid column where `flex-1`
+       * already resolves correctly, and giving the viewer a fixed aspect would
+       * break the staggered column ends that layout is built on.
+       *
+       * Wider too: 1100px of a 1920px display spent a third of the screen on
+       * backdrop, on the one surface whose entire purpose is the picture.
+       */}
+      <div className="relative flex h-[92vh] w-[min(1500px,96vw)] flex-col">
         <div className="mb-2 flex items-center gap-3">
           <h2 className="min-w-0 truncate text-[15px] font-medium text-ink">
             {displayName} — live screen
