@@ -157,10 +157,12 @@ import {
   heartbeatPatch,
   ownsClaim,
   readDutyMode,
+  readDutySnapshot,
   storedMode,
   type DutyDocument,
   type DutyHistoryEntry,
   type DutyMode,
+  type DutySnapshot,
 } from "@/lib/rules/presence/duty";
 import { presenceWriteRefusal } from "@/lib/rules/presence/taskGate";
 import {
@@ -3852,6 +3854,23 @@ export class MockRepository implements CoworkRepository {
     };
   }
 
+  /** The acting employee's own presence, live — see the interface note. */
+  watchDutyStatus(
+    onChange: (snapshot: DutySnapshot) => void,
+    employeeId?: EmployeeId,
+  ): () => void {
+    const id = String(employeeId ?? actingId());
+    const emit = () =>
+      onChange(readDutySnapshot(this.#duty.get(id) ?? null, Date.now()));
+    this.#dutyWatchers.add(emit);
+    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
+    emit();
+    return () => {
+      this.#dutyWatchers.delete(emit);
+      clearInterval(sweep);
+    };
+  }
+
   async listDutyHistory(dayKey?: string): Promise<DutyHistoryEntry[]> {
     const id = String(actingId());
     const key = dayKey ?? dutyDayKey(Date.now());
@@ -4488,6 +4507,8 @@ export class MockRepository implements CoworkRepository {
         assigneeIds: [String(input.employeeId)],
         senderTimerWindowSecs: t.estimatedEffortSecs ?? 0,
         committedDueAt: t.deadline.dueAt,
+        /* A task cannot be due before it existed — see `QueueTask.createdAtMs`. */
+        createdAtMs: t.createdAt ? Date.parse(t.createdAt) : undefined,
       }));
     return calculateDeadlineFeasibility({
       taskId: input.taskId ? String(input.taskId) : undefined,

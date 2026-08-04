@@ -24,7 +24,7 @@ import type {
 } from "@/lib/help/types";
 import type { ActionableReason } from "@/lib/rules/tasks/actionable";
 import type { CompletionState } from "@/lib/rules/tasks/completion";
-import type { DutyMode, DutyHistoryEntry } from "@/lib/rules/presence/duty";
+import type { DutyMode, DutyHistoryEntry, DutySnapshot } from "@/lib/rules/presence/duty";
 import type { OfficePolicy } from "@/lib/legacy/officePolicy";
 import type {
   TimerSopConfig,
@@ -987,6 +987,23 @@ export interface CoworkRepository {
   watchDutyModes(
     employeeIds: EmployeeId[],
     onChange: (modes: Map<EmployeeId, DutyMode>) => void,
+  ): () => void;
+  /**
+   * The acting employee's OWN presence, live, with the clocks behind it.
+   *
+   * `getDutyMode` is a one-shot read answering one word, and both halves of that
+   * were faults across devices: a second device sat at its initial `offline`
+   * until the round trip landed and then corrected itself on screen, and it
+   * learned the person was on a break without learning WHEN — so each device
+   * started its own stopwatch and the two disagreed by however long they were
+   * apart.
+   *
+   * Same shape as `watchDutyModes`: subscribe, return the unsubscribe. Firestore's
+   * own listener is the live channel; there is no second realtime system here.
+   */
+  watchDutyStatus(
+    onChange: (snapshot: DutySnapshot) => void,
+    employeeId?: EmployeeId,
   ): () => void;
   /**
    * The acting employee's status changes for one day, newest first.

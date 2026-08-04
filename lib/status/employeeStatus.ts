@@ -99,6 +99,31 @@ export interface EmployeeStatusState {
    * share goes live or the person changes their own status. See `derive`.
    */
   reconnecting: boolean;
+  /**
+   * The ACCOUNT holds the online claim, on a connection that is not this one.
+   *
+   * Presence is a fact about a person, and a person is not four different people
+   * because they have four devices open. A laptop sharing its screen puts the
+   * account online; the phone in their pocket showed Offline for the same
+   * account, which is simply wrong — and it is what the second device reported
+   * to the person looking at it.
+   *
+   * This does NOT weaken the rule that online is a live share. Somewhere, a
+   * screen IS being shared, and a manager who opens it finds it. What changes is
+   * only which device may SAY so. `sharedElsewhere` below is what keeps the
+   * sentence honest on the device that is not the one sharing.
+   */
+  remoteOnline: boolean;
+  /**
+   * The account's own presence has been read at least once.
+   *
+   * The store initialises to `offline`, which is a GUESS until the duty document
+   * has been heard from — and a second device announced that guess out loud, so
+   * somebody on a break saw "Offline" and then "Break" a moment later. Nothing
+   * was wrong except that the pill spoke before it knew. Surfaces that would
+   * otherwise assert Offline wait on this instead.
+   */
+  hydrated: boolean;
 }
 
 const IDLE_SHARE: ShareFacts = {
@@ -133,15 +158,25 @@ const IDLE_SESSION = {
 export function derive(
   manual: ManualStatus,
   share: ShareFacts,
+  /**
+   * The account is online on ANOTHER connection — read live from the duty
+   * document. Defaulted so every existing caller and test is unchanged.
+   */
+  remoteOnline = false,
 ): EmployeeStatus {
   if (manual === "emergency") return "emergency";
   if (manual === "break") return "break";
-  /* **Online is a live share, and NOTHING else asserts it.** A reconnect after a
-     refresh must not read as online — a manager who opens the screen would find
-     nothing there. `reconnecting` is tracked separately (see the state) purely to
-     drive a "resume sharing" affordance; it never makes someone online. Until the
-     track is actually flowing, this is offline. */
-  return share.sharing && share.connected ? "online" : "offline";
+  /* **Online is a live share, and nothing this DEVICE does asserts it.** A
+     reconnect after a refresh must not read as online — `reconnecting` is
+     tracked separately purely to drive a "resume sharing" affordance, and it
+     never makes someone online, because no screen is flowing from here.
+
+     `remoteOnline` is different in kind, and that is why it is allowed to. It is
+     not this device guessing; it is the account's own claim, held by a
+     connection that IS sharing right now. A manager who opens that screen finds
+     it. Presence describes the person, and the person is online. */
+  if (share.sharing && share.connected) return "online";
+  return remoteOnline ? "online" : "offline";
 }
 
 const INITIAL: EmployeeStatusState = {
@@ -155,6 +190,8 @@ const INITIAL: EmployeeStatusState = {
   emergencyStartedAt: null,
   notice: null,
   reconnecting: false,
+  remoteOnline: false,
+  hydrated: false,
 };
 
 let state: EmployeeStatusState = INITIAL;
@@ -185,7 +222,7 @@ function commit(next: Omit<EmployeeStatusState, "status">) {
     (next.share.sharing && next.share.connected) || next.manual !== null
       ? false
       : next.reconnecting;
-  const status = derive(next.manual, next.share);
+  const status = derive(next.manual, next.share, next.remoteOnline);
   const same =
     status === state.status &&
     next.manual === state.manual &&
@@ -199,7 +236,9 @@ function commit(next: Omit<EmployeeStatusState, "status">) {
     next.breakStartedAt === state.breakStartedAt &&
     next.emergencyStartedAt === state.emergencyStartedAt &&
     next.notice === state.notice &&
-    reconnecting === state.reconnecting;
+    reconnecting === state.reconnecting &&
+    next.remoteOnline === state.remoteOnline &&
+    next.hydrated === state.hydrated;
   if (same) return;
   state = { ...next, reconnecting, status };
   for (const fn of listeners) fn();
@@ -578,6 +617,98 @@ export function restorePresence(input: {
     notice: restored.reconnecting
       ? "Reconnecting — resume your screen share to go back online."
       : null,
+  });
+}
+
+/**
+ * Apply the account's own presence, as the duty document currently states it.
+ *
+ * Called on every snapshot of a LIVE subscription, not once at mount. That is
+ * the difference between the four reported faults and none of them:
+ *
+ *  · **The Offline flash.** A one-shot read meant the store sat at its initial
+ *    `offline` until the round trip landed, so a second device announced Offline
+ *    and corrected itself a moment later. `hydrated` below is what stops the pill
+ *    asserting anything before it has been told.
+ *  · **Timers that disagreed.** The start instants come from the account, so both
+ *    devices count from the same origin. The clocks are not synchronised — they
+ *    cannot be — they are given one shared zero.
+ *  · **Status that did not follow.** A change on one device now reaches the other
+ *    because there is a subscription rather than a single read at load.
+ *
+ * A break or an emergency is a claim about the PERSON and restores identically
+ * everywhere. `online` is the one that needed a decision — see `remoteOnline`.
+ */
+export function applyRemotePresence(input: {
+  mode: EmployeeStatus;
+  breakStartedAtMs: number | null;
+  emergencyStartedAtMs: number | null;
+  /** The `online` claim belongs to a connection that is not this one. */
+  onlineElsewhere: boolean;
+}): void {
+  const sharingHere = state.share.sharing && state.share.connected;
+
+  if (input.mode === "break") {
+    commit({
+      ...state,
+      hydrated: true,
+      manual: "break",
+      /* The account's instant wins. The local value is kept only when the
+         document has none — the moment between starting a break here and the
+         write landing, where dropping to `Date.now()` would restart the clock
+         the person is watching. */
+      breakStartedAt:
+        input.breakStartedAtMs ?? state.breakStartedAt ?? Date.now(),
+      emergencyStartedAt: null,
+      remoteOnline: false,
+      reconnecting: false,
+    });
+    return;
+  }
+
+  if (input.mode === "emergency") {
+    commit({
+      ...state,
+      hydrated: true,
+      manual: "emergency",
+      breakStartedAt: null,
+      emergencyStartedAt:
+        input.emergencyStartedAtMs ?? state.emergencyStartedAt ?? Date.now(),
+      remoteOnline: false,
+      reconnecting: false,
+    });
+    return;
+  }
+
+  if (input.mode === "online") {
+    commit({
+      ...state,
+      hydrated: true,
+      manual: null,
+      breakStartedAt: null,
+      emergencyStartedAt: null,
+      /* Only when the claim is somebody ELSE's connection. If this device is the
+         one sharing, its own share already says so and `remoteOnline` would be
+         a second, redundant reason for the same truth — one that would outlive
+         the share if the document were slow to catch up. */
+      remoteOnline: !sharingHere && input.onlineElsewhere,
+      reconnecting: false,
+      notice: null,
+    });
+    return;
+  }
+
+  /* Offline. The manual states are cleared because the account left them; this
+     device's own share is untouched and still decides on its own — if it is
+     sharing, `derive` keeps it online and the next publish corrects the
+     document rather than this clearing the share. */
+  commit({
+    ...state,
+    hydrated: true,
+    manual: null,
+    breakStartedAt: null,
+    emergencyStartedAt: null,
+    remoteOnline: false,
   });
 }
 

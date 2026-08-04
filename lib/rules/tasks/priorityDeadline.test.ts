@@ -197,15 +197,21 @@ test("only done and cancelled are excluded — a task in review still occupies t
 
 /* ── Where the chain starts ───────────────────────────────────────────────── */
 
-test("a queue already running anchors at the leader's start", () => {
+test("a running leader does NOT move the anchor", () => {
+  /* The reported jump. A task with no start anchored at the office opening, and
+     pressing play switched the anchor to `startedAt` — so the due date moved the
+     instant work began, 17:22 to 17:20, with nothing about the work changing. A
+     commitment is decided once; starting a timer is not one of the four things
+     allowed to move it. */
+  const openMs = T0 - 5 * HOUR * 1000;
   const started = T0 - 2 * HOUR * 1000;
   assert.equal(
     anchorMsFor({
       leader: task({ taskId: "a", startedAt: new Date(started).toISOString() }),
-      officeOpenMs: T0 - 5 * HOUR * 1000,
+      officeOpenMs: openMs,
       nowMs: T0,
     }),
-    started,
+    openMs,
   );
 });
 
@@ -244,11 +250,29 @@ test("Firestore timestamps, ISO strings and epoch ms all read as a start", () =>
   assert.equal(startedAtMs("not a date"), null);
 });
 
-test("an off day or a missing schedule falls back to now", () => {
-  /* Never to midnight, which would schedule the whole queue into the past. */
-  assert.equal(officeOpenMsFor(null, T0), T0);
-  assert.equal(officeOpenMsFor({ wednesday: { isOff: true } }, T0), T0);
-  assert.equal(officeOpenMsFor({ wednesday: { inTime: "oops" } }, T0), T0);
+test("an UNKNOWN schedule anchors at the start of the day, not at now", () => {
+  /* Reversed from the original rule, which returned `nowMs` here so a queue
+     would not be scheduled into the past. A due date that has already passed
+     means the work is LATE — information, not a defect. An anchor that follows
+     the clock is a deadline nobody can miss, because it retreats as they
+     approach it. */
+  const midnight = new Date(T0).setHours(0, 0, 0, 0);
+  assert.equal(officeOpenMsFor(null, T0), midnight);
+  assert.equal(officeOpenMsFor({ wednesday: { inTime: "oops" } }, T0), midnight);
+});
+
+test("a day explicitly marked OFF anchors at midnight, not at now", () => {
+  /* The exception, and the reason for it: a day the schedule says is off
+     contributes no working seconds, so `addWorkingSecs` reaches the same next
+     working period from midnight as from any hour of it — nothing is scheduled
+     into the past. What midnight buys is that the answer does not MOVE. With
+     `nowMs` the projection crept forward on every read, all through every
+     Sunday and holiday, which is the "expected completion goes up on its own"
+     report. See `anchorStability.test.ts`. */
+  const at = officeOpenMsFor({ wednesday: { isOff: true } }, T0);
+  assert.notEqual(at, T0);
+  assert.equal(new Date(at).getHours(), 0);
+  assert.equal(new Date(at).getDate(), new Date(T0).getDate());
 });
 
 /* ── The window ───────────────────────────────────────────────────────────── */

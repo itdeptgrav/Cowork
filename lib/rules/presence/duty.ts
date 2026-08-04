@@ -180,6 +180,66 @@ export function readDutyMode(
 }
 
 /**
+ * The account's presence AND the clocks behind it.
+ *
+ * ## Why the mode alone was not enough
+ *
+ * Every cross-device read went through `readDutyMode`, which answers with one
+ * word. So a second device learned that the person was on a break and nothing
+ * else — including when the break started. `restorePresence` filled that gap
+ * with `Date.now()`, meaning each device began counting from the moment IT
+ * found out. Two devices on one account showed 13 seconds and 4 seconds for the
+ * same break, and neither was wrong about anything except the question being
+ * asked.
+ *
+ * The timestamps were in the document the whole time. Nothing carried them.
+ *
+ * A break or an emergency is a claim about the PERSON, so its start belongs to
+ * the account and every device must count from the same instant. That is what
+ * makes the two agree — not synchronising the timers, which cannot be done, but
+ * giving them one origin and letting each device do its own arithmetic.
+ */
+export interface DutySnapshot {
+  mode: DutyMode;
+  /** Epoch ms the current break began, or null. The SAME instant on every device. */
+  breakStartedAtMs: number | null;
+  emergencyStartedAtMs: number | null;
+  /**
+   * The connection that holds the `online` claim, or null.
+   *
+   * Lets a device tell "I am the one sharing" from "somebody else on this
+   * account is" — the same fact, needing two different sentences on screen.
+   */
+  presenceConnectionId: string | null;
+}
+
+/**
+ * Read the whole of it, staleness already applied.
+ *
+ * The start timestamps are returned only for the mode actually in force: a
+ * `breakStartedAtMs` left behind by a break that ended is not a live clock, and
+ * handing it back would let a device count a break nobody is on.
+ */
+export function readDutySnapshot(
+  doc: DutyDocument | null,
+  nowMs: number,
+): DutySnapshot {
+  const mode = readDutyMode(doc, nowMs);
+  const num = (v: unknown): number | null =>
+    typeof v === "number" && Number.isFinite(v) ? v : null;
+  return {
+    mode,
+    breakStartedAtMs: mode === "break" ? num(doc?.breakStartedAtMs) : null,
+    emergencyStartedAtMs:
+      mode === "emergency" ? num(doc?.emergencyStartedAtMs) : null,
+    presenceConnectionId:
+      mode === "online" && typeof doc?.presenceConnectionId === "string"
+        ? doc.presenceConnectionId
+        : null,
+  };
+}
+
+/**
  * May this tab downgrade the claim it is looking at?
  *
  * The multi-tab rule, and the reason it is not simply "write what I see". Two

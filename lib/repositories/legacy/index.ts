@@ -13,10 +13,12 @@ import {
   ownsClaim,
   queueAnchorMs,
   readDutyMode,
+  readDutySnapshot,
   storedMode,
   type DutyDocument,
   type DutyHistoryEntry,
   type DutyMode,
+  type DutySnapshot,
 } from "../../rules/presence/duty.ts";
 import { bankableRunSecs } from "../../rules/tasks/timer.ts";
 import { presenceWriteRefusal } from "../../rules/presence/taskGate.ts";
@@ -292,6 +294,7 @@ import {
   type LegacyC1Response,
   type LegacyC2Response,
 } from "./scoreMap.ts";
+import { readTimerFigures } from "../../rules/tasks/timerSession.ts";
 import {
   readDueAtMs,
   readInstant,
@@ -510,14 +513,18 @@ function toTimerSession(
   taskId: string,
   employeeId: string,
 ): TimerSession {
-  const startedAtRealMs =
-    typeof data.lastStartTime === "number" ? data.lastStartTime : null;
+  /* ONE reading, shared with `getActiveTimer` — see `readTimerFigures`. The two
+     used to read this document independently and disagreed about which field
+     held the total and which shapes of start instant were acceptable, which is
+     the reported "different time after a reload". */
+  const figures = readTimerFigures(data);
+  const startedAtRealMs = figures.startedAtRealMs;
   return {
     organisationId: LEGACY_ORGANISATION_ID,
     taskId: taskId as TaskId,
     employeeId,
     isActive: data.isActive === true,
-    accumulatedSecs: firstNumber(data, "totalSeconds", "totalSecs") ?? 0,
+    accumulatedSecs: figures.accumulatedSecs,
     /* Legacy stores one real timestamp and no prototype clock. Presenting the
        real one as both keeps a session readable without inventing a second
        reading of when it began. */
@@ -3693,7 +3700,10 @@ export class LegacyRepository {
       },
       { merge: true },
     );
-    await this.#logTimerEvent(employeeId, "start", id, taskTitle);
+    /* Not awaited, for the reason spelled out in `pauseTimer`: the session
+       write is the record and this is the audit trail beside it. Awaiting it
+       let a slow log line decide whether a start could be confirmed. */
+    void this.#logTimerEvent(employeeId, "start", id, taskTitle);
 
     /* **Starting the clock must NOT move this task's deadline.**
      *
@@ -3781,13 +3791,38 @@ export class LegacyRepository {
       },
       { merge: true },
     );
-    /* Record the committed segment so listDayCommits can surface it in the
-       daily report modal. Each pause produces one document; the modal sums
-       all documents for the same taskId to get total time today. */
+    /**
+     * **The session write above IS the pause. Everything below is an audit
+     * trail, and it must not be awaited.**
+     *
+     * This used to `await` a work-commit `addDoc` and then a timer-event
+     * `addDoc`, and only then call `notifyRepositoryChanged()` and return. Both
+     * are `try`/`catch`ed, which handles a REJECTION and does nothing at all for
+     * a write that simply does not come back — and a Firestore write does not
+     * come back while the client is offline, it queues.
+     *
+     * The result was a pause that had visibly happened and could not be
+     * confirmed. Firestore applies a write locally before the server
+     * acknowledges it, so the task page's live listener showed "Paused"
+     * immediately — while this promise sat behind two audit writes, the caller
+     * timed out, and `notifyRepositoryChanged()` never ran, so the top-bar pill
+     * never re-read and went on counting a session that had already stopped.
+     * That is the reported "paused here, still running up there", and the red
+     * "did not reach the server in time" beneath a clock that had plainly
+     * stopped.
+     *
+     * So the notify and the return happen the moment the record is safe. The two
+     * writes still go out and still land; they simply no longer decide whether
+     * the person is told their pause worked. `#logTimerEvent`'s own note already
+     * draws this line — "losing a log line must not leave a timer half-started"
+     * — and a log line that is merely SLOW must not either.
+     */
+    notifyRepositoryChanged();
+
     if (elapsed > 0) {
-      const { legacyDb } = await import("../../legacy/firebase.ts");
       const nowMs = Date.now();
-      try {
+      void (async () => {
+        const { legacyDb } = await import("../../legacy/firebase.ts");
         await addDoc(collection(legacyDb(), "cowork_work_commits"), {
           organisationId: LEGACY_ORGANISATION_ID,
           employeeId,
@@ -3798,18 +3833,19 @@ export class LegacyRepository {
           durationSecs: elapsed,
           createdAt: serverTimestamp(),
         });
-      } catch {
-        /* Non-fatal — the timer session itself is already saved. */
-      }
+      })().catch((e) =>
+        console.error("[timer] work commit failed:", e?.message ?? e),
+      );
     }
-    await this.#logTimerEvent(
+
+    void this.#logTimerEvent(
       employeeId,
       "pause",
       id,
       data.taskTitle ?? id,
       pauseReason,
     );
-    notifyRepositoryChanged();
+
     return { ok: true, data: { taskId: id, loggedSecs: total } };
   }
 
@@ -4471,7 +4507,21 @@ export class LegacyRepository {
       }
       const lostMs = endedSpanMs + returningMs;
       if (lostMs > 0) {
-        const shifted = await this.#compensateActiveDeadlines(employeeId, lostMs);
+        /* Named by CAUSE, because the history has to answer "why". The two
+           spans arrive summed, so the label says which contributed — a reader
+           seeing only "absence credited" cannot tell a break from an overnight
+           and will assume the emergency they never had approved. */
+        const mins = (ms: number) => Math.round(ms / 60000);
+        const parts: string[] = [];
+        if (endedSpanMs > 0) parts.push(`break ${mins(endedSpanMs)}m`);
+        if (returningMs > 0) parts.push(`offline ${mins(returningMs)}m`);
+        const shifted = await this.#compensateActiveDeadlines(
+          employeeId,
+          lostMs,
+          parts.length
+            ? `Time credited back — ${parts.join(" + ")}`
+            : "Time credited back",
+        );
         /* **Broken down by cause, because the total alone cannot be diagnosed.**
          * "My deadline moved and nobody approved anything" is a report that fits
          * two completely different mechanisms — a credited break and a credited
@@ -4560,11 +4610,22 @@ export class LegacyRepository {
   async #compensateActiveDeadlines(
     employeeId: string,
     lostMs: number,
+    /**
+     * Why the deadline moved, in the words a person will read.
+     *
+     * **A deadline that moves without a record is the complaint, not the
+     * mechanism.** This wrote nothing but a console line, so the only account of
+     * an automatic shift lived in a browser nobody had open. Every move now
+     * leaves a `cowork_task_deadline_extensions` row carrying the date before,
+     * the reason, and the date after — the three things somebody asking "why is
+     * this due later than I agreed?" actually needs.
+     */
+    reason: string = "Absence credited",
   ): Promise<number> {
     if (lostMs <= 0) return 0;
     let shifted = 0;
     try {
-      const { collection, query, where, getDocs, doc, updateDoc } = await import(
+      const { addDoc, collection, query, where, getDocs, doc, updateDoc } = await import(
         "firebase/firestore"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
@@ -4594,12 +4655,36 @@ export class LegacyRepository {
         if (field === null) continue;
 
         const currentMs = readInstant(data[field])!;
+        const previousIso = new Date(currentMs).toISOString();
         const newDueIso = new Date(currentMs + lostMs).toISOString();
         await updateDoc(doc(db, "cowork_tasks", d.id), {
           [field]: newDueIso,
           updatedAt: new Date(),
         });
         shifted += 1;
+
+        /* The receipt: previous → reason → current, in the same collection the
+           approved extensions land in, so one history answers "why is this due
+           later" whatever moved it. Not awaited into the caller's critical path
+           and never allowed to fail the shift — the deadline write above is the
+           record, this is the account of it. */
+        void addDoc(collection(db, "cowork_task_deadline_extensions"), {
+          taskId: d.id,
+          requestedBy: employeeId,
+          approverId: null,
+          previousDeadline: previousIso,
+          proposedDeadline: newDueIso,
+          reason,
+          status: "approved",
+          createdAt: new Date().toISOString(),
+          approvedAt: new Date().toISOString(),
+          decidedBy: null,
+          /* Nobody decided this — it is the absence rule applying itself. The
+             flag is what lets a reader tell it from a negotiated extension. */
+          automatic: true,
+        }).catch((e) =>
+          console.error("[duty] deadline history write failed:", e?.message ?? e),
+        );
       }
     } catch (error) {
       console.error("[duty] deadline compensation failed:", error);
@@ -4645,6 +4730,56 @@ export class LegacyRepository {
    * that somebody's laptop shut. Without the timer a manager's screen would
    * hold a green dot until some unrelated document happened to change.
    */
+  /**
+   * This employee's own presence, live, with the start instants.
+   *
+   * One document, one listener — cheaper than `watchDutyModes` over a list of
+   * one, and it emits the whole snapshot rather than a mode, because the clocks
+   * are the point: a break's start belongs to the ACCOUNT, so every device
+   * counts from the same instant instead of from whenever it happened to find
+   * out.
+   *
+   * The periodic sweep is inherited from `watchDutyModes` for the same reason:
+   * staleness is a function of the clock, not of a write, so an `online` claim
+   * whose heartbeat stopped has to expire without anybody writing anything.
+   */
+  watchDutyStatus(
+    onChange: (snapshot: DutySnapshot) => void,
+    employeeId?: EmployeeId,
+  ): () => void {
+    const id = String(employeeId ?? this.#ctx.employeeId);
+    let doc: DutyDocument | null = null;
+    let stopped = false;
+    let unsub: (() => void) | null = null;
+
+    const emit = () => {
+      if (stopped) return;
+      onChange(readDutySnapshot(doc, Date.now()));
+    };
+
+    void (async () => {
+      const { doc: docRef, onSnapshot } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      if (stopped) return;
+      unsub = onSnapshot(
+        docRef(legacyDb(), ...(dutyStatusPath(id) as [string, string])),
+        (snap) => {
+          doc = snap.exists() ? (snap.data() as DutyDocument) : null;
+          emit();
+        },
+        (error) => console.error(`[duty] watch self ${id}:`, error.message),
+      );
+    })();
+
+    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
+
+    return () => {
+      stopped = true;
+      clearInterval(sweep);
+      unsub?.();
+    };
+  }
+
   watchDutyModes(
     employeeIds: EmployeeId[],
     onChange: (modes: Map<EmployeeId, DutyMode>) => void,
@@ -5558,6 +5693,9 @@ export class LegacyRepository {
       const shifted = await this.#compensateActiveDeadlines(
         String(request.employeeId),
         lostMs,
+        `Emergency approved (${Math.round(lostMs / 60000)}m)${
+          decisionReason ? ` — ${decisionReason}` : ""
+        }`,
       );
       console.info("[presence] EMERGENCY APPROVED, deadlines shifted:", {
         employeeId: request.employeeId,
@@ -7720,6 +7858,7 @@ export class LegacyRepository {
               priority: number | null;
               agreedWindowSecs: number | null;
               senderWindowSecs: number | null;
+              createdAtMs: number | null;
             };
             return {
               taskId: x.id,
@@ -7730,6 +7869,10 @@ export class LegacyRepository {
                  seconds the Details panel shows. */
               senderTimerWindowSecs: resolveTimeBudget(x),
               loggedSecs: logged.get(x.id) ?? 0,
+              /* A task cannot be due before it existed. Without this a queue
+                 anchored at the office opening spent the morning against work
+                 that only arrived in the afternoon. */
+              createdAtMs: x.createdAtMs,
             };
           }) as never,
         anchorMs,
@@ -7962,6 +8105,9 @@ export class LegacyRepository {
            `FeasibilityTask.isContainer`. */
         isContainer: t.subtaskIds.length > 0,
         committedDueAt: t.dueAtMs === null ? null : new Date(t.dueAtMs).toISOString(),
+        /* A task cannot be due before it existed — the chain floors each task's
+           start at this. See `QueueTask.createdAtMs`. */
+        createdAtMs: t.createdAtMs,
       }));
 
     const { addWorkingSecs, explainAddWorkingSecs } = await import(
@@ -9141,12 +9287,16 @@ export class LegacyRepository {
         /* A paused session keeps its document. Without this check the most
            recently *touched* session would be reported as running forever. */
         if (data.isActive !== true) return;
-        const startedAtMs = readInstant(data.lastStartTime ?? data.startedAt);
-        if (startedAtMs === null) return;
-        const total =
-          firstNumber(data, "totalSecs", "totalSeconds") ?? 0;
-        if (!running || startedAtMs > running.startedAtMs) {
-          running = { taskId: d.id, startedAtMs, totalSecs: total };
+        /* The SAME reading the task page uses — see `readTimerFigures`. These
+           two read one document and used to disagree about it. */
+        const { accumulatedSecs, startedAtRealMs } = readTimerFigures(data);
+        if (startedAtRealMs === null) return;
+        if (!running || startedAtRealMs > running.startedAtMs) {
+          running = {
+            taskId: d.id,
+            startedAtMs: startedAtRealMs,
+            totalSecs: accumulatedSecs,
+          };
         }
       });
     } catch {

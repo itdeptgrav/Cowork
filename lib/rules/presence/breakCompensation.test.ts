@@ -78,7 +78,15 @@ test("the shift is applied to every active task, which is what cascades it", () 
      the queue keeps its order and its gaps. One shared shift, not a
      recalculation per task. */
   const src = readFileSync("lib/repositories/legacy/index.ts", "utf8");
-  assert.match(src, /#compensateActiveDeadlines\(employeeId, lostMs\)/);
+  /* Tolerant of the trailing REASON argument and of the call being wrapped
+     across lines — what is being asserted is that one shift is handed the whole
+     lost span for the whole person, not that the call fits on one line. The
+     reason itself is what the deadline history renders as
+     "previous → why → current". */
+  assert.match(
+    src,
+    /#compensateActiveDeadlines\(\s*employeeId,\s*lostMs\s*[,)]/,
+  );
 });
 
 /* ── Emergency is gated on approval, break is not ─────────────────────────── */
