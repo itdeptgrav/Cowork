@@ -234,11 +234,36 @@ export function Popover({
   children,
   align = "right",
   label,
+  solid = false,
+  insetEnd = false,
 }: {
   trigger: (props: { open: boolean; toggle: () => void }) => ReactNode;
   children: (close: () => void) => ReactNode;
   align?: "left" | "right";
   label: string;
+  /**
+   * Opaque instead of frosted.
+   *
+   * For a popover that lands on top of a form CONTROL rather than on the page.
+   * At frost's 0.92 alpha the field's border shows through and the two read as
+   * one widget — see `.frost-bar-solid`.
+   */
+  solid?: boolean;
+  /**
+   * Hold the panel clear of the field's trailing control column.
+   *
+   * A form whose fields each carry a trailing button — the AI sparkle sits at
+   * `right-1.5` on Title, Description and Acceptance criteria alike — stacks
+   * those buttons in one column. A panel anchored flush to its trigger covers
+   * the NEXT field's button exactly, so opening one and then clicking the next
+   * takes two clicks: the first is swallowed by the panel.
+   *
+   * Flipping the panel above does not help; it covers the button above instead.
+   * Offsetting it sideways is what actually clears the column, whichever way it
+   * opens. 2.5rem clears the 24px button plus its 6px inset with room to spare;
+   * 2rem cleared it by only 2px, which sub-pixel rounding would eat.
+   */
+  insetEnd?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -266,8 +291,14 @@ export function Popover({
         <div
           role="dialog"
           aria-label={label}
-          className={`frost-bar absolute top-[calc(100%+6px)] z-50 min-w-[220px] rounded-panel p-2 ${
-            align === "right" ? "right-0" : "left-0"
+          className={`${solid ? "frost-bar-solid" : "frost-bar"} absolute top-[calc(100%+6px)] z-50 min-w-[220px] rounded-panel p-2 ${
+            align === "right"
+              ? insetEnd
+                ? "right-10"
+                : "right-0"
+              : insetEnd
+                ? "left-10"
+                : "left-0"
           }`}
         >
           {children(() => setOpen(false))}

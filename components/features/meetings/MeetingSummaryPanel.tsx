@@ -432,7 +432,7 @@ function AskAIBox({ meetId }: { meetId: string }) {
           placeholder="What did we decide about…"
           maxLength={500}
           disabled={asking}
-          className="min-w-0 flex-1 rounded-inset border border-hairline bg-[var(--surface-sunken)] px-3 py-1.5 text-[12px] text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-[var(--focus-ring)]"
+          className="min-w-0 flex-1 rounded-inset border border-hairline bg-[var(--surface-sunken)] px-3 py-1.5 text-[12px] text-ink placeholder:text-ink-faint focus:outline-none focus:ring-1 focus:ring-ink/20"
         />
         <button
           type="button"

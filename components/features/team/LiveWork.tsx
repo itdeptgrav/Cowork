@@ -213,7 +213,7 @@ export function WorkBudgetBreakdown({
       )}
 
       {/* The three figures, read across. */}
-      <dl className="mt-2.5 grid grid-cols-3 divide-x divide-hairline rounded-inset border border-hairline bg-[var(--surface)] text-center">
+      <dl className="mt-2.5 grid grid-cols-3 divide-x divide-hairline rounded-inset border border-hairline bg-[var(--surface-sunken)] text-center">
         <Figure label="Asked for" value={workSpan(p.budgetSecs ?? 0)} />
         <Figure label="Worked" value={workSpan(p.workedSecs)} accent="var(--state-positive-ink)" />
         {label ? (

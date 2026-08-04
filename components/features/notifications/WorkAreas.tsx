@@ -605,7 +605,7 @@ export function NotificationsPage() {
                       <Link
                         href={href}
                         onClick={open}
-                        className="block rounded-inset outline-none focus-visible:ring-2 focus-visible:ring-[var(--focus)]"
+                        className="block rounded-inset outline-none focus-visible:ring-2 focus-visible:ring-ink"
                       >
                         <p className="text-sm text-ink hover:underline">
                           {n.title}
