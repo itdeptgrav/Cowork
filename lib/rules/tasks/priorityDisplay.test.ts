@@ -31,6 +31,8 @@ function view(input: {
      left the queue, so a fixture without one was silently exercising the
      closed-task branch. */
   status?: string;
+  /** Positions among work still awaiting acceptance — a separate sequence. */
+  provisional?: (number | null)[];
 }): TaskView {
   return {
     task: { id: "t-1", status: input.status ?? "in_progress" },
@@ -39,6 +41,7 @@ function view(input: {
     assignments: (input.ranks ?? []).map((rank, i) => ({
       employeeId: `e-${i}`,
       rank,
+      provisionalPosition: input.provisional?.[i] ?? null,
     })),
   } as unknown as TaskView;
 }
@@ -130,9 +133,9 @@ test('"P—" can no longer be produced', () => {
 test("the tooltip says whose rank it is", () => {
   /* A manager told "your priority" about a report's rank comes to believe their
      own day is ordered by somebody else's queue. */
-  assert.match(rankTitle({ rank: 2, isMine: true, isHistoric: false }), /Your priority/);
-  assert.match(rankTitle({ rank: 2, isMine: false, isHistoric: false }), /assignee's priority/);
-  assert.match(rankTitle({ rank: null, isMine: false, isHistoric: false }), /No priority/);
+  assert.match(rankTitle({ rank: 2, isMine: true, isHistoric: false, isProvisional: false }), /Your priority/);
+  assert.match(rankTitle({ rank: 2, isMine: false, isHistoric: false, isProvisional: false }), /assignee's priority/);
+  assert.match(rankTitle({ rank: null, isMine: false, isHistoric: false, isProvisional: false }), /No priority/);
 });
 
 /* ── Live position against closed record ─────────────────────────────────── */
@@ -179,4 +182,50 @@ test("a closed task with no rank still shows a dash, not \"Was P—\"", () => {
   const d = rankFor(view({ status: "completed", ranks: [] }), "e-0");
   assert.equal(d.rank, null);
   assert.equal(formatRankDisplay(d), "—");
+});
+
+/* ── Two sequences, one list ──────────────────────────────────────────────── */
+
+test("a task awaiting acceptance does not render a bare P1", () => {
+  /* The report: a list showing one live task and one not-yet-accepted task
+     displayed "P1" twice, and nothing said the numbers counted different
+     things. The same argument the closed-task branch already makes — a
+     different scale must not wear the live chip. */
+  const d = rankFor(
+    view({ myRank: null, myStoredRank: 1, ranks: [1], provisional: [1] }),
+    /* Deliberately NOT a holder: the provisional tier is reached through
+       `holders`, which is how the list path resolves it. */
+    "someone-else",
+  );
+  assert.equal(d.rank, 1);
+  assert.equal(d.isProvisional, true);
+  assert.equal(d.isHistoric, false);
+  assert.notEqual(
+    formatRankDisplay(d),
+    "P1",
+    "a provisional position is wearing the live queue's chip",
+  );
+  assert.equal(formatRankDisplay(d), "P1 to accept");
+  assert.match(rankTitle(d), /awaiting acceptance/i);
+});
+
+test("a live queue position keeps the bare form", () => {
+  /* The distinction is only worth anything if the ordinary case is untouched. */
+  const d = rankFor(view({ myRank: 1, myStoredRank: 1, ranks: [1] }), "e-0");
+  assert.equal(d.isProvisional, false);
+  assert.equal(formatRankDisplay(d), "P1");
+});
+
+test("the two can be told apart at a glance in the same list", () => {
+  const live = rankFor(view({ myRank: 1, myStoredRank: 1, ranks: [1] }), "e-0");
+  const waiting = rankFor(
+    view({ myRank: null, myStoredRank: 1, ranks: [1], provisional: [1] }),
+    "someone-else",
+  );
+  assert.equal(live.rank, waiting.rank, "both are genuinely a 1");
+  assert.notEqual(
+    formatRankDisplay(live),
+    formatRankDisplay(waiting),
+    "two different sequences render identically — the reported bug",
+  );
 });

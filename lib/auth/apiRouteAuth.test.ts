@@ -77,17 +77,34 @@ test("the seat split is untouched by the auth change", () => {
   assert.match(livekit, /room: ROOM_NAME/, "the room is still pinned");
 });
 
-test("the meetings route is left refusing, with the reason recorded", () => {
-  /* Deliberately NOT given the same fix. It mints a token AS a named person and
-     reads `session.employeeId` to do it; a verified Firebase token carries a
-     uid, which is not the workspace employee id. Guessing the mapping would put
-     somebody into a meeting under another person's name — worse than a refusal.
-     Refusing honestly beats half-connected. */
-  assert.match(meetings, /currentSession/);
-  assert.match(meetings, /session\.employeeId/);
+test("the meetings route resolves an identity instead of refusing", () => {
+  /* **This test used to assert the opposite, and was wrong for as long as it
+     did.** The route was once left deliberately unfixed: it mints a token AS a
+     named person, and a verified Firebase token carries a uid rather than the
+     workspace employee id — so refusing honestly beat guessing the mapping and
+     putting somebody into a meeting under another person's name.
+     `mailPrincipal` closed that by ASKING the engine: `/cowork/me` verifies the
+     token and answers with the workspace id, so the mapping is looked up rather
+     than guessed. The refusal this test was guarding no longer exists, and a
+     test still describing it fails on every run while telling whoever reads it
+     that meetings cannot authenticate. */
+  assert.match(meetings, /mailPrincipal/);
+  assert.match(
+    meetings,
+    /if \(!principal\)/,
+    "the route no longer fails closed when the caller cannot be named",
+  );
+});
+
+test("the seat is minted for the PRINCIPAL, never for whoever the body names", () => {
+  /* The one thing that must not drift. The participant grid is how people know
+     who is in the room, so a caller able to name its own identity could sit in
+     a meeting under somebody else's name. `room`, `displayName` and
+     `isOrganiser` are read from the body; `identity` must not be. */
+  assert.match(meetings, /identity: principal\.employeeId/);
   assert.equal(
-    meetings.includes("isSignedInRequest"),
+    /"identity" in body|body as \{ identity/.test(meetings),
     false,
-    "the meetings route was given an auth check it cannot satisfy an identity for",
+    "the route reads an identity from the request body",
   );
 });

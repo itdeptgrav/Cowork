@@ -1,0 +1,459 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import {
+  ControlBar,
+  GridLayout,
+  LiveKitRoom,
+  ParticipantTile,
+  RoomAudioRenderer,
+  useTracks,
+} from "@livekit/components-react";
+import { Track } from "livekit-client";
+import "@livekit/components-styles";
+import { Icon } from "@/components/ui/Icons";
+import {
+  Button,
+  EmptyState,
+  InlineError,
+  Panel,
+  SkeletonRows,
+} from "@/components/ui/Primitives";
+import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import { liveMeetingFigures } from "@/lib/rules/meetings/meetingCredit";
+import { formatDateTime, formatTimer } from "@/lib/utils/format";
+import type { TaskView } from "@/lib/repositories";
+
+/**
+ * A task's own meeting: join it, and what previous ones cost.
+ *
+ * ## Why there is nothing to schedule
+ *
+ * Every task has a room. It is not created until somebody presses Join —
+ * a room per task made up front would be thousands nobody entered — but from
+ * the reader's point of view it has simply always been there, which is the
+ * point. Scheduling a meeting to explain a task is the step this removes.
+ *
+ * ## The figures, and why three of them
+ *
+ * `First start` and `Last end` bracket the whole history; `Total` counts only
+ * the meetings themselves. They are deliberately not derivable from one
+ * another — sessions at 10:00–10:30 and 14:00–14:20 give a four-hour bracket
+ * and fifty minutes of meeting — and showing the bracket as the duration would
+ * claim four hours of deadline for fifty minutes of talking.
+ *
+ * ## What the person needs to know before they press Join
+ *
+ * That the clock only runs while the person who ASSIGNED the work is in the
+ * room. Without that sentence, an assignee who joins alone and waits will
+ * reasonably expect the time to count, and will be wrong. It is said on the
+ * panel rather than left for them to discover from a total that did not move.
+ *
+ * ## The room is rendered here, not linked to
+ *
+ * An earlier version of this panel took the token from `joinTaskMeeting` and
+ * dropped it, showing a green "In the room" pill beside no room at all — the
+ * session was recorded, the deadline arithmetic ran, and there was nothing to
+ * talk into. A meeting the product believes is happening and the person cannot
+ * see is worse than no meeting: it credits time against a conversation that
+ * never took place.
+ */
+export function TaskMeetingPanel({ view }: { view: TaskView }) {
+  const taskId = view.task.id;
+  const sessions = useQuery(
+    (r) => r.listTaskMeetingSessions(taskId),
+    [taskId, view.task.meetings.lastEndedAt],
+  );
+  const [joined, setJoined] = useState<{
+    sessionId: string;
+    roomName: string;
+    token: string;
+    url: string;
+  } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const [join, joinState] = useAction((r) => r.joinTaskMeeting(taskId));
+  const [leave] = useAction((r, sessionId: string) =>
+    r.leaveTaskMeeting({ taskId, sessionId }),
+  );
+  const [end] = useAction((r, sessionId: string) =>
+    r.endTaskMeeting({ taskId, sessionId }),
+  );
+
+  /**
+   * **Leaving is recorded even when nobody presses Leave.**
+   *
+   * Attendance decides the credit, so a departure that is never written leaves
+   * somebody apparently in the room indefinitely. A closed tab and a navigation
+   * away are the two ordinary ways out that no button sees, so both are caught.
+   * `beforeunload` cannot await, which is why the ref holds the id — the call is
+   * fired and the page may die mid-flight, and the session's own close bounds
+   * the span either way.
+   */
+  const openRef = useRef<string | null>(null);
+  useEffect(() => {
+    openRef.current = joined?.sessionId ?? null;
+  }, [joined]);
+
+  useEffect(() => {
+    const bail = () => {
+      const id = openRef.current;
+      if (id) void leave(id);
+    };
+    window.addEventListener("beforeunload", bail);
+    return () => {
+      window.removeEventListener("beforeunload", bail);
+      bail();
+    };
+  }, [leave]);
+
+  /**
+   * Leaving and closing are two calls, and the order is the point.
+   *
+   * **Once per session, whichever way out was taken.** Pressing Leave clears
+   * `joined`, which unmounts the room, which fires `onDisconnected` — so the
+   * obvious writing of this runs the whole settlement twice for one departure.
+   * Ending twice would re-close an already-closed session against a later
+   * clock, and any task that went live in between would be credited for a
+   * meeting that had finished. The ref is what makes the second call a no-op.
+   */
+  const departingRef = useRef<string | null>(null);
+  const depart = async (sessionId: string) => {
+    if (departingRef.current === sessionId) return;
+    departingRef.current = sessionId;
+
+    await leave(sessionId);
+    /* Closing is what CREDITS it. Leaving alone would keep the session open for
+       whoever is still inside — which is correct when somebody else remains,
+       and is why the two are separate calls rather than one. */
+    const r = await end(sessionId);
+    if (!r.ok) setError(r.message);
+    setJoined(null);
+    sessions.refetch();
+  };
+
+  const meetings = view.task.meetings;
+  const list = sessions.data ?? [];
+
+  /* ── The meeting that is happening right now ──────────────────────────────
+   *
+   * Shown whether or not THIS reader is in it: a running room is a fact about
+   * the task, and somebody opening the tab to find out whether a conversation
+   * is under way should not have to join to see.
+   */
+  const running = list.find((s) => s.endedAt === null) ?? null;
+  const creatorId = view.owner?.id ?? "";
+  const creatorName = view.owner?.displayName ?? "the person who assigned the work";
+
+  /* The id rather than the session: the object is rebuilt by every refetch, so
+     depending on it would tear down and restart both intervals on a timer that
+     one of them drives. */
+  const runningId = running?.id ?? null;
+  const refetchSessions = sessions.refetch;
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!runningId) return;
+    /* One second, because this is a duration somebody is watching tick. It
+       stops entirely when no meeting is running rather than idling forever. */
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [runningId]);
+
+  /* Attendance arrives with the session list, so without this the live figure
+     would be computed from whoever was in the room when the tab loaded — the
+     creator could walk in and the panel would go on saying "not counting". */
+  useEffect(() => {
+    if (!runningId) return;
+    const id = setInterval(() => refetchSessions(), 15_000);
+    return () => clearInterval(id);
+  }, [runningId, refetchSessions]);
+
+  const live = running
+    ? liveMeetingFigures(
+        {
+          creatorId,
+          startedAtMs: Date.parse(running.startedAt),
+          endedAtMs: now,
+          attendance: running.attendance.map((a) => ({
+            employeeId: a.employeeId,
+            joinedAtMs: Date.parse(a.joinedAt),
+            leftAtMs: a.leftAt ? Date.parse(a.leftAt) : null,
+          })),
+        },
+        now,
+      )
+    : null;
+
+  return (
+    <Panel label="Meetings">
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="min-w-0 flex-1">
+          <p className="text-[12.5px] font-medium text-ink">
+            Meeting about this task
+          </p>
+          <p className="mt-1 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
+            Every task has its own room — there is nothing to schedule. Time
+            spent here is added to your deadline, and to every other task you
+            have on the go. The clock runs only while{" "}
+            {view.owner?.displayName ?? "the person who assigned the work"} is in
+            the room.
+          </p>
+        </div>
+
+        {joined ? (
+          <div className="flex shrink-0 items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2.5 py-1 text-[11px] text-ink-muted">
+              <span
+                aria-hidden="true"
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ background: "var(--state-positive)" }}
+              />
+              In the room
+            </span>
+            <Button
+              size="sm"
+              tone="ghost"
+              onClick={() => void depart(joined.sessionId)}
+            >
+              Leave
+            </Button>
+          </div>
+        ) : (
+          <Button
+            size="sm"
+            disabled={joinState.isPending}
+            onClick={async () => {
+              setError(null);
+              const r = await join();
+              if (!r.ok) {
+                setError(r.message);
+                return;
+              }
+              /* A rejoin after a settled departure is a fresh arrival, so the
+                 once-only guard is released rather than carried over. */
+              departingRef.current = null;
+              setJoined(r.data);
+            }}
+          >
+            {joinState.isPending ? "…" : "Join meeting"}
+          </Button>
+        )}
+      </div>
+
+      {error && (
+        <div className="mt-3">
+          <InlineError compact message={error} />
+        </div>
+      )}
+
+      {/* ── The running meeting ──────────────────────────────────────────────
+          Two figures, because they answer different questions and the gap
+          between them IS the anti-cheat: how long people have been talking,
+          and how much of that is moving the deadline. A single number would
+          have to pick one, and either choice misleads — the wall clock
+          promises credit that an absent creator is not earning, and the credit
+          alone denies a conversation that is plainly happening. */}
+      {live && (
+        <div
+          className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 rounded-inset bg-[var(--control)] px-3 py-2.5"
+          aria-live="off"
+        >
+          <span className="inline-flex items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="h-1.5 w-1.5 rounded-full"
+              style={{
+                background: live.counting
+                  ? "var(--state-positive)"
+                  : "var(--state-overdue)",
+              }}
+            />
+            <span className="text-[11px] text-ink-faint">Meeting running</span>
+            <span data-figure className="text-[13px] text-ink tabular-nums">
+              {formatTimer(live.elapsedSecs)}
+            </span>
+          </span>
+
+          <span className="inline-flex items-center gap-2">
+            <span className="text-[11px] text-ink-faint">Counting</span>
+            <span
+              data-figure
+              className="text-[13px] tabular-nums"
+              style={{
+                color: live.counting
+                  ? "var(--state-positive-ink)"
+                  : "var(--ink-muted)",
+              }}
+            >
+              {formatTimer(live.creditedSecs)}
+            </span>
+          </span>
+
+          <span className="min-w-0 flex-1 text-[11px] leading-relaxed text-ink-faint">
+            {live.counting
+              ? `${creatorName} is in the room, so this is being added to your deadlines.`
+              : `Nothing is being added — ${creatorName} is not in the room. Time only counts while they are.`}
+          </span>
+        </div>
+      )}
+
+      {/* The room itself. Mounted only while joined: `LiveKitRoom` opens a
+          websocket and asks for the camera the moment it renders, and doing
+          that to somebody reading the session list would be a meeting they
+          never agreed to be in. */}
+      {joined && (
+        <section
+          aria-label="Meeting room"
+          data-on-slab
+          className="slab slab-flat mt-4 flex h-[420px] flex-col overflow-hidden rounded-card"
+        >
+          <LiveKitRoom
+            token={joined.token}
+            serverUrl={joined.url}
+            connect
+            video
+            audio
+            data-lk-theme="default"
+            className="flex min-h-0 flex-1 flex-col"
+            /* The control bar's own leave button disconnects rather than
+               calling anything here, so the close is hung off the
+               disconnection — otherwise hanging up would leave the session
+               open and the meeting would never be credited. */
+            onDisconnected={() => {
+              const id = openRef.current;
+              if (id) void depart(id);
+            }}
+            onError={(e) => setError(e.message)}
+          >
+            <Stage />
+            <div className="shrink-0 border-t border-white/10">
+              <ControlBar variation="verbose" />
+            </div>
+            <RoomAudioRenderer />
+          </LiveKitRoom>
+        </section>
+      )}
+
+      {/* The three figures. Shown even at zero: "no meetings yet" is an answer,
+          and an absent row reads as a panel that failed to load. */}
+      <dl className="mt-4 grid grid-cols-3 gap-3 border-t border-hairline pt-3">
+        <Figure
+          label="First start"
+          value={
+            meetings.firstStartedAt ? formatDateTime(meetings.firstStartedAt) : "—"
+          }
+        />
+        <Figure
+          label="Last end"
+          value={meetings.lastEndedAt ? formatDateTime(meetings.lastEndedAt) : "—"}
+        />
+        <Figure label="Total" value={formatTimer(meetings.totalSecs)} />
+      </dl>
+
+      <div className="mt-4 border-t border-hairline pt-3">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+            Sessions
+          </p>
+          {/* Naming the column, because "00:02:54" beside "3 people" reads as
+              the length of the meeting and is not — it is the part of it that
+              the creator was present for. */}
+          <p className="text-[10.5px] text-ink-faint">
+            Time counted for your deadline
+          </p>
+        </div>
+        {sessions.isLoading ? (
+          <div className="mt-2">
+            <SkeletonRows rows={2} />
+          </div>
+        ) : list.length === 0 ? (
+          <EmptyState
+            compact
+            title="No meetings yet"
+            body="Press Join meeting to open this task's room. Nobody needs to schedule anything."
+          />
+        ) : (
+          <ul className="mt-1 divide-y divide-hairline">
+            {list.map((s) => (
+              <li key={s.id} className="flex items-center gap-3 py-2">
+                <span className="grid h-7 w-7 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted">
+                  <Icon.meeting className="h-3.5 w-3.5" />
+                </span>
+                <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
+                  {formatDateTime(s.startedAt)}
+                  {s.endedAt === null && (
+                    <span className="ml-2 text-[11px] text-ink-faint">running</span>
+                  )}
+                </span>
+                {/* Said in words, not only as a tooltip. A zero next to "3
+                    people" is the one figure on this panel somebody will argue
+                    about, and a hover they never perform cannot answer them. */}
+                {s.endedAt !== null && s.creditedSecs === 0 && (
+                  <span className="shrink-0 text-[10.5px] text-ink-faint">
+                    {creatorName.split(" ")[0]} was not in the room
+                  </span>
+                )}
+                <span className="shrink-0 text-[11px] text-ink-faint">
+                  {s.attendance.length === 1
+                    ? "1 person"
+                    : `${s.attendance.length} people`}
+                </span>
+                <span
+                  data-figure
+                  className="w-[72px] shrink-0 text-right text-[12px] tabular-nums"
+                  style={{
+                    color: s.creditedSecs === 0 ? "var(--ink-faint)" : "var(--ink)",
+                  }}
+                  title={
+                    s.creditedSecs === 0
+                      ? "Nothing was credited — the person who assigned the work was not in the room."
+                      : "Credited to your deadlines."
+                  }
+                >
+                  {formatTimer(s.creditedSecs)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+/**
+ * The participant grid.
+ *
+ * Camera and screen-share tracks in one grid, so a shared screen takes the
+ * space it needs instead of sitting in a thumbnail beside the faces — which is
+ * what a task meeting is usually for: showing the thing being discussed.
+ */
+function Stage() {
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: true },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    { onlySubscribed: false },
+  );
+
+  return (
+    <div className="min-h-0 flex-1 p-2">
+      <GridLayout tracks={tracks} className="h-full">
+        <ParticipantTile />
+      </GridLayout>
+    </div>
+  );
+}
+
+function Figure({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-[11px] text-ink-faint">{label}</dt>
+      <dd data-figure className="mt-0.5 text-[13px] text-ink tabular-nums">
+        {value}
+      </dd>
+    </div>
+  );
+}

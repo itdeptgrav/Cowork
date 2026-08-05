@@ -8,6 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "check-secrets": "node scripts/check-secrets.mjs",
+    "meeting:cases": "npx --yes tsx scripts/meeting-edge-cases.ts",
+    "meeting:clear-budget-rows": "node scripts/clear-meeting-budget-rows.mjs",
     "verify": "npm run lint && npx tsc --noEmit && npm test && npm run build && npm run check-secrets",
     "test": "node --test \"lib/**/*.test.ts\" \"components/**/*.test.ts\""
   },

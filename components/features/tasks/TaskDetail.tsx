@@ -10,6 +10,7 @@ import { statusMeta, nextAction } from "./statusMeta";
 import { ProjectPanel } from "./ProjectPanel";
 import { ResponsibilityPanel } from "./ResponsibilityPanel";
 import { RelatedMeetings } from "@/components/features/meetings/RelatedMeetings";
+import { TaskMeetingPanel } from "./TaskMeetingPanel";
 import { ApprovalActionCard } from "./ApprovalActionCard";
 import { budgetTurn } from "@/lib/rules/tasks/budgetNegotiation";
 import { BudgetNegotiationCard } from "./BudgetNegotiationCard";
@@ -86,7 +87,8 @@ type Tab =
   | "review"
   | "history"
   | "chat"
-  | "files";
+  | "files"
+  | "meetings";
 
 export function TaskDetail({
   taskId,
@@ -219,6 +221,14 @@ export function TaskDetail({
        reference material — the brief everybody works from — hangs off THIS
        document, and its chat is where it is discussed, so there is something
        real here even when nobody works the task itself. */
+    /* Offered on a project too, like Files: a project IS discussed even though
+       nobody works it, and its subtasks each have rooms of their own. */
+    {
+      id: "meetings",
+      label: "Meetings",
+      href: `/tasks/${taskId}/meetings`,
+      icon: "meeting" as const,
+    },
     {
       id: "files",
       label: "Files",
@@ -557,6 +567,7 @@ export function TaskDetail({
           {tab === "review" && !isContainer && (
             <ReviewPanel view={v} onChange={refetch} />
           )}
+          {tab === "meetings" && <TaskMeetingPanel view={v} />}
           {tab === "files" && <TaskFilesPanel view={v} />}
           {tab === "history" && <HistoryPanel taskId={taskId} />}
           {tab === "chat" && (
