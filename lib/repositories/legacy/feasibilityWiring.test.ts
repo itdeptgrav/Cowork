@@ -19,9 +19,16 @@ const REPO = "lib/repositories/legacy/index.ts";
 const RULE = "lib/rules/tasks/deadlineFeasibility.ts";
 
 function method(): string {
+  /* Bounded by the NEXT method, not by a character count. It was `at + 3200`,
+     and adding four lines to the preview pushed its last assertion out of the
+     window — the test failed while the thing it guards was untouched. A slice
+     that reports a fault when the code above it grows is not a guard. */
   const src = code(REPO);
   const at = src.indexOf("async previewDeadlineFeasibility(");
-  return src.slice(at, at + 3200);
+  assert.ok(at > 0, `${REPO} no longer has previewDeadlineFeasibility`);
+  const end = src.indexOf("\n  async ", at + 1);
+  assert.ok(end > at, "could not find the end of previewDeadlineFeasibility");
+  return src.slice(at, end);
 }
 
 test("the queue is the EVALUATED employee's, never the viewer's", () => {

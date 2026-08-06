@@ -8,6 +8,7 @@ import {
   declareEmergency,
   goOffline,
   goOnline,
+  startScreenShare,
   startBreak,
   takeBreakStart,
   type EmployeeStatus,
@@ -57,12 +58,16 @@ const CHOICES: {
   label: string;
   hint: string;
 }[] = [
+  /* The hints describe what each choice DOES. "Requires sharing your entire
+     screen" and "sharing stops" were true while online was a consequence of a
+     live share; a menu still saying so beside a button that no longer asks is
+     the fault people report as "it did nothing". */
   {
     id: "online",
     label: "Go online",
-    hint: "Requires sharing your entire screen",
+    hint: "Available and working",
   },
-  { id: "break", label: "Break", hint: "Step away, sharing stops" },
+  { id: "break", label: "Break", hint: "Step away — your deadlines are credited" },
   {
     id: "emergency",
     label: "Emergency",
@@ -71,7 +76,7 @@ const CHOICES: {
   {
     id: "offline",
     label: "Go offline",
-    hint: "Stop sharing and leave the room",
+    hint: "Done for now — write up the day",
   },
 ];
 
@@ -336,30 +341,17 @@ export function StatusButton() {
       so the deferred emergency exit and an ordinary switch run identical code. */
   function applyTransition(id: EmployeeStatus) {
     if (id === "online") {
-      /* Already compliant: no picker, nothing to explain — this is only
-         lifting a manual state that was suppressing an existing share. */
-      if (share.sharing && share.connected) {
-        if (viewerId) void goOnline(() => fetchRoomCredentials(viewerId));
-        setOpen(false);
-        return;
-      }
       /**
-       * **The popover has to be open for this to be reachable.**
+       * **Immediate — OWNER DECISION.**
        *
-       * `confirming` renders INSIDE `{open && …}`, and the two callers of this
-       * function disagree about whether the popover is up. An ordinary switch
-       * runs from the open menu, so setting the flag was enough. The deferred
-       * emergency exit does not: `choose` closes the popover before showing the
-       * modal, so on the way back this set a flag on a panel that was not
-       * mounted — the request was sent, the dialog closed, and going online
-       * silently did nothing.
-       *
-       * Coming back to an open picker is also the correct behaviour on its own
-       * terms: leaving an emergency for `online` still owes a screen share, and
-       * that is the step being reopened.
+       * This used to open a confirmation panel and then the browser's capture
+       * picker, and you were not online until a whole-screen track was live.
+       * Pressing Online now simply makes you online. Sharing is still available
+       * from the same menu, and is no longer what online means.
        */
-      setOpen(true);
-      setConfirming(true);
+      goOnline();
+      setOpen(false);
+      setConfirming(false);
       return;
     }
     if (id === "break") startBreak();
@@ -431,7 +423,7 @@ export function StatusButton() {
     /* The picker opens inside this click. Nothing is awaited before it, or the
        browser withdraws the gesture and refuses the prompt. */
     if (!viewerId) return;
-    const started = await goOnline(() => fetchRoomCredentials(viewerId));
+    const started = await startScreenShare(() => fetchRoomCredentials(viewerId));
     setConfirming(false);
     if (started) setOpen(false);
   }
@@ -746,7 +738,7 @@ export function StatusButton() {
               </span>
             </p>
             <p className="mt-1 flex items-baseline justify-between gap-3 text-[11px]">
-              <span className="text-ink-faint">Eligible for Online</span>
+              <span className="text-ink-faint">Screen shared</span>
               <span
                 className={
                   share.sharing && share.connected

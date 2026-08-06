@@ -3,7 +3,11 @@
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { Panel, PanelHead, Button } from "@/components/ui/Primitives";
 import { useEmployeeStatus } from "@/components/features/status/useEmployeeStatus";
-import { STATUS_META, goOffline, goOnline } from "@/lib/status/employeeStatus";
+import {
+  STATUS_META,
+  endSession,
+  startScreenShare,
+} from "@/lib/status/employeeStatus";
 import {
   ROOM_NAME,
   fetchRoomCredentials,
@@ -22,8 +26,10 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
  * the track and the publish are behaving, from the same controls the top bar
  * uses.
  *
- * Nothing here is required to go online. The pill in the top bar does the whole
- * flow on every route.
+ * Nothing here is required to go online — and since Online became a choice
+ * rather than a consequence of sharing, nothing here changes your status at
+ * all. This page starts and stops the SHARE, which is what a diagnostics page
+ * for screen sharing should do; the pill in the top bar owns presence.
  */
 export default function EmployeePage() {
   const { status, share, session, token, url, notice } = useEmployeeStatus();
@@ -43,18 +49,21 @@ export default function EmployeePage() {
         title="Screen share"
         count="LiveKit diagnostics"
         action={
-          status === "offline" ? (
+          !share.sharing ? (
             <Button
               tone="primary"
               disabled={connecting || !viewerId}
               onClick={() =>
-                viewerId && void goOnline(() => fetchRoomCredentials(viewerId))
+                viewerId &&
+                void startScreenShare(() => fetchRoomCredentials(viewerId))
               }
             >
-              {connecting ? "Waiting for your screen…" : "Go online"}
+              {connecting ? "Waiting for your screen…" : "Start sharing"}
             </Button>
           ) : (
-            <Button tone="secondary" onClick={() => goOffline()}>
+            /* Ends the ROOM, not the person's presence — stopping a share no
+               longer takes anybody offline. */
+            <Button tone="secondary" onClick={() => endSession()}>
               Stop sharing
             </Button>
           )

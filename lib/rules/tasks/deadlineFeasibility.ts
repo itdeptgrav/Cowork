@@ -254,6 +254,15 @@ export function calculateDeadlineFeasibility(input: {
   orderOverride?: string[] | null;
   /** Now, injected so the answer is reproducible in a test. */
   nowMs: number;
+  /**
+   * The day's opening — the FIXED origin a queue with nothing started hangs on.
+   *
+   * From `officeOpenMsFor`, the same function the real chain anchors to. Supply
+   * it: without it this falls back to the start of the day, which is fixed and
+   * therefore safe, but is not the office's own opening and will schedule into
+   * hours nobody works.
+   */
+  officeOpenMs?: number;
   /** Production's own arithmetic — office hours, breaks, blocked dates. */
   addWorkingSecs: (anchorMs: number, windowSecs: number) => string;
   /**
@@ -305,6 +314,25 @@ export function calculateDeadlineFeasibility(input: {
     /* Filled from the same field as every other row, so the subject is not the
        one entry in the list with an empty commitment column. */
     committedDueAt: input.committedDeadline ?? null,
+    /**
+     * **Carried from the REAL task, for the same reason `startedAt` is.**
+     *
+     * `chainDeadlines` floors every task at its own creation instant — a task
+     * cannot be due before it existed — and this row is synthesised, so without
+     * this it arrives with no creation time and is scheduled from the anchor
+     * whatever the anchor is. Harmless while the anchor was `now`; the moment
+     * it became the day's opening, work handed over at 16:00 was scheduled from
+     * the morning and reported as already finishable.
+     *
+     * A task that does not exist yet — a proposal being previewed — is floored
+     * at `now`, because that is genuinely when it would come into being.
+     */
+    createdAtMs:
+      (input.taskId
+        ? (input.tasks.find(
+            (t) => String((t as QueueTask).taskId) === String(input.taskId),
+          ) as QueueTask | undefined)?.createdAtMs
+        : undefined) ?? (input.taskId ? undefined : input.nowMs),
   } as FeasibilityTask;
 
   const subjectId = String(subject.taskId);
@@ -364,8 +392,21 @@ export function calculateDeadlineFeasibility(input: {
    * that are allowed to move it: a break, an offline span, an approved
    * emergency, an approved extension.
    *
-   * Nothing has started yet? Then there is no origin to hold and `nowMs` is the
-   * honest answer, exactly as before.
+   * **Nothing has started yet? Still not `nowMs`.**
+   *
+   * That was the remaining half of the creep, and it is the ordinary case — a
+   * task sitting at `assigned` has no `startedAt`, so every read of it anchored
+   * at the wall clock and *Expected completion* advanced a minute a minute with
+   * nobody working and nothing changed. Reported from the running product:
+   * 11:50 on one look and 11:56 on the next, on an untouched task whose owner
+   * was online the whole time.
+   *
+   * `anchorMsFor` settled this for the real chain — "the day's opening and
+   * nothing else" — and this function never got the same treatment. It does
+   * now: the office opening, or the start of the day where none was supplied.
+   * Both are fixed for the whole day, which is the only property that matters.
+   * `chainDeadlines` then floors each task at its own `createdAtMs`, so work
+   * handed over at 15:00 is still not scheduled from the morning.
    */
   const startedAnchorMs = (() => {
     /* Read from the REAL tasks, not from `simulated`. The subject in there is a
@@ -385,7 +426,8 @@ export function calculateDeadlineFeasibility(input: {
       const started = startsById.get(String(t.taskId));
       if (started !== undefined) return started;
     }
-    return input.nowMs;
+    /* The fixed origin. Never the wall clock — see the note above. */
+    return input.officeOpenMs ?? new Date(input.nowMs).setHours(0, 0, 0, 0);
   })();
 
   /* The real chain, over the simulated order. Each task starts when the one

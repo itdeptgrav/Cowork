@@ -153,7 +153,7 @@ export function ScreenShareBridge() {
         sharing: false,
         connected: false,
         surface: null,
-        detail: "Not sharing. Go online to start.",
+        detail: "Not sharing. Your screen is not being watched.",
       });
     };
   }, [room, localParticipant]);

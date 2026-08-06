@@ -4770,12 +4770,41 @@ export class LegacyRepository {
         ),
       );
 
-      for (const d of snap.docs) {
-        const data = d.data() as Record<string, unknown>;
-        const status = typeof data.status === "string" ? data.status : "";
-        if (ABSENCE_TERMINAL_STATUSES.has(status)) continue;
+      /**
+       * **The head of this person's queue, and why it is needed here.**
+       *
+       * Expected completion is computed from WINDOWS laid end to end, not from
+       * stored dates — so shifting dates alone moved nothing a reader could
+       * see. Most tasks carry no stored date at all (the creator sets hours and
+       * the date comes from the queue), and those were skipped outright by a
+       * `continue`, so an offline span credited them nothing whatsoever.
+       *
+       * The same shape the meeting credit settled on: exactly ONE window grows —
+       * the work in hand — and the chain carries the shift to everything behind
+       * it. Growing every window would make the third task in the queue move by
+       * three times the absence.
+       */
+      const active = snap.docs.filter((d) => {
+        const st = (d.data() as Record<string, unknown>).status;
+        return !ABSENCE_TERMINAL_STATUSES.has(typeof st === "string" ? st : "");
+      });
+      const headId = [...active]
+        .map((d) => ({
+          id: d.id,
+          rank: resolveTaskPriority(
+            { ...(d.data() as Record<string, unknown>), id: d.id } as never,
+            employeeId,
+          ),
+        }))
+        .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id))[0]?.id;
+      const lostSecs = Math.round(lostMs / 1000);
 
-        /* The source field, so the write lands where the read looks. */
+      for (const d of active) {
+        const data = d.data() as Record<string, unknown>;
+
+        /* The source field, so the write lands where the read looks. Null is
+           the ordinary shape of a task nobody typed a date on — it is not a
+           reason to skip the task. */
         const field =
           readInstant(data.fixedDeadline) !== null
             ? "fixedDeadline"
@@ -4784,16 +4813,41 @@ export class LegacyRepository {
               : readInstant(data.dueDate) !== null
                 ? "dueDate"
                 : null;
-        if (field === null) continue;
 
-        const currentMs = readInstant(data[field])!;
-        const previousIso = new Date(currentMs).toISOString();
-        const newDueIso = new Date(currentMs + lostMs).toISOString();
+        const currentMs = field === null ? null : readInstant(data[field]);
+        const previousIso =
+          currentMs === null ? null : new Date(currentMs).toISOString();
+        const newDueIso =
+          currentMs === null ? null : new Date(currentMs + lostMs).toISOString();
+
+        /* The head absorbs the lost time on its budget; the chain does the rest. */
+        const growsWindow = d.id === headId && lostSecs > 0;
+        const mapped = growsWindow
+          ? readTask({ ...data, id: d.id } as never)
+          : null;
+        const currentWindow = mapped ? resolveTimeBudget(mapped) : 0;
+        const newWindowSecs =
+          growsWindow && currentWindow > 0 ? currentWindow + lostSecs : null;
+
+        if (newDueIso === null && newWindowSecs === null) continue;
+
         await updateDoc(doc(db, "cowork_tasks", d.id), {
-          [field]: newDueIso,
+          ...(newDueIso !== null && field !== null ? { [field]: newDueIso } : {}),
+          /* Both fields legacy reads a window from, so the queue and the Details
+             panel cannot end up describing different amounts of work. */
+          ...(newWindowSecs !== null
+            ? {
+                deadlineWindowSecs: newWindowSecs,
+                senderTimerWindowSecs: newWindowSecs,
+              }
+            : {}),
           updatedAt: new Date(),
         });
         shifted += 1;
+
+        /* Nothing to file where no date moved — the receipt below names a
+           previous and a proposed deadline, and there was neither. */
+        if (previousIso === null || newDueIso === null) continue;
 
         /* The receipt: previous → reason → current, in the same collection the
            approved extensions land in, so one history answers "why is this due
@@ -8887,6 +8941,10 @@ export class LegacyRepository {
       orderOverride: input.orderOverride ?? null,
       tasks,
       nowMs: Date.now(),
+      /* The FIXED origin for a queue with nothing started — the same function
+         the real chain anchors to. Without it the preview falls back to
+         midnight, which is stable but schedules into hours nobody works. */
+      officeOpenMs: officeOpenMsFor(policy.schedule, Date.now()),
       addWorkingSecs: (anchorMs, windowSecs) =>
         addWorkingSecs(anchorMs, windowSecs, policy.schedule, blocked, policy.breaks),
       /* The step log takes a MAP rather than a set, so it can say WHICH reason

@@ -15,7 +15,7 @@ const IDLE: ShareFacts = {
   sharing: false,
   connected: false,
   surface: null,
-  detail: "Not sharing. Go online to start.",
+  detail: "Not sharing. Your screen is not being watched.",
 };
 
 const facts = (over: Parameters<typeof shareFactsFor>[0]) => shareFactsFor(over);

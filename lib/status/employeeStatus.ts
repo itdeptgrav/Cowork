@@ -42,7 +42,7 @@ import {
 export type EmployeeStatus = "online" | "break" | "emergency" | "offline";
 
 /** What the person asked for. Never includes "online" — see the module note. */
-export type ManualStatus = "break" | "emergency" | null;
+export type ManualStatus = "online" | "break" | "emergency" | null;
 
 /**
  * Where the connect-and-share attempt has got to.
@@ -130,7 +130,7 @@ const IDLE_SHARE: ShareFacts = {
   sharing: false,
   connected: false,
   surface: null,
-  detail: "Not sharing. Go online to start.",
+  detail: "Not sharing. Your screen is not being watched.",
 };
 
 /**
@@ -166,15 +166,26 @@ export function derive(
 ): EmployeeStatus {
   if (manual === "emergency") return "emergency";
   if (manual === "break") return "break";
-  /* **Online is a live share, and nothing this DEVICE does asserts it.** A
-     reconnect after a refresh must not read as online — `reconnecting` is
-     tracked separately purely to drive a "resume sharing" affordance, and it
-     never makes someone online, because no screen is flowing from here.
-
-     `remoteOnline` is different in kind, and that is why it is allowed to. It is
-     not this device guessing; it is the account's own claim, held by a
-     connection that IS sharing right now. A manager who opens that screen finds
-     it. Presence describes the person, and the person is online. */
+  /**
+   * **Online is now a CHOICE — OWNER DECISION, and a reversal.**
+   *
+   * This module was built on the opposite rule: online was a consequence of a
+   * live whole-screen share and nothing a person said could assert it. Pressing
+   * Online opened the browser's capture picker, and cancelling it left you
+   * offline. That has been removed at the owner's instruction: pressing Online
+   * makes you online, immediately, with no prompt.
+   *
+   * What that costs, stated where the rule lives rather than left to be
+   * discovered: presence is now SELF-DECLARED. Nothing verifies it, and a
+   * manager opening somebody's screen finds one only if that person chose to
+   * share. Screen sharing still exists and still works — it is simply no longer
+   * what online MEANS.
+   *
+   * A live share still reports online on its own, so somebody who shares
+   * without pressing anything is online exactly as before, and `remoteOnline`
+   * still carries the account's claim from another device.
+   */
+  if (manual === "online") return "online";
   if (share.sharing && share.connected) return "online";
   return remoteOnline ? "online" : "offline";
 }
@@ -277,31 +288,57 @@ export function reportShare(share: ShareFacts): void {
 /* ── The go-online flow ───────────────────────────────────────────────────── */
 
 /**
- * Ask for a screen, then hold a session.
+ * Go online.
  *
- * MUST be called straight from a click. `requestScreenShare` needs the gesture,
- * so the capture prompt comes FIRST and the network comes after — which also
- * means a cancelled prompt costs nothing: no token is minted and no room is
- * joined. That is the "if the user cancels, remain Offline" rule expressed as
- * an ordering rather than as a cleanup.
+ * **No screen-share prompt — OWNER DECISION, and a deliberate reversal.**
+ *
+ * This used to open the browser's capture picker first and hold the whole
+ * transition behind it: cancel the picker and you stayed offline, pick a single
+ * window rather than the whole screen and you stayed offline. Online meant a
+ * live whole-screen track and nothing else could assert it.
+ *
+ * Pressing Online now simply makes you online. It commits synchronously and
+ * takes no argument, because there is nothing left to await — no picker, no
+ * token, no room. The old signature accepted a credential fetcher, and callers
+ * that still pass one are unaffected: it is ignored rather than called, so
+ * nothing mints a token for a room nobody is joining.
+ *
+ * **Sharing is not gone, only unhooked.** `startScreenShare` below is the same
+ * flow under its own name, for anybody who wants to be watched or is asked to
+ * be; a live share still reports online through `derive` on its own. What has
+ * gone is the requirement.
  */
-export async function goOnline(
+export function goOnline(_unused?: unknown): boolean {
+  void _unused;
+  commit({
+    ...state,
+    manual: "online",
+    breakStartedAt: null,
+    emergencyStartedAt: null,
+    notice: null,
+    /* Choosing to be online settles the question a reconnect was holding open. */
+    reconnecting: false,
+  });
+  return true;
+}
+
+/**
+ * Start sharing this screen — the old `goOnline`, under the name it always
+ * deserved.
+ *
+ * Kept whole because monitoring still runs on it: `requestScreenShare` refuses
+ * anything but the entire screen, the token is fetched only once a track
+ * exists, and a cancelled picker costs nothing. It no longer decides presence.
+ *
+ * MUST be called straight from a click — `requestScreenShare` needs the gesture.
+ */
+export async function startScreenShare(
   fetchCredentials: () => Promise<{ token: string; url: string }>,
 ): Promise<boolean> {
   if (state.session === "requesting" || state.session === "connecting")
     return false;
 
-  if (state.share.sharing && state.share.connected) {
-    // Already sharing — "go online" just means "stop suppressing it".
-    commit({
-      ...state,
-      manual: null,
-      breakStartedAt: null,
-      emergencyStartedAt: null,
-      notice: null,
-    });
-    return true;
-  }
+  if (state.share.sharing && state.share.connected) return true;
 
   commit({ ...state, session: "requesting", notice: null });
 
@@ -331,7 +368,7 @@ export async function goOnline(
       });
 
       await nativeStartScreenShare(url, token);
-      commit({ ...state, session: "live", manual: null, breakStartedAt: null, emergencyStartedAt: null, token, url, notice: null });
+      commit({ ...state, session: "live", token, url, notice: null });
       reportShare({
         sharing: true,
         connected: true,
@@ -362,7 +399,7 @@ export async function goOnline(
       share: { ...state.share, surface: surfaceOf(e) },
       notice:
         e instanceof ScreenShareCancelled
-          ? "Screen sharing was cancelled — you are still offline."
+          ? "Screen sharing was cancelled."
           : e instanceof ScreenShareWrongSurface
             ? `${e.message} ${ENTIRE_SCREEN_REQUIREMENT}`
             : (e instanceof Error && e.message)
@@ -373,13 +410,7 @@ export async function goOnline(
   }
 
   pendingTrack = track;
-  commit({
-    ...state,
-    session: "connecting",
-    manual: null,
-    breakStartedAt: null,
-    emergencyStartedAt: null,
-  });
+  commit({ ...state, session: "connecting" });
 
   try {
     const { token, url } = await fetchCredentials();
@@ -394,7 +425,7 @@ export async function goOnline(
       session: "error",
       token: null,
       url: null,
-      notice: "Could not reach the room. You are still offline.",
+      notice: "Could not reach the room, so your screen is not being shared.",
     });
     return false;
   }
@@ -404,7 +435,6 @@ function surfaceOf(e: unknown): SharedSurface | null {
   return e instanceof ScreenShareWrongSurface ? e.surface : null;
 }
 
-/** The room reported that the track is published and flowing. */
 export function sessionLive(): void {
   commit({ ...state, session: "live", notice: null });
 }
@@ -684,7 +714,21 @@ export function applyRemotePresence(input: {
     commit({
       ...state,
       hydrated: true,
-      manual: null,
+      /**
+       * **A locally CHOSEN online survives its own echo.**
+       *
+       * This cleared `manual` unconditionally, which was right while online was
+       * a consequence of sharing and could never be a manual state. It is one
+       * now — and the account echoing back the very claim this device just
+       * published then wiped the choice that produced it. `derive(null, not
+       * sharing, remoteOnline: false)` is `offline`, so pressing Online lit the
+       * pill green and dropped it to grey a moment later, which is what was
+       * reported.
+       *
+       * Cleared only when this device is genuinely SHARING, where the track says
+       * online on its own and a manual flag would outlive it.
+       */
+      manual: !sharingHere && state.manual === "online" ? "online" : null,
       breakStartedAt: null,
       emergencyStartedAt: null,
       /* Only when the claim is somebody ELSE's connection. If this device is the

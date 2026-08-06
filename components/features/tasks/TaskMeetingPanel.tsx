@@ -169,23 +169,41 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   const runningId = running?.id ?? null;
   const refetchSessions = sessions.refetch;
 
+  /**
+   * **Live while a meeting is running OR while this reader is in one.**
+   *
+   * Gated on `runningId` alone, a reader who pressed Join before their session
+   * list had been fetched had `running === null` — so no clock started, no
+   * refetch was scheduled, and the panel sat at "not counting" for the whole
+   * meeting while the other side counted normally. That is two people watching
+   * the same room and seeing different answers, which is what was reported.
+   */
+  const watching = runningId !== null || joined !== null;
+
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (!runningId) return;
+    if (!watching) return;
     /* One second, because this is a duration somebody is watching tick. It
        stops entirely when no meeting is running rather than idling forever. */
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [runningId]);
+  }, [watching]);
 
-  /* Attendance arrives with the session list, so without this the live figure
-     would be computed from whoever was in the room when the tab loaded — the
-     creator could walk in and the panel would go on saying "not counting". */
+  /**
+   * Attendance arrives with the session list, so the live figure is only ever as
+   * fresh as the last fetch.
+   *
+   * **Five seconds, not fifteen.** The figure beside it ticks every second, so a
+   * fifteen-second lag on WHO IS IN THE ROOM meant the two sides of a meeting
+   * disagreed for a quarter of a minute at a time — one counting, one at zero,
+   * both drawn from the same room. The panel is only mounted while somebody is
+   * looking at a meeting, so the cost is bounded by the meeting itself.
+   */
   useEffect(() => {
-    if (!runningId) return;
-    const id = setInterval(() => refetchSessions(), 15_000);
+    if (!watching) return;
+    const id = setInterval(() => refetchSessions(), 5_000);
     return () => clearInterval(id);
-  }, [runningId, refetchSessions]);
+  }, [watching, refetchSessions]);
 
   const viewerId = useViewerId() ?? "";
   const liveSession = running
@@ -230,8 +248,10 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
           <p className="mt-1 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
             Every task has its own room — there is nothing to schedule. Time
             spent here is added to your deadline, and to every other task you
-            have on the go. The clock runs only while{" "}
-            {counterpartyName} is in the room.
+            have on the go.{" "}
+            {crossDept
+              ? `This work came from another department, so the clock runs only while ${counterpartyName} and ${receiverName} are both in the room — and each person in it is credited their own time, on their own tasks.`
+              : `The clock runs only while ${counterpartyName} is in the room.`}
           </p>
         </div>
 
@@ -268,6 +288,12 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                  once-only guard is released rather than carried over. */
               departingRef.current = null;
               setJoined(r.data);
+              /* **Immediately, not on the next tick.** The snapshot this panel
+                 is holding was taken before this join — it contains neither
+                 this reader's own attendance row nor anybody already inside, so
+                 without this the figure reads zero and the reason line blames
+                 the other person for not being in a room they are standing in. */
+              sessions.refetch();
             }}
           >
             {joinState.isPending ? "…" : "Join meeting"}
@@ -348,6 +374,10 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             audio
             data-lk-theme="default"
             className="flex min-h-0 flex-1 flex-col"
+            /* The room being up is the moment the other side becomes visible to
+               this one — read the attendance again rather than waiting out the
+               poll. */
+            onConnected={() => refetchSessions()}
             /* The control bar's own leave button disconnects rather than
                calling anything here, so the close is hung off the
                disconnection — otherwise hanging up would leave the session

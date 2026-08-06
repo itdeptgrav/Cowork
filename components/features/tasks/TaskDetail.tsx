@@ -7,6 +7,7 @@ import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import { useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
+import { meetingFirstHint } from "@/lib/rules/meetings/meetingFirst";
 import { ProjectPanel } from "./ProjectPanel";
 import { ResponsibilityPanel } from "./ResponsibilityPanel";
 import { RelatedMeetings } from "@/components/features/meetings/RelatedMeetings";
@@ -617,6 +618,14 @@ function NextActionCard({
   const v = view as never as import("@/lib/repositories").TaskView;
   const dutyMode = useMyDutyMode();
   const action = nextAction(v, me ?? "", dutyMode);
+  /* A suggestion under the obligation, never instead of it — see
+     `lib/rules/meetings/meetingFirst.ts`. */
+  const meetFirst = meetingFirstHint({
+    taskId,
+    actor: action.actor,
+    budgetSettled: isBudgetSettled(v.budgetNegotiation?.state ?? null),
+    everMet: v.task.meetings.firstStartedAt !== null,
+  });
   const [start, startState] = useAction((r) => r.startTask(taskId));
   const [decide, decideState] = useAction(
     (r, approvalId: string, d: "approved" | "rejected") =>
@@ -692,6 +701,20 @@ function NextActionCard({
                 : "Closed"}
           </p>
           <p className="mt-0.5 text-[15px] text-ink">{action.label}</p>
+          {meetFirst && (
+            /* Deliberately quiet: smaller, muted, and BELOW the move somebody is
+               waiting on. A suggestion that competes with the obligation for
+               attention is how the obligation gets missed. */
+            <p className="mt-1.5 max-w-[62ch] text-[11px] leading-relaxed text-ink-faint">
+              {meetFirst.text}{" "}
+              <Link
+                href={meetFirst.href}
+                className="text-ink underline underline-offset-2"
+              >
+                {meetFirst.label}
+              </Link>
+            </p>
+          )}
         </div>
 
         {action.actor === "you" && (

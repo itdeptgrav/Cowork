@@ -185,14 +185,40 @@ test("CASE 14 — logging more time does not move it either", () => {
   assert.equal(early, late);
 });
 
-test("CASE 15 — a task not yet started still answers from now", () => {
-  /* Nothing has begun, so there is no origin to hold. `now` is the honest
-     answer, exactly as before — this is not a regression, it is the case the
-     anchor cannot apply to. */
+test("CASE 15 — a task NOT yet started does not move with the clock either", () => {
+  /* **This case used to assert the opposite, and was the bug.** Its reasoning
+     was that with nothing begun there is no origin to hold, so `now` is honest.
+     It is not: a task sitting at `assigned` is the ORDINARY state, so every
+     read of it anchored at the wall clock and the date advanced a minute a
+     minute. Reported from the running product — 11:50 on one look and 11:56 on
+     the next, on an untouched task whose owner was online throughout.
+
+     CASE 12 states the invariant for a started task. There was never a reason
+     for an unstarted one to be exempt: `anchorMsFor` settled the same question
+     for the real chain with "the day's opening and nothing else". */
   const noStart = started({ startedAt: undefined });
   const a = completionAt("2026-08-04T16:34:30", noStart);
   const b = completionAt("2026-08-04T16:36:30", noStart);
-  assert.notEqual(a, b);
+  const c = completionAt("2026-08-04T17:20:00", noStart);
+  assert.equal(a, b, "the projection moved because two minutes passed");
+  assert.equal(b, c, "the projection moved because forty minutes passed");
+});
+
+test("CASE 15b — but it is still not scheduled from before it existed", () => {
+  /* The fixed origin must not schedule work from the morning that was handed
+     over in the afternoon. `chainDeadlines` floors each task at its own
+     `createdAtMs`, so the anchor being the day's start does not undo the rule
+     that a task cannot be due before it existed. */
+  const madeAtFour = started({
+    startedAt: undefined,
+    createdAtMs: at("2026-08-04T16:00:00"),
+  });
+  const due = completionAt("2026-08-04T16:34:30", madeAtFour);
+  assert.ok(due, "no completion was projected at all");
+  assert.ok(
+    Date.parse(due!) >= at("2026-08-04T16:00:00"),
+    `scheduled from before the task existed: ${due}`,
+  );
 });
 
 /* ── A task cannot be due before it existed ───────────────────────────────── */

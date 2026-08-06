@@ -5,8 +5,10 @@ import {
   declareEmergency,
   derive,
   getSnapshot,
+  applyRemotePresence,
   goOffline,
   goOnline,
+  startScreenShare,
   reportShare,
   resetStatus,
   startBreak,
@@ -134,7 +136,7 @@ test("a window share is refused before any token is minted", async () => {
   };
   let asked = 0;
   const started = await withPicker(grants(track), () =>
-    goOnline(async () => {
+    startScreenShare(async () => {
       asked += 1;
       return CREDENTIALS;
     }),
@@ -150,7 +152,7 @@ test("a window share is refused before any token is minted", async () => {
 test("a browser tab share is refused the same way", async () => {
   fresh();
   const started = await withPicker(grants(fakeTrack("browser")), () =>
-    goOnline(async () => CREDENTIALS),
+    startScreenShare(async () => CREDENTIALS),
   );
   assert.equal(started, false);
   assert.equal(getSnapshot().share.surface, "browser_tab");
@@ -160,7 +162,7 @@ test("a browser tab share is refused the same way", async () => {
 test("a browser that will not name the surface is refused, not trusted", async () => {
   fresh();
   const started = await withPicker(grants(unnamedSurfaceTrack()), () =>
-    goOnline(async () => CREDENTIALS),
+    startScreenShare(async () => CREDENTIALS),
   );
   assert.equal(started, false);
   assert.equal(getSnapshot().share.surface, "unknown");
@@ -174,11 +176,11 @@ test("a window share reported by the room never reads as online", () => {
   assert.equal(derive(null, WINDOW_ONLY), "offline");
 });
 
-test("cancelling the screen picker costs no token and stays offline", async () => {
+test("cancelling the screen picker costs no token and shares nothing", async () => {
   fresh();
   let asked = 0;
   const started = await withPicker(cancels(), () =>
-    goOnline(async () => {
+    startScreenShare(async () => {
       asked += 1;
       return CREDENTIALS;
     }),
@@ -195,7 +197,7 @@ test("granting a screen holds the track and fetches credentials", async () => {
   fresh();
   const track = fakeTrack();
   const started = await withPicker(grants(track), () =>
-    goOnline(async () => CREDENTIALS),
+    startScreenShare(async () => CREDENTIALS),
   );
   assert.equal(started, true);
   assert.equal(
@@ -212,7 +214,7 @@ test("granting a screen holds the track and fetches credentials", async () => {
   );
 });
 
-test("a token failure releases the capture and stays offline", async () => {
+test("a token failure releases the capture and shares nothing", async () => {
   fresh();
   const track = fakeTrack();
   let stopped = false;
@@ -220,7 +222,7 @@ test("a token failure releases the capture and stays offline", async () => {
     stopped = true;
   };
   const started = await withPicker(grants(track), () =>
-    goOnline(async () => {
+    startScreenShare(async () => {
       throw new Error("500");
     }),
   );
@@ -244,7 +246,7 @@ test("Online is a consequence of the track, never of the request", async () => {
      because the online-ness comes from the live track, not the request. (A break
      no longer keeps the track, so it is not the vehicle for this case anymore.) */
   const started = await withPicker(null, () =>
-    goOnline(async () => {
+    startScreenShare(async () => {
       throw new Error("should never be reached");
     }),
   );
@@ -337,4 +339,136 @@ test("going offline ends the session and drops the credentials", () => {
   assert.equal(s.session, "idle");
   assert.equal(s.share.sharing, false);
   assert.equal(takePendingTrack(), null);
+});
+
+/* ── Online is a choice — OWNER DECISION, and a reversal ──────────────────── */
+
+test("pressing Online goes online immediately, with no screen picker", () => {
+  /* The whole point of the change: this module was built so that nothing a
+     person said could assert online, and pressing the button opened the
+     browser's capture prompt. It no longer does. */
+  fresh();
+  let pickerOpened = 0;
+  const result = withPicker(
+    () => {
+      pickerOpened += 1;
+      throw new Error("the picker must not be opened");
+    },
+    () => goOnline(),
+  );
+  assert.equal(result, true);
+  assert.equal(pickerOpened, 0, "pressing Online opened the capture prompt");
+  assert.equal(getSnapshot().status, "online");
+  assert.equal(getSnapshot().notice, null, "going online reported a problem");
+});
+
+test("it does not mint a token or hold a room", () => {
+  /* Nothing is being shared, so there is nothing to carry — an open room for
+     somebody publishing no media is a connection nobody uses. */
+  fresh();
+  goOnline();
+  const s = getSnapshot();
+  assert.equal(s.token, null);
+  assert.equal(s.url, null);
+  assert.equal(s.session, "idle");
+});
+
+test("a caller still passing a credential fetcher does not trigger it", () => {
+  /* The old signature took one. Rather than break every call site, it is
+     ignored — but it must not be CALLED, or going online would quietly mint a
+     token for a room nobody joins. */
+  fresh();
+  let asked = 0;
+  goOnline(async () => {
+    asked += 1;
+    return CREDENTIALS;
+  });
+  assert.equal(asked, 0);
+  assert.equal(getSnapshot().status, "online");
+});
+
+test("break and emergency still win over a chosen online", () => {
+  /* Both are claims about the person and both suppress presence. Choosing
+     online must not become a way to stay online through a break. */
+  assert.equal(derive("break", GONE), "break");
+  assert.equal(derive("emergency", GONE), "emergency");
+});
+
+test("going offline clears the choice", () => {
+  fresh();
+  goOnline();
+  assert.equal(getSnapshot().status, "online");
+  goOffline();
+  assert.equal(getSnapshot().status, "offline");
+  assert.equal(getSnapshot().manual, null);
+});
+
+test("a live share still reports online on its own", () => {
+  /* Sharing was unhooked from presence, not deleted. Somebody who shares
+     without pressing anything is online exactly as before. */
+  assert.equal(derive(null, LIVE), "online");
+});
+
+/* ── The echo that undid the choice ───────────────────────────────────────── */
+
+test("a chosen online survives the account echoing it straight back", () => {
+  /* **The reported fault, reproduced.** Press Online, the store goes online,
+     DutySync publishes it, and the live subscription delivers the very claim
+     that was just written. `applyRemotePresence` cleared `manual`, and with
+     nothing shared and the claim being this connection's own, `remoteOnline`
+     was false too — so the pill lit green and dropped straight back to grey. */
+  fresh();
+  goOnline();
+  assert.equal(getSnapshot().status, "online");
+
+  applyRemotePresence({
+    mode: "online",
+    breakStartedAtMs: null,
+    emergencyStartedAtMs: null,
+    onlineElsewhere: false,
+  });
+
+  assert.equal(getSnapshot().status, "online", "the echo cancelled the choice");
+  assert.equal(getSnapshot().manual, "online");
+});
+
+test("repeated echoes do not wear it down", () => {
+  /* The subscription fires on every snapshot, not once. */
+  fresh();
+  goOnline();
+  for (let i = 0; i < 5; i += 1) {
+    applyRemotePresence({
+      mode: "online",
+      breakStartedAtMs: null,
+      emergencyStartedAtMs: null,
+      onlineElsewhere: false,
+    });
+  }
+  assert.equal(getSnapshot().status, "online");
+});
+
+test("the account going offline elsewhere still takes this device offline", () => {
+  /* The choice is sticky against its own echo, not against a genuine change. */
+  fresh();
+  goOnline();
+  applyRemotePresence({
+    mode: "offline",
+    breakStartedAtMs: null,
+    emergencyStartedAtMs: null,
+    onlineElsewhere: false,
+  });
+  assert.equal(getSnapshot().status, "offline");
+  assert.equal(getSnapshot().manual, null);
+});
+
+test("a break declared elsewhere still wins over a chosen online", () => {
+  fresh();
+  goOnline();
+  applyRemotePresence({
+    mode: "break",
+    breakStartedAtMs: Date.now(),
+    emergencyStartedAtMs: null,
+    onlineElsewhere: false,
+  });
+  assert.equal(getSnapshot().status, "break");
 });
