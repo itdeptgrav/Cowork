@@ -58,6 +58,12 @@ export function MindMapsArea({
 }) {
   const maps = useQuery((r) => r.listMindMaps(), []);
   const [openId, setOpenId] = useState<string | null>(() => initialOpenId);
+  /* The map just created, held locally — same reason as `DocumentsArea`:
+     `createAndOpen` does not await `maps.refetch()`, so on the render straight
+     after creating, `list` has not caught up, `open` resolves to null and the
+     list is drawn again instead of the new map. `createMindMap` hands back the
+     whole record, so it is opened from that instead of from the list. */
+  const [justCreated, setJustCreated] = useState<MindMapSummary | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
@@ -73,7 +79,11 @@ export function MindMapsArea({
   const [remove] = useAction((r, id: string) => r.deleteMindMap(id));
 
   const list = maps.data ?? [];
-  const open = list.find((m) => m.id === openId) ?? null;
+  /* The listed copy wins once it arrives; the just-created one only stands in
+     until the refetch lands. */
+  const open =
+    list.find((m) => m.id === openId) ??
+    (justCreated && justCreated.id === openId ? justCreated : null);
 
   /**
    * The map this browser still holds from before mindmaps were stored properly.
@@ -122,10 +132,11 @@ export function MindMapsArea({
   const createAndOpen = async () => {
     const r = await create();
     if (!r.ok) return;
-    maps.refetch();
     /* Opened straight away: a new map's first need is to be drawn in, and its
        name is easier to choose once there is something in it. */
+    setJustCreated(r.data);
     setOpenId(r.data.id);
+    maps.refetch();
   };
 
   /**
