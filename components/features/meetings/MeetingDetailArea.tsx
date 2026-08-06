@@ -18,6 +18,7 @@ import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { canView, joinRefusal, manageRefusal } from "@/lib/rules/meetings/access";
 import { MeetingRoom, RoomClosed } from "./MeetingRoom";
 import { MeetingSummaryPanel } from "./MeetingSummaryPanel";
+import { VerbatimTranscriptPanel } from "./VerbatimTranscriptPanel";
 import { PublicLinkPanel } from "./PublicLinkPanel";
 
 /**
@@ -272,6 +273,22 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               sub="Generated from meeting audio"
             />
             <MeetingSummaryPanel
+              meetId={meetingId}
+              meetStatus={m.status}
+            />
+          </Panel>
+
+          {/* A separate panel, not a tab inside the summary above — see this
+              component's own header comment for why the two must not be
+              conflated: the summary translates and paraphrases by design;
+              this flags uncertainty instead of guessing, in either of its
+              own two modes (verbatim or translated). */}
+          <Panel>
+            <PanelHead
+              title="Transcript"
+              sub="Verbatim or translated — never the summary's silent paraphrase"
+            />
+            <VerbatimTranscriptPanel
               meetId={meetingId}
               meetStatus={m.status}
             />
