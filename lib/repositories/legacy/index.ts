@@ -300,7 +300,11 @@ import {
   type LegacyC2Response,
 } from "./scoreMap.ts";
 import { readTimerFigures } from "../../rules/tasks/timerSession.ts";
-import { settleSession } from "../../rules/meetings/meetingCredit.ts";
+import {
+  creditsInWindow,
+  settleCrossDeptSession,
+  settleSession,
+} from "../../rules/meetings/meetingCredit.ts";
 import {
   taskJoinRefusal,
   taskMeetingRoomName,
@@ -7540,10 +7544,15 @@ export class LegacyRepository {
       const refusal = taskJoinRefusal(
         {
           createdById: host.createdById,
+          /* Differs from the creator only on a SELF task, where it is the
+             manager — the counterparty for the budget, the priority and the
+             review, and so a party to the meeting. */
+          assignedById: host.assignedById,
           assigneeIds: host.assigneeIds.map(String),
           pendingAssigneeIds: host.pendingAssigneeId
             ? [String(host.pendingAssigneeId)]
             : [],
+          approverIds: [host.approverId, ...host.departmentApproverIds],
         },
         me,
       );
@@ -7714,71 +7723,143 @@ export class LegacyRepository {
         return { ok: false as const, code: "not_found" as const, message: "That task could not be found." };
       }
 
-      /* Whose deadlines move: the RECEIVER of the work. */
-      const assigneeId = String(hostTask.assigneeIds[0] ?? "");
-      const mine = assigneeId
-        ? await getDocs(
-            query(
-              collection(db, "cowork_tasks"),
-              where("assigneeIds", "array-contains", assigneeId),
-            ),
-          )
-        : null;
+      /**
+       * Whose deadlines move: the RECEIVER of the work.
+       *
+       * **`pendingAssigneeId` FIRST**, and the engine resolves it the same way
+       * in `department-tl-set-hours`. A gated task carries `assigneeIds: []`
+       * until its approvals clear — the engine's own visibility rule, so the
+       * work stays invisible to somebody who has not been given it yet — and
+       * reading `assigneeIds[0]` alone therefore returned "" on exactly the
+       * tasks a kickoff meeting is held about. The queue lookup was skipped,
+       * the settlement was handed an empty task list, and an hour of
+       * cross-department kickoff credited nobody anything at all.
+       */
+      const assigneeId = String(
+        hostTask.pendingAssigneeId || hostTask.assigneeIds[0] || "",
+      );
 
-      const tasks = (mine?.docs ?? [])
-        .map((d) => readTask({ ...d.data(), id: d.id } as never))
-        .filter((t): t is NonNullable<typeof t> => t !== null && !t.isDeleted)
-        .map((t) => ({
-          taskId: t.id,
-          status: toTaskStatus(t),
-          assigneeIds: t.assigneeIds.map(String),
-          totals: {
-            firstStartedAtMs: t.meetingFirstStartedAtMs,
-            lastEndedAtMs: t.meetingLastEndedAtMs,
-            totalSecs: t.meetingTotalSecs ?? 0,
-          },
-          dueAtMs: t.dueAtMs,
-          /* The agreed window, read through the shared resolver so the queue is
-             laid out from the same seconds the Details panel shows. */
-          windowSecs: resolveTimeBudget(t) || null,
-          /* The queue position, from the SAME function the queue is sorted by —
-             `settleSession` grows exactly one window and this is what picks it.
-             A rank invented here would choose a different head than the chain
-             actually works through, and the shift would land behind the task
-             the person is on. */
-          rank: resolveTaskPriority(t as never, assigneeId),
-        }));
+      /** One person's live queue, shaped for the settlement. */
+      const queueOf = async (employeeId: string) => {
+        if (!employeeId) return [];
+        const mine = await getDocs(
+          query(
+            collection(db, "cowork_tasks"),
+            where("assigneeIds", "array-contains", employeeId),
+          ),
+        );
+        return mine.docs
+          .map((d) => readTask({ ...d.data(), id: d.id } as never))
+          .filter((t): t is NonNullable<typeof t> => t !== null && !t.isDeleted)
+          .map((t) => ({
+            taskId: t.id,
+            status: toTaskStatus(t),
+            assigneeIds: t.assigneeIds.map(String),
+            totals: {
+              firstStartedAtMs: t.meetingFirstStartedAtMs,
+              lastEndedAtMs: t.meetingLastEndedAtMs,
+              totalSecs: t.meetingTotalSecs ?? 0,
+            },
+            dueAtMs: t.dueAtMs,
+            /* The agreed window, read through the shared resolver so the queue
+               is laid out from the same seconds the Details panel shows. */
+            windowSecs: resolveTimeBudget(t) || null,
+            /* The queue position, from the SAME function the queue is sorted by
+               — the settlement grows exactly one window and this is what picks
+               it. A rank invented here would choose a different head than the
+               chain actually works through, and the shift would land behind the
+               task the person is on. */
+            rank: resolveTaskPriority(t as never, employeeId),
+          }));
+      };
 
-      const endedAtMs = Date.now();
+      const tasks = await queueOf(assigneeId);
+
+      /**
+       * **A meeting closes ONCE, and every later call settles against that
+       * instant.**
+       *
+       * Everybody in the room calls this on their way out — a three-person
+       * meeting is three calls — and reading `Date.now()` each time re-closed an
+       * already-closed session at a later instant. Anybody still marked present
+       * (`leftAt: null`) then had their span stretched to the new close, so the
+       * same meeting was worth more every time somebody else left. A ten-minute
+       * visitor came out with fifteen.
+       */
+      const endedAtMs = readInstant(session.endedAt) ?? Date.now();
       const rows = Array.isArray(session.attendance) ? session.attendance : [];
 
       /* **The same composition the mock runs.** One decision, two persisters. */
-      const settlement = settleSession({
-        session: {
-          creatorId: String(hostTask.createdById ?? ""),
-          startedAtMs: readInstant(session.startedAt) ?? endedAtMs,
-          endedAtMs,
-          attendance: rows.map((r) => {
-            const row = r as Record<string, unknown>;
-            return {
-              employeeId: String(row.employeeId),
-              joinedAtMs: readInstant(row.joinedAt) ?? endedAtMs,
-              leftAtMs: readInstant(row.leftAt),
-            };
-          }),
-        },
-        onTaskId: String(input.taskId),
-        assigneeId,
-        alreadyCredited: Array.isArray(session.creditedTaskIds)
-          ? session.creditedTaskIds.map(String)
-          : [],
-        tasks,
-      });
+      const meetingSession = {
+        counterpartyId: String(hostTask.assignedById ?? hostTask.createdById ?? ""),
+        startedAtMs: readInstant(session.startedAt) ?? endedAtMs,
+        endedAtMs,
+        attendance: rows.map((r) => {
+          const row = r as Record<string, unknown>;
+          return {
+            employeeId: String(row.employeeId),
+            joinedAtMs: readInstant(row.joinedAt) ?? endedAtMs,
+            leftAtMs: readInstant(row.leftAt),
+          };
+        }),
+      };
+      const alreadyCredited = Array.isArray(session.creditedTaskIds)
+        ? session.creditedTaskIds.map(String)
+        : [];
 
+      /**
+       * Two rules, and the task decides which — OWNER DECISION.
+       *
+       * Work that crossed a department boundary settles on the shared-window
+       * rule: the clock runs only while both sides are in the room, and every
+       * person in that window is credited their own time against their own
+       * queue. Everything else keeps the ordinary rule, where the receiver's
+       * deadlines are the only ones that move.
+       *
+       * The branch is on the TASK rather than on who happens to be in the room,
+       * so the same meeting cannot settle two different ways depending on who
+       * joined it.
+       */
+      const settlement = hostTask.isCrossDepartment
+        ? await (async () => {
+            const window = { ...meetingSession, receiverId: assigneeId };
+            /* One queue read per person who earned something — not per
+               attendee, so somebody who looked in after the window closed
+               costs nothing. */
+            const earners = creditsInWindow(window).map((c) => c.employeeId);
+            const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
+            for (const id of earners) queues.set(id, await queueOf(id));
+            return settleCrossDeptSession({
+              session: window,
+              onTaskId: String(input.taskId),
+              tasksByEmployee: queues,
+              alreadyCredited,
+            });
+          })()
+        : settleSession({
+            session: meetingSession,
+            onTaskId: String(input.taskId),
+            assigneeId,
+            alreadyCredited,
+            tasks,
+          });
+
+      /**
+       * **MERGED, never replaced.** This wrote only what the current call had
+       * credited, so the second person to leave — whose call correctly credited
+       * nothing, because the first had already done it — wiped the record back
+       * to empty. The third person's call then found nothing marked and paid
+       * the whole meeting a second time. With three people in a room the credit
+       * landed roughly twice, which is how a fifteen-minute meeting moved a
+       * deadline by three quarters of an hour.
+       */
+      const creditedTaskIds = [
+        ...new Set([...alreadyCredited, ...settlement.updates.map((u) => u.taskId)]),
+      ];
       await updateDoc(ref, {
         endedAt: new Date(endedAtMs).toISOString(),
         creditedSecs: settlement.creditedSecs,
-        creditedTaskIds: settlement.updates.map((u) => u.taskId),
+        creditedTaskIds,
       });
 
       for (const update of settlement.updates) {
@@ -7819,7 +7900,7 @@ export class LegacyRepository {
                that while the mock did not. */
             newWindowSecs: update.newWindowSecs,
             reason: update.reason,
-            byEmployeeId: assigneeId,
+            byEmployeeId: update.forEmployeeId,
           }).catch((e: unknown) =>
             console.error(
               "[meeting] deadline shift failed",
@@ -10018,12 +10099,24 @@ export class LegacyRepository {
     const ref = collection(legacyDb(), "cowork_tasks");
 
     const queries = [];
-    if (role === "ceo" || role === "tl") {
-      queries.push(query(ref, where("assignedBy", "==", viewerId), orderBy("updatedAt", "desc"), limit(100)));
-      queries.push(query(ref, where("assigneeIds", "array-contains", viewerId), orderBy("updatedAt", "desc"), limit(100)));
-    } else {
-      queries.push(query(ref, where("assigneeIds", "array-contains", viewerId), orderBy("updatedAt", "desc"), limit(100)));
-    }
+    /**
+     * **Work you ASSIGNED, whatever your role.**
+     *
+     * This query used to be for a TL or a CEO only, and an ordinary employee got
+     * `assigneeIds array-contains` alone — so a task they had given to somebody
+     * else was reachable only while it happened to be theirs too. It is not:
+     * `taskForward.js` writes `assigneeIds: []` on a cross-department task and
+     * parks the target in `pendingAssigneeId`, so nothing an employee queried
+     * could match it. They sent the work to another department and it vanished
+     * from their own list the moment the approvals cleared and it stopped
+     * appearing in the held-task query below.
+     *
+     * Seniority was never the right test. Whether you can see a task you
+     * assigned is a question about YOUR relationship to that task, and the
+     * answer is the same for everybody.
+     */
+    queries.push(query(ref, where("assignedBy", "==", viewerId), orderBy("updatedAt", "desc"), limit(100)));
+    queries.push(query(ref, where("assigneeIds", "array-contains", viewerId), orderBy("updatedAt", "desc"), limit(100)));
     if (role === "ceo") {
       queries.push(query(ref, where("approverId", "==", viewerId), orderBy("updatedAt", "desc"), limit(100)));
     }

@@ -56,7 +56,7 @@ test("a task with a budget and NO stored due date still grows its window", () =>
   const start = Date.UTC(2026, 7, 5, 11, 31);
   const settlement = settleSession({
     session: {
-      creatorId: "rakesh",
+      counterpartyId: "rakesh",
       startedAtMs: start,
       endedAtMs: start + 5 * 60_000,
       attendance: [
@@ -150,6 +150,34 @@ test("the deadline history still records why a date moved", () => {
   assert.match(body, /proposedDeadline:/);
 });
 
+test("the credit follows the ASSIGNER OF RECORD, not whoever created it", () => {
+  /* The self-task hole, guarded at the wiring rather than only in the rule.
+     `creditableSecs` counts `counterpartyId`; if the repository fills that from
+     `createdById`, then on a self task — where the creator IS the assignee —
+     somebody can sit alone in a room and mint their own deadline. The engine
+     already names the right person in `assignedBy`: the assignee's manager,
+     because nobody negotiates a budget with or reviews their own work.
+
+     Order matters in the fallback. `assignedById ?? createdById` is correct;
+     the other way round silently restores the hole on exactly the task that
+     needs it closed, and every ordinary task would still pass. */
+  const settle = endTaskMeetingBody(LEGACY);
+  const m = settle.match(/counterpartyId:\s*([^\n]+)/);
+  assert.ok(m, "endTaskMeeting no longer names who the credit follows");
+
+  assert.match(
+    m![1],
+    /assignedById/,
+    "The meeting clock is not reading the assigner of record, so a self task " +
+      "credits the assignee for their own attendance.",
+  );
+  assert.ok(
+    m![1].indexOf("assignedById") < m![1].indexOf("createdById"),
+    "`createdById` is preferred over `assignedById`. On a self task that is " +
+      "the assignee, and the anti-cheat is gone.",
+  );
+});
+
 test("a meeting NEVER asks anybody to approve or confirm it", () => {
   /* The bug this holds shut, because it looked like the responsible thing to
      do: a window-only credit filed a `cowork_task_budget_extensions` row so the
@@ -187,4 +215,148 @@ test("a meeting NEVER asks anybody to approve or confirm it", () => {
       `endTaskMeeting reaches for ${negotiation} — a meeting applies itself.`,
     );
   }
+});
+
+/* ── The cross-department branch ──────────────────────────────────────────── */
+
+test("a gated task resolves its receiver from pendingAssigneeId FIRST", () => {
+  /* The bug: a cross-department task carries `assigneeIds: []` until its
+     approvals clear — the engine's own visibility rule — so reading
+     `assigneeIds[0]` returned "" on exactly the tasks a kickoff is held about.
+     The queue lookup was skipped and an hour of meeting credited nobody.
+     Order matters: `assigneeIds` first would restore the bug on the gated task
+     while every ordinary task kept passing. */
+  for (const file of [LEGACY, MOCK]) {
+    const body = endTaskMeetingBody(file);
+    const m = body.match(/const assigneeId = String\(([\s\S]*?)\n\s*\);/);
+    assert.ok(m, `${file}: endTaskMeeting no longer resolves a receiver`);
+    const expr = m![1];
+    assert.match(
+      expr,
+      /pendingAssignee/i,
+      `${file}: the receiver is read from assigneeIds alone, so a task still ` +
+        `awaiting department approval credits nobody anything.`,
+    );
+    assert.ok(
+      expr.search(/pendingAssignee/i) < expr.search(/assigneeIds|assignments/),
+      `${file}: assigneeIds is preferred over pendingAssigneeId.`,
+    );
+  }
+});
+
+test("the settlement branches on the TASK, not on who is in the room", () => {
+  /* Branching on attendance would let one meeting settle two different ways
+     depending on who happened to join it. */
+  for (const file of [LEGACY, MOCK]) {
+    const body = endTaskMeetingBody(file);
+    assert.match(
+      body,
+      /isCrossDepartment/,
+      `${file}: cross-department work is not settled by its own rule.`,
+    );
+    assert.match(
+      body,
+      /settleCrossDeptSession\(/,
+      `${file}: the shared-window settlement is never called.`,
+    );
+    assert.match(
+      body,
+      /settleSession\(/,
+      `${file}: the ordinary rule was lost when the branch was added.`,
+    );
+  }
+});
+
+test("the shared window is built from the RECEIVER, not from any attendee", () => {
+  for (const file of [LEGACY, MOCK]) {
+    const body = endTaskMeetingBody(file);
+    assert.match(
+      body,
+      /receiverId: assigneeId/,
+      `${file}: the window's second side is not the receiver of the work.`,
+    );
+  }
+});
+
+test("each person's history row is filed in THEIR name", () => {
+  /* Several people's deadlines move in one cross-department settlement. A
+     single shared id would file everybody's shift under whoever was first. */
+  const src = readFileSync(LEGACY, "utf8");
+  assert.match(
+    src,
+    /byEmployeeId: update\.forEmployeeId/,
+    "the deadline-history row names one fixed person for every update",
+  );
+});
+
+/* ── Closing the same meeting more than once ──────────────────────────────── */
+
+test("a meeting closes ONCE — a later call must not re-close it at a new instant", () => {
+  /* Everybody in the room calls `endTaskMeeting` on their way out, so a
+     three-person meeting is three calls. Reading the clock afresh each time
+     re-closed the session later and later, and anybody still marked present was
+     credited up to the NEW close — so the same meeting grew every time somebody
+     left, and a ten-minute visitor came out with fifteen. */
+  const legacy = endTaskMeetingBody(LEGACY);
+  assert.match(
+    legacy,
+    /const endedAtMs = readInstant\(session\.endedAt\) \?\? Date\.now\(\)/,
+    "the legacy close reads the clock instead of the session's recorded end",
+  );
+  assert.ok(
+    !/const endedAtMs = Date\.now\(\);/.test(legacy),
+    "the legacy close still stamps a fresh instant on an already-closed session",
+  );
+
+  const mock = endTaskMeetingBody(MOCK);
+  assert.match(
+    mock,
+    /session\.endedAt\s*\n?\s*\?\s*Date\.parse\(session\.endedAt\)/,
+    "the mock close reads the clock instead of the session's recorded end",
+  );
+});
+
+test("the credited-task record is MERGED, never replaced", () => {
+  /* The second person to leave credits nothing — the first call already did it —
+     and writing only that call's result wiped the record back to empty. The
+     third person's call then found nothing marked and paid the whole meeting
+     again. Three people in a room paid the credit roughly twice. */
+  const body = endTaskMeetingBody(LEGACY);
+  assert.ok(
+    !/creditedTaskIds: settlement\.updates\.map\(\(u\) => u\.taskId\),\s*\n\s*\}\);/.test(
+      body,
+    ),
+    "creditedTaskIds is written from this call alone, wiping what earlier " +
+      "calls had already recorded.",
+  );
+  assert.match(
+    body,
+    /new Set\(\[\.\.\.alreadyCredited,/,
+    "expected the already-credited ids to be carried into the new record",
+  );
+});
+
+/* ── Seeing work you sent ─────────────────────────────────────────────────── */
+
+test("a task you ASSIGNED is fetched whatever your role", () => {
+  /* Reported: work sent to another department vanished from the sender's own
+     list. The `assignedBy` query was behind `role === "ceo" || role === "tl"`,
+     so an ordinary employee got `assigneeIds array-contains` alone — and a
+     cross-department task carries `assigneeIds: []` until its approvals clear.
+     Nothing they could query matched it. Seniority was never the right test for
+     "may I see what I sent". */
+  const src = readFileSync(LEGACY, "utf8");
+  const from = src.indexOf("async #taskDocuments");
+  assert.ok(from > 0, "the task fetch was renamed");
+  const body = src.slice(from, src.indexOf("backfillFolderParents", from));
+
+  const assignedBy = body.indexOf('where("assignedBy", "==", viewerId)');
+  assert.ok(assignedBy > 0, "tasks are no longer fetched by who assigned them");
+
+  const roleGate = body.indexOf('role === "ceo" || role === "tl"');
+  assert.ok(
+    roleGate === -1 || assignedBy < roleGate,
+    "the assignedBy query sits behind a role check again, so an employee " +
+      "cannot see the work they gave to another department.",
+  );
 });

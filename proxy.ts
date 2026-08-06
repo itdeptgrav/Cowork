@@ -209,6 +209,6 @@ export const config = {
    * device's token.
    */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/auth|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|apple-icon.png).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|icon-maskable-512.png|apple-icon.png).*)",
   ],
 };

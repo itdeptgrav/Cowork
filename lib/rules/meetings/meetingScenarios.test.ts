@@ -62,7 +62,7 @@ const meet = (
   to: string,
   tasks: SettlementTask[],
   opts: {
-    creatorId?: string;
+    counterpartyId?: string;
     onTaskId?: string;
     assigneeId?: string;
     alreadyCredited?: string[];
@@ -70,12 +70,12 @@ const meet = (
 ) =>
   settleSession({
     session: {
-      creatorId: opts.creatorId ?? CREATOR,
+      counterpartyId: opts.counterpartyId ?? CREATOR,
       startedAtMs: T(from),
       endedAtMs: T(to),
       attendance: [
         {
-          employeeId: opts.creatorId ?? CREATOR,
+          employeeId: opts.counterpartyId ?? CREATOR,
           joinedAtMs: T(from),
           leftAtMs: T(to),
         },
@@ -89,16 +89,67 @@ const meet = (
 
 /* ── Every kind of task ───────────────────────────────────────────────────── */
 
-test("SELF TASK — the creator and the assignee are the same person", () => {
-  /* Somebody who assigns work to themselves IS the creator, so their presence
-     is the creditable presence. The anti-cheat does not accidentally make a
-     self task uncreditable — which it would if it required two people. */
+test("SELF TASK — the MANAGER's time counts, not the assignee's", () => {
+  /* The hole this closes: the creator of a self task IS the assignee, so
+     counting "the creator" let somebody sit alone in a room and mint their own
+     deadline — on the one kind of task where the incentive is strongest.
+     The engine makes the assignee's manager the assigner of record, so they are
+     the counterparty and their attendance is what earns the time. */
+  const MANAGER = "rakesh";
   const r = meet("10:00", "10:20", [target("SELF")], {
-    creatorId: ASSIGNEE,
+    counterpartyId: MANAGER,
     assigneeId: ASSIGNEE,
   });
+  assert.equal(mins(r.creditedSecs), 20, "the manager attended for 20 minutes");
+  assert.equal(hhmm(r.updates[0].newDueAtMs!), "17:20");
+});
+
+test("SELF TASK — the assignee alone earns nothing", () => {
+  /* The same room, the same twenty minutes, with only the person who gave
+     themselves the work in it. */
+  const r = settleSession({
+    session: {
+      counterpartyId: "rakesh",
+      startedAtMs: T("10:00"),
+      endedAtMs: T("10:20"),
+      attendance: [
+        { employeeId: ASSIGNEE, joinedAtMs: T("10:00"), leftAtMs: T("10:20") },
+      ],
+    },
+    onTaskId: "SELF",
+    assigneeId: ASSIGNEE,
+    tasks: [target("SELF")],
+  });
+  assert.equal(r.creditedSecs, 0, "a self task credited an empty room");
+  assert.equal(r.updates[0].newDueAtMs, null);
+  assert.equal(r.updates[0].newWindowSecs, null);
+});
+
+test("SELF TASK — the meeting is still RECORDED when nothing is earned", () => {
+  /* Refusing the credit must not refuse the history: the session happened, and
+     a total that silently omitted it would read as a lost meeting. */
+  const r = settleSession({
+    session: {
+      counterpartyId: "rakesh",
+      startedAtMs: T("10:00"),
+      endedAtMs: T("10:20"),
+      attendance: [
+        { employeeId: ASSIGNEE, joinedAtMs: T("10:00"), leftAtMs: T("10:20") },
+      ],
+    },
+    onTaskId: "SELF",
+    assigneeId: ASSIGNEE,
+    tasks: [target("SELF")],
+  });
+  assert.equal(hhmm(r.updates[0].totals.firstStartedAtMs!), "10:00");
+  assert.equal(hhmm(r.updates[0].totals.lastEndedAtMs!), "10:20");
+  assert.equal(r.updates[0].totals.totalSecs, 0);
+});
+
+test("an ORDINARY task is untouched — creator and assigner are one person", () => {
+  /* The change must be invisible everywhere except a self task. */
+  const r = meet("10:00", "10:20", [target("T")]);
   assert.equal(mins(r.creditedSecs), 20);
-  assert.equal(mins(r.updates[0].totals.totalSecs), 20);
   assert.equal(hhmm(r.updates[0].newDueAtMs!), "17:20");
 });
 
@@ -417,7 +468,7 @@ test("a task with no window is credited but grows nothing", () => {
 test("a worthless session grows no window either", () => {
   const r = settleSession({
     session: {
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       startedAtMs: T("10:00"),
       endedAtMs: T("11:00"),
       attendance: [

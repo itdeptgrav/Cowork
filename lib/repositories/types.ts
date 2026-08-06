@@ -292,6 +292,19 @@ export interface TaskView {
   pendingAssignees: Employee[];
   /** The person who created the task. Distinct from the assignee. */
   owner: Employee | null;
+  /**
+   * The other SIDE of the work — the assigner of record.
+   *
+   * The same person as `owner` on an ordinary task, and deliberately not on a
+   * SELF task, where the engine records the assignee's primary manager: nobody
+   * negotiates a budget with, sets the priority of, or reviews their own work.
+   *
+   * Carried separately because `owner` folds the two together, and the one case
+   * where they differ is the one that needs them apart — the meeting clock runs
+   * on THIS person's attendance, so on a self task naming the owner would credit
+   * somebody for sitting in a room alone.
+   */
+  assigner: Employee | null;
   /** Actual logged effort, so progress is derived rather than guessed. */
   loggedSecs: number;
   project: Project | null;

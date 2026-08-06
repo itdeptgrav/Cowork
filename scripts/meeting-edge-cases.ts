@@ -20,7 +20,10 @@ import {
   addSession,
   creditTargets,
   creditableSecs,
+  creditsInWindow,
+  settleCrossDeptSession,
   settleSession,
+  sharedWindowSecs,
   type Attendance,
   type SettlementTask,
 } from "../lib/rules/meetings/meetingCredit.ts";
@@ -35,6 +38,8 @@ import type { TaskStatus } from "../lib/domain/tasks.ts";
 
 const CREATOR = "rakesh";
 const ASSIGNEE = "pramod";
+/** The assignee's manager — the counterparty on a SELF task. */
+const MANAGER = "umung";
 
 /** August 2026: the 4th is a Tuesday, the 9th a Sunday. */
 const T = (day: string, hm: string) =>
@@ -94,10 +99,10 @@ function heading(text: string) {
 
 /* ── A · What a session is worth ──────────────────────────────────────────── */
 
-heading("A · WHAT A SESSION IS WORTH  (only the task creator's presence counts)");
+heading("A · WHAT A SESSION IS WORTH  (only the COUNTERPARTY's presence counts)");
 
 const worth = (attendance: Attendance[], endDay: string, endAt: string) =>
-  mins(creditableSecs({ creatorId: CREATOR, attendance, endedAtMs: T(endDay, endAt) }));
+  mins(creditableSecs({ counterpartyId: CREATOR, attendance, endedAtMs: T(endDay, endAt) }));
 
 check(
   "creator + assignee, both 10:00-10:45",
@@ -158,23 +163,38 @@ check(
 check("zero-length span", worth([span(CREATOR, "04", "10:00", "10:00")], "04", "11:00"), "0m");
 check("reversed span (left before joined)", worth([span(CREATOR, "04", "10:30", "10:00")], "04", "11:00"), "0m");
 check("no attendance rows at all", worth([], "04", "11:00"), "0m");
+/* On a SELF task the counterparty is the assignee's MANAGER, not the assignee —
+   the creator and the receiver are one person there, so counting the creator
+   would let somebody mint their own deadline in an empty room. */
 check(
-  "SELF task — creator IS the assignee",
+  "SELF task — assignee alone in their own room",
   mins(
     creditableSecs({
-      creatorId: ASSIGNEE,
+      counterpartyId: MANAGER,
       attendance: [span(ASSIGNEE, "04", "10:00", "10:20")],
       endedAtMs: T("04", "10:20"),
     }),
   ),
-  "20m",
-  "credits normally",
+  "0m",
+  "cannot credit yourself",
+);
+check(
+  "SELF task — the manager attends",
+  mins(
+    creditableSecs({
+      counterpartyId: MANAGER,
+      attendance: [span(ASSIGNEE, "04", "10:00", "10:20"), span(MANAGER, "04", "10:05", "10:20")],
+      endedAtMs: T("04", "10:20"),
+    }),
+  ),
+  "15m",
+  "from when the manager joined",
 );
 check(
   "meeting across midnight 23:30 → 00:30",
   mins(
     creditableSecs({
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       attendance: [{ employeeId: CREATOR, joinedAtMs: T("04", "23:30"), leftAtMs: T("05", "00:30") }],
       endedAtMs: T("05", "00:30"),
     }),
@@ -247,7 +267,7 @@ const st = (taskId: string, over: Partial<SettlementTask> = {}): SettlementTask 
 const settle = (tasks: SettlementTask[], from = "10:00", to = "10:10") =>
   settleSession({
     session: {
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       startedAtMs: T("04", from),
       endedAtMs: T("04", to),
       attendance: [span(CREATOR, "04", from, to)],
@@ -266,7 +286,7 @@ check("task with no due date", String(settle([st("N", { dueAtMs: null })]).updat
 
 const absent = settleSession({
   session: {
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     startedAtMs: T("04", "10:00"),
     endedAtMs: T("04", "11:00"),
     attendance: [span(ASSIGNEE, "04", "10:00", "11:00")],
@@ -314,6 +334,86 @@ check(
   "what growing EVERY window would give — 10/20/30",
 );
 
+/* ── G · Cross-department ─────────────────────────────────────────────────── */
+
+heading("G · CROSS-DEPARTMENT  (both sides in the room; everyone earns their own)");
+
+const SUNIL = "sunil";
+const UMUNG = "umung";
+const cross = (rows: Array<[string, string, string | null]>, endAt = "11:00") => ({
+  counterpartyId: CREATOR,
+  receiverId: ASSIGNEE,
+  startedAtMs: T("04", "10:00"),
+  endedAtMs: T("04", endAt),
+  attendance: rows.map(([who, from, to]) => span(who, "04", from, to)),
+});
+
+/* The agreed example: sender 10:10-10:50, receiver all hour, Sunil 10:30-10:40,
+   Umung 10:55-11:00. */
+const agreed = cross([
+  [ASSIGNEE, "10:00", "11:00"],
+  [CREATOR, "10:10", "10:50"],
+  [SUNIL, "10:30", "10:40"],
+  [UMUNG, "10:55", "11:00"],
+]);
+check("the shared window", mins(sharedWindowSecs(agreed)), "40m", "10:10 → 10:50");
+check("Pramod (receiver) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === ASSIGNEE)?.secs ?? 0), "40m");
+check("Rakesh (sender) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === CREATOR)?.secs ?? 0), "40m", "on HIS own tasks");
+check("Sunil (10:30-10:40) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === SUNIL)?.secs ?? 0), "10m", "only his own overlap");
+check("Umung (10:55-11:00) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === UMUNG)?.secs ?? 0), "0m", "window had closed");
+
+check("receiver alone, room full of others", mins(sharedWindowSecs(cross([[ASSIGNEE, "10:00", "11:00"], [SUNIL, "10:00", "11:00"], [UMUNG, "10:00", "11:00"]]))), "0m", "one side missing");
+check("sender alone", mins(sharedWindowSecs(cross([[CREATOR, "10:00", "11:00"], [SUNIL, "10:00", "11:00"]]))), "0m");
+check("both there, never together", mins(sharedWindowSecs(cross([[CREATOR, "10:00", "10:20"], [ASSIGNEE, "10:30", "11:00"]]))), "0m");
+check("sender drops 10:20-10:40 and returns", mins(sharedWindowSecs(cross([[ASSIGNEE, "10:00", "11:00"], [CREATOR, "10:00", "10:20"], [CREATOR, "10:40", "11:00"]]))), "40m", "the gap is not counted");
+check("sender's overlapping rejoin", mins(sharedWindowSecs(cross([[ASSIGNEE, "10:00", "11:00"], [CREATOR, "10:00", "10:30"], [CREATOR, "10:20", "10:50"]]))), "50m", "merged, not 60m");
+
+/* ── H · Everybody leaves — the meeting must settle ONCE ──────────────────── */
+
+heading("H · CLOSING TWICE  (three people leave, three end calls, one credit)");
+
+/* The reported fault: a 15-minute meeting moved a deadline by ~49 minutes.
+   Every participant calls `endTaskMeeting` on their way out, and the session
+   both re-closed at a fresh instant and threw away its record of what it had
+   already credited — so the credit landed two or three times. Simulated here
+   with the REAL settlement, run the same three times the product runs it. */
+const room = {
+  counterpartyId: CREATOR,
+  receiverId: ASSIGNEE,
+  startedAtMs: T("04", "12:06"),
+  endedAtMs: T("04", "12:21"),
+  attendance: [
+    span(ASSIGNEE, "04", "12:06", "12:21"),
+    span(CREATOR, "04", "12:06", "12:21"),
+    span(SUNIL, "04", "12:11", "12:21"),
+  ],
+};
+const budgets = new Map([[ASSIGNEE, 3 * 3600], [CREATOR, 3 * 3600], [SUNIL, 3 * 3600]]);
+const grown = new Map(budgets);
+let credited: string[] = [];
+for (let call = 1; call <= 3; call += 1) {
+  const r = settleCrossDeptSession({
+    session: room,
+    onTaskId: "X",
+    tasksByEmployee: new Map(
+      [...budgets.keys()].map((who) => [
+        who,
+        [{ taskId: `${who}-1`, status: "in_progress" as TaskStatus, assigneeIds: [who], totals: NO_MEETINGS, dueAtMs: T("04", "17:00"), windowSecs: budgets.get(who)!, rank: 1 }],
+      ]),
+    ),
+    alreadyCredited: credited,
+  });
+  for (const u of r.updates) {
+    if (u.newWindowSecs !== null) grown.set(u.forEmployeeId, u.newWindowSecs);
+  }
+  /* MERGED, exactly as the repository now writes it back. */
+  credited = [...new Set([...credited, ...r.updates.map((u) => u.taskId)])];
+}
+check("meeting length", mins(sharedWindowSecs(room)), "15m");
+check("Pramod after 3 end calls", mins(grown.get(ASSIGNEE)! - budgets.get(ASSIGNEE)!), "15m", "not 45m");
+check("Rakesh after 3 end calls", mins(grown.get(CREATOR)! - budgets.get(CREATOR)!), "15m", "not 45m");
+check("Sunil (joined 5m late) after 3", mins(grown.get(SUNIL)! - budgets.get(SUNIL)!), "10m", "his own overlap, once");
+
 /* ── F · Meeting vs break and offline ─────────────────────────────────────── */
 
 heading("F · MEETING vs BREAK  (same span, two rules — POLICY GAP, see below)");
@@ -321,7 +421,7 @@ heading("F · MEETING vs BREAK  (same span, two rules — POLICY GAP, see below)
 const compare = (label: string, day: string, from: string, to: string) => {
   const asBreak = workingSecsInSpan({ startMs: T(day, from), endMs: T(day, to), schedule: OFFICE });
   const asMeeting = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [span(CREATOR, day, from, to)],
     endedAtMs: T(day, to),
   });

@@ -730,6 +730,10 @@ function baseTask(
     satisfiesRequirementIds: [],
     createdById: "e-01",
     createdByRoleId: "role-manager",
+    /* Required by `Task`, and absent here until a meeting settlement read it
+       and threw. A seeded task has held no meetings; that is a real zero. */
+    meetings: { firstStartedAt: null, lastEndedAt: null, totalSecs: 0 },
+    isCrossDepartment: false,
     rootCreatorEmployeeId: "e-01",
     /* Derived from the creator, and overridable per task. Cross-department
        detection compares this against each assignee's department, so a null

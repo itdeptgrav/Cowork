@@ -306,6 +306,8 @@ export function toTask(legacy: LegacyTask): Task {
      */
     approvalReason: approvalReasonOf(legacy.status),
     approverIds: legacy.approverId ? [legacy.approverId] : [],
+    /* Sender-side department approval — see the mapper in lib/legacy/tasks.ts. */
+    isCrossDepartment: legacy.isCrossDepartment,
     /* The person a cross-department gate is holding the work for. Hardcoded
        empty before, so the approval trail could not name who the task was
        actually for — it renders `pendingAssignees` precisely when there are no
@@ -638,6 +640,11 @@ export function toTaskView(input: {
       : [],
     owner: legacy.createdById
       ? (employeesById.get(legacy.createdById) ?? null)
+      : null,
+    /* The assigner OF RECORD, which on a self task is the assignee's manager
+       rather than the assignee. The meeting clock runs on their attendance. */
+    assigner: legacy.assignedById
+      ? (employeesById.get(legacy.assignedById) ?? null)
       : null,
     /* Logged effort lives on the timer subcollection, which needs the Firestore
        proxy. Zero is honest here; any other number would be invented. */

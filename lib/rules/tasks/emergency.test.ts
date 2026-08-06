@@ -51,6 +51,7 @@ function task(over: Partial<Task> = {}): Task {
   return {
     organisationId: "org-test",
     meetings: { firstStartedAt: null, lastEndedAt: null, totalSecs: 0 },
+    isCrossDepartment: false,
     id: "t-1",
     reference: "CW-1",
     type: "standard",

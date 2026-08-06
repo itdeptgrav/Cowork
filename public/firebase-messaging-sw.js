@@ -42,7 +42,7 @@
 // activate handler below deletes every `cowork-*` cache that is not in `keep`,
 // so installing this version is what evicts the poisoned copies. Without the
 // bump the fix would ship and the bad bytes would stay.
-const SW_VERSION = "1.1.0";
+const SW_VERSION = "1.2.0";
 const STATIC_CACHE = `cowork-static-v${SW_VERSION}`;
 const ASSET_CACHE = `cowork-assets-v${SW_VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -50,7 +50,13 @@ const OFFLINE_URL = "/offline";
 /* Precached on install: the one page that must render when the network is
    gone, and the icons it and every notification refer to. Deliberately short —
    a precache listing app routes would go stale on every deploy. */
-const PRECACHE = [OFFLINE_URL, "/icon-192.png", "/icon-512.png", "/manifest.json"];
+const PRECACHE = [
+  OFFLINE_URL,
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-maskable-512.png",
+  "/manifest.json",
+];
 
 // ── Take over immediately on change ──────────────────────────────────────────
 //

@@ -263,6 +263,19 @@ export interface Task {
   approvalReason: ApprovalReason | null;
   approverIds: EmployeeId[];
   /**
+   * The work crossed a department boundary.
+   *
+   * True where the engine raised a SENDER-side department approval — the
+   * cross-department gate writes one for each side, while the CEO-assignment
+   * gate writes only a receiver-side row and is not a crossing.
+   *
+   * Load-bearing rather than descriptive: a task's MEETINGS settle by a
+   * different rule when this is true — the clock runs only while both sides are
+   * in the room, and everyone in that window is credited their own time against
+   * their own queue. See `lib/rules/meetings/meetingCredit.ts`.
+   */
+  isCrossDepartment: boolean;
+  /**
    * Assignees held back until a cross-department approval clears.
    *
    * Legacy's visibility gate, reproduced. `/task/create` wrote

@@ -24,7 +24,7 @@ const RECEIVER = "pramod";
 
 function session(attendance: Array<[string, number, number | null]>) {
   return {
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     startedAtMs: T0,
     endedAtMs: T0,
     attendance: attendance.map(([employeeId, joined, left]) => ({
@@ -152,7 +152,7 @@ test("a session with no attendance at all is quiet, not counting", () => {
 
 test("a SELF task counts, because the creator IS the person in the room", () => {
   const s = {
-    creatorId: RECEIVER,
+    counterpartyId: RECEIVER,
     startedAtMs: T0,
     endedAtMs: T0,
     attendance: [

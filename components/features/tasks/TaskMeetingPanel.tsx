@@ -20,7 +20,11 @@ import {
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
-import { liveMeetingFigures } from "@/lib/rules/meetings/meetingCredit";
+import { useViewerId } from "@/lib/hooks/usePermissions";
+import {
+  liveCrossDeptFigures,
+  liveMeetingFigures,
+} from "@/lib/rules/meetings/meetingCredit";
 import { formatDateTime, formatTimer } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
 
@@ -142,8 +146,22 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * is under way should not have to join to see.
    */
   const running = list.find((s) => s.endedAt === null) ?? null;
-  const creatorId = view.owner?.id ?? "";
-  const creatorName = view.owner?.displayName ?? "the person who assigned the work";
+  /* The COUNTERPARTY, not the owner. On a self task the owner is the assignee,
+     and naming them here would tell somebody sitting alone in a room that their
+     own presence was earning time — which it is not. `assigner` is the assigner
+     of record: the same person on an ordinary task, the manager on a self one. */
+  const counterparty = view.assigner ?? view.owner;
+  const counterpartyId = counterparty?.id ?? "";
+  const counterpartyName =
+    counterparty?.displayName ?? "the person who assigned the work";
+
+  /* Cross-department work settles by the shared-window rule: the clock runs
+     only while BOTH sides are in the room, and each person earns their own time
+     in it. So the figure below is this reader's own, not the meeting's. */
+  const crossDept = view.task.isCrossDepartment;
+  const receiver = view.assignees[0] ?? view.pendingAssignees[0] ?? null;
+  const receiverId = receiver?.id ?? "";
+  const receiverName = receiver?.displayName ?? "the person doing the work";
 
   /* The id rather than the session: the object is rebuilt by every refetch, so
      depending on it would tear down and restart both intervals on a timer that
@@ -169,21 +187,38 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
     return () => clearInterval(id);
   }, [runningId, refetchSessions]);
 
-  const live = running
-    ? liveMeetingFigures(
-        {
-          creatorId,
-          startedAtMs: Date.parse(running.startedAt),
-          endedAtMs: now,
-          attendance: running.attendance.map((a) => ({
-            employeeId: a.employeeId,
-            joinedAtMs: Date.parse(a.joinedAt),
-            leftAtMs: a.leftAt ? Date.parse(a.leftAt) : null,
-          })),
-        },
-        now,
-      )
+  const viewerId = useViewerId() ?? "";
+  const liveSession = running
+    ? {
+        counterpartyId,
+        startedAtMs: Date.parse(running.startedAt),
+        endedAtMs: now,
+        attendance: running.attendance.map((a) => ({
+          employeeId: a.employeeId,
+          joinedAtMs: Date.parse(a.joinedAt),
+          leftAtMs: a.leftAt ? Date.parse(a.leftAt) : null,
+        })),
+      }
     : null;
+
+  const live = !liveSession
+    ? null
+    : crossDept
+      ? liveCrossDeptFigures({ ...liveSession, receiverId }, viewerId, now)
+      : liveMeetingFigures(liveSession, now);
+
+  /* Why the clock is or is not running, in the terms of whichever rule applies.
+     One sentence rather than a shared vague one: "nothing is being added" with
+     no reason is the message that sent people to argue with a correct system. */
+  const liveNote = !live
+    ? ""
+    : crossDept
+      ? live.counting
+        ? `${counterpartyName} and ${receiverName} are both in the room, so this is being added to your deadlines.`
+        : `Nothing is being added to yours — it counts only while ${counterpartyName} and ${receiverName} are both in the room, and you are too.`
+      : live.counting
+        ? `${counterpartyName} is in the room, so this is being added to your deadlines.`
+        : `Nothing is being added — ${counterpartyName} is not in the room. Time only counts while they are.`;
 
   return (
     <Panel label="Meetings">
@@ -196,8 +231,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             Every task has its own room — there is nothing to schedule. Time
             spent here is added to your deadline, and to every other task you
             have on the go. The clock runs only while{" "}
-            {view.owner?.displayName ?? "the person who assigned the work"} is in
-            the room.
+            {counterpartyName} is in the room.
           </p>
         </div>
 
@@ -291,9 +325,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
           </span>
 
           <span className="min-w-0 flex-1 text-[11px] leading-relaxed text-ink-faint">
-            {live.counting
-              ? `${creatorName} is in the room, so this is being added to your deadlines.`
-              : `Nothing is being added — ${creatorName} is not in the room. Time only counts while they are.`}
+            {liveNote}
           </span>
         </div>
       )}
@@ -391,7 +423,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                     about, and a hover they never perform cannot answer them. */}
                 {s.endedAt !== null && s.creditedSecs === 0 && (
                   <span className="shrink-0 text-[10.5px] text-ink-faint">
-                    {creatorName.split(" ")[0]} was not in the room
+                    {counterpartyName.split(" ")[0]} was not in the room
                   </span>
                 )}
                 <span className="shrink-0 text-[11px] text-ink-faint">

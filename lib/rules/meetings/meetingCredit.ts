@@ -27,29 +27,78 @@ export interface Attendance {
 }
 
 export interface MeetingSession {
-  /** Who created the TASK — not who opened the meeting. */
-  creatorId: string;
+  /**
+   * Whose presence earns the credit: the OTHER SIDE of the work.
+   *
+   * The assigner of record, which is not always who typed the task in. On an
+   * ordinary task the two are the same person and this reads as "the creator".
+   * On a SELF task they are not, and that difference is the whole point — see
+   * `creditableSecs`.
+   */
+  counterpartyId: string;
   attendance: readonly Attendance[];
   /** When the room closed, used to bound anybody still marked present. */
   endedAtMs: number;
 }
 
 /**
- * The seconds this session is worth — the time the task's creator was present.
+ * The seconds this session is worth — the time the COUNTERPARTY was present.
  *
  * **This is the anti-cheat, and it is the whole reason attendance is tracked at
  * all.** Without it an assignee could open the room, leave it running, and earn
- * an unlimited deadline extension for an empty call. The creator is the person
- * who wanted the work done; their presence is what makes the conversation real.
+ * an unlimited deadline extension for an empty call. The person on the other
+ * side of the work is the one who wanted it done; their presence is what makes
+ * the conversation real.
  *
- * Overlapping spans are merged rather than summed. A creator whose connection
+ * ## Why the counterparty and not "the creator" — OWNER DECISION
+ *
+ * This counted the CREATOR, and on a self task the creator IS the assignee. So
+ * the one kind of task where somebody assigns work to themselves was the one
+ * kind where they could sit alone in a room and mint their own deadline. The
+ * anti-cheat was not weakened there — it was absent, and precisely where the
+ * incentive is strongest.
+ *
+ * The engine already names the right person. On a self task it makes the
+ * assignee's primary MANAGER the assigner of record, because nobody negotiates
+ * a budget with, sets the priority of, or reviews their own work. That manager
+ * is the other side, so their time in the room is what counts — and a self task
+ * now earns nothing unless the manager actually attends.
+ *
+ * One rule, not a special case: **the counterparty is always the assigner of
+ * record.** Ordinary tasks are unaffected, because there it is the creator.
+ *
+ * Overlapping spans are merged rather than summed. Somebody whose connection
  * drops and rejoins produces two attendance rows, and adding them would pay
  * twice for one stretch of wall clock — the same double-count a reconnect used
  * to cause in presence.
  */
 export function creditableSecs(session: MeetingSession): number {
+  return secsOf(presenceOf(session, session.counterpartyId));
+}
+
+/* ── Span arithmetic ──────────────────────────────────────────────────────────
+ *
+ * One implementation, because the two rules below both need it and two would
+ * eventually disagree. A span is half-open: `to` is the instant the person left,
+ * so touching spans do not double-count the boundary.
+ */
+
+interface Span {
+  from: number;
+  to: number;
+}
+
+/**
+ * When this person was in the room, merged.
+ *
+ * Overlaps are merged rather than summed: a dropped connection produces two
+ * attendance rows and adding them would pay twice for one stretch of wall
+ * clock — the same double-count a reconnect used to cause in presence.
+ */
+function presenceOf(session: MeetingSession, employeeId: string): Span[] {
+  if (!employeeId) return [];
   const spans = session.attendance
-    .filter((a) => a.employeeId === session.creatorId)
+    .filter((a) => a.employeeId === employeeId)
     .map((a) => ({
       from: a.joinedAtMs,
       /* Still in the room when it closed: bounded at the close, never at `now`
@@ -57,17 +106,115 @@ export function creditableSecs(session: MeetingSession): number {
          make the answer depend on when somebody asked. */
       to: Math.min(a.leftAtMs ?? session.endedAtMs, session.endedAtMs),
     }))
+    /* Drops zero-length and reversed rows, and anything entirely after the
+       close — a skewed device clock must never produce a negative credit. */
     .filter((s) => s.to > s.from)
     .sort((a, b) => a.from - b.from);
 
-  let total = 0;
-  let cursor = -Infinity;
+  const merged: Span[] = [];
   for (const span of spans) {
-    const from = Math.max(span.from, cursor);
-    if (span.to > from) total += span.to - from;
-    cursor = Math.max(cursor, span.to);
+    const last = merged[merged.length - 1];
+    if (last && span.from <= last.to) last.to = Math.max(last.to, span.to);
+    else merged.push({ ...span });
   }
-  return Math.floor(total / 1000);
+  return merged;
+}
+
+/** The time covered by BOTH sets of spans. Both inputs must be merged+sorted. */
+function intersect(a: readonly Span[], b: readonly Span[]): Span[] {
+  const out: Span[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < a.length && j < b.length) {
+    const from = Math.max(a[i].from, b[j].from);
+    const to = Math.min(a[i].to, b[j].to);
+    if (to > from) out.push({ from, to });
+    /* Advance whichever ends first — the other may still meet the next one. */
+    if (a[i].to < b[j].to) i += 1;
+    else j += 1;
+  }
+  return out;
+}
+
+function secsOf(spans: readonly Span[]): number {
+  return Math.floor(spans.reduce((n, s) => n + (s.to - s.from), 0) / 1000);
+}
+
+/* ── The cross-department rule ────────────────────────────────────────────────
+ *
+ * A different rule, deliberately, and only for work that crossed departments —
+ * OWNER DECISION. Two things differ from the ordinary rule above:
+ *
+ *  1. **Both sides must be in the room.** The clock runs only while the sender
+ *     AND the receiver are present together. A room holding one of them earns
+ *     nobody anything, however many other people are in it. On an ordinary task
+ *     the sender's presence alone is enough, because the receiver's deadline is
+ *     the only one that can move; here several people's can, so the evidence has
+ *     to be stronger.
+ *
+ *  2. **Everybody earns, on their own work.** A cross-department meeting costs
+ *     the sender, the receiver and any approver the same wall clock, and each of
+ *     them has their own queue that lost it. So each is credited their OWN time
+ *     inside the shared window, against their OWN tasks — not the meeting's full
+ *     length, and not somebody else's tasks.
+ *
+ * Time outside the window is worth nothing to anyone. Somebody who arrives after
+ * the sender has left was in a room, but not in the meeting.
+ */
+
+/** The stretch a cross-department meeting is actually running. */
+export function sharedWindow(
+  session: MeetingSession & { receiverId: string },
+): Span[] {
+  return intersect(
+    presenceOf(session, session.counterpartyId),
+    presenceOf(session, session.receiverId),
+  );
+}
+
+/** How long both sides were in the room together. */
+export function sharedWindowSecs(
+  session: MeetingSession & { receiverId: string },
+): number {
+  return secsOf(sharedWindow(session));
+}
+
+/** What one person earned: their own presence inside the shared window. */
+export function creditInWindowFor(
+  session: MeetingSession & { receiverId: string },
+  employeeId: string,
+): number {
+  return secsOf(intersect(presenceOf(session, employeeId), sharedWindow(session)));
+}
+
+/**
+ * Everybody who earned something, and how much.
+ *
+ * Only non-zero earners: a row of `0m` against somebody who looked in for a
+ * moment after the window closed is noise, and every consumer would have to
+ * filter it anyway.
+ *
+ * The sender and the receiver always earn exactly the window, because they are
+ * the two who define it — that falls out of the arithmetic rather than being a
+ * case.
+ */
+export function creditsInWindow(
+  session: MeetingSession & { receiverId: string },
+): { employeeId: string; secs: number }[] {
+  const window = sharedWindow(session);
+  if (window.length === 0) return [];
+
+  /* Insertion order, so the result is stable for a given attendance list rather
+     than depending on how a Set happens to iterate. */
+  const seen = new Set<string>();
+  const out: { employeeId: string; secs: number }[] = [];
+  for (const row of session.attendance) {
+    if (!row.employeeId || seen.has(row.employeeId)) continue;
+    seen.add(row.employeeId);
+    const secs = secsOf(intersect(presenceOf(session, row.employeeId), window));
+    if (secs > 0) out.push({ employeeId: row.employeeId, secs });
+  }
+  return out;
 }
 
 /**
@@ -112,7 +259,37 @@ export function liveMeetingFigures(
     /* `now` stands in for the close. Anybody still in the room is credited up
        to this instant, which is precisely what they would get if it ended now. */
     creditedSecs: creditableSecs({ ...session, endedAtMs: nowMs }),
-    counting: isPresent(session, session.creatorId, nowMs),
+    counting: isPresent(session, session.counterpartyId, nowMs),
+  };
+}
+
+/**
+ * The same three figures for a CROSS-DEPARTMENT meeting, from one person's
+ * point of view.
+ *
+ * `creditedSecs` is **the viewer's own** share, not the meeting's, because on
+ * this rule they differ: a manager who looked in for ten minutes of a
+ * forty-minute call earns ten. Showing the session's figure to everybody would
+ * promise three of them time they are not getting.
+ *
+ * `counting` needs BOTH halves of the rule to be true right now — the window is
+ * open, and this viewer is in it. Somebody watching from outside the room sees a
+ * meeting that is earning for other people and nothing for them, which is the
+ * honest reading of their own screen.
+ */
+export function liveCrossDeptFigures(
+  session: MeetingSession & { startedAtMs: number; receiverId: string },
+  viewerId: string,
+  nowMs: number,
+): LiveMeetingFigures {
+  const upToNow = { ...session, endedAtMs: nowMs };
+  return {
+    elapsedSecs: Math.floor(Math.max(0, nowMs - session.startedAtMs) / 1000),
+    creditedSecs: creditInWindowFor(upToNow, viewerId),
+    counting:
+      isPresent(upToNow, session.counterpartyId, nowMs) &&
+      isPresent(upToNow, session.receiverId, nowMs) &&
+      isPresent(upToNow, viewerId, nowMs),
   };
 }
 
@@ -289,30 +466,42 @@ export interface SettlementTask {
 export interface Settlement {
   creditedSecs: number;
   /** Per task: the new totals, and the deadline it should move to. */
-  updates: {
-    taskId: string;
-    totals: MeetingTotals;
-    /** Null when the task carries no deadline to shift. */
-    newDueAtMs: number | null;
-    /**
-     * The window after the credit, or null where nothing about it changes.
-     *
-     * **Non-null on exactly ONE task per settlement — the head of the queue.**
-     * See `settleSession` for why; the short version is that the queue is laid
-     * end to end, so growing every window would make each task wait through
-     * every earlier task's growth as well as its own, and a ten-minute meeting
-     * would move the third task by thirty minutes.
-     *
-     * **Returned here rather than computed by each caller.** It was not, and the
-     * two persisters promptly disagreed: one grew the window and the other left
-     * it alone, so the same meeting produced different Expected completions
-     * depending on which repository answered. That is the precise failure
-     * `settleSession` exists to make impossible, and it happened anyway because
-     * the settlement stopped short of this field.
-     */
-    newWindowSecs: number | null;
-    reason: string;
-  }[];
+  updates: SettlementUpdate[];
+}
+
+export interface SettlementUpdate {
+  taskId: string;
+  /**
+   * Whose task this is.
+   *
+   * Always the same person on an ordinary task, and several people on a
+   * cross-department one — where the sender, the receiver and any approver each
+   * earn their own time against their own queue. The deadline-history row is
+   * written in this person's name, so a settlement that lost it would file
+   * everybody's shift under whoever happened to be first.
+   */
+  forEmployeeId: string;
+  totals: MeetingTotals;
+  /** Null when the task carries no deadline to shift. */
+  newDueAtMs: number | null;
+  /**
+   * The window after the credit, or null where nothing about it changes.
+   *
+   * **Non-null on exactly ONE task PER PERSON — the head of their queue.**
+   * See `settleSession` for why; the short version is that a queue is laid end
+   * to end, so growing every window would make each task wait through every
+   * earlier task's growth as well as its own, and a ten-minute meeting would
+   * move the third task by thirty minutes.
+   *
+   * **Returned here rather than computed by each caller.** It was not, and the
+   * two persisters promptly disagreed: one grew the window and the other left
+   * it alone, so the same meeting produced different Expected completions
+   * depending on which repository answered. That is the precise failure
+   * `settleSession` exists to make impossible, and it happened anyway because
+   * the settlement stopped short of this field.
+   */
+  newWindowSecs: number | null;
+  reason: string;
 }
 
 /**
@@ -361,11 +550,42 @@ export function settleSession(input: {
   tasks: readonly SettlementTask[];
   alreadyCredited?: readonly string[];
 }): Settlement {
-  const creditedSecs = creditableSecs(input.session);
+  return {
+    creditedSecs: creditableSecs(input.session),
+    updates: updatesFor({
+      creditedSecs: creditableSecs(input.session),
+      employeeId: input.assigneeId,
+      tasks: input.tasks,
+      alreadyCredited: input.alreadyCredited,
+      onTaskId: input.onTaskId,
+      startedAtMs: input.session.startedAtMs,
+      endedAtMs: input.session.endedAtMs,
+    }),
+  };
+}
+
+/**
+ * One person's share of a settlement, applied to their own queue.
+ *
+ * Shared by both rules on purpose. The ordinary rule calls it once, for the
+ * receiver; the cross-department rule calls it once per person who was in the
+ * shared window. Two copies of the head-of-queue choice is how the two would
+ * come to shift queues differently for the same meeting.
+ */
+function updatesFor(input: {
+  creditedSecs: number;
+  employeeId: string;
+  tasks: readonly SettlementTask[];
+  alreadyCredited?: readonly string[];
+  onTaskId: string;
+  startedAtMs: number;
+  endedAtMs: number;
+}): SettlementUpdate[] {
+  const { creditedSecs } = input;
   const targets = new Set(
     creditTargets({
       tasks: input.tasks,
-      assigneeId: input.assigneeId,
+      assigneeId: input.employeeId,
       alreadyCredited: input.alreadyCredited,
     }),
   );
@@ -394,34 +614,74 @@ export function settleSession(input: {
           .sort((a, b) => a.rank - b.rank || a.taskId.localeCompare(b.taskId))[0]
       : undefined;
 
+  return input.tasks
+    .filter((t) => targets.has(t.taskId))
+    .map((t) => ({
+      taskId: t.taskId,
+      forEmployeeId: input.employeeId,
+      totals: addSession(t.totals, {
+        startedAtMs: input.startedAtMs,
+        endedAtMs: input.endedAtMs,
+        creditedSecs,
+      }),
+      /* A session worth nothing records that it happened and moves no date —
+         the counterparty never came, so no working time was lost.
+         Every live task shifts by the SAME seconds, once. That is the whole
+         line moving by the length of the meeting. */
+      newDueAtMs:
+        creditedSecs > 0 && t.dueAtMs !== null
+          ? t.dueAtMs + creditedSecs * 1000
+          : null,
+      /* The head of the queue, and nothing else. The chain does the rest: a
+         task behind it starts when it finishes, so it inherits exactly this
+         shift and no more. Growing every window here is what produced
+         +10/+20/+30 — see the note on `settleSession`. */
+      newWindowSecs:
+        t.taskId === head?.taskId && t.windowSecs !== null
+          ? t.windowSecs + creditedSecs
+          : null,
+      reason,
+    }));
+}
+
+/**
+ * Settle a CROSS-DEPARTMENT meeting — OWNER DECISION.
+ *
+ * The shared-window rule, applied. `sharedWindowSecs` is the headline figure
+ * (what the session is worth and what both sides earn); each other person earns
+ * only their own time inside it, and every one of them is credited against
+ * their own queue.
+ *
+ * **A person with no live tasks simply produces no updates.** They still lost
+ * the time, and there is nothing to move it on — silently doing nothing is
+ * right, and inventing a task for them would be worse.
+ */
+export function settleCrossDeptSession(input: {
+  session: MeetingSession & { startedAtMs: number; receiverId: string };
+  /** The task the meeting was opened from — named in the history sentence. */
+  onTaskId: string;
+  /** Each person's own live tasks, keyed by their id. Absent means no queue. */
+  tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
+  alreadyCredited?: readonly string[];
+}): Settlement {
+  const credits = creditsInWindow(input.session);
+
   return {
-    creditedSecs,
-    updates: input.tasks
-      .filter((t) => targets.has(t.taskId))
-      .map((t) => ({
-        taskId: t.taskId,
-        totals: addSession(t.totals, {
-          startedAtMs: input.session.startedAtMs,
-          endedAtMs: input.session.endedAtMs,
-          creditedSecs,
-        }),
-        /* A session worth nothing records that it happened and moves no date —
-           the creator never came, so no working time was lost.
-           Every live task shifts by the SAME seconds, once. That is the whole
-           line moving by the length of the meeting. */
-        newDueAtMs:
-          creditedSecs > 0 && t.dueAtMs !== null
-            ? t.dueAtMs + creditedSecs * 1000
-            : null,
-        /* The head of the queue, and nothing else. The chain does the rest: a
-           task behind it starts when it finishes, so it inherits exactly this
-           shift and no more. Growing every window here is what produced
-           +10/+20/+30 — see the note on this function. */
-        newWindowSecs:
-          t.taskId === head?.taskId && t.windowSecs !== null
-            ? t.windowSecs + creditedSecs
-            : null,
-        reason,
-      })),
+    /* The session's own worth is the WINDOW, not the sum of everybody's shares
+       — four people in a forty-minute meeting cost forty minutes of wall clock,
+       not a hundred and sixty. This is the figure the panel shows and the one
+       written on the session record. */
+    creditedSecs: sharedWindowSecs(input.session),
+    updates: credits.flatMap((c) =>
+      updatesFor({
+        creditedSecs: c.secs,
+        employeeId: c.employeeId,
+        tasks: input.tasksByEmployee.get(c.employeeId) ?? [],
+        alreadyCredited: input.alreadyCredited,
+        onTaskId: input.onTaskId,
+        startedAtMs: input.session.startedAtMs,
+        endedAtMs: input.session.endedAtMs,
+      }),
+    ),
   };
 }

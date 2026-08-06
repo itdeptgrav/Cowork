@@ -255,7 +255,11 @@ import {
   emergencyRequestRefusal,
 } from "@/lib/rules/tasks/emergency";
 import { shiftableTasks, shiftedDueAt } from "@/lib/rules/tasks/deadlineShift";
-import { settleSession } from "@/lib/rules/meetings/meetingCredit";
+import {
+  creditsInWindow,
+  settleCrossDeptSession,
+  settleSession,
+} from "@/lib/rules/meetings/meetingCredit";
 import {
   taskJoinRefusal,
   taskMeetingRoomName,
@@ -628,6 +632,11 @@ export class MockRepository implements CoworkRepository {
       assignments,
       assignees,
       owner: s.employees.find((e) => e.id === task.createdById) ?? null,
+      /* The prototype has no self-task manager substitution — the engine makes
+         that swap server-side — so the assigner of record is the creator. Named
+         rather than left undefined so the shape matches the product and the
+         panel reads one field in both. */
+      assigner: s.employees.find((e) => e.id === task.createdById) ?? null,
       loggedSecs: s.workCommits
         .filter((w) => w.taskId === task.id)
         .reduce((sum, w) => sum + w.durationSecs, 0),
@@ -1230,6 +1239,8 @@ export class MockRepository implements CoworkRepository {
          not appear on their list and cannot be started. They move across when
          the last approver agrees. */
       pendingAssigneeIds: crossPlan?.chain.length ? [...input.assigneeIds] : [],
+      /* The prototype models a crossing by the approval chain it planned. */
+      isCrossDepartment: (crossPlan?.chain.length ?? 0) > 0,
       approverIds: crossPlan?.chain.length
         ? crossPlan.chain
         : upward.length
@@ -8136,6 +8147,10 @@ export class MockRepository implements CoworkRepository {
           .filter((a) => a.taskId === task.id)
           .map((a) => String(a.employeeId)),
         pendingAssigneeIds: task.pendingAssigneeIds.map(String),
+        /* The people the task itself names as owing it a decision — the hours,
+           or a cross-department gate. The meeting is usually the conversation
+           that settles what they have to decide. */
+        approverIds: task.approverIds.map(String),
       },
       me,
     );
@@ -8192,35 +8207,26 @@ export class MockRepository implements CoworkRepository {
     const task = s.tasks.find((t) => t.id === session.taskId);
     if (!task) return fail("not_found", "That task could not be found.");
 
-    const endedAtMs = Date.now();
+    /* Closed ONCE. Everybody in the room calls this on the way out, and reading
+       the clock each time stretched the span of anybody still marked present —
+       so the meeting was worth more with every person who left. */
+    const endedAtMs = session.endedAt
+      ? Date.parse(session.endedAt)
+      : Date.now();
     session.endedAt = new Date(endedAtMs).toISOString();
 
-    /* Whose deadlines move: the RECEIVER of the work, not the creator. */
+    /* Whose deadlines move: the RECEIVER of the work, not the creator.
+       `pendingAssigneeIds` first, for the same reason the engine resolves it
+       that way — a gated task holds no assignment record until it clears. */
     const assigneeId = String(
-      s.assignments.find((a) => a.taskId === session.taskId)?.employeeId ?? "",
+      task.pendingAssigneeIds[0] ??
+        s.assignments.find((a) => a.taskId === session.taskId)?.employeeId ??
+        "",
     );
 
-    /* **One composition, shared with the engine.** `settleSession` decides what
-       changes; this only persists it. Two implementations each composing the
-       same three rules in their own order is how a mock and an engine come to
-       disagree about a number somebody is scored on. */
-    const iso = (ms: number | null) =>
-      ms === null ? null : new Date(ms).toISOString();
-    const settlement = settleSession({
-      session: {
-        creatorId: String(task.createdById),
-        endedAtMs,
-        startedAtMs: Date.parse(session.startedAt),
-        attendance: session.attendance.map((a) => ({
-          employeeId: String(a.employeeId),
-          joinedAtMs: Date.parse(a.joinedAt),
-          leftAtMs: a.leftAt === null ? null : Date.parse(a.leftAt),
-        })),
-      },
-      onTaskId: String(session.taskId),
-      assigneeId,
-      alreadyCredited: session.creditedTaskIds.map(String),
-      tasks: s.tasks
+    /** One person's live queue, shaped for the settlement. */
+    const queueOf = (employeeId: string) =>
+      s.tasks
         .filter((t) => !t.deletedAt)
         .map((t) => ({
           taskId: t.id,
@@ -8228,25 +8234,64 @@ export class MockRepository implements CoworkRepository {
           assigneeIds: s.assignments
             .filter((a) => a.taskId === t.id)
             .map((a) => String(a.employeeId)),
+          /* Defensive: one task without meeting totals used to throw and take
+             the whole settlement — everybody's credit — down with it. */
           totals: {
-            firstStartedAtMs: t.meetings.firstStartedAt
+            firstStartedAtMs: t.meetings?.firstStartedAt
               ? Date.parse(t.meetings.firstStartedAt)
               : null,
-            lastEndedAtMs: t.meetings.lastEndedAt
+            lastEndedAtMs: t.meetings?.lastEndedAt
               ? Date.parse(t.meetings.lastEndedAt)
               : null,
-            totalSecs: t.meetings.totalSecs,
+            totalSecs: t.meetings?.totalSecs ?? 0,
           },
           dueAtMs: t.deadline.dueAt ? Date.parse(t.deadline.dueAt) : null,
           windowSecs: t.deadline.currentWindowSecs ?? null,
-          /* The assignee's own position, not the stored one — `settleSession`
-             grows exactly one window and this decides which. */
           rank:
             s.assignments.find(
-              (a) => a.taskId === t.id && a.employeeId === assigneeId,
+              (a) => a.taskId === t.id && a.employeeId === employeeId,
             )?.rank ?? 999,
-        })),
-    });
+        }));
+
+    /* **One composition, shared with the engine.** `settleSession` decides what
+       changes; this only persists it. Two implementations each composing the
+       same three rules in their own order is how a mock and an engine come to
+       disagree about a number somebody is scored on. */
+    const iso = (ms: number | null) =>
+      ms === null ? null : new Date(ms).toISOString();
+    const meetingSession = {
+      counterpartyId: String(task.createdById),
+      endedAtMs,
+      startedAtMs: Date.parse(session.startedAt),
+      attendance: session.attendance.map((a) => ({
+        employeeId: String(a.employeeId),
+        joinedAtMs: Date.parse(a.joinedAt),
+        leftAtMs: a.leftAt === null ? null : Date.parse(a.leftAt),
+      })),
+    };
+    const alreadyCredited = session.creditedTaskIds.map(String);
+
+    /* Two rules, and the TASK decides which — the same branch the engine makes,
+       so a cross-department meeting cannot settle one way in the prototype and
+       another in the product. */
+    const settlement = task.isCrossDepartment
+      ? settleCrossDeptSession({
+          session: { ...meetingSession, receiverId: assigneeId },
+          onTaskId: String(session.taskId),
+          tasksByEmployee: new Map(
+            creditsInWindow({ ...meetingSession, receiverId: assigneeId }).map(
+              (c) => [c.employeeId, queueOf(c.employeeId)],
+            ),
+          ),
+          alreadyCredited,
+        })
+      : settleSession({
+          session: meetingSession,
+          onTaskId: String(session.taskId),
+          assigneeId,
+          alreadyCredited,
+          tasks: queueOf(assigneeId),
+        });
 
     const creditedSecs = settlement.creditedSecs;
     session.creditedSecs = creditedSecs;

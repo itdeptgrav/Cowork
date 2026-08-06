@@ -40,6 +40,18 @@ export function taskIdFromRoomName(roomName: string): string | null {
 export interface TaskMeetingParty {
   /** `createdBy ?? assignedBy` — who raised the work. */
   createdById: string | null;
+  /**
+   * The assigner OF RECORD, and the reason a self task was broken.
+   *
+   * On an ordinary task this is the creator again. On a SELF task the engine
+   * makes it the assignee's primary manager, because nobody negotiates a budget
+   * with, sets the priority of, or reviews their own work — the manager stands
+   * on the other side of all three. A rule reading `createdById` alone therefore
+   * refused the one person the meeting was with: the creator and the assignee
+   * were the same human, so the room admitted exactly one participant and told
+   * the approver "This meeting is for the people this task is between."
+   */
+  assignedById?: string | null;
   assigneeIds: string[];
   /**
    * The cross-department case, and the reason this field is here at all.
@@ -51,13 +63,33 @@ export interface TaskMeetingParty {
    * the conversation that settles those hours.
    */
   pendingAssigneeIds?: string[];
+  /**
+   * People the task itself NAMES as having to decide something about it: the
+   * approver who must set the hours (`pending_tl_hours`), and the department
+   * heads on a cross-department gate.
+   *
+   * Included because a task meeting is very often the conversation that settles
+   * the thing they have to decide — the hours, or whether the work should cross
+   * departments at all — and holding it without them is holding it without the
+   * person who has to answer.
+   *
+   * This does NOT open the room to seniority. Nobody is here for being senior,
+   * for managing somebody, or for administrative reach; they are here because
+   * this task records that it is waiting on them. A manager who can merely SEE
+   * their report's task is still refused, which is the rule
+   * `lib/rules/meetings/access.ts` sets for scheduled meetings and the one this
+   * follows.
+   */
+  approverIds?: (string | null | undefined)[];
 }
 
-/** Whether this person is one of the two sides of the work. */
+/** Whether this person is one of the sides of the work. */
 export function isTaskParty(task: TaskMeetingParty, employeeId: string): boolean {
   if (!employeeId) return false;
   if (task.createdById === employeeId) return true;
+  if (task.assignedById === employeeId) return true;
   if ((task.pendingAssigneeIds ?? []).includes(employeeId)) return true;
+  if ((task.approverIds ?? []).some((id) => id === employeeId)) return true;
   return task.assigneeIds.includes(employeeId);
 }
 

@@ -38,7 +38,7 @@ const at = (
 
 test("CASE 1 — a straightforward meeting is worth its length", () => {
   const secs = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [at(CREATOR, "10:00", "10:45"), at(ASSIGNEE, "10:00", "10:45")],
     endedAtMs: T("10:45"),
   });
@@ -49,7 +49,7 @@ test("CASE 2 — only the CREATOR's presence counts, not the assignee's", () => 
   /* **The anti-cheat.** Rakesh leaves at 10:30, Pramod stays until 11:00. The
      conversation ended when the person who wanted the work left the room. */
   const secs = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [at(CREATOR, "10:00", "10:30"), at(ASSIGNEE, "10:00", "11:00")],
     endedAtMs: T("11:00"),
   });
@@ -60,7 +60,7 @@ test("CASE 3 — an assignee alone in the room earns nothing", () => {
   /* Without this, anybody could open a room, walk away, and buy an unlimited
      deadline extension for an empty call. */
   const secs = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [at(ASSIGNEE, "10:00", "12:00")],
     endedAtMs: T("12:00"),
   });
@@ -71,7 +71,7 @@ test("CASE 4 — a creator who drops and rejoins is not paid twice", () => {
   /* Two attendance rows for one stretch of wall clock. Summing them would
      double-count a reconnect — the same fault presence used to have. */
   const secs = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [
       at(CREATOR, "10:00", "10:20"),
       at(CREATOR, "10:10", "10:30"), // overlaps the first
@@ -83,7 +83,7 @@ test("CASE 4 — a creator who drops and rejoins is not paid twice", () => {
 
 test("CASE 5 — two genuinely separate spans DO add up", () => {
   const secs = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [at(CREATOR, "10:00", "10:10"), at(CREATOR, "10:20", "10:30")],
     endedAtMs: T("10:30"),
   });
@@ -94,7 +94,7 @@ test("CASE 6 — somebody still in the room is bounded at the close", () => {
   /* Not at `now`: a session is credited when it ENDS, so reading the clock here
      would make the answer depend on when somebody asked. */
   const secs = creditableSecs({
-    creatorId: CREATOR,
+    counterpartyId: CREATOR,
     attendance: [at(CREATOR, "10:00", null)],
     endedAtMs: T("10:15"),
   });
@@ -105,7 +105,7 @@ test("CASE 7 — a zero-length or reversed span is worth nothing", () => {
   for (const [from, to] of [["10:00", "10:00"], ["10:30", "10:00"]] as const) {
     assert.equal(
       creditableSecs({
-        creatorId: CREATOR,
+        counterpartyId: CREATOR,
         attendance: [at(CREATOR, from, to)],
         endedAtMs: T("11:00"),
       }),
@@ -274,7 +274,7 @@ test("CASE 18 — Rules 1, 2 and 3 in one story", () => {
 
   const hold = (from: string, to: string, onTask: string) => {
     const session = {
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       attendance: [at(CREATOR, from, to)],
       endedAtMs: T(to),
     };
@@ -340,7 +340,7 @@ const settleTask = (
 const settle = (from: string, to: string, tasks: SettlementTask[], onTaskId = "P1") =>
   settleSession({
     session: {
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       attendance: [at(CREATOR, from, to)],
       endedAtMs: T(to),
       startedAtMs: T(from),
@@ -375,7 +375,7 @@ test("CASE 20 — a completed task is left out of the settlement entirely", () =
 test("CASE 21 — a session the creator missed moves no deadline at all", () => {
   const r = settleSession({
     session: {
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       attendance: [at(ASSIGNEE, "10:00", "11:00")],
       endedAtMs: T("11:00"),
       startedAtMs: T("10:00"),
@@ -403,7 +403,7 @@ test("CASE 23 — settling twice credits once", () => {
   const first = settle("10:00", "10:10", [settleTask("P1", "in_progress")]);
   const again = settleSession({
     session: {
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       attendance: [at(CREATOR, "10:00", "10:10")],
       endedAtMs: T("10:10"),
       startedAtMs: T("10:00"),
@@ -434,7 +434,7 @@ test("CASE 25 — a span entirely after the room closed is worth nothing", () =>
      turns it into zero rather than a negative that would REDUCE a total. */
   assert.equal(
     creditableSecs({
-      creatorId: CREATOR,
+      counterpartyId: CREATOR,
       attendance: [at(CREATOR, "11:00", "11:30")],
       endedAtMs: T("10:00"),
     }),
@@ -448,7 +448,7 @@ test("CASE 26 — nested spans count once, not three times", () => {
   assert.equal(
     mins(
       creditableSecs({
-        creatorId: CREATOR,
+        counterpartyId: CREATOR,
         attendance: [
           at(CREATOR, "10:00", "11:00"),
           at(CREATOR, "10:15", "10:30"),
@@ -463,7 +463,7 @@ test("CASE 26 — nested spans count once, not three times", () => {
 
 test("CASE 27 — a session with no attendance at all is worth nothing", () => {
   assert.equal(
-    creditableSecs({ creatorId: CREATOR, attendance: [], endedAtMs: T("11:00") }),
+    creditableSecs({ counterpartyId: CREATOR, attendance: [], endedAtMs: T("11:00") }),
     0,
   );
 });

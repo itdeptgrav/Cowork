@@ -228,6 +228,23 @@ export interface LegacyTask {
   isTerminal: boolean;
   assigneeIds: string[];
   createdById: string | null;
+  /**
+   * The assigner OF RECORD, which is not always who typed the task in.
+   *
+   * On an ordinary task it is the creator and this is the same id twice. On a
+   * SELF task the engine deliberately makes it the assignee's primary manager
+   * (`effectiveAssignedBy` in `taskForward.js`): somebody cannot negotiate a
+   * budget with, set the priority of, or review their own work, so their manager
+   * stands on the other side of every one of those turns.
+   *
+   * Kept as its own field because `createdById` folds it away —
+   * `createdBy ?? assignedBy` — so on the one kind of task where the two differ,
+   * the counterparty was unreadable. That is how a manager came to be refused
+   * entry to the meeting for a self task they are the approver of.
+   */
+  assignedById: string | null;
+  /** Work that crossed a department boundary — see the mapper for the test. */
+  isCrossDepartment: boolean;
   approverId: string | null;
   priority: number | null;
   /**
@@ -468,6 +485,10 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     isTerminal: isTerminal(doc.status),
     assigneeIds: Array.isArray(doc.assigneeIds) ? doc.assigneeIds.filter(Boolean) : [],
     createdById: doc.createdBy ?? doc.assignedBy ?? null,
+    /* The other direction from `createdById` above: that one prefers whoever
+       typed it in, this one prefers the assigner of record. They differ only on
+       a self task, which is exactly the case that needs them apart. */
+    assignedById: doc.assignedBy ?? doc.createdBy ?? null,
     approverId: doc.approverId ?? null,
     priority: typeof doc.priority === "number" ? doc.priority : null,
     order: typeof doc.order === "number" ? doc.order : null,
@@ -677,6 +698,22 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
         )
       : [],
     isForwardedTask: doc.isForwardedTask === true,
+    /**
+     * Did this task cross a department boundary?
+     *
+     * **A SENDER-side approval, specifically.** The cross-department gate writes
+     * two rows — the sender's manager and the receiver's — while the
+     * CEO-assignment gate writes only a receiver-side one. Testing for
+     * `departmentApprovals` at all would treat a CEO assignment as
+     * cross-department, and it is not: nothing left one department for another.
+     *
+     * The rows persist after approval, so this stays true for the life of the
+     * task — which it must, because the meeting rule keyed to it applies long
+     * after the HODs have finished.
+     */
+    isCrossDepartment: Array.isArray(doc.departmentApprovals)
+      ? doc.departmentApprovals.some((a) => a?.side === "sender")
+      : false,
     departmentApproverIds: Array.isArray(doc.departmentApprovals)
       ? doc.departmentApprovals
           .map((a) => a?.approverId)

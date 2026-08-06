@@ -108,6 +108,76 @@ test("a self task is one person on both sides", () => {
   assert.equal(taskJoinRefusal(self, "pramod"), null);
 });
 
+test("SELF TASK: the approving manager may enter — the reported break", () => {
+  /* The engine makes the assignee's primary manager the assigner OF RECORD on a
+     self task, because nobody negotiates a budget with, sets the priority of, or
+     reviews their own work. `createdById` is the assignee, so a rule reading it
+     alone admitted exactly one person and told the manager "This meeting is for
+     the people this task is between" — about a task they are the approver of.
+     They ARE one of the people it is between; they are the only other one. */
+  const selfTask = {
+    createdById: "pramod",
+    assignedById: "rakesh",
+    assigneeIds: ["pramod"],
+  };
+  assert.equal(taskJoinRefusal(selfTask, "pramod"), null);
+  assert.equal(
+    taskJoinRefusal(selfTask, "rakesh"),
+    null,
+    "the manager the self task is assigned by was refused entry to it",
+  );
+  /* And it stays closed to everybody else. */
+  assert.notEqual(taskJoinRefusal(selfTask, "a-colleague"), null);
+});
+
+test("an ordinary task is unchanged — creator and assigner are one person", () => {
+  const ordinary = {
+    createdById: "rakesh",
+    assignedById: "rakesh",
+    assigneeIds: ["pramod"],
+  };
+  assert.equal(taskJoinRefusal(ordinary, "rakesh"), null);
+  assert.equal(taskJoinRefusal(ordinary, "pramod"), null);
+  assert.notEqual(taskJoinRefusal(ordinary, "outsider"), null);
+});
+
+test("whoever must set the hours may join the meeting that settles them", () => {
+  /* `pending_tl_hours`: the task names an approver who has to decide the budget.
+     Holding the kickoff without them is holding it without the person who has to
+     answer. */
+  const awaitingHours = {
+    createdById: "rakesh",
+    assigneeIds: ["pramod"],
+    approverIds: ["the-tl"],
+  };
+  assert.equal(taskJoinRefusal(awaitingHours, "the-tl"), null);
+});
+
+test("cross-department approvers may join the task they are gating", () => {
+  const gated = {
+    createdById: "rakesh",
+    assigneeIds: [] as string[],
+    pendingAssigneeIds: ["pramod"],
+    approverIds: ["hod-sender", "hod-receiver"],
+  };
+  for (const id of ["rakesh", "pramod", "hod-sender", "hod-receiver"]) {
+    assert.equal(taskJoinRefusal(gated, id), null, `${id} was refused`);
+  }
+  assert.notEqual(taskJoinRefusal(gated, "unrelated"), null);
+});
+
+test("a null or absent approver never admits anybody", () => {
+  /* `approverId` is null on most tasks and arrives in the list as-is. A loose
+     comparison would make "no approver" match a caller with no id. */
+  const t = {
+    createdById: "rakesh",
+    assigneeIds: ["pramod"],
+    approverIds: [null, undefined] as (string | null | undefined)[],
+  };
+  assert.notEqual(taskJoinRefusal(t, ""), null);
+  assert.notEqual(taskJoinRefusal(t, "outsider"), null);
+});
+
 test("somebody else is refused, and told why", () => {
   assert.equal(
     taskJoinRefusal(TASK, "outsider"),
@@ -119,7 +189,12 @@ test("seeing a task is not being in the conversation about it", () => {
   /* The precedent is `joinRefusal` in ./access.ts: a manager who can SEE their
      report's meeting does not walk into it, and neither does an administrator.
      There is no seniority parameter here BECAUSE there is no seniority rule —
-     if one is ever added, this test should be the thing that argues with it. */
+     if one is ever added, this test should be the thing that argues with it.
+
+     Note what this does NOT contradict: the people admitted alongside the two
+     sides are admitted because the TASK NAMES THEM as owing it a decision, not
+     because of where they sit. A manager with nothing recorded against this task
+     is still refused, however senior. */
   for (const senior of ["their-manager", "the-hod", "an-administrator"]) {
     assert.notEqual(
       taskJoinRefusal(TASK, senior),
