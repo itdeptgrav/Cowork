@@ -156,7 +156,15 @@ test("the chained date leads, and the engine is the fallback", () => {
      to recompute a number it was handed — and two answers that can drift. */
   const src = code("components/features/tasks/ExpectedCompletion.tsx");
   assert.match(src, /const chained = view\.task\.deadline\.operationalDueAt;/);
-  assert.match(src, /if \(chained\) return;/);
+  /* The guard moved from an effect's early return into the query's own fetcher
+     when this stopped being a hand-rolled `useEffect` — see
+     `lib/rules/tasks/liveCompletion.test.ts` for why it had to. The rule is
+     unchanged: with a chained date in hand, the engine is not asked. */
+  assert.match(
+    src,
+    /chained \|\| !subject \|\| budgetSecs <= 0/,
+    "the engine is asked even when the queue already answered",
+  );
   assert.match(
     src,
     /const completion = chained \?\? result\?\.estimatedCompletionTime \?\? null;/,

@@ -1,9 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRepo } from "@/lib/hooks/useRepository";
+import { useQuery } from "@/lib/hooks/useRepository";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
-import type { Feasibility } from "@/lib/rules/tasks/deadlineFeasibility";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -26,15 +24,12 @@ import type { TaskView } from "@/lib/repositories";
  */
 
 export function ExpectedCompletion({ view }: { view: TaskView }) {
-  const repo = useRepo();
   /* Already chained by the repository for the assignee whose queue was
      fetched. Preferred over asking again: it is the SAME calculation, computed
      once for the whole queue, so the date here and the date on their list
      cannot drift apart. The query below is the fallback for a task whose queue
      was not fetched — a viewer who is neither the assignee nor first in line. */
   const chained = view.task.deadline.operationalDueAt;
-  const [result, setResult] = useState<Feasibility | null>(null);
-  const [failed, setFailed] = useState(false);
 
   /* The person who will DO it. A held cross-department task keeps them in
      `pendingAssigneeIds`, so that is checked first — otherwise the one stage
@@ -60,29 +55,38 @@ export function ExpectedCompletion({ view }: { view: TaskView }) {
    */
   const requested = view.task.deadline.dueAt;
 
-  useEffect(() => {
-    if (chained) return;
-    if (!subject || budgetSecs <= 0) return;
-    let cancelled = false;
-    void repo
-      .previewDeadlineFeasibility({
-        taskId: view.task.id,
-        employeeId: subject,
-        estimatedWorkSeconds: budgetSecs,
-        committedDeadline: requested,
-      })
-      .then((r) => {
-        if (!cancelled) setResult(r);
-      })
-      .catch(() => {
-        /* The requested deadline is still shown by the caller, so a failure
-           here costs the extra fact rather than the whole field. */
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [repo, view.task.id, subject, budgetSecs, requested, chained]);
+  /**
+   * **`useQuery`, not a hand-rolled effect — and the difference is the bug.**
+   *
+   * This was a `useEffect` whose dependencies were all local: the task id, the
+   * subject, this task's own budget and its requested date. None of them moves
+   * when the QUEUE moves, and the queue is what this answer is made of. Credit
+   * an offline span and only the head of the queue's window grows — every task
+   * behind it should slide, but their own fields are byte-identical, so the
+   * effect never re-ran and the date sat where it was until the page was
+   * reloaded. Reported as "it increases correctly, but only after a refresh".
+   *
+   * `useQuery` subscribes to the repository's version through
+   * `useSyncExternalStore`, so any mutation anywhere re-runs it. That is the
+   * whole reason it exists, and re-implementing the fetch beside it opted this
+   * one field out of it.
+   */
+  const preview = useQuery(
+    (r) =>
+      chained || !subject || budgetSecs <= 0
+        ? Promise.resolve(null)
+        : r.previewDeadlineFeasibility({
+            taskId: view.task.id,
+            employeeId: subject,
+            estimatedWorkSeconds: budgetSecs,
+            committedDeadline: requested,
+          }),
+    [view.task.id, subject, budgetSecs, requested, chained],
+  );
+  const result = preview.data ?? null;
+  /* The requested deadline is still shown by the caller, so a failure here
+     costs the extra fact rather than the whole field. */
+  const failed = preview.error !== null;
 
   /* Nothing to compute against: no assignee, or no agreed budget. The requested
      deadline stands alone, which is honest — there is no queue answer yet. */
