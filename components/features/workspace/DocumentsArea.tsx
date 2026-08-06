@@ -66,6 +66,15 @@ export function DocumentsArea({
   const noun = kind === "sheet" ? "sheet" : "document";
   const plural = kind === "sheet" ? "Sheets" : "Documents";
   const [openId, setOpenId] = useState<string | null>(() => initialOpenId);
+  /* The document just created, held locally.
+     Opening used to depend on the new document coming back from `listDocuments`,
+     but `createAndOpen` fires `docs.refetch()` WITHOUT awaiting it, so on the
+     render right after creating, `list` is still the old one, `open` resolves to
+     null, and the list is drawn again instead of the editor. Clicking "New
+     sheet" therefore looked like it did nothing. `createDocument` already
+     returns the whole record, so the editor is opened from that and the refetch
+     only has to catch the list up afterwards. */
+  const [justCreated, setJustCreated] = useState<DocumentSummary | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
@@ -75,18 +84,26 @@ export function DocumentsArea({
   const [rename] = useAction((r, id: string, title: string) =>
     r.renameDocument(id, title),
   );
-  const [remove] = useAction((r, id: string) => r.deleteDocument(id));
+  const [remove, removeState] = useAction((r, id: string) =>
+    r.deleteDocument(id),
+  );
 
   const list = docs.data ?? [];
-  const open = list.find((d) => d.id === openId) ?? null;
+  /* The listed copy wins once it arrives — it carries the preview and any edit
+     made elsewhere — and the just-created record only stands in until then. */
+  const open =
+    list.find((d) => d.id === openId) ??
+    (justCreated && justCreated.id === openId ? justCreated : null);
 
   const createAndOpen = async () => {
     const r = await create();
     if (!r.ok) return;
-    docs.refetch();
     /* Opened straight away: a new document's first need is to be written in,
-       and its name is easier to choose once there is something in it. */
+       and its name is easier to choose once there is something in it. The
+       record is stood up locally first so this does not race the refetch. */
+    setJustCreated({ ...r.data, preview: "" });
     setOpenId(r.data.id);
+    docs.refetch();
   };
 
   /**
@@ -238,9 +255,26 @@ export function DocumentsArea({
             <RowAction
               label={`Delete ${d.title}`}
               onClick={async () => {
+                /* Asked first, the way deleting a sheet TAB already is: this
+                   takes the whole document and every tab inside it, and the row
+                   sits one icon away from Rename. A misclick should not be how
+                   a spreadsheet goes away. */
+                if (
+                  typeof window !== "undefined" &&
+                  !window.confirm(
+                    `Delete "${d.title}"? This removes the whole ${noun} and can't be undone.`,
+                  )
+                )
+                  return;
                 const r = await remove(d.id);
+                /* A refused delete used to fall through this `if` in silence,
+                   leaving the row on screen with no hint why. `removeState.error`
+                   is rendered in the banner above. */
                 if (r.ok) {
                   if (openId === d.id) setOpenId(null);
+                  /* Drop the local stand-in too, or a just-created document
+                     deleted before the list caught up would keep resolving. */
+                  setJustCreated((j) => (j && j.id === d.id ? null : j));
                   docs.refetch();
                 }
               }}
@@ -336,7 +370,7 @@ export function DocumentsArea({
           reason the repository gave back — permission, validation, offline — was
           held in `createState.error` and never shown. A create that fails has to
           say so, or it reads as the button being broken. */}
-      {createState.error && (
+      {(createState.error || removeState.error) && (
         <div
           role="alert"
           className="border-b border-hairline px-4 py-2 text-[13px]"
@@ -345,7 +379,9 @@ export function DocumentsArea({
             color: "var(--state-overdue-ink)",
           }}
         >
-          {`That ${noun} could not be created — ${createState.error}`}
+          {createState.error
+            ? `That ${noun} could not be created — ${createState.error}`
+            : `That ${noun} could not be deleted — ${removeState.error}`}
         </div>
       )}
 

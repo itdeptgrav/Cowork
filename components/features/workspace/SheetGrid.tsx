@@ -281,6 +281,25 @@ export function SheetGrid({
   const gridRef = useRef<HTMLDivElement | null>(null);
   const shell = useRef<HTMLDivElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /* What the footer reports about the write.
+     The save itself was already reliable — debounced, flushed on hide and on
+     unmount — but it was entirely invisible, so there was no way to know
+     whether a change had landed before closing the tab, and no way to force
+     one. That is what this, the Ctrl+S handler and the `pagehide` flush below
+     are for. */
+  const [saveState, setSaveState] = useState<
+    "saved" | "pending" | "saving" | "error"
+  >("saved");
+  /* `saveNow` runs from unmount and from `pagehide`, both of which can happen
+     after this component is gone; the guard keeps those from setting state on
+     a dead component. */
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
   const seeded = useRef(false);
   const csvInputRef = useRef<HTMLInputElement | null>(null);
   const xlsxInputRef = useRef<HTMLInputElement | null>(null);
@@ -289,6 +308,11 @@ export function SheetGrid({
      the migration effect below. */
   const migrated = useRef(false);
   const dragging = useRef(false);
+  /* A drag that began on a row/column header. Kept apart from `dragging` so
+     sweeping across headers extends whole rows/columns, while the cell grid's
+     own `onMouseEnter` stays inert — otherwise passing over the cells would
+     collapse the band selection back down to a single cell. */
+  const headerDrag = useRef<{ kind: "col" | "row"; from: number } | null>(null);
   const pointing = useRef(false);
   const scrollRaf = useRef(0);
 
@@ -627,9 +651,16 @@ export function SheetGrid({
         ...(allSheetsData[tab.id] ?? tab),
       })),
     };
+    if (mounted.current) setSaveState("saving");
     void getRepository()
       .saveDocumentBody(documentId, { cells: writeWorkbook(next) })
-      .catch(() => setError("That could not be saved."));
+      .then(() => {
+        if (mounted.current) setSaveState("saved");
+      })
+      .catch(() => {
+        if (mounted.current) setSaveState("error");
+        setError("That could not be saved.");
+      });
   }, [documentId, workbook, allSheetsData, readOnly]);
 
   /* Held in a ref so the flush listeners can stay registered once (a stable
@@ -648,6 +679,7 @@ export function SheetGrid({
 
   const scheduleSave = useCallback(() => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
+    setSaveState("pending");
     saveTimer.current = setTimeout(() => saveNowRef.current(), 1500);
   }, []);
 
@@ -664,9 +696,17 @@ export function SheetGrid({
       )
         saveNowRef.current();
     };
+    /* `visibilitychange` does not reliably fire before a reload or a tab close,
+       which left a 1.5s window where the last edit was lost. `pagehide` is the
+       one the browsers agree on for that, so it flushes too. */
+    const onPageHide = () => {
+      if (saveTimer.current && !readOnlyRef.current) saveNowRef.current();
+    };
     document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
     return () => {
       document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
       if (saveTimer.current && !readOnlyRef.current) saveNowRef.current();
     };
   }, []);
@@ -922,6 +962,48 @@ export function SheetGrid({
     if (extend) setAnchor((a) => a ?? active);
     else setAnchor(null);
     setActive(cellRef(r, c));
+  };
+
+  /* Whole-band selection.
+     A band is expressed in the existing two-corner model rather than as a new
+     kind of selection: every column from `fromCol` to `toCol`, spanning every
+     row. Everything downstream — the formatting toolbar, copy, the summary,
+     conditional rules — already operates on `selRect` and so needs no change.
+     The focus cell is put on the LAST header touched, which is what the formula
+     bar names and where typing would land, matching a spreadsheet. */
+  const selectColumns = (fromCol: number, toCol: number) => {
+    if (!sheet) return;
+    const a = Math.max(0, Math.min(sheet.cols - 1, fromCol));
+    const b = Math.max(0, Math.min(sheet.cols - 1, toCol));
+    setAnchor(cellRef(sheet.rows - 1, a));
+    setActive(cellRef(0, b));
+  };
+
+  const selectRows = (fromRow: number, toRow: number) => {
+    if (!sheet) return;
+    const a = Math.max(0, Math.min(sheet.rows - 1, fromRow));
+    const b = Math.max(0, Math.min(sheet.rows - 1, toRow));
+    setAnchor(cellRef(a, sheet.cols - 1));
+    setActive(cellRef(b, 0));
+  };
+
+  const selectEverything = () => {
+    if (!sheet) return;
+    setAnchor(cellRef(sheet.rows - 1, sheet.cols - 1));
+    setActive("A1");
+  };
+
+  /* Shared by every header: whatever was being typed is committed first, the
+     way clicking a cell does, and the grid takes focus so the keyboard keeps
+     working on the new selection. */
+  const beginHeaderSelection = () => {
+    if (editing) commit();
+    setEditing(null);
+    setSelectedChart(null);
+    setSelectedRule(null);
+    dragging.current = false;
+    pointing.current = false;
+    gridRef.current?.focus();
   };
 
   const move = (dRow: number, dCol: number, extend = false) => {
@@ -1780,6 +1862,7 @@ export function SheetGrid({
     const up = () => {
       dragging.current = false;
       pointing.current = false;
+      headerDrag.current = null;
     };
     window.addEventListener("mouseup", up);
     return () => window.removeEventListener("mouseup", up);
@@ -2429,8 +2512,30 @@ export function SheetGrid({
           }
           /* The shortcuts every spreadsheet shares. Copy/cut/paste ride the
              native clipboard events above; these are the rest. */
+          /* Ctrl/Cmd+Space selects the column, Shift+Space the row — the
+             keyboard half of clicking a header, and the same keys Excel and
+             Sheets use. Checked before the modifier block below because
+             Ctrl+Shift+Space (select all) needs both to be seen together. */
+          if (e.key === " " && (e.metaKey || e.ctrlKey || e.shiftKey) && !e.altKey && !editing) {
+            const at = parseRef(active);
+            if (at) {
+              e.preventDefault();
+              if ((e.metaKey || e.ctrlKey) && e.shiftKey) selectEverything();
+              else if (e.metaKey || e.ctrlKey) selectColumns(at.col, at.col);
+              else selectRows(at.row, at.row);
+              return;
+            }
+          }
           if ((e.metaKey || e.ctrlKey) && !e.altKey) {
             const k = e.key.toLowerCase();
+            /* Without this the browser's "Save page as…" dialog opens over the
+               sheet — the one keystroke a person reaches for to be sure their
+               work is safe was the one that did something else entirely. */
+            if (k === "s") {
+              e.preventDefault();
+              if (!readOnly) saveNow();
+              return;
+            }
             if (k === "z") {
               e.preventDefault();
               if (e.shiftKey) undoMgr?.redo();
@@ -2569,17 +2674,39 @@ export function SheetGrid({
           <thead>
             <tr>
               <th
-                className="sticky top-0 left-0 z-20 border border-hairline bg-[var(--frost-bar)]"
+                title="Select all cells"
+                aria-label="Select all cells"
+                onMouseDown={(e) => {
+                  if (e.button === 2) return;
+                  beginHeaderSelection();
+                  selectEverything();
+                }}
+                className="sticky top-0 left-0 z-20 cursor-pointer border border-hairline bg-[var(--frost-bar)] select-none hover:bg-[var(--control)]"
                 style={{ width: HEAD_W, height: CELL_H }}
               />
               {Array.from({ length: sheet.cols }, (_, c) => (
                 <th
                   key={c}
                   scope="col"
-                  className={`sticky top-0 z-10 border border-hairline text-[10px] font-normal ${
+                  title={`Select column ${columnLabel(c)} — shift-click to extend`}
+                  onMouseDown={(e) => {
+                    if (e.button === 2) return;
+                    /* Shift extends from the corner the selection is already
+                       pinned to, so dragging back the other way narrows it
+                       rather than jumping. */
+                    const from = e.shiftKey && anchorPos ? anchorPos.col : c;
+                    beginHeaderSelection();
+                    headerDrag.current = { kind: "col", from };
+                    selectColumns(from, c);
+                  }}
+                  onMouseEnter={() => {
+                    const d = headerDrag.current;
+                    if (d?.kind === "col") selectColumns(d.from, c);
+                  }}
+                  className={`sticky top-0 z-10 cursor-pointer border border-hairline text-[10px] font-normal select-none ${
                     selRect && c >= selRect.left && c <= selRect.right
                       ? "bg-[var(--control)] text-ink"
-                      : "bg-[var(--frost-bar)] text-ink-faint"
+                      : "bg-[var(--frost-bar)] text-ink-faint hover:bg-[var(--control)]"
                   }`}
                   style={{ width: CELL_W, height: CELL_H }}
                 >
@@ -2623,10 +2750,22 @@ export function SheetGrid({
                   <th
                     scope="row"
                     data-figure
-                    className={`sticky left-0 z-10 border border-hairline text-[10px] font-normal ${
+                    title={`Select row ${r + 1} — shift-click to extend`}
+                    onMouseDown={(e) => {
+                      if (e.button === 2) return;
+                      const from = e.shiftKey && anchorPos ? anchorPos.row : r;
+                      beginHeaderSelection();
+                      headerDrag.current = { kind: "row", from };
+                      selectRows(from, r);
+                    }}
+                    onMouseEnter={() => {
+                      const d = headerDrag.current;
+                      if (d?.kind === "row") selectRows(d.from, r);
+                    }}
+                    className={`sticky left-0 z-10 cursor-pointer border border-hairline text-[10px] font-normal select-none ${
                       selRect && r >= selRect.top && r <= selRect.bottom
                         ? "bg-[var(--control)] text-ink"
-                        : "bg-[var(--frost-bar)] text-ink-faint"
+                        : "bg-[var(--frost-bar)] text-ink-faint hover:bg-[var(--control)]"
                     }`}
                     style={{ width: HEAD_W, height: CELL_H }}
                   >
@@ -2975,6 +3114,26 @@ export function SheetGrid({
       />
 
       <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-hairline px-4 py-2">
+        {!readOnly && (
+          <p
+            className="text-[10px]"
+            style={{
+              color:
+                saveState === "error"
+                  ? "var(--state-overdue-ink)"
+                  : "var(--color-ink-faint)",
+            }}
+            aria-live="polite"
+          >
+            {saveState === "saved"
+              ? "All changes saved"
+              : saveState === "saving"
+                ? "Saving…"
+                : saveState === "pending"
+                  ? "Unsaved changes — ⌘S to save now"
+                  : "Could not save — retrying on your next edit"}
+          </p>
+        )}
         <p className="text-[10px] text-ink-faint">
           {readOnly
             ? "You have view access. Ask an owner if you need to edit this."
