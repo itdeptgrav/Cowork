@@ -77,7 +77,20 @@ export type SheetCommand =
   | { type: "structuralEdit"; next: SheetData }
   | { type: "setHiddenRows"; hidden: number[] }
   | { type: "createChart"; range: string; chartType: ChartType; title: string }
-  | { type: "applyConditionalFormat"; rule: Omit<ConditionalRule, "id"> };
+  | { type: "applyConditionalFormat"; rule: Omit<ConditionalRule, "id"> }
+  /**
+   * Style an EXPLICIT list of cells, regardless of what is currently
+   * selected — for `flag_outliers`, whose flagged cells are rarely a single
+   * rectangle. `{ type: "style" }` above styles "whatever is selected", which
+   * is right for a human at the toolbar but wrong for an assistant action
+   * that knows exactly which refs it means: a `selectRange` immediately
+   * followed by a `style` dispatch cannot be relied on here, because the
+   * selection state that `style` reads back is not updated until the next
+   * render, so a second `selectRange`+`style` pair in the same call would
+   * still read the FIRST pair's target. This carries its own ref list
+   * instead, straight to the same merge-and-write code `style` already uses.
+   */
+  | { type: "styleCells"; refs: string[]; patch: Partial<CellStyle> };
 
 /** The grid's front door: turn an intent into the change that carries it out. */
 export type SheetDispatch = (command: SheetCommand) => void;

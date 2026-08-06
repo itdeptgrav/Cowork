@@ -9,6 +9,7 @@ import { InlineError } from "@/components/ui/Primitives";
 import { StageError, StageSkeleton } from "./WorkspaceStage";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { getRepository } from "@/lib/repositories";
+import { notifyRepositoryChanged } from "@/lib/repositories/events";
 import {
   canManage,
   editRefusal,
@@ -18,6 +19,8 @@ import {
   cellRef,
   chartData,
   columnLabel,
+  DEFAULT_COLS,
+  DEFAULT_ROWS,
   displayValue,
   evalConditional,
   explainError,
@@ -27,6 +30,7 @@ import {
   inRect,
   isFormula,
   isNumericDisplay,
+  MAX_SHEETS,
   matchFunctionNames,
   normalizeRange,
   offsetReferences,
@@ -34,9 +38,10 @@ import {
   parseRef,
   rangeLabel,
   rangeToRect,
-  readSheet,
+  readWorkbook,
   summarize,
-  writeSheet,
+  writeWorkbook,
+  type CellMap,
   type CellPos,
   type CellStyle,
   type ChartSpec,
@@ -46,6 +51,9 @@ import {
   type NumberFormat,
   type RuleStats,
   type SheetData,
+  type SheetTab,
+  type StyleMap,
+  type Workbook,
 } from "@/lib/rules/sheets/grid";
 import { useCollabSession } from "./useCollabSession";
 import { documentRoom } from "@/lib/rules/workspace/collabRoom";
@@ -60,6 +68,9 @@ import { ConditionalPanel } from "./ConditionalPanel";
 import { SheetsAssistant } from "./ai/SheetsAssistant";
 import { parseCellDirective, resolveAutosum } from "@/lib/rules/sheets/cellDirectives";
 import { SheetContextMenu, type MenuAction } from "./SheetContextMenu";
+import { SheetTabBar } from "./docs/SheetTabBar";
+import { MenuItem, MenuSeparator, Popover } from "./docs/DocsMenu";
+import { readCsv, writeCsv } from "@/lib/rules/sheets/csv";
 import type { SelectionState, SheetCommand } from "./sheetCommands";
 
 /**
@@ -88,6 +99,89 @@ const CELL_W = 104;
 const CELL_H = 26;
 const HEAD_W = 44;
 const OVERSCAN = 8;
+
+/**
+ * Tabs share one collab room (`documentRoom(documentId)` is per-DOCUMENT, not
+ * per-sheet), so the CELL and STYLE maps stay flat `Y.Map`s keyed
+ * `"<sheetId>:<ref>"` rather than one nested map per tab — the smallest change
+ * to structures `parseSheet`/`sheetToObject` already understand per-sheet.
+ * Charts and conditional rules are `Y.Array`s (order matters — paint order,
+ * rule priority), so the same idea is a `sheetId` TAG on each element instead
+ * of a key prefix; filtering by tag is this file's problem, not grid.ts's.
+ */
+type StoredChart = ChartSpec & { sheetId?: string };
+type StoredRule = ConditionalRule & { sheetId?: string };
+
+function withoutSheetId<T extends { sheetId?: string }>(item: T): Omit<T, "sheetId"> {
+  const copy: Record<string, unknown> = { ...item };
+  delete copy.sheetId;
+  return copy as Omit<T, "sheetId">;
+}
+
+/**
+ * One tab's `SheetData`, read from the shared maps when collaborating (else
+ * from the tab's own stored fields).
+ *
+ * `isFirst` carries the ONE-TIME legacy fallback: a document collaborated on
+ * before tabs existed has plain, un-prefixed keys and un-tagged chart/rule
+ * entries in the room already, and those belong to whatever is now the FIRST
+ * tab (the one `readWorkbook` wrapped it as). The migration effect below
+ * rewrites them with a prefix/tag the first time a session sees them; this
+ * fallback just means nothing looks blank in the moment before that runs.
+ */
+function sheetDataFor(
+  tab: SheetTab,
+  isFirst: boolean,
+  yCells: Y.Map<string> | null,
+  yStyles: Y.Map<CellStyle> | null,
+  yCharts: Y.Array<StoredChart> | null,
+  yConds: Y.Array<StoredRule> | null,
+): SheetData {
+  if (!yCells) {
+    return {
+      cells: tab.cells,
+      styles: tab.styles,
+      rows: tab.rows,
+      cols: tab.cols,
+      charts: tab.charts,
+      conditionals: tab.conditionals,
+      hidden: tab.hidden,
+    };
+  }
+  const prefix = `${tab.id}:`;
+  const cells: CellMap = {};
+  for (const [key, value] of yCells.entries()) {
+    if (key.startsWith(prefix)) cells[key.slice(prefix.length)] = value;
+    else if (isFirst && parseRef(key)) cells[key] = value;
+  }
+  const styles: StyleMap = {};
+  if (yStyles)
+    for (const [key, style] of yStyles.entries()) {
+      if (key.startsWith(prefix)) styles[key.slice(prefix.length)] = style;
+      else if (isFirst && parseRef(key)) styles[key] = style;
+    }
+  const charts = yCharts
+    ? yCharts
+        .toArray()
+        .filter((c) => c.sheetId === tab.id || (isFirst && !c.sheetId))
+        .map(withoutSheetId)
+    : (tab.charts ?? []);
+  const conditionals = yConds
+    ? yConds
+        .toArray()
+        .filter((r) => r.sheetId === tab.id || (isFirst && !r.sheetId))
+        .map(withoutSheetId)
+    : (tab.conditionals ?? []);
+  return {
+    cells,
+    styles,
+    rows: tab.rows,
+    cols: tab.cols,
+    ...(charts.length ? { charts } : {}),
+    ...(conditionals.length ? { conditionals } : {}),
+    ...(tab.hidden?.length ? { hidden: tab.hidden } : {}),
+  };
+}
 
 /** The font-family menu, Excel's list. */
 const FONTS = [
@@ -129,7 +223,7 @@ export function SheetGrid({
     : false;
   const myRole = doc.data ? roleOf(doc.data, me.data?.id ?? null) : null;
 
-  const [sheet, setSheet] = useState<SheetData | null>(null);
+  const [workbook, setWorkbook] = useState<Workbook | null>(null);
   /* The FOCUS cell (`active`) and the other corner of a selection (`anchor`).
      A null anchor is a single-cell selection. */
   const [active, setActive] = useState("A1");
@@ -188,20 +282,28 @@ export function SheetGrid({
   const shell = useRef<HTMLDivElement | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const seeded = useRef(false);
+  const csvInputRef = useRef<HTMLInputElement | null>(null);
+  const xlsxInputRef = useRef<HTMLInputElement | null>(null);
+  /* Guards the one-time rewrite of a room's pre-tabs keys (plain "A1", untagged
+     chart/rule entries) into the "<sheetId>:ref" / sheetId-tagged shape — see
+     the migration effect below. */
+  const migrated = useRef(false);
   const dragging = useRef(false);
   const pointing = useRef(false);
   const scrollRaf = useRef(0);
 
   /* The shared maps. Read through the provider's doc so every client mutates the
-     same structure rather than a copy of it. */
+     same structure rather than a copy of it. Keys/tags are namespaced by sheet
+     id — see `sheetDataFor` above — because the room is per-DOCUMENT and every
+     tab shares it. */
   const yCells = collab.session?.doc.getMap<string>("cells") ?? null;
   const yStyles = collab.session?.doc.getMap<CellStyle>("styles") ?? null;
-  const yCharts = collab.session?.doc.getArray<ChartSpec>("charts") ?? null;
+  const yCharts = collab.session?.doc.getArray<StoredChart>("charts") ?? null;
   const yConds =
-    collab.session?.doc.getArray<ConditionalRule>("conditionals") ?? null;
+    collab.session?.doc.getArray<StoredRule>("conditionals") ?? null;
 
   /**
-   * The engine and its sheet id, BUILT AND DESTROYED IN ONE EFFECT.
+   * The engine, BUILT AND DESTROYED IN ONE EFFECT.
    *
    * The engine used to be built in a `useMemo` and freed in a SEPARATE effect's
    * cleanup. Under React StrictMode (dev) a component is mounted, unmounted and
@@ -210,15 +312,24 @@ export function SheetGrid({
    * remount, so the live grid was left driving a torn-down engine and the next
    * `setSheetContent` threw. Building and freeing in one effect makes the pair
    * inseparable, and holding it in state re-runs the consumers once it is ready.
+   *
+   * `sheetIds` maps a TAB's id to the numeric HyperFormula sheet it drives —
+   * one HF sheet per tab (a direct fit, not a workaround), so `=Sheet2!A1`
+   * resolves the way HyperFormula already knows how to. It starts empty and is
+   * kept in step with `workbook.sheets` by the sync effect just below, rather
+   * than built once here, because tabs are added/removed/renamed long after
+   * mount.
    */
   const [hf, setHf] = useState<{
     engine: HyperFormula;
-    sheetId: number;
+    /* Optional in its own type, not just in practice — a tab added this render
+       has no HF sheet yet (the sync effect below hasn't run), and typing it as
+       always-present would make that state uncheckable. */
+    sheetIds: Record<string, number | undefined>;
   } | null>(null);
 
   useEffect(() => {
     const engine = HyperFormula.buildEmpty({ licenseKey: "gpl-v3" });
-    engine.addSheet("main");
     /* Bare TRUE/FALSE as literals — HyperFormula reads them as named
        expressions otherwise, so `=VLOOKUP(3,A1:B2,2,FALSE)` returned `#NAME?`. */
     try {
@@ -227,41 +338,160 @@ export function SheetGrid({
     } catch {
       /* Already registered. */
     }
-    setHf({ engine, sheetId: engine.getSheetId("main") ?? 0 });
+    setHf({ engine, sheetIds: {} });
     return () => {
       engine.destroy();
       setHf(null);
     };
   }, []);
 
+  /* Keep the engine's own sheets in step with the tabs: add one for a new tab,
+     rename HF's to match a renamed tab (its numeric id is stable across a
+     rename), drop one for a closed tab. A tab's NAME is what a cross-sheet
+     formula names, so this — not the tab's id — is what HyperFormula tracks;
+     `SheetTabBar` keeps tab names unique so two tabs never fight over one HF
+     sheet. Runs after render rather than during it (unlike `engineError`
+     below): this is tab bookkeeping, not the hot per-keystroke path. */
+  useEffect(() => {
+    if (!hf || !workbook) return;
+    const { engine, sheetIds } = hf;
+    const nextIds = { ...sheetIds };
+    let changed = false;
+    const liveIds = new Set(workbook.sheets.map((t) => t.id));
+    for (const tabId of Object.keys(nextIds)) {
+      const hfId = nextIds[tabId];
+      if (!liveIds.has(tabId)) {
+        try {
+          if (hfId !== undefined) engine.removeSheet(hfId);
+        } catch {
+          /* Already gone. */
+        }
+        delete nextIds[tabId];
+        changed = true;
+      }
+    }
+    for (const tab of workbook.sheets) {
+      const existing = nextIds[tab.id];
+      if (existing === undefined) {
+        try {
+          engine.addSheet(tab.name);
+          const id = engine.getSheetId(tab.name);
+          if (id !== undefined) {
+            nextIds[tab.id] = id;
+            changed = true;
+          }
+        } catch {
+          /* A name collision or invalid name — `engineError` will surface it
+             once the tab's content is fed in below. */
+        }
+      } else if (engine.getSheetName(existing) !== tab.name) {
+        try {
+          engine.renameSheet(existing, tab.name);
+          changed = true;
+        } catch {
+          /* Leave the old name; the next sync retries. */
+        }
+      }
+    }
+    if (changed) setHf({ engine, sheetIds: nextIds });
+  }, [hf, workbook]);
+
   /* ── Load ──────────────────────────────────────────────────────────────── */
 
   useEffect(() => {
-    if (sheet || body.isLoading) return;
+    if (workbook || body.isLoading) return;
     const frame = requestAnimationFrame(() =>
-      setSheet(readSheet(body.data?.cells ?? null)),
+      setWorkbook(readWorkbook(body.data?.cells ?? null)),
     );
     return () => cancelAnimationFrame(frame);
-  }, [body.isLoading, body.data?.cells, sheet]);
+  }, [body.isLoading, body.data?.cells, workbook]);
 
-  /* Carry a pre-collaboration sheet into the CRDT once, only when the shared map
-     is genuinely empty, so the second person to open it does not write a copy. */
+  /* Carry a pre-collaboration workbook into the CRDT once, only when the shared
+     map is genuinely empty, so the second person to open it does not write a
+     copy. Every tab is seeded, not just the active one — the room holds the
+     whole workbook. */
   useEffect(() => {
-    if (!yCells || !sheet || seeded.current || !collab.session) return;
+    if (!yCells || !workbook || seeded.current || !collab.session) return;
     const apply = () => {
       if (seeded.current) return;
       seeded.current = true;
       if (yCells.size > 0) return;
       collab.session!.doc.transact(() => {
-        for (const [ref, value] of Object.entries(sheet.cells)) yCells.set(ref, value);
-        for (const [ref, style] of Object.entries(sheet.styles)) yStyles?.set(ref, style);
-        if (sheet.charts?.length) yCharts?.push([...sheet.charts]);
-        if (sheet.conditionals?.length) yConds?.push([...sheet.conditionals]);
+        for (const tab of workbook.sheets) {
+          for (const [ref, value] of Object.entries(tab.cells))
+            yCells.set(`${tab.id}:${ref}`, value);
+          for (const [ref, style] of Object.entries(tab.styles))
+            yStyles?.set(`${tab.id}:${ref}`, style);
+          if (tab.charts?.length)
+            yCharts?.push(tab.charts.map((c) => ({ ...c, sheetId: tab.id })));
+          if (tab.conditionals?.length)
+            yConds?.push(tab.conditionals.map((r) => ({ ...r, sheetId: tab.id })));
+        }
       });
     };
     if (collab.session.provider.synced) apply();
     else collab.session.provider.once("sync", apply);
-  }, [yCells, yStyles, sheet, collab.session]);
+  }, [yCells, yStyles, yCharts, yConds, workbook, collab.session]);
+
+  /* One-time rewrite of a room that predates tabs: plain "A1" keys become
+     "<firstSheetId>:A1", and chart/rule entries with no `sheetId` are tagged
+     with it. `sheetDataFor`'s `isFirst` fallback already reads this data
+     correctly before this runs, so this is tidying the room's actual shape
+     rather than fixing a display bug — it means the SECOND session to open a
+     legacy room also sees a namespaced map, not a growing pile of both. */
+  useEffect(() => {
+    if (!yCells || !workbook || migrated.current || !collab.session) return;
+    const firstId = workbook.sheets[0]?.id;
+    if (!firstId) return;
+    const apply = () => {
+      if (migrated.current) return;
+      migrated.current = true;
+      const legacyCellKeys = Array.from(yCells.keys()).filter((k) => parseRef(k));
+      const legacyStyleKeys = yStyles
+        ? Array.from(yStyles.keys()).filter((k) => parseRef(k))
+        : [];
+      const chartsNeedTag = yCharts?.toArray().some((c) => !c.sheetId) ?? false;
+      const condsNeedTag = yConds?.toArray().some((r) => !r.sheetId) ?? false;
+      if (
+        !legacyCellKeys.length &&
+        !legacyStyleKeys.length &&
+        !chartsNeedTag &&
+        !condsNeedTag
+      )
+        return;
+      collab.session!.doc.transact(() => {
+        for (const key of legacyCellKeys) {
+          const value = yCells.get(key);
+          if (value === undefined) continue;
+          yCells.delete(key);
+          yCells.set(`${firstId}:${key}`, value);
+        }
+        if (yStyles)
+          for (const key of legacyStyleKeys) {
+            const style = yStyles.get(key);
+            if (style === undefined) continue;
+            yStyles.delete(key);
+            yStyles.set(`${firstId}:${key}`, style);
+          }
+        if (yCharts && chartsNeedTag) {
+          const tagged = yCharts
+            .toArray()
+            .map((c) => (c.sheetId ? c : { ...c, sheetId: firstId }));
+          yCharts.delete(0, yCharts.length);
+          yCharts.insert(0, tagged);
+        }
+        if (yConds && condsNeedTag) {
+          const tagged = yConds
+            .toArray()
+            .map((r) => (r.sheetId ? r : { ...r, sheetId: firstId }));
+          yConds.delete(0, yConds.length);
+          yConds.insert(0, tagged);
+        }
+      });
+    };
+    if (collab.session.provider.synced) apply();
+    else collab.session.provider.once("sync", apply);
+  }, [yCells, yStyles, yCharts, yConds, workbook, collab.session]);
 
   /* Re-render on anybody's change — including our own. */
   useEffect(() => {
@@ -283,7 +513,10 @@ export function SheetGrid({
      default null origin), so Ctrl+Z never rewinds a collaborator's change out
      from under them. Charts and conditional rules are in scope too, so inserting
      a chart or a rule is undoable like any cell edit. Live sessions only —
-     offline there is no CRDT history to walk. */
+     offline there is no CRDT history to walk. Global across the whole workbook,
+     same as Excel's: undoing a change made on another tab acts on that tab's
+     data even while a different one is active (Excel would flip you to it —
+     this doesn't, which is a known rough edge, not a correctness problem). */
   useEffect(() => {
     if (!yCells || !yStyles) return;
     /* Charts and rules share the session, so they exist together with the cell
@@ -301,78 +534,103 @@ export function SheetGrid({
     };
   }, [yCells, yStyles, yCharts, yConds]);
 
-  /** The authoritative raw cells: the CRDT when connected, local state otherwise. */
-  const rawCells = useMemo(() => {
-    if (yCells) return Object.fromEntries(yCells.entries());
-    return sheet?.cells ?? {};
-  }, [yCells, sheet, version]);
+  /* Every tab's SheetData, live: the CRDT's view when collaborating (folded
+     through `sheetDataFor`'s namespacing), else each tab's own stored fields.
+     Computed for the whole workbook — not just the active tab — because
+     HyperFormula needs every sheet's content to resolve a cross-sheet
+     reference, not only the one on screen. */
+  const allSheetsData = useMemo<Record<string, SheetData>>(() => {
+    if (!workbook) return {};
+    const out: Record<string, SheetData> = {};
+    workbook.sheets.forEach((tab, i) => {
+      out[tab.id] = sheetDataFor(tab, i === 0, yCells, yStyles, yCharts, yConds);
+    });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` stands in for yCells/yStyles/yCharts/yConds mutating in place.
+  }, [workbook, yCells, yStyles, yCharts, yConds, version]);
 
-  const rawStyles = useMemo(() => {
-    if (yStyles) return Object.fromEntries(yStyles.entries());
-    return sheet?.styles ?? {};
-  }, [yStyles, sheet, version]);
+  const activeId =
+    workbook &&
+    (workbook.sheets.some((s) => s.id === workbook.activeId)
+      ? workbook.activeId
+      : workbook.sheets[0]?.id);
+  const activeTab = workbook && activeId ? (workbook.sheets.find((s) => s.id === activeId) ?? null) : null;
+  /* The active tab's live SheetData — what the rest of this component reads
+     as "the sheet". Kept under the name `sheet` so the render body below,
+     written for one sheet, needed no wider rewrite: switching tabs is just
+     this lookup changing. */
+  const sheet = activeTab ? allSheetsData[activeTab.id] : null;
+  const activeHfId = hf && activeTab ? hf.sheetIds[activeTab.id] : undefined;
 
-  const rawCharts = useMemo<ChartSpec[]>(() => {
-    if (yCharts) return yCharts.toArray();
-    return sheet?.charts ?? [];
-  }, [yCharts, sheet, version]);
+  const rawCells = sheet?.cells ?? {};
+  const rawStyles = sheet?.styles ?? {};
+  const rawCharts = sheet?.charts ?? [];
+  const rawConds = sheet?.conditionals ?? [];
 
-  const rawConds = useMemo<ConditionalRule[]>(() => {
-    if (yConds) return yConds.toArray();
-    return sheet?.conditionals ?? [];
-  }, [yConds, sheet, version]);
-
-  /* Feed the engine SYNCHRONOUSLY — a memo during render, NOT an effect.
-     **This is the "the total doesn't show until I touch something else" fix.** An
-     effect runs AFTER the render that reads the engine, so a freshly-typed
-     `=SUM(...)` was evaluated against the PREVIOUS content and its result surfaced
-     a render late. Computing it here means the cells below read an engine that
-     already knows the edit, so the answer is on screen the instant Enter lands.
-     `setSheetContent` is idempotent, so StrictMode's double-invoke is harmless. */
+  /* Feed EVERY sheet into the engine SYNCHRONOUSLY — a memo during render, NOT
+     an effect. **This is the "the total doesn't show until I touch something
+     else" fix.** An effect runs AFTER the render that reads the engine, so a
+     freshly-typed `=SUM(...)` was evaluated against the PREVIOUS content and
+     its result surfaced a render late. Computing it here means the cells below
+     read an engine that already knows the edit, so the answer is on screen the
+     instant Enter lands. Every sheet, not just the active one, so a formula on
+     this tab referencing another tab reads that tab's CURRENT content —
+     `setSheetContent` is idempotent, so re-feeding an unchanged tab is only
+     wasted work, not a correctness risk, and StrictMode's double-invoke stays
+     harmless. */
   const engineError = useMemo<string | null>(() => {
-    if (!sheet || !hf) return null;
-    const grid: string[][] = Array.from({ length: sheet.rows }, () =>
-      Array.from({ length: sheet.cols }, () => ""),
-    );
-    for (const [ref, value] of Object.entries(rawCells)) {
-      const at = parseRef(ref);
-      if (at && at.row < sheet.rows && at.col < sheet.cols) {
-        grid[at.row][at.col] = value;
+    if (!workbook || !hf) return null;
+    let firstError: string | null = null;
+    for (const tab of workbook.sheets) {
+      const hfId = hf.sheetIds[tab.id];
+      if (hfId === undefined) continue;
+      const data = allSheetsData[tab.id];
+      if (!data) continue;
+      const grid: string[][] = Array.from({ length: tab.rows }, () =>
+        Array.from({ length: tab.cols }, () => ""),
+      );
+      for (const [ref, value] of Object.entries(data.cells)) {
+        const at = parseRef(ref);
+        if (at && at.row < tab.rows && at.col < tab.cols) {
+          grid[at.row][at.col] = value;
+        }
+      }
+      try {
+        hf.engine.setSheetContent(hfId, grid);
+      } catch (e) {
+        const message =
+          e instanceof Error ? e.message : "That sheet could not be calculated.";
+        firstError ??= tab.id === activeTab?.id ? message : `${tab.name}: ${message}`;
       }
     }
-    try {
-      hf.engine.setSheetContent(hf.sheetId, grid);
-      return null;
-    } catch (e) {
-      return e instanceof Error
-        ? e.message
-        : "That sheet could not be calculated.";
-    }
-  }, [rawCells, sheet, hf]);
+    return firstError;
+  }, [workbook, hf, allSheetsData, activeTab?.id]);
 
   /* ── Save ──────────────────────────────────────────────────────────────── */
 
   /* The actual write, run either after the debounce or immediately on a flush.
-     Cancels any pending timer so a queued save and a flush never race. */
+     Cancels any pending timer so a queued save and a flush never race. Saves
+     the WHOLE workbook — every tab's live data (`allSheetsData` already has
+     it, CRDT-merged or not), not just the one on screen. */
   const saveNow = useCallback(() => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
     }
-    if (!sheet || readOnly) return;
+    if (!workbook || readOnly) return;
+    const next: Workbook = {
+      activeId: workbook.activeId,
+      sheets: workbook.sheets.map((tab) => ({
+        id: tab.id,
+        name: tab.name,
+        ...(tab.color ? { color: tab.color } : {}),
+        ...(allSheetsData[tab.id] ?? tab),
+      })),
+    };
     void getRepository()
-      .saveDocumentBody(documentId, {
-        cells: writeSheet({
-          cells: rawCells,
-          styles: rawStyles,
-          rows: sheet.rows,
-          cols: sheet.cols,
-          charts: rawCharts,
-          conditionals: rawConds,
-        }),
-      })
+      .saveDocumentBody(documentId, { cells: writeWorkbook(next) })
       .catch(() => setError("That could not be saved."));
-  }, [documentId, rawCells, rawStyles, rawCharts, rawConds, sheet, readOnly]);
+  }, [documentId, workbook, allSheetsData, readOnly]);
 
   /* Held in a ref so the flush listeners can stay registered once (a stable
      effect) yet always call the latest closure over the current cells. */
@@ -424,7 +682,7 @@ export function SheetGrid({
     const ro = new ResizeObserver(() => setViewportH(el.clientHeight));
     ro.observe(el);
     return () => ro.disconnect();
-  }, [sheet, hf]);
+  }, [sheet, hf, activeTab?.id]);
 
   /* Keep the focus cell on screen when it moves off it by keyboard — otherwise
      an arrow into a windowed-away row selects a cell nobody can see. */
@@ -440,14 +698,28 @@ export function SheetGrid({
 
   /* ── Edit ──────────────────────────────────────────────────────────────── */
 
+  /* One tab's slice of a flat, namespaced Yjs key/tag — see `sheetDataFor`. */
+  const tabKey = (ref: string): string | null =>
+    activeTab ? `${activeTab.id}:${ref}` : null;
+
+  /** Rewrite `workbook.sheets[activeTab]` with a patch — the non-collab path every setter below falls back to. */
+  const patchActiveTab = (patch: Partial<SheetTab>) => {
+    const id = activeTab?.id;
+    if (!id) return;
+    setWorkbook((wb) =>
+      wb ? { ...wb, sheets: wb.sheets.map((s) => (s.id === id ? { ...s, ...patch } : s)) } : wb,
+    );
+  };
+
   const setCell = (ref: string, value: string) => {
-    if (readOnly) return;
+    const key = tabKey(ref);
+    if (readOnly || !key) return;
     setError(null);
     if (yCells) {
-      if (value === "") yCells.delete(ref);
-      else yCells.set(ref, value);
+      if (value === "") yCells.delete(key);
+      else yCells.set(key, value);
     } else {
-      setSheet((s) => (s ? { ...s, cells: { ...s.cells, [ref]: value } } : s));
+      patchActiveTab({ cells: { ...(activeTab?.cells ?? {}), [ref]: value } });
     }
     scheduleSave();
   };
@@ -455,62 +727,69 @@ export function SheetGrid({
   /* A block write — one CRDT transaction (or one state update) for a whole
      range, so a paste or a range-clear is a single merge everyone sees at once. */
   const writeCells = (entries: [string, string][]) => {
-    if (readOnly || entries.length === 0) return;
+    const id = activeTab?.id;
+    if (readOnly || entries.length === 0 || !id) return;
     setError(null);
     if (yCells) {
       collab.session?.doc.transact(() => {
         for (const [ref, value] of entries) {
-          if (value === "") yCells.delete(ref);
-          else yCells.set(ref, value);
+          if (value === "") yCells.delete(`${id}:${ref}`);
+          else yCells.set(`${id}:${ref}`, value);
         }
       });
     } else {
-      setSheet((s) => {
-        if (!s) return s;
-        const cells = { ...s.cells };
-        for (const [ref, value] of entries) {
-          if (value === "") delete cells[ref];
-          else cells[ref] = value;
-        }
-        return { ...s, cells };
-      });
+      const cells = { ...(activeTab?.cells ?? {}) };
+      for (const [ref, value] of entries) {
+        if (value === "") delete cells[ref];
+        else cells[ref] = value;
+      }
+      patchActiveTab({ cells });
     }
     scheduleSave();
   };
 
   /**
-   * Replace the whole sheet with an already-computed one — the landing spot
-   * for `lib/rules/sheets/grid.ts`'s `insertRows`/`deleteRows`/
+   * Replace the whole ACTIVE tab with an already-computed `SheetData` — the
+   * landing spot for `lib/rules/sheets/grid.ts`'s `insertRows`/`deleteRows`/
    * `insertColumns`/`deleteColumns`/`sortRange`, which each take the current
    * `SheetData` and return the new one rather than a patch. Cells, styles,
    * charts and conditionals are CRDT-backed when collaborating, so the swap
-   * is delete-everything-then-set-everything inside one transaction — the
-   * same delete/insert-whole-array shape `moveRule` already uses for
-   * conditionals, extended to every Yjs structure this touches. `rows`,
-   * `cols` and `hidden` are not CRDT-backed (see the top of this file), so
-   * they go through `setSheet` either way.
+   * is delete-everything-then-set-everything inside one transaction, scoped to
+   * this tab's keys/tags — the OTHER tabs' entries in the same flat maps are
+   * left untouched. `rows`, `cols` and `hidden` are not CRDT-backed (see the
+   * top of this file), so they go through `workbook` state either way.
    */
   const applyStructuralEdit = (next: SheetData) => {
-    if (readOnly) return;
+    const id = activeTab?.id;
+    if (readOnly || !id) return;
     setError(null);
     if (yCells && yStyles) {
+      const prefix = `${id}:`;
       collab.session?.doc.transact(() => {
-        for (const key of Array.from(yCells.keys())) yCells.delete(key);
-        for (const [ref, value] of Object.entries(next.cells)) yCells.set(ref, value);
-        for (const key of Array.from(yStyles.keys())) yStyles.delete(key);
-        for (const [ref, style] of Object.entries(next.styles)) yStyles.set(ref, style);
+        for (const key of Array.from(yCells.keys()))
+          if (key.startsWith(prefix)) yCells.delete(key);
+        for (const [ref, value] of Object.entries(next.cells))
+          yCells.set(`${prefix}${ref}`, value);
+        for (const key of Array.from(yStyles.keys()))
+          if (key.startsWith(prefix)) yStyles.delete(key);
+        for (const [ref, style] of Object.entries(next.styles))
+          yStyles.set(`${prefix}${ref}`, style);
         if (yCharts) {
+          const others = yCharts.toArray().filter((c) => c.sheetId !== id);
+          const mine = (next.charts ?? []).map((c) => ({ ...c, sheetId: id }));
           yCharts.delete(0, yCharts.length);
-          if (next.charts?.length) yCharts.insert(0, next.charts);
+          yCharts.insert(0, [...others, ...mine]);
         }
         if (yConds) {
+          const others = yConds.toArray().filter((r) => r.sheetId !== id);
+          const mine = (next.conditionals ?? []).map((r) => ({ ...r, sheetId: id }));
           yConds.delete(0, yConds.length);
-          if (next.conditionals?.length) yConds.insert(0, next.conditionals);
+          yConds.insert(0, [...others, ...mine]);
         }
       });
-      setSheet((s) => (s ? { ...s, rows: next.rows, cols: next.cols, hidden: next.hidden } : s));
+      patchActiveTab({ rows: next.rows, cols: next.cols, hidden: next.hidden });
     } else {
-      setSheet(() => next);
+      patchActiveTab(next);
     }
     scheduleSave();
   };
@@ -518,10 +797,17 @@ export function SheetGrid({
   /* Formatting applies to the WHOLE selection, as a spreadsheet does — bolding
      A1:C3 bolds all nine. Each cell keeps its other styles; only the patched keys
      change (`null`-valued keys are stripped, so "no fill" is an absence, not a
-     stored null the CRDT keeps replicating). */
-  const toggleStyle = (patch: Partial<CellStyle>) => {
-    if (readOnly) return;
-    const list = selRect ? rectRefs() : [active];
+     stored null the CRDT keeps replicating).
+
+     `refsOverride` lets a caller that already knows exactly which cells it
+     means (the AI assistant's `flag_outliers`) bypass the selection entirely,
+     rather than going through `selectRange` first — see `styleCells` in
+     `sheetCommands.ts` for why that two-step sequence cannot be relied on for
+     a non-rectangular set of refs. */
+  const toggleStyle = (patch: Partial<CellStyle>, refsOverride?: string[]) => {
+    const id = activeTab?.id;
+    if (readOnly || !id) return;
+    const list = refsOverride ?? (selRect ? rectRefs() : [active]);
     const merge = (cur: CellStyle): CellStyle => {
       const next: CellStyle = { ...cur };
       for (const [k, v] of Object.entries(patch)) {
@@ -535,16 +821,15 @@ export function SheetGrid({
     };
     if (yStyles) {
       collab.session?.doc.transact(() => {
-        for (const ref of list)
-          yStyles.set(ref, merge((yStyles.get(ref) as CellStyle | undefined) ?? {}));
+        for (const ref of list) {
+          const key = `${id}:${ref}`;
+          yStyles.set(key, merge((yStyles.get(key) as CellStyle | undefined) ?? {}));
+        }
       });
     } else {
-      setSheet((s) => {
-        if (!s) return s;
-        const styles = { ...s.styles };
-        for (const ref of list) styles[ref] = merge(styles[ref] ?? {});
-        return { ...s, styles };
-      });
+      const styles = { ...(activeTab?.styles ?? {}) };
+      for (const ref of list) styles[ref] = merge(styles[ref] ?? {});
+      patchActiveTab({ styles });
     }
     scheduleSave();
   };
@@ -678,19 +963,17 @@ export function SheetGrid({
      formats". Deletes the whole style entry rather than blanking keys, so the
      document shrinks back. */
   const clearFormats = () => {
-    if (readOnly) return;
+    const id = activeTab?.id;
+    if (readOnly || !id) return;
     const list = selRect ? rectRefs() : [active];
     if (yStyles) {
       collab.session?.doc.transact(() => {
-        for (const ref of list) yStyles.delete(ref);
+        for (const ref of list) yStyles.delete(`${id}:${ref}`);
       });
     } else {
-      setSheet((s) => {
-        if (!s) return s;
-        const styles = { ...s.styles };
-        for (const ref of list) delete styles[ref];
-        return { ...s, styles };
-      });
+      const styles = { ...(activeTab?.styles ?? {}) };
+      for (const ref of list) delete styles[ref];
+      patchActiveTab({ styles });
     }
     scheduleSave();
   };
@@ -724,6 +1007,189 @@ export function SheetGrid({
       }),
     );
     writeCells(entries);
+  };
+
+  /* Drop an already-parsed 2D grid (CSV, or one XLSX sheet's cells) at a given
+     anchor — the same shape of write as `pasteText` just above, generalised
+     to a grid that did not come off the clipboard. Both funnel through
+     `writeCells`, the one bulk-cell-write path, rather than each import format
+     inventing its own way to reach the sheet's cells. */
+  const importGrid = (grid: string[][], atRef: string) => {
+    if (readOnly || !sheet) return;
+    const at = parseRef(atRef);
+    if (!at) return;
+    const entries: [string, string][] = [];
+    grid.forEach((line, dr) =>
+      line.forEach((val, dc) => {
+        const r = at.row + dr;
+        const c = at.col + dc;
+        if (r < sheet.rows && c < sheet.cols) entries.push([cellRef(r, c), val]);
+      }),
+    );
+    writeCells(entries);
+  };
+
+  /* Same download convention `DocumentEditor.tsx`'s `download()` uses: a Blob,
+     an off-screen anchor, revoke after the click. */
+  const downloadBlob = (data: BlobPart, filename: string, type: string) => {
+    const blob = new Blob([data], { type });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const fileBaseName = () =>
+    doc.data?.title.replace(/[^\w\d -]+/g, "").trim() || "sheet";
+
+  const exportCsvFile = () => {
+    if (!sheet) return;
+    downloadBlob(writeCsv(sheet), `${fileBaseName()}.csv`, "text/csv;charset=utf-8");
+  };
+
+  const importCsvFile = async (file: File) => {
+    const text = await file.text();
+    importGrid(readCsv(text), "A1");
+  };
+
+  const exportXlsxFile = async () => {
+    if (!workbook) return;
+    const { workbookToXlsx } = await import("@/lib/rules/sheets/xlsx");
+    const bytes = workbookToXlsx(workbook);
+    downloadBlob(
+      bytes,
+      `${fileBaseName()}.xlsx`,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    );
+  };
+
+  /**
+   * "Save As" — a full copy, under a new document, left where it is rather
+   * than opened: this component has no `onOpen`-style navigation prop (only
+   * `onClose`/`onNew`, for leaving or starting BLANK), and threading one in
+   * just for this would touch every caller between here and the workspace
+   * router. The copy is real and immediately findable from the sheets list
+   * the moment this returns — `notifyRepositoryChanged` is what makes it
+   * show up there without a manual refresh.
+   */
+  const [duplicateNotice, setDuplicateNotice] = useState<string | null>(null);
+  const duplicateSheet = async () => {
+    if (!doc.data || !workbook) return;
+    setDuplicateNotice(null);
+    const created = await getRepository().createDocument({
+      title: `Copy of ${doc.data.title}`,
+      kind: "sheet",
+    });
+    if (!created.ok) {
+      setError(created.message);
+      return;
+    }
+    const saved = await getRepository().saveDocumentBody(created.data.id, {
+      cells: writeWorkbook(workbook),
+    });
+    if (!saved.ok) {
+      setError(saved.message);
+      return;
+    }
+    notifyRepositoryChanged();
+    setDuplicateNotice(`Saved as "${created.data.title}" — open it from the sheets list.`);
+  };
+
+  /**
+   * Print — the grid is normally virtualized to the rows on screen (see the
+   * windowing note near `CELL_H`), so printing it as-is would print whatever
+   * happened to be scrolled into view. This forces every row into the render
+   * window first, waits two frames for that to actually paint (one for the
+   * state to commit, one for layout), prints, then restores the real
+   * viewport/scroll the person had — printing must not permanently change
+   * what they were looking at.
+   */
+  const printSheet = () => {
+    if (!sheet) return;
+    const prevViewportH = viewportH;
+    const prevScrollTop = scrollTop;
+    setViewportH(sheet.rows * CELL_H + CELL_H);
+    setScrollTop(0);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        document.body.classList.add("sheet-printing");
+        const cleanup = () => {
+          document.body.classList.remove("sheet-printing");
+          setViewportH(prevViewportH);
+          setScrollTop(prevScrollTop);
+        };
+        window.addEventListener("afterprint", cleanup, { once: true });
+        window.print();
+      });
+    });
+  };
+
+  /**
+   * Land an imported workbook's sheets as NEW tabs, appended after whatever is
+   * already here — never a silent replace of a document someone is already
+   * working in. Every new tab gets a fresh id and a name disambiguated
+   * against the existing ones, and (like `deleteSheet`/`applyStructuralEdit`
+   * elsewhere in this file) writes straight into the shared `yCells`/`yStyles`
+   * maps under that id's own prefix when collaborating — brand-new keys, so
+   * there is nothing of anyone else's to race with. Sheets past the
+   * `MAX_SHEETS` ceiling are dropped with a message rather than silently lost.
+   */
+  const importWorkbookTabs = (imported: Workbook) => {
+    if (readOnly || !workbook) return;
+    const room = MAX_SHEETS - workbook.sheets.length;
+    if (room <= 0) {
+      setError(`This document is already at the ${MAX_SHEETS}-sheet limit — nothing was imported.`);
+      return;
+    }
+    const existingNames = new Set(workbook.sheets.map((s) => s.name));
+    const incoming = imported.sheets.slice(0, room);
+    const withNewIds: SheetTab[] = incoming.map((t, i) => {
+      let name = t.name || `Sheet ${workbook.sheets.length + i + 1}`;
+      let n = 1;
+      const base = name;
+      while (existingNames.has(name)) name = `${base} (${++n})`;
+      existingNames.add(name);
+      return { ...t, id: newId(`sheet-import-${Date.now()}-${i}`), name };
+    });
+
+    if (yCells) {
+      collab.session?.doc.transact(() => {
+        for (const t of withNewIds) {
+          for (const [ref, value] of Object.entries(t.cells)) yCells.set(`${t.id}:${ref}`, value);
+          if (yStyles)
+            for (const [ref, style] of Object.entries(t.styles)) yStyles.set(`${t.id}:${ref}`, style);
+          if (yCharts && t.charts?.length)
+            yCharts.insert(yCharts.length, t.charts.map((c) => ({ ...c, sheetId: t.id })));
+          if (yConds && t.conditionals?.length)
+            yConds.insert(yConds.length, t.conditionals.map((r) => ({ ...r, sheetId: t.id })));
+        }
+      });
+    }
+    /* When collaborating, cells/styles live in `yCells`/`yStyles` (just
+       written above) and `sheetDataFor` reads them by prefix — so the tab
+       entry itself carries none of that, the same split `applyStructuralEdit`
+       keeps elsewhere in this file. Solo, there is no Yjs map to hold it, so
+       the tab is the only place it can live. */
+    const newTabs: SheetTab[] = withNewIds.map((t) =>
+      yCells ? { id: t.id, name: t.name, cells: {}, styles: {}, rows: t.rows, cols: t.cols } : t,
+    );
+    setWorkbook((wb) =>
+      wb ? { ...wb, sheets: [...wb.sheets, ...newTabs], activeId: newTabs[0]?.id ?? wb.activeId } : wb,
+    );
+    resetSelectionForTabSwitch();
+    scheduleSave();
+    if (incoming.length < imported.sheets.length)
+      window.alert(
+        `Only the first ${incoming.length} sheet(s) were imported — this document is at the ${MAX_SHEETS}-sheet limit.`,
+      );
+  };
+
+  const importXlsxFile = async (file: File) => {
+    const bytes = await file.arrayBuffer();
+    const { xlsxToWorkbook } = await import("@/lib/rules/sheets/xlsx");
+    importWorkbookTabs(xlsxToWorkbook(bytes));
   };
 
   /* Fill down / right, with relative references adjusted the Excel way. A single
@@ -771,7 +1237,8 @@ export function SheetGrid({
    * is rarely what happens to be selected right now.
    */
   const insertChartAt = (range: string, type: ChartType, title: string) => {
-    if (readOnly) return;
+    const id = activeTab?.id;
+    if (readOnly || !id) return;
     /* Drop it into the current viewport, staggered so several don't stack. */
     const stagger = (rawCharts.length % 6) * 24;
     const spec: ChartSpec = {
@@ -785,8 +1252,8 @@ export function SheetGrid({
       h: CHART_DEFAULT_H,
       z: topChartZ() + 1,
     };
-    if (yCharts) yCharts.push([spec]);
-    else setSheet((s) => (s ? { ...s, charts: [...(s.charts ?? []), spec] } : s));
+    if (yCharts) yCharts.push([{ ...spec, sheetId: id }]);
+    else patchActiveTab({ charts: [...(activeTab?.charts ?? []), spec] });
     setCfOpen(false);
     setSelectedChart(spec.id);
     scheduleSave();
@@ -812,16 +1279,11 @@ export function SheetGrid({
         });
       }
     } else {
-      setSheet((s) =>
-        s
-          ? {
-              ...s,
-              charts: (s.charts ?? []).map((c) =>
-                c.id === id ? { ...c, ...patch } : c,
-              ),
-            }
-          : s,
-      );
+      patchActiveTab({
+        charts: (activeTab?.charts ?? []).map((c) =>
+          c.id === id ? { ...c, ...patch } : c,
+        ),
+      });
     }
     scheduleSave();
   };
@@ -832,16 +1294,15 @@ export function SheetGrid({
       const i = yCharts.toArray().findIndex((c) => c.id === id);
       if (i >= 0) yCharts.delete(i, 1);
     } else {
-      setSheet((s) =>
-        s ? { ...s, charts: (s.charts ?? []).filter((c) => c.id !== id) } : s,
-      );
+      patchActiveTab({ charts: (activeTab?.charts ?? []).filter((c) => c.id !== id) });
     }
     if (selectedChart === id) setSelectedChart(null);
     scheduleSave();
   };
 
   const duplicateChart = (id: string) => {
-    if (readOnly) return;
+    const tabId = activeTab?.id;
+    if (readOnly || !tabId) return;
     const src = rawCharts.find((c) => c.id === id);
     if (!src) return;
     const copy: ChartSpec = {
@@ -852,8 +1313,8 @@ export function SheetGrid({
       y: (src.y ?? 24) + 24,
       z: topChartZ() + 1,
     };
-    if (yCharts) yCharts.push([copy]);
-    else setSheet((s) => (s ? { ...s, charts: [...(s.charts ?? []), copy] } : s));
+    if (yCharts) yCharts.push([{ ...copy, sheetId: tabId }]);
+    else patchActiveTab({ charts: [...(activeTab?.charts ?? []), copy] });
     setSelectedChart(copy.id);
     scheduleSave();
   };
@@ -901,18 +1362,16 @@ export function SheetGrid({
   };
 
   const addRule = (kind: ConditionalKind) => {
-    if (readOnly) return;
+    const tabId = activeTab?.id;
+    if (readOnly || !tabId) return;
     const rule: ConditionalRule = {
       id: newId(`cf-${rawConds.length}`),
       range: selRect ? rangeLabel(selRect) : active,
       kind,
       ...ruleDefaults(kind),
     };
-    if (yConds) yConds.push([rule]);
-    else
-      setSheet((s) =>
-        s ? { ...s, conditionals: [...(s.conditionals ?? []), rule] } : s,
-      );
+    if (yConds) yConds.push([{ ...rule, sheetId: tabId }]);
+    else patchActiveTab({ conditionals: [...(activeTab?.conditionals ?? []), rule] });
     setSelectedRule(rule.id);
     scheduleSave();
   };
@@ -942,16 +1401,11 @@ export function SheetGrid({
         });
       }
     } else {
-      setSheet((s) =>
-        s
-          ? {
-              ...s,
-              conditionals: (s.conditionals ?? []).map((r) =>
-                r.id === id ? mergeRule(r, patch) : r,
-              ),
-            }
-          : s,
-      );
+      patchActiveTab({
+        conditionals: (activeTab?.conditionals ?? []).map((r) =>
+          r.id === id ? mergeRule(r, patch) : r,
+        ),
+      });
     }
     scheduleSave();
   };
@@ -962,46 +1416,49 @@ export function SheetGrid({
       const i = yConds.toArray().findIndex((r) => r.id === id);
       if (i >= 0) yConds.delete(i, 1);
     } else {
-      setSheet((s) =>
-        s
-          ? { ...s, conditionals: (s.conditionals ?? []).filter((r) => r.id !== id) }
-          : s,
-      );
+      patchActiveTab({
+        conditionals: (activeTab?.conditionals ?? []).filter((r) => r.id !== id),
+      });
     }
     if (selectedRule === id) setSelectedRule(null);
     scheduleSave();
   };
 
   const duplicateRule = (id: string) => {
-    if (readOnly) return;
+    const tabId = activeTab?.id;
+    if (readOnly || !tabId) return;
     const src = rawConds.find((r) => r.id === id);
     if (!src) return;
     const copy: ConditionalRule = { ...src, id: newId(`cf-${rawConds.length}`) };
-    if (yConds) yConds.push([copy]);
-    else
-      setSheet((s) =>
-        s ? { ...s, conditionals: [...(s.conditionals ?? []), copy] } : s,
-      );
+    if (yConds) yConds.push([{ ...copy, sheetId: tabId }]);
+    else patchActiveTab({ conditionals: [...(activeTab?.conditionals ?? []), copy] });
     setSelectedRule(copy.id);
     scheduleSave();
   };
 
   /* Reorder by rebuilding the array — rules apply top-to-bottom, so priority IS
-     array position. One transaction, so a reorder is a single merge. */
+     array position, but the array is shared across every tab, so only the
+     ACTIVE tab's rules are reordered; the others are left in place (in the
+     combined array, not necessarily interleaved as before — order across
+     different tabs' rules is meaningless, only within a tab). One transaction,
+     so a reorder is a single merge. */
   const moveRule = (id: string, toIndex: number) => {
-    if (readOnly) return;
+    const tabId = activeTab?.id;
+    if (readOnly || !tabId) return;
     const arr = [...rawConds];
     const from = arr.findIndex((r) => r.id === id);
     if (from < 0) return;
     const [rule] = arr.splice(from, 1);
     arr.splice(Math.max(0, Math.min(arr.length, toIndex)), 0, rule);
     if (yConds) {
+      const others = yConds.toArray().filter((r) => r.sheetId !== tabId);
+      const mine = arr.map((r) => ({ ...r, sheetId: tabId }));
       collab.session?.doc.transact(() => {
         yConds.delete(0, yConds.length);
-        yConds.insert(0, arr);
+        yConds.insert(0, [...others, ...mine]);
       });
     } else {
-      setSheet((s) => (s ? { ...s, conditionals: arr } : s));
+      patchActiveTab({ conditionals: arr });
     }
     scheduleSave();
   };
@@ -1011,6 +1468,122 @@ export function SheetGrid({
   const openConditionalPanel = () => {
     setSelectedChart(null);
     setCfOpen(true);
+  };
+
+  /* ── Sheet tabs ────────────────────────────────────────────────────────── */
+
+  /* Selection state is per-cell, not per-workbook, so switching tabs resets
+     it the way opening a different sheet in Excel does — the previous tab's
+     chart/rule selection would otherwise point at ids that don't exist here. */
+  const resetSelectionForTabSwitch = () => {
+    setActive("A1");
+    setAnchor(null);
+    setEditing(null);
+    setSelectedChart(null);
+    setSelectedRule(null);
+  };
+
+  const selectTab = (id: string) => {
+    if (!workbook || id === workbook.activeId) return;
+    setWorkbook((wb) => (wb ? { ...wb, activeId: id } : wb));
+    resetSelectionForTabSwitch();
+    scheduleSave();
+  };
+
+  const addSheet = () => {
+    if (readOnly || !workbook) return;
+    /* Said out loud rather than returned from silently. The import path already
+       explains this ceiling (see `MAX_SHEETS` above); the add button used to
+       just do nothing, which is indistinguishable from a broken button. */
+    if (workbook.sheets.length >= MAX_SHEETS) {
+      setError(`This document is at the ${MAX_SHEETS}-sheet limit — delete a sheet before adding another.`);
+      return;
+    }
+    const existing = new Set(workbook.sheets.map((s) => s.name));
+    let n = workbook.sheets.length + 1;
+    while (existing.has(`Sheet ${n}`)) n++;
+    const id = newId(`sheet-${workbook.sheets.length + 1}-${Date.now()}`);
+    const tab: SheetTab = {
+      id,
+      name: `Sheet ${n}`,
+      cells: {},
+      styles: {},
+      rows: DEFAULT_ROWS,
+      cols: DEFAULT_COLS,
+    };
+    setWorkbook((wb) => (wb ? { ...wb, sheets: [...wb.sheets, tab], activeId: id } : wb));
+    resetSelectionForTabSwitch();
+    scheduleSave();
+  };
+
+  /* Renaming to a name another tab already has is refused rather than
+     disambiguated for you — the same "the last one can't go" spirit as
+     `deleteSheet` below (`lib/rules/mindmap/tree.ts`'s `deleteNode` refuses to
+     delete the root the same way): a silent auto-rename would let two clicks
+     land you on a tab whose name isn't what you typed. HyperFormula also
+     needs names unique to resolve `Sheet2!A1`, so this isn't just cosmetic. */
+  const renameSheet = (id: string, name: string) => {
+    if (readOnly || !workbook) return;
+    const trimmed = name.trim().slice(0, 80);
+    if (!trimmed) return;
+    if (workbook.sheets.some((s) => s.id !== id && s.name === trimmed)) return;
+    setWorkbook((wb) =>
+      wb ? { ...wb, sheets: wb.sheets.map((s) => (s.id === id ? { ...s, name: trimmed } : s)) } : wb,
+    );
+    scheduleSave();
+  };
+
+  const colorSheet = (id: string, color: string) => {
+    if (readOnly || !workbook) return;
+    setWorkbook((wb) =>
+      wb ? { ...wb, sheets: wb.sheets.map((s) => (s.id === id ? { ...s, color } : s)) } : wb,
+    );
+    scheduleSave();
+  };
+
+  /** Refuses to delete the workbook's last sheet, same as `deleteNode` refusing the mindmap's root. */
+  const deleteSheet = (id: string) => {
+    if (readOnly || !workbook || workbook.sheets.length <= 1) return;
+    const idx = workbook.sheets.findIndex((s) => s.id === id);
+    if (idx < 0) return;
+    /* Same confirm-before-delete as `MessagesArea.tsx`'s own message delete —
+       this removes a tab's cells/styles/charts immediately, with no separate
+       trash to recover from, so one misclick should not be how a sheet goes
+       away. */
+    const tab = workbook.sheets[idx];
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`Delete "${tab.name}"? This can't be undone.`)
+    )
+      return;
+    const nextSheets = workbook.sheets.filter((s) => s.id !== id);
+    const nextActive =
+      workbook.activeId === id
+        ? (nextSheets[Math.max(0, idx - 1)]?.id ?? nextSheets[0].id)
+        : workbook.activeId;
+    setWorkbook({ sheets: nextSheets, activeId: nextActive });
+    if (yCells) {
+      const prefix = `${id}:`;
+      collab.session?.doc.transact(() => {
+        for (const key of Array.from(yCells.keys()))
+          if (key.startsWith(prefix)) yCells.delete(key);
+        if (yStyles)
+          for (const key of Array.from(yStyles.keys()))
+            if (key.startsWith(prefix)) yStyles.delete(key);
+        if (yCharts) {
+          const kept = yCharts.toArray().filter((c) => c.sheetId !== id);
+          yCharts.delete(0, yCharts.length);
+          yCharts.insert(0, kept);
+        }
+        if (yConds) {
+          const kept = yConds.toArray().filter((r) => r.sheetId !== id);
+          yConds.delete(0, yConds.length);
+          yConds.insert(0, kept);
+        }
+      });
+    }
+    resetSelectionForTabSwitch();
+    scheduleSave();
   };
 
   /* ── Command seam ──────────────────────────────────────────────────────── */
@@ -1091,7 +1664,7 @@ export function SheetGrid({
         break;
       case "setHiddenRows":
         if (!readOnly) {
-          setSheet((s) => (s ? { ...s, hidden: command.hidden } : s));
+          patchActiveTab({ hidden: command.hidden });
           scheduleSave();
         }
         break;
@@ -1099,13 +1672,16 @@ export function SheetGrid({
         insertChartAt(command.range, command.chartType, command.title);
         break;
       case "applyConditionalFormat": {
-        if (readOnly) break;
+        if (readOnly || !activeTab) break;
         const rule: ConditionalRule = { id: newId(`cf-${rawConds.length}`), ...command.rule };
-        if (yConds) yConds.push([rule]);
-        else setSheet((s) => (s ? { ...s, conditionals: [...(s.conditionals ?? []), rule] } : s));
+        if (yConds) yConds.push([{ ...rule, sheetId: activeTab.id }]);
+        else patchActiveTab({ conditionals: [...(activeTab.conditionals ?? []), rule] });
         scheduleSave();
         break;
       }
+      case "styleCells":
+        toggleStyle(command.patch, command.refs);
+        break;
     }
   };
 
@@ -1228,12 +1804,33 @@ export function SheetGrid({
     }
   };
 
-  if (doc.isLoading || body.isLoading || !sheet || !hf)
+  if (doc.isLoading || body.isLoading || !workbook || !activeTab || !sheet || !hf || activeHfId === undefined)
     return <StageSkeleton onClose={onClose} />;
   if (!doc.data)
     return <StageError message="This sheet is not available." onClose={onClose} />;
 
   const activeRaw = rawCells[active] ?? "";
+
+  /* Whether the active cell is showing an error, for the formula-bar "Fix
+     this formula" trigger below — same `getCellValue` + `displayValue` +
+     `explainError` path the grid's own per-cell tooltip already uses,
+     computed once here for just the one cell rather than read off whatever
+     the grid last rendered. */
+  const activeErrorHint = (() => {
+    if (!isFormula(activeRaw)) return null;
+    const pos = parseRef(active);
+    if (!pos) return null;
+    try {
+      const value = hf.engine.getCellValue({
+        sheet: activeHfId,
+        row: pos.row,
+        col: pos.col,
+      });
+      return explainError(displayValue(value));
+    } catch {
+      return explainError("#ERROR!");
+    }
+  })();
 
   /* The numeric value a cell shows — its formula RESULT or its typed number,
      nothing for a label or a blank. Feeds the selection summary. */
@@ -1241,7 +1838,7 @@ export function SheetGrid({
     const raw = rawCells[cellRef(r, c)] ?? "";
     if (isFormula(raw)) {
       try {
-        const v = hf.engine.getCellValue({ sheet: hf.sheetId, row: r, col: c });
+        const v = hf.engine.getCellValue({ sheet: activeHfId, row: r, col: c });
         return isNumericDisplay(v) ? (v as number) : null;
       } catch {
         return null;
@@ -1262,7 +1859,7 @@ export function SheetGrid({
     if (isFormula(raw)) {
       try {
         text = displayValue(
-          hf.engine.getCellValue({ sheet: hf.sheetId, row: r, col: c }),
+          hf.engine.getCellValue({ sheet: activeHfId, row: r, col: c }),
         );
       } catch {
         /* Matches the cell render's catch, so a rule's range stats key errors by
@@ -1409,6 +2006,76 @@ export function SheetGrid({
             <DocIcon.plus className="h-4 w-4" />
           </button>
         )}
+        <Popover
+          label="File actions for this sheet"
+          title="File"
+          width={200}
+          render={() => (
+            <>
+              <MenuItem
+                label="Save as a copy…"
+                icon={<Icon.attach className="h-3.5 w-3.5" />}
+                note="A new sheet, in the list."
+                onSelect={() => void duplicateSheet()}
+              />
+              <MenuItem
+                label="Print"
+                icon={<DocIcon.download className="h-3.5 w-3.5" />}
+                onSelect={printSheet}
+              />
+              <MenuSeparator />
+              <MenuItem
+                label="Import CSV…"
+                icon={<Icon.attach className="h-3.5 w-3.5" />}
+                disabled={readOnly}
+                note={readOnly ? "You can't edit this sheet." : "Writes into cells from A1."}
+                onSelect={() => csvInputRef.current?.click()}
+              />
+              <MenuItem
+                label="Export CSV"
+                icon={<DocIcon.download className="h-3.5 w-3.5" />}
+                onSelect={exportCsvFile}
+              />
+              <MenuSeparator />
+              <MenuItem
+                label="Import XLSX…"
+                icon={<Icon.attach className="h-3.5 w-3.5" />}
+                disabled={readOnly}
+                note={readOnly ? "You can't edit this sheet." : "Adds each sheet as a new tab."}
+                onSelect={() => xlsxInputRef.current?.click()}
+              />
+              <MenuItem
+                label="Export XLSX"
+                icon={<DocIcon.download className="h-3.5 w-3.5" />}
+                onSelect={() => void exportXlsxFile()}
+              />
+            </>
+          )}
+        >
+          <DocIcon.download className="h-4 w-4" />
+        </Popover>
+        <input
+          ref={csvInputRef}
+          type="file"
+          accept=".csv,text/csv"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void importCsvFile(file);
+          }}
+        />
+        <input
+          ref={xlsxInputRef}
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (file) void importXlsxFile(file);
+          }}
+        />
         {myRole && myRole !== "owner" && (
           <span className="rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted">
             {myRole === "viewer" ? "View only" : "Editor"}
@@ -1425,7 +2092,7 @@ export function SheetGrid({
           <button
             type="button"
             onClick={() => {
-              setSheet((s) => (s ? { ...s, hidden: [] } : s));
+              patchActiveTab({ hidden: [] });
               scheduleSave();
             }}
             className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
@@ -1511,6 +2178,42 @@ export function SheetGrid({
             className="left-24 top-full"
             onPick={applySuggestion}
           />
+        )}
+        {/* One click into the same `=ai …` bridge — "Explain this
+            formula"/"Fix this formula" already work end to end through the
+            assistant chat, they were just undiscoverable behind typing the
+            directive by hand. Shown only for a formula cell, and only the
+            "Fix" variant when it is actually erroring. */}
+        {!readOnly && isFormula(activeRaw) && (
+          <button
+            type="button"
+            title={
+              activeErrorHint
+                ? "Fix this formula with AI"
+                : "Explain this formula with AI"
+            }
+            aria-label={
+              activeErrorHint
+                ? "Fix this formula with AI"
+                : "Explain this formula with AI"
+            }
+            onClick={() => {
+              setCellPrompt({
+                ref: active,
+                text: activeErrorHint
+                  ? "This formula isn't working. Find and fix the problem."
+                  : "Explain what this formula does.",
+              });
+              setShowAssistant(true);
+            }}
+            className={`grid h-6 w-6 shrink-0 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] ${
+              activeErrorHint
+                ? "text-[var(--state-overdue-ink)]"
+                : "text-ink-faint hover:text-ink"
+            }`}
+          >
+            <Icon.sparkle className="h-3.5 w-3.5" />
+          </button>
         )}
       </div>
 
@@ -1684,6 +2387,13 @@ export function SheetGrid({
           <InlineError compact message={engineError ?? error ?? ""} />
         </div>
       )}
+      {duplicateNotice && !engineError && !error && (
+        <div className="px-4 pt-2">
+          <p className="rounded-inset bg-[var(--surface-sunken)] px-2.5 py-1.5 text-[11.5px] text-ink-faint">
+            {duplicateNotice}
+          </p>
+        </div>
+      )}
 
       {/* `relative`: the assistant panel below is an OVERLAY, `absolute`
           against this row specifically — so it floats over the grid instead
@@ -1692,6 +2402,7 @@ export function SheetGrid({
       <div className="relative flex min-h-0 flex-1">
       <div
         ref={gridRef}
+        data-sheet-print
         tabIndex={0}
         role="grid"
         aria-label="Spreadsheet"
@@ -1936,7 +2647,7 @@ export function SheetGrid({
                     if (isFormula(raw)) {
                       try {
                         const value = hf.engine.getCellValue({
-                          sheet: hf.sheetId,
+                          sheet: activeHfId,
                           row: r,
                           col: c,
                         });
@@ -2251,6 +2962,17 @@ export function SheetGrid({
           />
         )}
       </div>
+
+      <SheetTabBar
+        sheets={workbook.sheets}
+        activeId={activeTab.id}
+        readOnly={readOnly}
+        onSelect={selectTab}
+        onAdd={addSheet}
+        onRename={renameSheet}
+        onColor={colorSheet}
+        onDelete={deleteSheet}
+      />
 
       <footer className="flex shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-hairline px-4 py-2">
         <p className="text-[10px] text-ink-faint">

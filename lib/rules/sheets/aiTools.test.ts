@@ -160,3 +160,41 @@ test("set_cells overwriting existing data in bulk requires confirmation; a coupl
 test("an unknown tool is refused", () => {
   assert.equal(validateSheetsToolCall("drop_table", {}, sheet()).ok, false);
 });
+
+test("flag_outliers accepts a valid call and never requires confirmation", () => {
+  const r = validateSheetsToolCall(
+    "flag_outliers",
+    { range: "A1:A10", flags: [{ ref: "A3", reason: "3x the range average" }] },
+    sheet(),
+  );
+  assert.equal(r.ok, true);
+  if (r.ok) {
+    assert.deepEqual(r.action, {
+      tool: "flag_outliers",
+      rect: { top: 0, left: 0, bottom: 9, right: 0 },
+      flags: [{ ref: "A3", reason: "3x the range average" }],
+    });
+    assert.equal(sheetsActionRequiresConfirmation(r.action, sheet()), false);
+  }
+});
+
+test("flag_outliers rejects a flagged ref outside the analysed range", () => {
+  const r = validateSheetsToolCall(
+    "flag_outliers",
+    { range: "A1:A10", flags: [{ ref: "B3", reason: "out of range" }] },
+    sheet(),
+  );
+  assert.equal(r.ok, false);
+});
+
+test("flag_outliers rejects an over-the-cap flag list", () => {
+  const r = validateSheetsToolCall(
+    "flag_outliers",
+    {
+      range: "A1:A600",
+      flags: Array.from({ length: 501 }, (_, i) => ({ ref: `A${i + 1}`, reason: "outlier" })),
+    },
+    sheet({ rows: 1000 }),
+  );
+  assert.equal(r.ok, false);
+});

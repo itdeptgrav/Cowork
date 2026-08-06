@@ -20,10 +20,11 @@
  * envelope; it does not know what a valid `replace_selection` argument looks
  * like — that is `lib/rules/documents/aiTools.ts` and
  * `lib/rules/sheets/aiTools.ts`, one per surface, because the tool sets and
- * their safety rules genuinely differ.
+ * their safety rules genuinely differ. `lib/rules/mindmap/aiTools.ts` is the
+ * third — same split, same reasoning, one more surface.
  */
 
-export type AiSurface = "docs" | "sheets";
+export type AiSurface = "docs" | "sheets" | "mindmap";
 
 export const MAX_INSTRUCTION_LENGTH = 1500;
 export const MAX_CONTEXT_LENGTH = 12_000;

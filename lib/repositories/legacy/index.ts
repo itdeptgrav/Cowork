@@ -70,7 +70,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
@@ -181,11 +181,16 @@ import {
   DOCUMENT_COLLECTION,
   documentBody as documentRecordFields,
   readDocument,
+  readDocumentVersion,
 } from "./documents.ts";
 import {
   readMindMapRecord,
   readMindNodes,
 } from "../../legacy/mindmaps.ts";
+import {
+  readExternalShareInvite,
+  readExternalShareInvites,
+} from "../../legacy/shareInvites.ts";
 import { previewOfHtml } from "../../rules/documents/preview.ts";
 import { pageSetupRefusal, readPageSetup } from "../../rules/documents/pageSetup.ts";
 import {
@@ -6822,6 +6827,76 @@ export class LegacyRepository {
     };
   }
 
+  /**
+   * Version history.
+   *
+   * `/cowork/documents/:id/versions`, through the engine — unlike the rest of
+   * a document, which is written browser-direct to Firestore. The reason is
+   * the same one mindmaps already have, one section down: a checkpoint holds
+   * raw Yjs bytes copied server-side from whatever the live save already
+   * wrote, and a restore replaces `ydocState` outright. Neither is safe as a
+   * browser-direct write — a client has no business reading or overwriting
+   * another session's CRDT state without the server checking membership
+   * first.
+   */
+  async listDocumentVersions(id: string): Promise<DocumentVersionSummary[]> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ versions?: unknown[] }>({
+      path: `/cowork/documents/${encodeURIComponent(id)}/versions`,
+      token,
+    });
+    if (!r.ok) throw new Error(r.error.message);
+    return (r.data.versions ?? [])
+      .map(readDocumentVersion)
+      .filter((v): v is DocumentVersionSummary => v !== null);
+  }
+
+  async saveDocumentVersion(
+    id: string,
+    label?: string,
+  ): Promise<ActionResult<DocumentVersionSummary>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ version?: unknown }>({
+      path: `/cowork/documents/${encodeURIComponent(id)}/versions`,
+      method: "POST",
+      token,
+      body: label ? { label } : {},
+    });
+    if (!r.ok)
+      return {
+        ok: false,
+        code: r.error.status === 403 ? "permission_denied" : "validation_failed",
+        message: r.error.message,
+      };
+    const version = readDocumentVersion(r.data.version);
+    if (!version)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "The version was saved but could not be read back.",
+      };
+    return { ok: true, data: version };
+  }
+
+  async restoreDocumentVersion(
+    id: string,
+    versionId: string,
+  ): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ success?: boolean }>({
+      path: `/cowork/documents/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`,
+      method: "POST",
+      token,
+    });
+    if (!r.ok)
+      return {
+        ok: false,
+        code: r.error.status === 403 ? "permission_denied" : "not_found",
+        message: r.error.message,
+      };
+    return { ok: true, data: undefined };
+  }
+
   /* ── Mindmaps ────────────────────────────────────────────────────────────
    *
    * `/cowork/mindmaps`, through the engine.
@@ -7012,6 +7087,84 @@ export class LegacyRepository {
   }): ActionResult<never> {
     if (error.status === 404)
       return { ok: false, code: "not_found", message: "Mindmap not found." };
+    if (error.status === 403)
+      return { ok: false, code: "permission_denied", message: error.message };
+    if (error.status === 400)
+      return { ok: false, code: "validation_failed", message: error.message };
+    return { ok: false, code: "offline", message: error.message };
+  }
+
+  /* ── External sharing ────────────────────────────────────────────────────
+   *
+   * `grav-cms-backend`'s `/cowork/share/*` — a system parallel to, never an
+   * extension of, `setDocumentMember`/`setMindMapMember`. See
+   * `ExternalShareInvite`'s own doc comment in `../types.ts` for why: an
+   * external invite must never become a `DocumentMember`/`MindMapMember`,
+   * because those are tied to a real `cowork_employees` identity and this
+   * deliberately is not. */
+
+  /** Every invite for one target, newest first. An empty list on any failure
+      — including "not an owner" — rather than throwing: this backs a share
+      panel that already shows nothing extra when there is nothing to show. */
+  async listExternalShares(
+    kind: ExternalShareKind,
+    id: string,
+  ): Promise<ExternalShareInvite[]> {
+    const token = await this.#token();
+    const r = await legacyFetch<unknown[]>({
+      path: `/cowork/share/${kind}/${encodeURIComponent(id)}/invites`,
+      token,
+      envelopeKey: "invites",
+    });
+    if (!r.ok) return [];
+    return readExternalShareInvites(r.data);
+  }
+
+  async inviteExternal(
+    kind: ExternalShareKind,
+    id: string,
+    email: string,
+    role: ExternalShareRole,
+  ): Promise<ActionResult<ExternalShareInvite>> {
+    const token = await this.#token();
+    const r = await legacyFetch<unknown>({
+      path: `/cowork/share/${kind}/${encodeURIComponent(id)}/invite`,
+      method: "POST",
+      token,
+      body: { email, role },
+      envelopeKey: "invite",
+    });
+    if (!r.ok) return this.#externalShareRefusal(r.error);
+    const invite = readExternalShareInvite(r.data);
+    if (!invite)
+      return {
+        ok: false,
+        code: "offline",
+        message: "The invite was sent but not returned.",
+      };
+    return { ok: true, data: invite };
+  }
+
+  async revokeExternal(
+    kind: ExternalShareKind,
+    id: string,
+    inviteId: string,
+  ): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await legacyFetch<unknown>({
+      path: `/cowork/share/${kind}/${encodeURIComponent(id)}/invites/${encodeURIComponent(inviteId)}/revoke`,
+      method: "POST",
+      token,
+    });
+    if (!r.ok) return this.#externalShareRefusal(r.error);
+    return { ok: true, data: undefined };
+  }
+
+  /** Same shape as `#mindMapRefusal` — the status decides the code, the
+      engine's own sentence is shown as-is. */
+  #externalShareRefusal(error: { status: number; message: string }): ActionResult<never> {
+    if (error.status === 404)
+      return { ok: false, code: "not_found", message: error.message || "Not found." };
     if (error.status === 403)
       return { ok: false, code: "permission_denied", message: error.message };
     if (error.status === 400)

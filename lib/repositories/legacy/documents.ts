@@ -1,6 +1,7 @@
 import { LEGACY_ORGANISATION_ID } from "./map.ts";
 import { readMembers } from "../../rules/documents/access.ts";
 import type { CoworkDocument } from "../../domain/documents.ts";
+import type { DocumentVersionSummary } from "../types.ts";
 
 /**
  * `cowork_documents` — the record — and `cowork_document_bodies` — the text.
@@ -57,6 +58,28 @@ export function readDocument(
     deletedAt: typeof raw.deletedAt === "string" ? raw.deletedAt : null,
     driveFileId: typeof raw.driveFileId === "string" ? raw.driveFileId : null,
     driveSyncedAt: typeof raw.driveSyncedAt === "string" ? raw.driveSyncedAt : null,
+  };
+}
+
+/**
+ * Read one entry off `GET /cowork/documents/:id/versions`, or null.
+ *
+ * Defensive the same way every other reader in this file is: the route is a
+ * separate service answering over HTTP, and a shape it changes without this
+ * client changing in step must degrade to "skip this row" rather than throw
+ * and blank the whole list over one bad entry.
+ */
+export function readDocumentVersion(raw: unknown): DocumentVersionSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== "string" || !r.id) return null;
+  if (typeof r.createdAt !== "string" || !r.createdAt) return null;
+  return {
+    id: r.id,
+    createdAt: r.createdAt,
+    authorId: typeof r.authorId === "string" ? r.authorId : null,
+    authorName: typeof r.authorName === "string" ? r.authorName : "Someone",
+    label: typeof r.label === "string" ? r.label : null,
   };
 }
 

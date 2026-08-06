@@ -20,6 +20,8 @@ import {
   parseRef,
   rowsNotMatching,
   sortRange,
+  type CellStyle,
+  type Rect,
   type SheetData,
 } from "@/lib/rules/sheets/grid";
 import { getRepository } from "@/lib/repositories";
@@ -50,7 +52,11 @@ const SUGGESTED_ACTIONS = [
   { label: "Find trends or anomalies", instruction: "Look at the selected data and point out any trends or anomalies." },
   { label: "Add a chart", instruction: "Create a column chart from the selected range." },
   { label: "Highlight duplicates", instruction: "Add conditional formatting that highlights duplicate values in the selected range." },
+  { label: "Continue this pattern", instruction: "Continue the pattern in the selected cells into the rest of the selected range." },
 ];
+
+/** The style `flag_outliers` paints on a flagged cell — a warning amber, same family as the RED/YELLOW/GREEN conditional-format fills in `grid.ts`. */
+const OUTLIER_STYLE: CellStyle = { bg: "#ffeb9c", color: "#7a5b00" };
 
 export function SheetsAssistant({
   documentId,
@@ -181,6 +187,8 @@ export function SheetsAssistant({
             Rename “{documentTitle}” to “{action.title}”.
           </p>
         );
+      case "flag_outliers":
+        return <FlagOutliersPreview rect={action.rect} flags={action.flags} />;
     }
   }
 
@@ -257,6 +265,13 @@ export function SheetsAssistant({
           .then((r) => {
             if (r.ok) onRenamed();
           });
+        return;
+      case "flag_outliers":
+        /* One explicit ref list, one style — `styleCells`, not `selectRange`
+           followed by `style`: the flagged cells are rarely a single
+           rectangle, and that two-dispatch sequence only ever lands on
+           whatever was selected before this ran (see `sheetCommands.ts`). */
+        dispatch({ type: "styleCells", refs: action.flags.map((f) => f.ref), patch: OUTLIER_STYLE });
         return;
     }
   }
@@ -388,6 +403,36 @@ function CellChangesPreview({
       </ul>
       {cells.length > shown.length && (
         <p className="mt-1 text-[11px] text-ink-faint">+{cells.length - shown.length} more cell(s).</p>
+      )}
+    </div>
+  );
+}
+
+function FlagOutliersPreview({
+  rect,
+  flags,
+}: {
+  rect: Rect;
+  flags: { ref: string; reason: string }[];
+}) {
+  const shown = flags.slice(0, 20);
+  return (
+    <div>
+      <p className="mb-1 text-[11.5px] text-ink-muted">
+        In {describeRect(rect)}, <span data-figure>{flags.length}</span> cell(s) flagged:
+      </p>
+      <ul className="flex flex-col gap-0.5">
+        {shown.map((f) => (
+          <li key={f.ref} className="flex items-baseline gap-1.5 text-[11.5px]">
+            <span data-figure className="w-10 shrink-0 text-ink-faint">
+              {f.ref}
+            </span>
+            <span className="text-ink">{f.reason}</span>
+          </li>
+        ))}
+      </ul>
+      {flags.length > shown.length && (
+        <p className="mt-1 text-[11px] text-ink-faint">+{flags.length - shown.length} more cell(s).</p>
       )}
     </div>
   );

@@ -36,6 +36,10 @@ import type {
   CreateMeetingInput,
   CreateProjectInput,
   CreateTaskInput,
+  DocumentVersionSummary,
+  ExternalShareInvite,
+  ExternalShareKind,
+  ExternalShareRole,
   Page,
   ProjectQuery,
   ProjectView,
@@ -7004,6 +7008,88 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(doc));
   }
 
+  /**
+   * Version history — an in-memory stand-in for the real service's Firestore
+   * subcollection. See the `documentVersions` field on `Store` for what a
+   * "version" holds here and why it is narrower than the real `ydocState`
+   * checkpoint.
+   */
+  async listDocumentVersions(id: string): Promise<DocumentVersionSummary[]> {
+    const me = actingId();
+    const s = getStore();
+    const doc = s.documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc || !canViewDocument(doc, me)) return delay([]);
+    return delay(
+      s.documentVersions
+        .filter((v) => v.documentId === id)
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+        .map(({ documentId: _documentId, html: _html, cells: _cells, ...summary }) => summary),
+    );
+  }
+
+  async saveDocumentVersion(
+    id: string,
+    label?: string,
+  ): Promise<ActionResult<DocumentVersionSummary>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const s = getStore();
+    const doc = s.documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc) return fail("not_found", "Document not found.");
+    const refusal = editRefusal(doc, me);
+    if (refusal) return fail("permission_denied", refusal);
+    const body = s.documentBodies.find((b) => b.documentId === id);
+    tick();
+    const version = {
+      documentId: id,
+      id: nextId("docver"),
+      createdAt: nowIso(),
+      authorId: me,
+      authorName: s.employees.find((e) => e.id === me)?.displayName ?? "Someone",
+      label: label?.trim() || null,
+      html: body?.html ?? "",
+      cells: body?.cells ?? null,
+    };
+    s.documentVersions.push(version);
+    persistStore();
+    const { documentId: _documentId, html: _html, cells: _cells, ...summary } = version;
+    return delay(ok(summary));
+  }
+
+  async restoreDocumentVersion(
+    id: string,
+    versionId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const me = actingId();
+    const s = getStore();
+    const doc = s.documents.find((d) => d.id === id && !d.deletedAt);
+    if (!doc) return fail("not_found", "Document not found.");
+    const refusal = editRefusal(doc, me);
+    if (refusal) return fail("permission_denied", refusal);
+    const version = s.documentVersions.find(
+      (v) => v.documentId === id && v.id === versionId,
+    );
+    if (!version) return fail("not_found", "That version no longer exists.");
+    tick();
+    const now = nowIso();
+    let body = s.documentBodies.find((b) => b.documentId === id);
+    if (!body) {
+      body = { documentId: id, html: "", cells: null, ydocState: null, pageSetup: null, updatedAt: now };
+      s.documentBodies.push(body);
+    }
+    /* A replacement, matching the real route: whatever is current is
+       overwritten with the version's own text, not merged with it. */
+    body.html = version.html;
+    body.cells = version.cells;
+    body.updatedAt = now;
+    doc.updatedAt = now;
+    persistStore();
+    return delay(ok(undefined));
+  }
+
   /* ── Mindmaps ────────────────────────────────────────────────────────────
    *
    * The real implementation posts to `/cowork/mindmaps` and the ENGINE
@@ -7227,6 +7313,77 @@ export class MockRepository implements CoworkRepository {
     map.updatedAt = nowIso();
     persistStore();
     return delay(ok({ ...map }));
+  }
+
+  /**
+   * External sharing, in the demo tenant — an in-memory ledger, not routed
+   * through any engine. There is no real email to send in mock mode, so
+   * `inviteExternal` just files the invite as `"pending"`; nothing here can
+   * be accepted from outside because there is no accept endpoint in the
+   * mock (the guest flow only exists against the real engine). This exists
+   * so `ShareMenu` can be exercised in the demo tenant without throwing.
+   */
+  #externalShares = new Map<string, ExternalShareInvite[]>();
+
+  async listExternalShares(
+    kind: ExternalShareKind,
+    id: string,
+  ): Promise<ExternalShareInvite[]> {
+    const list = this.#externalShares.get(`${kind}:${id}`) ?? [];
+    return delay([...list].sort((a, b) => b.createdAt.localeCompare(a.createdAt)));
+  }
+
+  async inviteExternal(
+    kind: ExternalShareKind,
+    id: string,
+    email: string,
+    role: ExternalShareRole,
+  ): Promise<ActionResult<ExternalShareInvite>> {
+    const g = guard();
+    if (g) return g;
+    const normalized = email.trim().toLowerCase();
+    if (!normalized || !normalized.includes("@"))
+      return fail("validation_failed", "That doesn't look like an email address.");
+    const me = getStore().employees.find((e) => e.id === actingId());
+    const key = `${kind}:${id}`;
+    /* Re-inviting the same email supersedes its previous live invite rather
+       than piling up a second one — same rule the real engine enforces. */
+    const invite: ExternalShareInvite = {
+      id: nextId("share"),
+      targetKind: kind,
+      targetId: id,
+      email: normalized,
+      role,
+      status: "pending",
+      invitedByName: me?.displayName ?? "A teammate",
+      createdAt: nowIso(),
+      expiresAt: new Date(Date.now() + 7 * 86_400_000).toISOString(),
+      acceptedAt: null,
+    };
+    const next = (this.#externalShares.get(key) ?? [])
+      .filter((i) => i.email !== normalized)
+      .concat(invite);
+    this.#externalShares.set(key, next);
+    tick();
+    return delay(ok(invite));
+  }
+
+  async revokeExternal(
+    kind: ExternalShareKind,
+    id: string,
+    inviteId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const key = `${kind}:${id}`;
+    const list = this.#externalShares.get(key) ?? [];
+    const idx = list.findIndex((i) => i.id === inviteId);
+    if (idx === -1) return fail("not_found", "That invite could not be found.");
+    const next = [...list];
+    next[idx] = { ...next[idx], status: "revoked" };
+    this.#externalShares.set(key, next);
+    tick();
+    return delay(ok(undefined));
   }
 
   async listMeetings() {

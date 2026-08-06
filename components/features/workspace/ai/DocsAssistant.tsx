@@ -1,11 +1,15 @@
 "use client";
 
 import { useEditorState, type Editor } from "@tiptap/react";
+import type * as Y from "yjs";
 import { AssistantPanel } from "./AssistantPanel";
 import { DiffPreview } from "./DiffPreview";
 import { buildDocsContext, requestsWholeDocument } from "@/lib/rules/documents/aiContext";
 import { docsActionRequiresConfirmation, validateDocsToolCall, type DocsAiAction } from "@/lib/rules/documents/aiTools";
 import { parseInline } from "@/lib/rules/documents/richText";
+import { flattenDocument, positionOf } from "@/lib/documents/searchText";
+import { findMatches } from "@/lib/rules/documents/find";
+import { addCommentThread } from "@/lib/documents/commentsStore";
 
 /**
  * The Docs executor.
@@ -35,9 +39,15 @@ const SUGGESTED_ACTIONS = [
 
 export function DocsAssistant({
   editor,
+  doc,
+  me,
   onClose,
 }: {
   editor: Editor;
+  /** The document's live Yjs room, or null — `add_comment` needs it to have
+      somewhere to write the thread; every other tool works without it. */
+  doc: Y.Doc | null;
+  me: { id: string; displayName: string } | null;
   onClose: () => void;
 }) {
   /* Re-renders only when the selection actually changes — the same pattern
@@ -222,6 +232,15 @@ export function DocsAssistant({
       }
       case "insert_page_break":
         return <p className="text-ink-muted">A page break at the cursor.</p>;
+      case "add_comment":
+        return (
+          <div className="flex flex-col gap-1">
+            <p className="truncate rounded-inset bg-[var(--surface-sunken)] px-2 py-1 text-[11px] text-ink-faint">
+              &ldquo;{action.quote}&rdquo;
+            </p>
+            <p className="text-ink">{action.text}</p>
+          </div>
+        );
     }
   }
 
@@ -247,6 +266,18 @@ export function DocsAssistant({
       validate={(tool, args) => {
         const result = validateDocsToolCall(tool, args);
         if (!result.ok) return result;
+        if (result.action.tool === "add_comment") {
+          if (!doc || !me)
+            return {
+              ok: false,
+              message: "Comments need a live connection to this document, which isn't up right now.",
+            };
+          if (!findQuoteRange(editor, result.action.quote))
+            return {
+              ok: false,
+              message: "Couldn't find that exact text in the document to comment on.",
+            };
+        }
         const requiresConfirmation = docsActionRequiresConfirmation(result.action, selection.text.length);
         return {
           ok: true,
@@ -258,7 +289,7 @@ export function DocsAssistant({
             : undefined,
         };
       }}
-      apply={(action) => applyDocsAction(editor, action, selection)}
+      apply={(action) => applyDocsAction(editor, action, selection, doc, me)}
       undo={() => editor.chain().focus().undo().run()}
       onClose={onClose}
     />
@@ -316,11 +347,44 @@ function inlineNodes(
   });
 }
 
+/** The flattened-text range `quote` occupies in the live document, or null. */
+function findQuoteRange(
+  editor: Editor,
+  quote: string,
+): { from: number; to: number } | null {
+  const { text, runs } = flattenDocument(editor.state.doc);
+  const match = findMatches(text, quote)[0];
+  if (!match) return null;
+  const from = positionOf(runs, match.from);
+  const to = positionOf(runs, match.to);
+  return from !== null && to !== null && to > from ? { from, to } : null;
+}
+
 function applyDocsAction(
   editor: Editor,
   action: DocsAiAction,
   selection: { from: number; to: number },
+  doc: Y.Doc | null,
+  me: { id: string; displayName: string } | null,
 ) {
+  /* Validated already refused an `add_comment` with no live room or no
+     match for `quote` — by the time this runs both are known to hold, so
+     this is read once rather than threaded through every other branch. */
+  if (action.tool === "add_comment") {
+    if (!doc || !me) return;
+    const range = findQuoteRange(editor, action.quote);
+    if (!range) return;
+    addCommentThread({
+      editor,
+      doc,
+      me,
+      range,
+      anchorText: action.quote,
+      text: action.text,
+    });
+    return;
+  }
+
   const chain = editor.chain().focus();
 
   switch (action.tool) {

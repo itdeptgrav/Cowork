@@ -15,6 +15,7 @@ import {
   cellRef,
   columnIndex,
   columnLabel,
+  inRect,
   parseRef,
   rangeToRect,
   type CellStyle,
@@ -87,7 +88,8 @@ export type SheetsAiAction =
       color?: string;
     }
   | { tool: "create_chart"; rect: Rect; chartType: ChartType; title: string }
-  | { tool: "rename_sheet"; title: string };
+  | { tool: "rename_sheet"; title: string }
+  | { tool: "flag_outliers"; rect: Rect; flags: { ref: string; reason: string }[] };
 
 function str(args: Record<string, unknown>, key: string): string | null {
   const v = args[key];
@@ -305,6 +307,33 @@ export function validateSheetsToolCall(
       return { ok: true, action: { tool: "rename_sheet", title: title.trim() } };
     }
 
+    case "flag_outliers": {
+      const range = str(args, "range");
+      const rect = range ? rangeToRect(range) : null;
+      const raw = args["flags"];
+      if (!rect) return { ok: false, message: "The assistant returned an invalid range." };
+      if (!rectInBounds(rect, sheet)) return { ok: false, message: "That range is outside this sheet." };
+      if (!Array.isArray(raw) || raw.length === 0)
+        return { ok: false, message: "The assistant found nothing to flag." };
+      if (raw.length > MAX_STRUCTURAL_COUNT)
+        return { ok: false, message: `That would flag too many cells at once (over ${MAX_STRUCTURAL_COUNT}).` };
+      const flags: { ref: string; reason: string }[] = [];
+      for (const f of raw) {
+        if (!f || typeof f !== "object") return { ok: false, message: "The assistant returned a malformed flag." };
+        const ref = str(f as Record<string, unknown>, "ref");
+        const reason = str(f as Record<string, unknown>, "reason");
+        if (!ref || !reason) return { ok: false, message: "The assistant returned a malformed flag." };
+        const pos = parseRef(ref);
+        /* Every flagged ref has to fall INSIDE the range it was found in — a
+           ref elsewhere on the sheet is not something this range's analysis
+           actually supports, whatever the model claims about it. */
+        if (!pos || !inRect(pos.row, pos.col, rect))
+          return { ok: false, message: `"${ref}" is outside the range being analysed.` };
+        flags.push({ ref: ref.toUpperCase(), reason });
+      }
+      return { ok: true, action: { tool: "flag_outliers", rect, flags } };
+    }
+
     default:
       return { ok: false, message: `The assistant proposed an action this sheet doesn't support (${tool}).` };
   }
@@ -353,6 +382,12 @@ export function sheetsActionRequiresConfirmation(action: SheetsAiAction, sheet: 
       }
       return false;
     }
+    case "flag_outliers":
+      /* Additive and cosmetic — it paints a style onto existing cells,
+         touches no value, and is undone the same one-click way any other
+         style change is. Same reasoning as the other additive tools that
+         fall through to the default below. */
+      return false;
     default:
       return false;
   }

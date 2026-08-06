@@ -51,8 +51,17 @@ const AUTH_ROUTES = new Set([
  * Guest meeting links (`/meetings/guest/[token]`) are public: someone outside
  * the company follows a share link and should land directly in a lobby, not a
  * sign-in wall.
+ *
+ * `/share/invite/` and `/share/view/` are the same shape for external
+ * document/sheet/mindmap sharing: the person opening either may have no
+ * Cowork account at all, so `WorkspaceShell` below — which bounces anyone
+ * without a session to `/signin` — must never see these routes.
  */
-const PUBLIC_PREFIXES = ["/meetings/guest/"];
+const PUBLIC_PREFIXES = [
+  "/meetings/guest/",
+  "/share/invite/",
+  "/share/view/",
+];
 
 /**
  * The one route that must render without a session: the connection diagnostic.

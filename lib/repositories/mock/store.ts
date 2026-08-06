@@ -217,6 +217,23 @@ export interface Store {
   mailAttachments: MailAttachment[];
   documents: CoworkDocument[];
   documentBodies: CoworkDocumentBody[];
+  /**
+   * Version-history checkpoints, newest-last (the repository sorts on read).
+   * The mock has no Yjs room to snapshot, so a "version" here is simply the
+   * body's `html`/`cells` at the moment it was saved — enough for the panel
+   * and for a restore to visibly do something, without pretending to model
+   * CRDT state that does not exist in this store.
+   */
+  documentVersions: {
+    documentId: string;
+    id: string;
+    createdAt: string;
+    authorId: string | null;
+    authorName: string;
+    label: string | null;
+    html: string;
+    cells: string | null;
+  }[];
   mindmaps: MindMapRecord[];
   /** Cards, keyed by map id — the record/body split the real store uses. */
   mindmapNodes: { mindmapId: string; nodes: MindNode[]; updatedAt: string }[];
@@ -363,6 +380,7 @@ function build(): Store {
     mailAttachments: [],
     documents: [],
     documentBodies: [],
+    documentVersions: [],
     mindmaps: [],
     mindmapNodes: [],
     meetingParticipants: [],

@@ -2,9 +2,13 @@
 
 import { useState } from "react";
 import { Icon } from "@/components/ui/Icons";
-import { Button, InlineError, Panel } from "@/components/ui/Primitives";
+import { Button, InlineError, Input, Panel } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
-import type { ActionResult } from "@/lib/repositories";
+import type {
+  ActionResult,
+  ExternalShareInvite,
+  ExternalShareRole,
+} from "@/lib/repositories";
 import {
   SHARE_ROLES,
   SHARE_ROLE_LABEL,
@@ -12,6 +16,13 @@ import {
   sortByRole,
   type ShareRole,
 } from "@/lib/rules/workspace/sharing";
+
+/** The three roles minus `"owner"` — the only ones an external invite may
+    ever carry. Filtered from `SHARE_ROLES` rather than declared separately,
+    so a role added there is not silently missing here. */
+const EXTERNAL_SHARE_ROLES = SHARE_ROLES.filter(
+  (r): r is ExternalShareRole => r !== "owner",
+);
 
 /**
  * Who has access, and as what. Documents, sheets and mindmaps.
@@ -55,6 +66,44 @@ export function ShareMenu({
   const [error, setError] = useState<string | null>(null);
   const people = useQuery((r) => r.listEmployees(), []);
   const hints = shareRoleHints(target.noun);
+
+  /* External shares — invited by email, no Cowork account required. A
+     separate query and a separate action pair from the internal member list
+     above: they read/write `cowork_share_invites`, never `members`. Only
+     fetched while the menu is open — there is nothing for it to back while
+     closed. */
+  const externalShares = useQuery(
+    (r) => (open ? r.listExternalShares(target.kind, target.id) : Promise.resolve([])),
+    [open, target.kind, target.id],
+  );
+  const invites = externalShares.data ?? [];
+
+  const [inviteExternal, inviteState] = useAction(
+    (r, email: string, role: ExternalShareRole) =>
+      r.inviteExternal(target.kind, target.id, email, role),
+  );
+  const [revokeExternal, revokeState] = useAction((r, inviteId: string) =>
+    r.revokeExternal(target.kind, target.id, inviteId),
+  );
+
+  const [externalEmail, setExternalEmail] = useState("");
+  const [externalRole, setExternalRole] = useState<ExternalShareRole>("editor");
+  const [externalError, setExternalError] = useState<string | null>(null);
+
+  const sendExternalInvite = async () => {
+    const email = externalEmail.trim();
+    if (!email) return;
+    setExternalError(null);
+    const result = await inviteExternal(email, externalRole);
+    if (result.ok) setExternalEmail("");
+    else setExternalError(result.message);
+  };
+
+  const revoke = async (inviteId: string) => {
+    setExternalError(null);
+    const result = await revokeExternal(inviteId);
+    if (!result.ok) setExternalError(result.message);
+  };
 
   const [setMember, state] = useAction(
     /* `ActionResult<unknown>` because the two calls return different records —
@@ -187,6 +236,78 @@ export function ShareMenu({
                 </div>
               )}
 
+              {/* External invites — by email, no Cowork account required. A
+                  system parallel to the member list above, not an extension
+                  of it: these rows never appear in `members`. */}
+              <div className="mt-3 border-t border-hairline pt-3">
+                <p className="text-[11px] text-ink-faint">
+                  Share with somebody outside Cowork
+                </p>
+
+                {invites.filter((i) => i.status !== "revoked").length > 0 && (
+                  <ul className="mt-1.5 flex flex-col gap-1">
+                    {invites
+                      .filter((i) => i.status !== "revoked")
+                      .map((invite) => (
+                        <ExternalInviteRow
+                          key={invite.id}
+                          invite={invite}
+                          disabled={revokeState.isPending}
+                          onRevoke={() => void revoke(invite.id)}
+                        />
+                      ))}
+                  </ul>
+                )}
+
+                <div className="mt-1.5 flex items-center gap-1.5">
+                  <Input
+                    type="email"
+                    aria-label="Email address to invite"
+                    placeholder="name@company.com"
+                    value={externalEmail}
+                    disabled={inviteState.isPending}
+                    onChange={(e) => setExternalEmail(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void sendExternalInvite();
+                      }
+                    }}
+                    className="h-7 flex-1 !py-1 !text-[12px]"
+                  />
+                  <select
+                    aria-label="Role for the invited email"
+                    value={externalRole}
+                    disabled={inviteState.isPending}
+                    onChange={(e) =>
+                      setExternalRole(e.target.value as ExternalShareRole)
+                    }
+                    className="h-7 shrink-0 rounded-inset bg-[var(--control)] px-1 text-[11px] text-ink-muted"
+                  >
+                    {EXTERNAL_SHARE_ROLES.map((r) => (
+                      <option key={r} value={r}>
+                        {SHARE_ROLE_LABEL[r]}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <Button
+                  size="sm"
+                  tone="secondary"
+                  className="mt-1.5 w-full"
+                  disabled={inviteState.isPending || !externalEmail.trim()}
+                  onClick={() => void sendExternalInvite()}
+                >
+                  {inviteState.isPending ? "Sending…" : "Send invite"}
+                </Button>
+
+                {externalError && (
+                  <div className="mt-1.5">
+                    <InlineError compact message={externalError} />
+                  </div>
+                )}
+              </div>
+
               <dl className="mt-3 border-t border-hairline pt-2">
                 {SHARE_ROLES.map((r) => (
                   <div key={r} className="flex gap-2 py-0.5">
@@ -210,5 +331,50 @@ export function ShareMenu({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * One external invite, in the share panel's list.
+ *
+ * Visually distinguished from a colleague's row rather than folded into it:
+ * there is no `displayName` to look up for an email that never had a
+ * directory entry, and an "External" badge says plainly that this access
+ * did not come from `members`.
+ */
+function ExternalInviteRow({
+  invite,
+  disabled,
+  onRevoke,
+}: {
+  invite: ExternalShareInvite;
+  disabled: boolean;
+  onRevoke: () => void;
+}) {
+  return (
+    <li className="flex items-center gap-2">
+      <span
+        title="Invited by email, no Cowork account"
+        className="shrink-0 rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[9px] font-medium tracking-wide text-ink-faint uppercase"
+      >
+        External
+      </span>
+      <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
+        {invite.email}
+      </span>
+      <span className="shrink-0 text-[11px] text-ink-faint">
+        {SHARE_ROLE_LABEL[invite.role]}
+        {invite.status === "pending" ? " · pending" : ""}
+      </span>
+      <button
+        type="button"
+        aria-label={`Revoke access for ${invite.email}`}
+        disabled={disabled}
+        onClick={onRevoke}
+        className="text-ink-faint hover:text-ink"
+      >
+        <Icon.close className="h-3 w-3" />
+      </button>
+    </li>
   );
 }

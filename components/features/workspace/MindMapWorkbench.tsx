@@ -2,6 +2,8 @@
 
 import { useState } from "react";
 import { Button, Chip, EmptyState, InlineError, Panel } from "@/components/ui/Primitives";
+import { Popover } from "@/components/ui/Workspace";
+import { Icon } from "@/components/ui/Icons";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { canManage } from "@/lib/rules/mindmap/access";
 import {
@@ -13,7 +15,13 @@ import {
   type MindNode,
   type MindNodeId,
 } from "@/lib/rules/mindmap/tree";
+import {
+  downloadMindmapPdf,
+  downloadMindmapPng,
+  downloadMindmapSvg,
+} from "@/lib/rules/mindmap/exportImage";
 import { mindmapRoom } from "@/lib/rules/workspace/collabRoom";
+import { MindmapAssistant } from "./ai/MindmapAssistant";
 import { DocIcon } from "./docs/DocsIcons";
 import { MindMapCanvas } from "./MindMapCanvas";
 import { NodeInspector } from "./NodeInspector";
@@ -72,6 +80,7 @@ export function MindMapWorkbench({
     reload,
   } = useMindMap(mindmapId, collab.session);
   const [selectedId, setSelectedId] = useState<MindNodeId | null>(null);
+  const [showAssistant, setShowAssistant] = useState(false);
 
   if (loading && !map) return <StageSkeleton onClose={onClose} />;
   if (loadError) return <StageError message={loadError} onClose={onClose} />;
@@ -139,6 +148,73 @@ export function MindMapWorkbench({
 
           <span className="ml-auto flex shrink-0 items-center gap-1.5">
             {collab.connected && <Presence peers={collab.peers} />}
+            {!readOnly && (
+              <button
+                type="button"
+                aria-label={showAssistant ? "Close assistant" : "Open assistant"}
+                aria-pressed={showAssistant}
+                title="Assistant (Gemini Flash-Lite)"
+                onClick={() => setShowAssistant((v) => !v)}
+                className={`grid h-7 w-7 shrink-0 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] hover:text-ink ${
+                  showAssistant ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+                }`}
+              >
+                <Icon.chat className="h-4 w-4" />
+              </button>
+            )}
+            {/* SVG/PNG, both rebuilt from the same `layoutMap` the canvas
+                draws from — see exportImage.ts for why this isn't a
+                serialization of the canvas itself. */}
+            <Popover
+              label="Export"
+              align="right"
+              trigger={({ toggle }) => (
+                <button
+                  type="button"
+                  aria-label="Export"
+                  title="Export this map"
+                  onClick={toggle}
+                  className="grid h-7 w-7 shrink-0 place-items-center rounded-inset text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
+                >
+                  <Icon.download className="h-4 w-4" />
+                </button>
+              )}
+            >
+              {(close) => (
+                <div className="w-[180px] p-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadMindmapSvg(map);
+                      close();
+                    }}
+                    className="block w-full rounded-inset px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:bg-[var(--control)]"
+                  >
+                    Download as SVG
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void downloadMindmapPng(map);
+                      close();
+                    }}
+                    className="block w-full rounded-inset px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:bg-[var(--control)]"
+                  >
+                    Download as PNG
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void downloadMindmapPdf(map);
+                      close();
+                    }}
+                    className="block w-full rounded-inset px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:bg-[var(--control)]"
+                  >
+                    Download as PDF
+                  </button>
+                </div>
+              )}
+            </Popover>
             {/* Owners only. Everybody else is not offered a control the engine
                 would refuse — and it WOULD refuse it: `mayManage` runs again on
                 the route, because a hidden button is courtesy, not a
@@ -164,86 +240,101 @@ export function MindMapWorkbench({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto scroll-slim px-3 py-3">
-        {/* A refused edit or a failed save. Above the canvas rather than beside
-            the card, because the sentence names the card and the reader needs
-            it before they try the same thing again. */}
-        {saveError && (
-          <div className="mb-3">
-            <InlineError message={saveError} onRetry={reload} />
-          </div>
-        )}
+      {/* `relative`: the assistant panel below is an OVERLAY, `absolute`
+          against this row specifically — so it floats over the map without
+          reserving flex space and squeezing the canvas down to a sliver.
+          Same pattern `DocumentEditor.tsx` uses for `DocsAssistant`. */}
+      <div className="relative flex min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-y-auto scroll-slim px-3 py-3">
+          {/* A refused edit or a failed save. Above the canvas rather than beside
+              the card, because the sentence names the card and the reader needs
+              it before they try the same thing again. */}
+          {saveError && (
+            <div className="mb-3">
+              <InlineError message={saveError} onRetry={reload} />
+            </div>
+          )}
 
-        {/* Which mode is ACTUALLY in force, rather than a claim that the
-            feature exists. A live session that quietly fell back to
-            single-writer is the one failure people must not be left guessing
-            about — two of them would overwrite each other's branches believing
-            they were collaborating. Mirrors the same line in `DocumentEditor`,
-            deliberately in the same words. */}
-        <p className="mb-2 text-[10px] leading-snug text-ink-faint">
-          {readOnly
-            ? (readOnlyReason ?? "You have view access.")
-            : collab.connected
-              ? "Edits are shared live. Everyone on this mindmap sees them as you draw."
-              : (collab.reason ??
-                "Working offline — edits are saved to this mindmap, but nobody else sees them live.")}
-        </p>
+          {/* Which mode is ACTUALLY in force, rather than a claim that the
+              feature exists. A live session that quietly fell back to
+              single-writer is the one failure people must not be left guessing
+              about — two of them would overwrite each other's branches believing
+              they were collaborating. Mirrors the same line in `DocumentEditor`,
+              deliberately in the same words. */}
+          <p className="mb-2 text-[10px] leading-snug text-ink-faint">
+            {readOnly
+              ? (readOnlyReason ?? "You have view access.")
+              : collab.connected
+                ? "Edits are shared live. Everyone on this mindmap sees them as you draw."
+                : (collab.reason ??
+                  "Working offline — edits are saved to this mindmap, but nobody else sees them live.")}
+          </p>
 
-        {!root ? (
-          <Panel>
-            <EmptyState
-              title="This map has no root"
-              body="Every mindmap is drawn from a single root card, and this one has none. Reloading will fetch it again; if it is still empty, the map cannot be drawn."
-              action={
-                <Button size="sm" onClick={reload}>
-                  Reload
-                </Button>
-              }
-            />
-          </Panel>
-        ) : (
-          /* The inspector takes a column of its own from the deck breakpoint up
-             and stacks under the canvas below it. A canvas and a form side by
-             side on a phone would make both unusable. */
-          <div className="grid min-h-[clamp(420px,68vh,760px)] gap-3 deck:grid-cols-[minmax(0,1fr)_360px]">
-            <MindMapCanvas
-              map={map}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onAddChild={handleAddChild}
-              onToggleCollapsed={(id) => update((m) => toggleCollapsed(m, id))}
-            />
-
-            {selected ? (
-              <NodeInspector
-                /* Keyed on the card so switching resets the panel's own drafts —
-                   a half-typed link must not follow you to another card and
-                   look like it belongs there. */
-                key={selected.id}
-                map={map}
-                node={selected}
-                onChange={(next) => patch(selected.id, next)}
-                onAddChild={() => handleAddChild(selected.id)}
-                onDelete={() => {
-                  update((m) => deleteNode(m, selected.id));
-                  setSelectedId(null);
-                }}
-                onClose={() => setSelectedId(null)}
+          {!root ? (
+            <Panel>
+              <EmptyState
+                title="This map has no root"
+                body="Every mindmap is drawn from a single root card, and this one has none. Reloading will fetch it again; if it is still empty, the map cannot be drawn."
+                action={
+                  <Button size="sm" onClick={reload}>
+                    Reload
+                  </Button>
+                }
               />
-            ) : (
-              <Panel>
-                <EmptyState
-                  compact
-                  title="Nothing selected"
-                  body={
-                    readOnly
-                      ? "Choose a card to read its description, images and links."
-                      : "Choose a card to give it a description, images or links. The + on a card adds a child."
-                  }
+            </Panel>
+          ) : (
+            /* The inspector takes a column of its own from the deck breakpoint up
+               and stacks under the canvas below it. A canvas and a form side by
+               side on a phone would make both unusable. */
+            <div className="grid min-h-[clamp(420px,68vh,760px)] gap-3 deck:grid-cols-[minmax(0,1fr)_360px]">
+              <MindMapCanvas
+                map={map}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                onAddChild={handleAddChild}
+                onToggleCollapsed={(id) => update((m) => toggleCollapsed(m, id))}
+              />
+
+              {selected ? (
+                <NodeInspector
+                  /* Keyed on the card so switching resets the panel's own drafts —
+                     a half-typed link must not follow you to another card and
+                     look like it belongs there. */
+                  key={selected.id}
+                  map={map}
+                  node={selected}
+                  onChange={(next) => patch(selected.id, next)}
+                  onAddChild={() => handleAddChild(selected.id)}
+                  onDelete={() => {
+                    update((m) => deleteNode(m, selected.id));
+                    setSelectedId(null);
+                  }}
+                  onClose={() => setSelectedId(null)}
                 />
-              </Panel>
-            )}
-          </div>
+              ) : (
+                <Panel>
+                  <EmptyState
+                    compact
+                    title="Nothing selected"
+                    body={
+                      readOnly
+                        ? "Choose a card to read its description, images and links."
+                        : "Choose a card to give it a description, images or links. The + on a card adds a child."
+                    }
+                  />
+                </Panel>
+              )}
+            </div>
+          )}
+        </div>
+
+        {showAssistant && !readOnly && (
+          <MindmapAssistant
+            map={map}
+            selectedId={selectedId}
+            update={update}
+            onClose={() => setShowAssistant(false)}
+          />
         )}
       </div>
     </div>

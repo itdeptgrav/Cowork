@@ -36,8 +36,10 @@ export interface MenuBarActions {
   onRename: () => void;
   onDownloadHtml: () => void;
   onDownloadText: () => void;
+  onDownloadPdf: () => void;
   onPrint: () => void;
   onPageSetup: () => void;
+  onVersionHistory: () => void;
   onDelete: () => void;
   canManage: boolean;
 
@@ -53,6 +55,10 @@ export interface MenuBarActions {
   onShowRuler: (value: boolean) => void;
   showPageGuides: boolean;
   onShowPageGuides: (value: boolean) => void;
+  /** "Continue writing" — off by default; see `DocumentEditor.tsx`'s own
+      note on why this is opt-in rather than always on. */
+  suggestEnabled: boolean;
+  onSuggestEnabled: (value: boolean) => void;
   /** The browser's own chrome is hidden — not a size the document can be. */
   chromeless: boolean;
   onChromeless: () => void;
@@ -167,8 +173,10 @@ export function DocsMenuBar({
                   <SubMenu label="Download" icon={<DocIcon.download className="h-3.5 w-3.5" />}>
                     <MenuItem label="Web page (.html)" onSelect={actions.onDownloadHtml} />
                     <MenuItem label="Plain text (.txt)" onSelect={actions.onDownloadText} />
+                    <MenuItem label="PDF document (.pdf)" onSelect={actions.onDownloadPdf} />
                   </SubMenu>
                   <MenuItem label="Print" shortcut="Ctrl P" onSelect={actions.onPrint} />
+                  <MenuItem label="Version history" onSelect={actions.onVersionHistory} />
                   <MenuSeparator />
                   <MenuItem
                     label="Move to bin"
@@ -236,6 +244,12 @@ export function DocsMenuBar({
                     active={actions.showPageGuides}
                     note="Approximate. The printed break can differ."
                     onSelect={() => actions.onShowPageGuides(!actions.showPageGuides)}
+                  />
+                  <MenuItem
+                    label="Suggest as I write"
+                    active={actions.suggestEnabled}
+                    note="Offers to continue a paragraph after a pause. Off by default."
+                    onSelect={() => actions.onSuggestEnabled(!actions.suggestEnabled)}
                   />
                   <MenuSeparator />
                   {/* Not "Full screen": the document already is. What this

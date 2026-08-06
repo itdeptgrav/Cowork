@@ -67,10 +67,38 @@ test("insert_page_break needs no arguments", () => {
   assert.equal(validateDocsToolCall("insert_page_break", {}).ok, true);
 });
 
-test("add_comment is always refused, by name, not silently dropped", () => {
-  const r = validateDocsToolCall("add_comment", { note: "looks good" });
+test("add_comment validates with a quote and comment text", () => {
+  const r = validateDocsToolCall("add_comment", {
+    quote: "the deadline moves",
+    text: "Worth double-checking with Finance first.",
+  });
+  assert.equal(r.ok, true);
+  if (r.ok)
+    assert.deepEqual(r.action, {
+      tool: "add_comment",
+      quote: "the deadline moves",
+      text: "Worth double-checking with Finance first.",
+    });
+});
+
+test("add_comment with no quote is rejected — there is nothing to anchor it to", () => {
+  const r = validateDocsToolCall("add_comment", { text: "looks good" });
   assert.equal(r.ok, false);
-  if (!r.ok) assert.match(r.message, /comments/i);
+});
+
+test("add_comment with no comment text is rejected", () => {
+  const r = validateDocsToolCall("add_comment", { quote: "the deadline moves" });
+  assert.equal(r.ok, false);
+});
+
+test("add_comment is additive, so it never asks for confirmation", () => {
+  assert.equal(
+    docsActionRequiresConfirmation(
+      { tool: "add_comment", quote: "x", text: "y" },
+      99_999,
+    ),
+    false,
+  );
 });
 
 test("an unknown tool name is refused rather than guessed at", () => {

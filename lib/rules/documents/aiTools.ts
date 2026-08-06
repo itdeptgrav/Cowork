@@ -31,6 +31,8 @@ const MAX_BLOCKS = 200;
 const MAX_LIST_ITEMS = 200;
 const MAX_TABLE_ROWS = 200;
 const MAX_TABLE_COLS = 20;
+const MAX_COMMENT_QUOTE_LENGTH = 2_000;
+const MAX_COMMENT_TEXT_LENGTH = 2_000;
 
 /**
  * Styling any text block may carry.
@@ -68,21 +70,16 @@ export type DocsAiAction =
   | { tool: "create_numbered_list"; items: string[] }
   | { tool: "create_table"; headers: string[]; rows: string[][] }
   | { tool: "format_text"; bold?: boolean; italic?: boolean; underline?: boolean }
-  | { tool: "insert_page_break" };
-
-/**
- * `add_comment` is deliberately not in {@link DocsAiAction}.
- *
- * It is declared to Gemini — see the backend's tool list — so the model can
- * recognise "add a comment saying..." as a real request rather than
- * hallucinating a different tool for it. But there is no comment layer in
- * this editor (`DocumentEditor.tsx`'s own header comment: "There are no
- * comments... because there is no comment store"), so every `add_comment`
- * call is refused here, with the same honesty the rest of the product
- * applies to unimplemented features — a control that pretends to work is
- * worse than one that says plainly it does not exist yet.
- */
-const UNSUPPORTED_TOOLS = new Set(["add_comment"]);
+  | { tool: "insert_page_break" }
+  /**
+   * `quote` is the exact text the comment is about — the model's only way to
+   * point at a location, since it has no notion of a document position. The
+   * caller (`DocsAssistant.tsx`) searches the live document for `quote` and
+   * refuses the action if it isn't found verbatim, rather than guessing a
+   * nearby range — a comment anchored to the wrong sentence is worse than no
+   * comment at all.
+   */
+  | { tool: "add_comment"; quote: string; text: string };
 
 function str(args: Record<string, unknown>, key: string): string | null {
   const v = args[key];
@@ -107,13 +104,6 @@ export function validateDocsToolCall(
   tool: string,
   args: Record<string, unknown>,
 ): { ok: true; action: DocsAiAction } | { ok: false; message: string } {
-  if (UNSUPPORTED_TOOLS.has(tool)) {
-    return {
-      ok: false,
-      message: "Comments aren't available in Cowork's document editor yet.",
-    };
-  }
-
   switch (tool) {
     case "insert_blocks": {
       const raw = args["blocks"];
@@ -266,6 +256,18 @@ export function validateDocsToolCall(
 
     case "insert_page_break":
       return { ok: true, action: { tool: "insert_page_break" } };
+
+    case "add_comment": {
+      const quote = str(args, "quote");
+      const text = str(args, "text");
+      if (!quote || !quote.trim())
+        return { ok: false, message: "The assistant didn't say what text to comment on." };
+      if (!text || !text.trim())
+        return { ok: false, message: "The assistant returned an empty comment." };
+      if (quote.length > MAX_COMMENT_QUOTE_LENGTH || text.length > MAX_COMMENT_TEXT_LENGTH)
+        return { ok: false, message: "That comment is too long." };
+      return { ok: true, action: { tool: "add_comment", quote, text } };
+    }
 
     default:
       return { ok: false, message: `The assistant proposed an action this editor doesn't support (${tool}).` };

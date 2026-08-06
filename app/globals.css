@@ -1052,6 +1052,17 @@
   outline: 1px solid color-mix(in srgb, var(--doc-page-ink) 45%, transparent);
 }
 
+/* Comment anchors — a real mark (see lib/documents/extensions/comment.ts),
+   unlike the find highlights above: everyone in the room sees this, and it
+   is part of the saved document, not one reader's transient search. Not
+   varied for a resolved thread — the resolved state lives on the thread in
+   the comments panel, not duplicated onto the mark itself. */
+.doc-comment-mark {
+  background: color-mix(in srgb, var(--color-field-slate) 30%, transparent);
+  border-bottom: 2px solid color-mix(in srgb, var(--color-field-slate) 70%, transparent);
+  cursor: pointer;
+}
+
 /* ── Printing ────────────────────────────────────────────────────────────────
  *
  * Everything except the page is hidden, and the page is lifted out of the
@@ -1106,6 +1117,34 @@
   body.doc-printing .doc-find-match {
     background: transparent !important;
     outline: 0 !important;
+  }
+}
+
+/* A sheet's print — same "hide everything but the one marked node" shape as
+   `doc-printing` above, over the grid's scroll container instead of a page.
+   The caller (`SheetGrid.tsx`'s `printSheet`) forces every row into the
+   window before adding this class: the grid is normally virtualized to only
+   the rows on screen, and printing that verbatim would print whatever
+   happened to be scrolled into view rather than the sheet. */
+@media print {
+  body.sheet-printing * {
+    visibility: hidden !important;
+  }
+  body.sheet-printing [data-sheet-print],
+  body.sheet-printing [data-sheet-print] * {
+    visibility: visible !important;
+  }
+  body.sheet-printing [data-sheet-print] {
+    position: absolute !important;
+    inset-block-start: 0;
+    inset-inline-start: 0;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #ffffff !important;
+  }
+  body.sheet-printing [data-sheet-print] table {
+    color: #101014 !important;
   }
 }
 

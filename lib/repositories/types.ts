@@ -153,6 +153,45 @@ import type {
   WorkflowTrigger,
 } from "@/lib/domain";
 
+/**
+ * Sharing a document, sheet or mindmap with somebody who is NOT an
+ * organisation employee — by email, with a role, no Cowork account required.
+ *
+ * A **separate, parallel system** from `DocumentMember`/`MindMapMember`,
+ * deliberately: an `employeeId` in either of those is tied to a real
+ * `cowork_employees` record and a real Firebase Auth user, which is a much
+ * bigger grant than "can see this one document". External access is its own
+ * identity on the engine (`cowork_share_guests`), reached with its own
+ * bearer session token, never with a Firebase ID token and never folded into
+ * `members`.
+ *
+ * `kind` here spans both documents (a sheet is a `CoworkDocument` with
+ * `kind:"sheet"`, so it is `"document"` here too — there is no sheet-specific
+ * branch anywhere in this feature) and mindmaps, matching the `:kind` route
+ * segment `POST /cowork/share/:kind/:id/invite` expects.
+ */
+export type ExternalShareKind = "document" | "mindmap";
+
+/** Never `"owner"` — an external invite cannot grant ownership. Enforced
+    server-side, not only by this type. */
+export type ExternalShareRole = "editor" | "viewer";
+
+export type ExternalShareStatus = "pending" | "accepted" | "revoked";
+
+export interface ExternalShareInvite {
+  id: string;
+  targetKind: ExternalShareKind;
+  targetId: string;
+  /** Lower-cased, normalised. */
+  email: string;
+  role: ExternalShareRole;
+  status: ExternalShareStatus;
+  invitedByName: string;
+  createdAt: string;
+  expiresAt: string;
+  acceptedAt: string | null;
+}
+
 export interface CreateRoleInput {
   key: string;
   displayName: string;
@@ -406,6 +445,21 @@ export interface ParentContext {
     /** True when this subtask is the only thing standing between it and done. */
     isSoleClaimant: boolean;
   }[];
+}
+
+/**
+ * One saved checkpoint of a document's text — not the text itself, which is
+ * only fetched by `restoreDocumentVersion` applying it server-side. A list
+ * screen needs no more than this to render a row: who, when, and the label
+ * they gave it, if any.
+ */
+export interface DocumentVersionSummary {
+  id: string;
+  createdAt: string;
+  /** Null for an automatic checkpoint — nobody in particular asked for it. */
+  authorId: string | null;
+  authorName: string;
+  label: string | null;
 }
 
 export interface ProjectView {
@@ -1710,6 +1764,42 @@ export interface CoworkRepository {
     role: DocumentRole | null,
   ): Promise<ActionResult<CoworkDocument>>;
 
+  /**
+   * Saved checkpoints of a document's text, newest first.
+   *
+   * Each entry is a point the document can be put BACK to — see
+   * `restoreDocumentVersion` — not a diff against the current text; comparing
+   * two versions is explicitly out of scope for this pass. The document
+   * checkpoints itself automatically while it is actively edited, on top of
+   * whatever `saveDocumentVersion` adds by hand.
+   */
+  listDocumentVersions(id: string): Promise<DocumentVersionSummary[]>;
+  /**
+   * Check-point the document's CURRENT text by hand.
+   *
+   * `label` is a note to find it by later ("before the rewrite"), never
+   * required. This copies whatever is already stored server-side — the
+   * live autosave keeps that fresh — so it never needs the caller's own Yjs
+   * state.
+   */
+  saveDocumentVersion(
+    id: string,
+    label?: string,
+  ): Promise<ActionResult<DocumentVersionSummary>>;
+  /**
+   * Replace the document's current text with an earlier version's.
+   *
+   * **A replacement, not a merge.** Everything typed since the chosen version
+   * is discarded from the live document — the version itself is untouched and
+   * stays in the list, so this is not a way to lose it, only a way to stop
+   * seeing it as current. Every connected collaborator's editor reconciles to
+   * the restored text the normal way a document ever changes under them.
+   */
+  restoreDocumentVersion(
+    id: string,
+    versionId: string,
+  ): Promise<ActionResult<void>>;
+
   /* ── Mindmaps ───────────────────────────────────────────────────────────
    *
    * The same record/body shape as documents, for the same reason: a list of
@@ -1772,6 +1862,50 @@ export interface CoworkRepository {
     employeeId: EmployeeId,
     role: MindMapRole | null,
   ): Promise<ActionResult<MindMapRecord>>;
+
+  /* ── External sharing ───────────────────────────────────────────────────
+   *
+   * Sharing a document, sheet or mindmap with somebody outside the
+   * organisation — by email, with a role, no Cowork account required. See
+   * `ExternalShareInvite` for why this is a system parallel to (never an
+   * extension of) `setDocumentMember`/`setMindMapMember`.
+   *
+   * All three go over the engine — `routes/task_routes/coworkExternalShare.routes.js` —
+   * never browser-direct, for both kinds: the owner check has to be
+   * re-derived server-side, and the invite email has to be sent from
+   * somewhere that isn't the browser. */
+
+  /** Every invite for one target — pending, accepted and revoked — newest
+      first. Owner-only; the server answers "not found" identically for a
+      missing target and one this caller does not own. */
+  listExternalShares(
+    kind: ExternalShareKind,
+    id: string,
+  ): Promise<ExternalShareInvite[]>;
+
+  /**
+   * Invite one external address. Owner-only.
+   *
+   * `role` may not be `"owner"` — the type already excludes it, and the
+   * server refuses it again rather than trusting the type. Re-inviting the
+   * same email supersedes any previous live invite for this (target, email)
+   * pair rather than issuing a second live one.
+   */
+  inviteExternal(
+    kind: ExternalShareKind,
+    id: string,
+    email: string,
+    role: ExternalShareRole,
+  ): Promise<ActionResult<ExternalShareInvite>>;
+
+  /** Revoke one invite — pending or already accepted. Owner-only. If it was
+      accepted, the guest's matching grant is removed in the same operation;
+      an already-revoked or unknown invite id is a `not_found`. */
+  revokeExternal(
+    kind: ExternalShareKind,
+    id: string,
+    inviteId: string,
+  ): Promise<ActionResult<void>>;
 
   listMeetings(): Promise<Meeting[]>;
   /* Meeting lifecycle. The organiser drives all of it; `manageRefusal` gates. */

@@ -14,6 +14,7 @@ import {
   readingMinutes,
   wordCount,
 } from "@/lib/rules/documents/textStats";
+import { useRepo } from "@/lib/hooks/useRepository";
 import type { DocumentPageSetup, PaperSize } from "@/lib/domain";
 
 /**
@@ -335,15 +336,22 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** The same ceiling `NodeInspector.tsx` uses for a mindmap card's image — one
+    number for what "too large to attach" means across the workspace. */
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+
 /**
  * A link or an image address.
  *
  * One dialog for both because they ask the same question — an address — and
  * differ only in what is done with the answer.
  *
- * **Images are by address, not by upload.** There is no file store wired to
- * documents; offering a file picker that silently dropped the file would be
- * worse than saying so, which is what the note does.
+ * **Images may be typed as an address, or uploaded.** Upload reuses
+ * `repo.uploadDriveFile` — the same kind-agnostic resumable-upload pipeline
+ * mindmap card images already go through (`NodeInspector.tsx`) — rather than
+ * a document-specific route, since nothing about that pipeline is mindmap
+ * shaped. A successful upload submits immediately with the returned URL, the
+ * same as pressing Insert after typing one in by hand.
  */
 export function AddressDialog({
   kind,
@@ -360,7 +368,43 @@ export function AddressDialog({
   onClose: () => void;
 }) {
   const [value, setValue] = useState(initial ?? "");
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInput = useRef<HTMLInputElement | null>(null);
   const isLink = kind === "link";
+  const repo = useRepo();
+  /* Off entirely without a store behind it, rather than offering an upload
+     control that cannot work — the in-memory prototype has no
+     `uploadDriveFile`, exactly the guard `NodeInspector.tsx` uses for the
+     same method on a mindmap card. */
+  const canUpload = !isLink && typeof repo.uploadDriveFile === "function";
+
+  async function uploadFile(file: File | undefined) {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setUploadError("Choose an image file.");
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setUploadError(
+        `That image is ${Math.round(file.size / 1024 / 1024)} MB. The limit is ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
+      );
+      return;
+    }
+    if (!repo.uploadDriveFile) return;
+    setUploadError(null);
+    setUploading(true);
+    const r = await repo.uploadDriveFile(file);
+    setUploading(false);
+    if (!r.ok) {
+      setUploadError(r.message);
+      return;
+    }
+    /* Submits straight away — an uploaded file has nothing left to type, so
+       waiting for a second press of Insert would just be one more click
+       between choosing the file and seeing it land. */
+    onSubmit(r.data.url);
+  }
 
   return (
     <DocsDialog
@@ -387,7 +431,7 @@ export function AddressDialog({
           </button>
           <button
             type="button"
-            disabled={!value.trim()}
+            disabled={!value.trim() || uploading}
             onClick={() => onSubmit(value.trim())}
             className="h-8 rounded-inset bg-ink px-3 text-[12px] text-[var(--body-bg)] disabled:opacity-40"
           >
@@ -402,14 +446,49 @@ export function AddressDialog({
         onKeyDown={(e) => {
           if (e.key === "Enter" && value.trim()) onSubmit(value.trim());
         }}
+        disabled={uploading}
         placeholder={isLink ? "https://…" : "https://…/picture.png"}
         aria-label={isLink ? "Link address" : "Image address"}
-        className="h-9 w-full rounded-inset border border-hairline bg-transparent px-2.5 text-[12.5px] text-ink"
+        className="h-9 w-full rounded-inset border border-hairline bg-transparent px-2.5 text-[12.5px] text-ink disabled:opacity-50"
       />
+
+      {canUpload && (
+        <>
+          <div className="my-2.5 flex items-center gap-2 text-[10.5px] text-ink-faint">
+            <span className="h-px flex-1 bg-hairline" />
+            or
+            <span className="h-px flex-1 bg-hairline" />
+          </div>
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              void uploadFile(e.target.files?.[0]);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            disabled={uploading}
+            onClick={() => fileInput.current?.click()}
+            className="h-9 w-full rounded-inset border border-dashed border-hairline text-[12.5px] text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink disabled:opacity-50"
+          >
+            {uploading ? "Uploading…" : "Upload from your computer"}
+          </button>
+          {uploadError && (
+            <p className="mt-1.5 text-[11.5px] text-[var(--state-overdue-ink)]">{uploadError}</p>
+          )}
+        </>
+      )}
+
       <p className="mt-2 text-[11.5px] text-ink-faint">
         {isLink
           ? "An address without http:// is treated as https://."
-          : "Images are linked by address. There is no upload for documents yet, so a file from your machine cannot be added here."}
+          : canUpload
+            ? `Up to ${MAX_IMAGE_BYTES / 1024 / 1024} MB. Uploaded images are stored with the rest of your files, so anyone you share the document with sees them.`
+            : "Images are linked by address. Upload isn't configured on this deployment, so a file from your machine can't be added here."}
       </p>
     </DocsDialog>
   );

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EditorContent, useEditor, useEditorState } from "@tiptap/react";
+import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import Highlight from "@tiptap/extension-highlight";
 import Image from "@tiptap/extension-image";
@@ -24,6 +24,7 @@ import { InlineError } from "@/components/ui/Primitives";
 import { StageError, StageSkeleton } from "./WorkspaceStage";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { getRepository } from "@/lib/repositories";
+import { notifyRepositoryChanged } from "@/lib/repositories/events";
 import { formatStamp } from "@/lib/utils/format";
 import { canManage, editRefusal, roleOf } from "@/lib/rules/documents/access";
 import { outlineRows, type OutlineHeading } from "@/lib/rules/documents/outline";
@@ -40,6 +41,7 @@ import { readingMinutes, wordCount } from "@/lib/rules/documents/textStats";
 import { BlockStyle } from "@/lib/documents/extensions/blockStyle";
 import { PageBreak } from "@/lib/documents/extensions/pageBreak";
 import { SearchHighlight } from "@/lib/documents/extensions/searchHighlight";
+import { CommentMark } from "@/lib/documents/extensions/comment";
 import { ShareMenu } from "./ShareMenu";
 import { useCollabSession } from "./useCollabSession";
 import { Presence } from "./Presence";
@@ -52,6 +54,15 @@ import { DocsToolbar } from "./docs/DocsToolbar";
 import { DocsRuler } from "./docs/DocsRuler";
 import { DocsSidebar } from "./docs/DocsSidebar";
 import { DocsFindReplace } from "./docs/DocsFindReplace";
+import { DocsSelectionToolbar } from "./docs/DocsSelectionToolbar";
+import { DocsComments } from "./docs/DocsComments";
+import { DocsVersionHistory } from "./docs/DocsVersionHistory";
+import { exportDocumentPdf } from "@/lib/documents/pdfExport";
+import { ContinueSuggestion } from "./ai/ContinueSuggestion";
+import { requestAssist } from "@/lib/workspace/ai/client";
+import { buildDocsContext } from "@/lib/rules/documents/aiContext";
+import { validateDocsToolCall } from "@/lib/rules/documents/aiTools";
+import { shouldOfferContinuation, CONTINUATION_PAUSE_MS } from "@/lib/workspace/ai/continuationSuggest";
 import {
   AddressDialog,
   PageSetupDialog,
@@ -92,11 +103,13 @@ import type { DocumentPageSetup, DocumentSummary, TaskId } from "@/lib/domain";
  *
  * ## Nothing here is a control that does not work
  *
- * There is no comment button, no version history and no Extensions menu,
- * because there is no comment store, no revision store and no add-on system.
- * The repository's rule is that an unimplemented method throws rather than
- * resolving empty; the same principle applies to chrome — a button that opens
- * a panel saying "coming soon" was found by somebody who needed the feature.
+ * There is no version history and no Extensions menu, because there is no
+ * revision store and no add-on system. The repository's rule is that an
+ * unimplemented method throws rather than resolving empty; the same
+ * principle applies to chrome — a button that opens a panel saying "coming
+ * soon" was found by somebody who needed the feature. Comments (see
+ * `DocsComments.tsx`) are the one exception since this note was written —
+ * a real thread store, riding the same Yjs room the prose syncs through.
  */
 
 const SAVE_DEBOUNCE_MS = 1200;
@@ -151,9 +164,22 @@ export function DocumentEditor({
   const [zoom, setZoom] = useState(1);
   const [showOutline, setShowOutline] = useState(true);
   const [showAssistant, setShowAssistant] = useState(false);
+  const [showComments, setShowComments] = useState(false);
+  const [showVersionHistory, setShowVersionHistory] = useState(false);
+  /** The thread a click on a comment mark in the prose just asked to see. */
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [showRuler, setShowRuler] = useState(true);
   const [showPageGuides, setShowPageGuides] = useState(false);
   const [spellcheck, setSpellcheck] = useState(true);
+  /**
+   * "Continue writing" — off by default. Fires a real network request on a
+   * typing pause, so it is opt-in rather than something that starts
+   * happening to everyone the moment this shipped. Session-only, matching
+   * every other view toggle here (`spellcheck`, `showPageGuides`, …) — there
+   * is no settings-persistence layer for a per-user editor preference.
+   */
+  const [suggestEnabled, setSuggestEnabled] = useState(false);
+  const [suggestion, setSuggestion] = useState<{ text: string; pos: number } | null>(null);
   /**
    * Whether the BROWSER is showing its own chrome — not whether this document
    * is maximised, which it always is now. See {@link WorkspaceStage}.
@@ -236,6 +262,12 @@ export function DocumentEditor({
         BlockStyle,
         PageBreak,
         SearchHighlight,
+        CommentMark.configure({
+          onActivate: (id) => {
+            setActiveThreadId(id);
+            setShowComments(true);
+          },
+        }),
         Placeholder.configure({ placeholder: "Start writing…" }),
         ...(collab.session
           ? [
@@ -283,36 +315,157 @@ export function DocumentEditor({
   );
 
   /**
-   * The outline and the counts, recomputed only when the text changes.
+   * The outline and the word count — off the typing path.
    *
-   * One subscription rather than two: both walk the document, and doing it
-   * twice per keystroke to fill two strips of chrome is work for nothing.
+   * This used to be a `useEditorState` selector, re-run by Tiptap on every
+   * transaction: every local keystroke, and every incoming Yjs update from a
+   * collaborator. Its selector did TWO full-document walks —
+   * `descendants()` for the headings, `textBetween(0, doc.content.size)` for
+   * a word count — which is invisible on a short document and is the
+   * reported "hangs" on a long one: the whole document, twice, on every
+   * character typed by anyone in the room.
+   *
+   * Neither consumer needs per-keystroke freshness. The outline sidebar and
+   * the status-bar count are read continuously but a few hundred
+   * milliseconds behind typing is unnoticeable, and `WordCountDialog` is
+   * opened deliberately, never mid-type — so it reads the editor directly at
+   * the moment it opens (see `dialog === "word-count"` below) rather than
+   * needing a live subscription of its own.
+   *
+   * So this is now plain state, written by a debounced recompute off the
+   * editor's own `update` event (fires for local AND remote changes alike —
+   * correct, a collaborator's paragraph should still eventually appear in
+   * the outline, just not synchronously inside their keystroke) rather than
+   * inside a selector Tiptap re-runs unconditionally.
    */
-  const derived = useEditorState({
-    editor,
-    selector: ({ editor: e }) => {
-      if (!e) return { headings: [] as OutlineHeading[], text: "", selection: "" };
-      const headings: OutlineHeading[] = [];
-      e.state.doc.descendants((node, pos) => {
-        if (node.type.name === "heading")
-          headings.push({
-            pos,
-            level: Number(node.attrs.level) || 1,
-            text: node.textContent,
-          });
-        return true;
-      });
-      const { from, to } = e.state.selection;
-      return {
-        headings,
-        text: e.state.doc.textBetween(0, e.state.doc.content.size, "\n", " "),
-        selection: from === to ? "" : e.state.doc.textBetween(from, to, "\n", " "),
-      };
-    },
-  }) ?? { headings: [] as OutlineHeading[], text: "", selection: "" };
+  const [derived, setDerived] = useState<{
+    headings: OutlineHeading[];
+    text: string;
+  }>({ headings: [], text: "" });
+  const outlineTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const recomputeOutline = useCallback((e: typeof editor) => {
+    if (!e || e.isDestroyed) return;
+    const headings: OutlineHeading[] = [];
+    e.state.doc.descendants((node, pos) => {
+      if (node.type.name === "heading")
+        headings.push({
+          pos,
+          level: Number(node.attrs.level) || 1,
+          text: node.textContent,
+        });
+      return true;
+    });
+    setDerived({
+      headings,
+      text: e.state.doc.textBetween(0, e.state.doc.content.size, "\n", " "),
+    });
+  }, []);
+  useEffect(() => {
+    if (!editor) return;
+    const scheduleRecompute = () => {
+      if (outlineTimer.current) clearTimeout(outlineTimer.current);
+      outlineTimer.current = setTimeout(() => recomputeOutline(editor), 300);
+    };
+    /* Scheduled rather than called straight away: a direct `setDerived` here
+       would run synchronously inside the effect body on every mount, which
+       is exactly the cascading-render shape effects are supposed to avoid.
+       The one-time cost is the outline sitting empty for the same ~300ms
+       debounce everything else already accepts. */
+    scheduleRecompute();
+    editor.on("update", scheduleRecompute);
+    return () => {
+      editor.off("update", scheduleRecompute);
+      if (outlineTimer.current) clearTimeout(outlineTimer.current);
+    };
+  }, [editor, recomputeOutline]);
 
   const rows = useMemo(() => outlineRows(derived.headings), [derived.headings]);
   const words = wordCount(derived.text);
+
+  /**
+   * "Continue writing" — a debounced single-shot suggestion, not a stream.
+   *
+   * `requestAssist` is one request/response call (see `client.ts`'s header
+   * comment); real streamed ghost text is a later phase this build does not
+   * attempt. Approximated instead as: wait for a genuine pause in typing,
+   * ask once, and show the whole reply as a dismissible card — never
+   * inserted without the person choosing to accept it.
+   *
+   * A request id guards against a reply arriving after the person has since
+   * kept typing or moved the cursor — `schedule` (fired by every
+   * `update`/`selectionUpdate`) clears any shown suggestion immediately, and
+   * the stale reply is dropped by the id check rather than resurrecting a
+   * card for a moment that has passed.
+   */
+  const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const suggestRequestId = useRef(0);
+  useEffect(() => {
+    /* Nothing to clear when this turns off: no listener is attached below,
+       so no new suggestion can arrive, and the render below only shows one
+       while `suggestEnabled` is also true — a stale one left in state from
+       just before the toggle switched off simply stops being rendered. */
+    if (!editor || !suggestEnabled) return;
+
+    const tryOffer = async () => {
+      if (editor.isDestroyed) return;
+      const { $from, from, to } = editor.state.selection;
+      const hasSelection = from !== to;
+      const cursorAtParagraphEnd = $from.parentOffset === $from.parent.content.size;
+      const precedingFrom = Math.max(0, from - 400);
+      const precedingText = editor.state.doc.textBetween(precedingFrom, from, "\n", " ");
+      if (
+        !shouldOfferContinuation({
+          precedingText,
+          hasSelection,
+          cursorAtParagraphEnd,
+          enabled: suggestEnabled,
+        })
+      )
+        return;
+
+      const myRequestId = ++suggestRequestId.current;
+      const headings: string[] = [];
+      editor.state.doc.descendants((node) => {
+        if (node.type.name === "heading") headings.push(node.textContent);
+        return true;
+      });
+      const outcome = await requestAssist({
+        surface: "docs",
+        instruction:
+          "Continue writing from where the cursor is, in the same voice as the surrounding text.",
+        contextSummary: buildDocsContext({ selectionText: "", precedingText, headings }),
+        history: [],
+      });
+      /* Superseded by a later attempt, or the editor unmounted while this
+         was in flight — either way, nothing from this round should reach
+         the screen. */
+      if (myRequestId !== suggestRequestId.current || editor.isDestroyed) return;
+      if (!outcome.ok || outcome.kind !== "tool_call") return;
+      const validated = validateDocsToolCall(outcome.tool, outcome.args);
+      /* Only ever `insert_text` — a suggestion that proposed a table or a
+         heading would not read as "the next few words", so anything else
+         the model returned here is discarded silently rather than shown. */
+      if (!validated.ok || validated.action.tool !== "insert_text") return;
+      setSuggestion({ text: validated.action.text, pos: editor.state.selection.from });
+    };
+
+    const schedule = () => {
+      /* Typing or moving the cursor retracts whatever was being shown — a
+         suggestion computed for a position the person has since left is not
+         an answer to anything anymore. */
+      setSuggestion(null);
+      if (suggestTimer.current) clearTimeout(suggestTimer.current);
+      suggestTimer.current = setTimeout(() => void tryOffer(), CONTINUATION_PAUSE_MS);
+    };
+
+    editor.on("update", schedule);
+    editor.on("selectionUpdate", schedule);
+    return () => {
+      editor.off("update", schedule);
+      editor.off("selectionUpdate", schedule);
+      if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    };
+  }, [editor, suggestEnabled]);
 
   /* Which heading the reader is in. Read from the scroll container rather than
      from the caret, because the outline follows what is on SCREEN — somebody
@@ -512,6 +665,28 @@ export function DocumentEditor({
   };
 
   /**
+   * PDF export — captures the live page element, so the zoom transform it
+   * normally carries has to come off first (`exportDocumentPdf`'s own input
+   * says why: the PDF's page size already comes from the true inch measure,
+   * and a zoomed capture would double it). Restored in `finally` regardless
+   * of how the export finishes.
+   */
+  const downloadPdf = async () => {
+    const el = page.current;
+    if (!el || !doc.data) return;
+    const name = doc.data.title.replace(/[^\w\d -]+/g, "").trim() || "document";
+    const { widthIn, heightIn } = pageSizeIn(pageSetup);
+    const previousTransform = el.style.transform;
+    el.style.transform = "none";
+    try {
+      const result = await exportDocumentPdf({ page: el, widthIn, heightIn, fileName: name });
+      if (!result.ok) setError(result.message);
+    } finally {
+      el.style.transform = previousTransform;
+    }
+  };
+
+  /**
    * Print.
    *
    * The page size and margins are injected as an `@page` rule, because CSS
@@ -549,6 +724,16 @@ export function DocumentEditor({
       pageSetup,
     });
     if (!saved.ok) setError(saved.message);
+    /* Every mutation invalidates every query — see `useAction` in
+       `useRepository.ts`. These three calls go straight to the repository
+       rather than through `useAction` (each has its own error/refresh
+       handling `useAction`'s generic shape doesn't fit), so they have to
+       raise the same signal by hand — without it, a rename or delete here
+       updates this screen and nothing else: a command palette, a "recent
+       documents" list, or any other open tab's query keeps showing the old
+       title (or the deleted document) until something unrelated happens to
+       refetch it. */
+    notifyRepositoryChanged();
     onChanged?.();
     onOpen?.(created.data.id);
   };
@@ -560,6 +745,7 @@ export function DocumentEditor({
     const result = await getRepository().renameDocument(documentId, next);
     if (!result.ok) setError(result.message);
     else {
+      notifyRepositoryChanged();
       doc.refetch();
       onChanged?.();
     }
@@ -571,6 +757,7 @@ export function DocumentEditor({
       setError(result.message);
       return;
     }
+    notifyRepositoryChanged();
     onChanged?.();
     onClose?.();
   };
@@ -724,8 +911,10 @@ export function DocumentEditor({
               },
               onDownloadHtml: () => download("html"),
               onDownloadText: () => download("text"),
+              onDownloadPdf: () => void downloadPdf(),
               onPrint: print,
               onPageSetup: () => setDialog("page-setup"),
+              onVersionHistory: () => setShowVersionHistory(true),
               onDelete: () => void remove(),
               canManage: mayManage,
               onFind: () => setFinding(true),
@@ -739,6 +928,8 @@ export function DocumentEditor({
               onShowRuler: setShowRuler,
               showPageGuides,
               onShowPageGuides: setShowPageGuides,
+              suggestEnabled,
+              onSuggestEnabled: setSuggestEnabled,
               chromeless,
               onChromeless: () => void toggleChrome(),
               spellcheck,
@@ -771,6 +962,20 @@ export function DocumentEditor({
               }`}
             >
               <Icon.chat className="h-4 w-4" />
+            </button>
+          )}
+          {mayEdit && (
+            <button
+              type="button"
+              aria-label={showComments ? "Close comments" : "Open comments"}
+              aria-pressed={showComments}
+              title="Comments"
+              onClick={() => setShowComments((v) => !v)}
+              className={`grid h-7 w-7 place-items-center rounded-inset transition-colors hover:bg-[var(--control)] hover:text-ink ${
+                showComments ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+              }`}
+            >
+              <Icon.list className="h-4 w-4" />
             </button>
           )}
           <button
@@ -949,13 +1154,57 @@ export function DocumentEditor({
                   />
                 )}
                 <EditorContent editor={editor} />
+                {!readOnly && (
+                  <DocsSelectionToolbar
+                    editor={editor}
+                    onComment={
+                      mayEdit ? () => setShowComments(true) : undefined
+                    }
+                  />
+                )}
+                {editor && suggestion && suggestEnabled && !readOnly && (
+                  <ContinueSuggestion
+                    editor={editor}
+                    text={suggestion.text}
+                    pos={suggestion.pos}
+                    onAccept={() => {
+                      const insertPos = editor.state.selection.from;
+                      editor.chain().focus().insertContentAt(insertPos, suggestion.text).run();
+                      setSuggestion(null);
+                    }}
+                    onDismiss={() => setSuggestion(null)}
+                  />
+                )}
               </div>
             </div>
           </div>
         </div>
 
         {showAssistant && editor && (
-          <DocsAssistant editor={editor} onClose={() => setShowAssistant(false)} />
+          <DocsAssistant
+            editor={editor}
+            doc={collab.session?.doc ?? null}
+            me={me.data ? { id: me.data.id, displayName: me.data.displayName } : null}
+            onClose={() => setShowAssistant(false)}
+          />
+        )}
+        {showComments && editor && (
+          <DocsComments
+            editor={editor}
+            doc={collab.session?.doc ?? null}
+            me={me.data ? { id: me.data.id, displayName: me.data.displayName } : null}
+            activeThreadId={activeThreadId}
+            onActiveThreadChange={setActiveThreadId}
+            onClose={() => setShowComments(false)}
+          />
+        )}
+        {showVersionHistory && (
+          <DocsVersionHistory
+            documentId={documentId}
+            canEdit={mayEdit}
+            onClose={() => setShowVersionHistory(false)}
+            onRestored={() => body.refetch()}
+          />
         )}
       </div>
 
@@ -1032,7 +1281,17 @@ export function DocumentEditor({
       {dialog === "word-count" && (
         <WordCountDialog
           documentText={derived.text}
-          selectionText={derived.selection}
+          /* Read fresh here rather than kept live in state: nobody needs a
+             selection count updating while they are not looking at it, and
+             computing it only when this dialog is actually open is what lets
+             `derived` above skip tracking selection at all. */
+          selectionText={(() => {
+            if (!editor) return "";
+            const { from, to } = editor.state.selection;
+            return from === to
+              ? ""
+              : editor.state.doc.textBetween(from, to, "\n", " ");
+          })()}
           onClose={() => setDialog(null)}
         />
       )}

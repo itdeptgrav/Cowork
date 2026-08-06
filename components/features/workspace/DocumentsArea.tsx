@@ -331,6 +331,24 @@ export function DocumentsArea({
         </Button>
       </div>
 
+      {/* `createAndOpen` bails on `!r.ok`, and until this banner existed it did so
+          in complete silence: the button flickered, no document appeared, and the
+          reason the repository gave back — permission, validation, offline — was
+          held in `createState.error` and never shown. A create that fails has to
+          say so, or it reads as the button being broken. */}
+      {createState.error && (
+        <div
+          role="alert"
+          className="border-b border-hairline px-4 py-2 text-[13px]"
+          style={{
+            background: "color-mix(in srgb, var(--state-overdue) 16%, transparent)",
+            color: "var(--state-overdue-ink)",
+          }}
+        >
+          {`That ${noun} could not be created — ${createState.error}`}
+        </div>
+      )}
+
       <div className="min-h-0 flex-1 overflow-y-auto scroll-slim">{body()}</div>
     </Panel>
   );
