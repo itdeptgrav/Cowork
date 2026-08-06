@@ -269,7 +269,13 @@ test("the office document's overrides survive a reload", () => {
     "components/features/auth/SessionProvider.tsx",
     "utf8",
   );
-  assert.match(provider, /applyRuleOverrides\(await repo\.getRuleOverrides\(\)\)/);
+  /* Both halves, asserted separately so the call may be wrapped. It is: the
+     read goes through `settledWithin`, because a Firestore read does not reject
+     when it cannot reach the server and an unbounded one left the whole sign-in
+     hanging on "Signing you in…". What matters here is that the overrides are
+     still READ at session start and APPLIED — not that the two fit on one line. */
+  assert.match(provider, /repo\.getRuleOverrides\(\)/);
+  assert.match(provider, /applyRuleOverrides\(overrides\)/);
   /* Replaces rather than merges — a cleared override must not survive the load. */
   const settings = readFileSync("lib/config/settings.ts", "utf8");
   const at = settings.indexOf("export function applyRuleOverrides");

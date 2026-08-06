@@ -10,6 +10,7 @@
  */
 
 import type {
+  TaskMeetingSession,
   CoworkDocument,
   CoworkDocumentBody,
   MindMapRecord,
@@ -153,6 +154,8 @@ export interface Store {
   mrfCatalogue: RawItemHit[];
 
   tasks: Task[];
+  /** One row per sitting in a task's room — see `TaskMeetingSession`. */
+  taskMeetingSessions: TaskMeetingSession[];
   assignments: TaskAssignment[];
   approvals: Approval[];
   taskEvents: TaskEvent[];
@@ -322,6 +325,7 @@ function build(): Store {
     mrfCatalogue: clone(seed.mrfCatalogue),
 
     tasks: clone(seed.tasks),
+    taskMeetingSessions: [],
     assignments: clone(seed.assignments),
     approvals: clone(seed.approvals),
     taskEvents: clone(seed.taskEvents),

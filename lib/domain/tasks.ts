@@ -127,6 +127,65 @@ export interface CompletionRequirement {
   satisfiedById: EmployeeId | null;
 }
 
+/**
+ * A task's meeting history, in three numbers.
+ *
+ * `firstStartedAt` is never overwritten and `lastEndedAt` always is, so the two
+ * bracket the whole history while `totalSecs` counts only the meetings
+ * themselves. They are deliberately not derivable from one another: sessions at
+ * 10:00–10:30 and 14:00–14:20 give a four-hour bracket and fifty minutes of
+ * meeting, and reporting the bracket as the duration would credit four hours of
+ * deadline for fifty minutes of talking.
+ */
+export interface TaskMeetingSummary {
+  /** ISO. The first meeting this task ever had. Never rewritten. */
+  firstStartedAt: string | null;
+  /** ISO. The most recent meeting to end. */
+  lastEndedAt: string | null;
+  /**
+   * Seconds of meeting credited to THIS task.
+   *
+   * Not only meetings opened from it: a session on any of the assignee's live
+   * tasks credits every one of them, because the conversation informs the whole
+   * of the work in front of them. See `creditTargets`.
+   */
+  totalSecs: number;
+}
+
+/**
+ * One sitting in a task's room.
+ *
+ * The audit trail behind `TaskMeetingSummary`. Kept per session rather than
+ * only as a total because the total alone cannot answer the question people
+ * actually ask when a deadline moves — *which meeting was that, and who was
+ * there?*
+ */
+export interface TaskMeetingSession {
+  id: string;
+  taskId: TaskId;
+  /** ISO. When the room opened. */
+  startedAt: string;
+  /** ISO. Null while the session is still running. */
+  endedAt: string | null;
+  /**
+   * Seconds credited — the span the task's CREATOR was present, not the length
+   * of the call. A room the assignee sat in alone is worth zero, and that zero
+   * is recorded rather than the session being discarded.
+   */
+  creditedSecs: number;
+  /** Who was in the room, and when. Drives `creditedSecs`. */
+  attendance: TaskMeetingAttendance[];
+  /** Tasks this session has already credited — the idempotency key. */
+  creditedTaskIds: TaskId[];
+}
+
+export interface TaskMeetingAttendance {
+  employeeId: EmployeeId;
+  joinedAt: string;
+  /** ISO, or null for somebody still in the room. */
+  leftAt: string | null;
+}
+
 export interface Task {
   /**
    * Owning tenant. Every read is scoped to it; every write stamps it.
@@ -184,6 +243,22 @@ export interface Task {
 
   estimatedEffortSecs: number | null;
   deadline: TaskDeadline;
+  /**
+   * What the task's meetings add up to.
+   *
+   * A task's meeting exists so the people doing the work understand it before
+   * they start, and that conversation is working time nobody spent on the task
+   * — so it is credited back to the deadline, the fifth reason a due date may
+   * move alongside a break, an offline span, an approved emergency and an
+   * approved extension.
+   *
+   * A SUMMARY, denormalised onto the task for the same reason `nodeCount` sits
+   * on a mindmap record: the panel that shows "45m of meetings" must not read a
+   * session log to draw one line. The sessions themselves live in
+   * `cowork_task_meetings/{taskId}/sessions`, and the rules that compute this
+   * are in `lib/rules/meetings/meetingCredit.ts`.
+   */
+  meetings: TaskMeetingSummary;
 
   approvalReason: ApprovalReason | null;
   approverIds: EmployeeId[];

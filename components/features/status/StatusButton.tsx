@@ -97,6 +97,8 @@ export function StatusButton() {
     emergencyStartedAt,
     notice,
     reconnecting,
+    hydrated,
+    remoteOnline,
   } = useEmployeeStatus();
   /* WHO is publishing. The room identity is derived from this, so a manager
      watching this person's profile matches this person's track and nobody
@@ -215,8 +217,27 @@ export function StatusButton() {
      Gated upstream (DutySync's claimedOnlineHere check) so only the device that
      was actually sharing ever reaches this state. */
   const reconnectingShare = reconnecting && status === "offline";
-  const pillLabel = reconnectingShare ? "Reconnecting" : meta.label;
-  const pillDot = reconnectingShare ? "var(--state-risk)" : meta.dot;
+  /**
+   * Before the account's own presence has been heard from, this device knows
+   * nothing — and "Offline" is a claim, not a blank.
+   *
+   * That is the reported flash: open Cowork on a second device while on a
+   * break and it announced Offline, then corrected itself to Break a moment
+   * later. Both the store and `legacyMode` arrive asynchronously, so the pill
+   * was reading its own initial value out loud. It now says nothing until it
+   * has been told something.
+   */
+  const settling = !hydrated && status === "offline" && !legacyMode;
+  const pillLabel = settling
+    ? "…"
+    : reconnectingShare
+      ? "Reconnecting"
+      : meta.label;
+  const pillDot = settling
+    ? "var(--ink-faint)"
+    : reconnectingShare
+      ? "var(--state-risk)"
+      : meta.dot;
   const pillGlow = reconnectingShare
     ? "color-mix(in srgb, var(--state-risk) 55%, transparent)"
     : meta.glow;

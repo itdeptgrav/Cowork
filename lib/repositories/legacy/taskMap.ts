@@ -38,6 +38,13 @@ import { LEGACY_ORGANISATION_ID } from "./map.ts";
  * specific of the two: legacy leaves `status` at `open` through an entire review
  * cycle while `completionStatus` moves through the stages.
  */
+/** An instant as ISO, or null for anything that is not a usable number. */
+function isoOrNull(ms: number | null | undefined): string | null {
+  return typeof ms === "number" && Number.isFinite(ms)
+    ? new Date(ms).toISOString()
+    : null;
+}
+
 export function toTaskStatus(task: LegacyTask): TaskStatus {
   switch (task.reviewState) {
     case "awaiting_tl":
@@ -216,6 +223,23 @@ export function toTask(legacy: LegacyTask): Task {
      * surfaces rendering one zero the mapper had written.
      */
     estimatedEffortSecs: resolveTimeBudget(legacy),
+    /* The stored summary. Absent on every task written before meetings existed,
+       and "none" is two nulls and a zero rather than a flag — a task that has
+       never met and a task whose meetings were all worth nothing are different
+       facts, and only the first has no bracket. */
+    meetings: {
+      /* Tested for a USABLE NUMBER, not for `=== null`. The field is absent —
+         `undefined`, not null — on every task written before meetings existed
+         and in every fixture that predates them, and `new Date(undefined)`
+         throws `Invalid time value` rather than returning something falsy. */
+      firstStartedAt: isoOrNull(legacy.meetingFirstStartedAtMs),
+      lastEndedAt: isoOrNull(legacy.meetingLastEndedAtMs),
+      totalSecs:
+        typeof legacy.meetingTotalSecs === "number" &&
+        Number.isFinite(legacy.meetingTotalSecs)
+          ? legacy.meetingTotalSecs
+          : 0,
+    },
     deadline: {
       /**
        * **Read from the document, not hardcoded.**

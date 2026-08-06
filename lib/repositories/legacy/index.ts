@@ -13,10 +13,12 @@ import {
   ownsClaim,
   queueAnchorMs,
   readDutyMode,
+  readDutySnapshot,
   storedMode,
   type DutyDocument,
   type DutyHistoryEntry,
   type DutyMode,
+  type DutySnapshot,
 } from "../../rules/presence/duty.ts";
 import { bankableRunSecs } from "../../rules/tasks/timer.ts";
 import { presenceWriteRefusal } from "../../rules/presence/taskGate.ts";
@@ -297,6 +299,13 @@ import {
   type LegacyC1Response,
   type LegacyC2Response,
 } from "./scoreMap.ts";
+import { readTimerFigures } from "../../rules/tasks/timerSession.ts";
+import { settleSession } from "../../rules/meetings/meetingCredit.ts";
+import {
+  taskJoinRefusal,
+  taskMeetingRoomName,
+} from "../../rules/meetings/taskRoom.ts";
+import type { TaskMeetingSession } from "../../domain/tasks.ts";
 import {
   readDueAtMs,
   readInstant,
@@ -515,14 +524,18 @@ function toTimerSession(
   taskId: string,
   employeeId: string,
 ): TimerSession {
-  const startedAtRealMs =
-    typeof data.lastStartTime === "number" ? data.lastStartTime : null;
+  /* ONE reading, shared with `getActiveTimer` — see `readTimerFigures`. The two
+     used to read this document independently and disagreed about which field
+     held the total and which shapes of start instant were acceptable, which is
+     the reported "different time after a reload". */
+  const figures = readTimerFigures(data);
+  const startedAtRealMs = figures.startedAtRealMs;
   return {
     organisationId: LEGACY_ORGANISATION_ID,
     taskId: taskId as TaskId,
     employeeId,
     isActive: data.isActive === true,
-    accumulatedSecs: firstNumber(data, "totalSeconds", "totalSecs") ?? 0,
+    accumulatedSecs: figures.accumulatedSecs,
     /* Legacy stores one real timestamp and no prototype clock. Presenting the
        real one as both keeps a session readable without inventing a second
        reading of when it began. */
@@ -3698,7 +3711,10 @@ export class LegacyRepository {
       },
       { merge: true },
     );
-    await this.#logTimerEvent(employeeId, "start", id, taskTitle);
+    /* Not awaited, for the reason spelled out in `pauseTimer`: the session
+       write is the record and this is the audit trail beside it. Awaiting it
+       let a slow log line decide whether a start could be confirmed. */
+    void this.#logTimerEvent(employeeId, "start", id, taskTitle);
 
     /* **Starting the clock must NOT move this task's deadline.**
      *
@@ -3786,13 +3802,38 @@ export class LegacyRepository {
       },
       { merge: true },
     );
-    /* Record the committed segment so listDayCommits can surface it in the
-       daily report modal. Each pause produces one document; the modal sums
-       all documents for the same taskId to get total time today. */
+    /**
+     * **The session write above IS the pause. Everything below is an audit
+     * trail, and it must not be awaited.**
+     *
+     * This used to `await` a work-commit `addDoc` and then a timer-event
+     * `addDoc`, and only then call `notifyRepositoryChanged()` and return. Both
+     * are `try`/`catch`ed, which handles a REJECTION and does nothing at all for
+     * a write that simply does not come back — and a Firestore write does not
+     * come back while the client is offline, it queues.
+     *
+     * The result was a pause that had visibly happened and could not be
+     * confirmed. Firestore applies a write locally before the server
+     * acknowledges it, so the task page's live listener showed "Paused"
+     * immediately — while this promise sat behind two audit writes, the caller
+     * timed out, and `notifyRepositoryChanged()` never ran, so the top-bar pill
+     * never re-read and went on counting a session that had already stopped.
+     * That is the reported "paused here, still running up there", and the red
+     * "did not reach the server in time" beneath a clock that had plainly
+     * stopped.
+     *
+     * So the notify and the return happen the moment the record is safe. The two
+     * writes still go out and still land; they simply no longer decide whether
+     * the person is told their pause worked. `#logTimerEvent`'s own note already
+     * draws this line — "losing a log line must not leave a timer half-started"
+     * — and a log line that is merely SLOW must not either.
+     */
+    notifyRepositoryChanged();
+
     if (elapsed > 0) {
-      const { legacyDb } = await import("../../legacy/firebase.ts");
       const nowMs = Date.now();
-      try {
+      void (async () => {
+        const { legacyDb } = await import("../../legacy/firebase.ts");
         await addDoc(collection(legacyDb(), "cowork_work_commits"), {
           organisationId: LEGACY_ORGANISATION_ID,
           employeeId,
@@ -3803,18 +3844,19 @@ export class LegacyRepository {
           durationSecs: elapsed,
           createdAt: serverTimestamp(),
         });
-      } catch {
-        /* Non-fatal — the timer session itself is already saved. */
-      }
+      })().catch((e) =>
+        console.error("[timer] work commit failed:", e?.message ?? e),
+      );
     }
-    await this.#logTimerEvent(
+
+    void this.#logTimerEvent(
       employeeId,
       "pause",
       id,
       data.taskTitle ?? id,
       pauseReason,
     );
-    notifyRepositoryChanged();
+
     return { ok: true, data: { taskId: id, loggedSecs: total } };
   }
 
@@ -4476,7 +4518,21 @@ export class LegacyRepository {
       }
       const lostMs = endedSpanMs + returningMs;
       if (lostMs > 0) {
-        const shifted = await this.#compensateActiveDeadlines(employeeId, lostMs);
+        /* Named by CAUSE, because the history has to answer "why". The two
+           spans arrive summed, so the label says which contributed — a reader
+           seeing only "absence credited" cannot tell a break from an overnight
+           and will assume the emergency they never had approved. */
+        const mins = (ms: number) => Math.round(ms / 60000);
+        const parts: string[] = [];
+        if (endedSpanMs > 0) parts.push(`break ${mins(endedSpanMs)}m`);
+        if (returningMs > 0) parts.push(`offline ${mins(returningMs)}m`);
+        const shifted = await this.#compensateActiveDeadlines(
+          employeeId,
+          lostMs,
+          parts.length
+            ? `Time credited back — ${parts.join(" + ")}`
+            : "Time credited back",
+        );
         /* **Broken down by cause, because the total alone cannot be diagnosed.**
          * "My deadline moved and nobody approved anything" is a report that fits
          * two completely different mechanisms — a credited break and a credited
@@ -4562,14 +4618,142 @@ export class LegacyRepository {
     }
   }
 
+  /**
+   * Move ONE task's deadline to a given instant, and record why.
+   *
+   * The absence version shifts every active task by a shared span;
+   * a meeting credits each task its own figure, so this takes an absolute
+   * target rather than a duration. Both write the same
+   * `cowork_task_deadline_extensions` row, so one History tab answers "why is
+   * this due later" whatever moved it.
+   */
+  /**
+   * Give a task its time back, on whichever of the two axes it actually has.
+   *
+   * **A task can have a budget and no stored deadline, and most do.** The
+   * creator sets hours; the DATE is derived from the receiver's queue and is
+   * never written down. This method used to open with "find the deadline field,
+   * and return if there isn't one" — so on exactly those tasks it returned
+   * before touching the budget, and a credited meeting moved nothing. Expected
+   * completion is computed from the WINDOW, so the one write that mattered was
+   * the one being skipped.
+   *
+   * The two are now independent. The window is written whenever there is a new
+   * one, and the date only where a date exists to move. Each leaves its own kind
+   * of history record, because "your deadline moved from 17:21 to 17:26" and
+   * "your budget grew by five minutes" are different sentences and only one of
+   * them is true on any given task.
+   */
+  async #compensateOneDeadline(input: {
+    taskId: string;
+    /** Null on a task whose date is derived rather than stored. */
+    newDueAtMs: number | null;
+    /** The window after the credit, or null to leave it alone. */
+    newWindowSecs?: number | null;
+    reason: string;
+    byEmployeeId: string;
+  }): Promise<void> {
+    const { addDoc, collection, doc, getDoc, updateDoc } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const db = legacyDb();
+
+    const snap = await getDoc(doc(db, "cowork_tasks", input.taskId));
+    if (!snap.exists()) return;
+    const data = snap.data() as Record<string, unknown>;
+
+    /* The source field, so the write lands where the read looks. Null is not a
+       failure here — it is the ordinary shape of a task nobody typed a date on. */
+    const field =
+      readInstant(data.fixedDeadline) !== null
+        ? "fixedDeadline"
+        : readInstant(data.deadline) !== null
+          ? "deadline"
+          : readInstant(data.dueDate) !== null
+            ? "dueDate"
+            : null;
+
+    const movesDate = field !== null && input.newDueAtMs !== null;
+    const growsWindow = typeof input.newWindowSecs === "number";
+    if (!movesDate && !growsWindow) return;
+
+    await updateDoc(doc(db, "cowork_tasks", input.taskId), {
+      ...(movesDate ? { [field!]: new Date(input.newDueAtMs!).toISOString() } : {}),
+      /* Both fields legacy reads a window from, so the queue and the Details
+         panel cannot end up describing different amounts of work. */
+      ...(growsWindow
+        ? {
+            deadlineWindowSecs: input.newWindowSecs,
+            senderTimerWindowSecs: input.newWindowSecs,
+          }
+        : {}),
+      updatedAt: new Date(),
+    });
+
+    const nowIso = new Date().toISOString();
+
+    if (movesDate) {
+      await addDoc(collection(db, "cowork_task_deadline_extensions"), {
+        taskId: input.taskId,
+        requestedBy: input.byEmployeeId,
+        approverId: null,
+        previousDeadline: new Date(readInstant(data[field!])!).toISOString(),
+        proposedDeadline: new Date(input.newDueAtMs!).toISOString(),
+        reason: input.reason,
+        status: "approved",
+        createdAt: nowIso,
+        approvedAt: nowIso,
+        decidedBy: null,
+        /* Nobody decided this — a meeting happened and the rule applied itself. */
+        automatic: true,
+      }).catch((e: unknown) =>
+        console.error(
+          "[meeting] deadline history write failed:",
+          e instanceof Error ? e.message : e,
+        ),
+      );
+      return;
+    }
+
+    /* Window-only, and DELIBERATELY no record filed here.
+     *
+     * This wrote a `cowork_task_budget_extensions` row so the change would have
+     * an account. That collection is not a receipt — it is a NEGOTIATION, and an
+     * approved row in it means "your manager has offered you this, confirm it to
+     * put it in force". So a meeting that should have applied itself silently
+     * produced a card asking the assignee to accept 5m08s, and accepting it
+     * would have SET the budget to 5m08s rather than adding to it. A meeting
+     * needs no approval — the creator's attendance is the evidence, which is the
+     * whole reason attendance is tracked — so it must never enter a flow whose
+     * premise is that somebody has to agree.
+     *
+     * The account lives where it belongs instead: the Meetings tab lists every
+     * session with its date, who was in it and what it was worth, and the task
+     * carries `meetingTotalSecs`. A date that moved still files its
+     * `cowork_task_deadline_extensions` receipt above — that collection records
+     * decisions already taken and asks nobody for anything. */
+  }
+
   async #compensateActiveDeadlines(
     employeeId: string,
     lostMs: number,
+    /**
+     * Why the deadline moved, in the words a person will read.
+     *
+     * **A deadline that moves without a record is the complaint, not the
+     * mechanism.** This wrote nothing but a console line, so the only account of
+     * an automatic shift lived in a browser nobody had open. Every move now
+     * leaves a `cowork_task_deadline_extensions` row carrying the date before,
+     * the reason, and the date after — the three things somebody asking "why is
+     * this due later than I agreed?" actually needs.
+     */
+    reason: string = "Absence credited",
   ): Promise<number> {
     if (lostMs <= 0) return 0;
     let shifted = 0;
     try {
-      const { collection, query, where, getDocs, doc, updateDoc } = await import(
+      const { addDoc, collection, query, where, getDocs, doc, updateDoc } = await import(
         "firebase/firestore"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
@@ -4599,12 +4783,36 @@ export class LegacyRepository {
         if (field === null) continue;
 
         const currentMs = readInstant(data[field])!;
+        const previousIso = new Date(currentMs).toISOString();
         const newDueIso = new Date(currentMs + lostMs).toISOString();
         await updateDoc(doc(db, "cowork_tasks", d.id), {
           [field]: newDueIso,
           updatedAt: new Date(),
         });
         shifted += 1;
+
+        /* The receipt: previous → reason → current, in the same collection the
+           approved extensions land in, so one history answers "why is this due
+           later" whatever moved it. Not awaited into the caller's critical path
+           and never allowed to fail the shift — the deadline write above is the
+           record, this is the account of it. */
+        void addDoc(collection(db, "cowork_task_deadline_extensions"), {
+          taskId: d.id,
+          requestedBy: employeeId,
+          approverId: null,
+          previousDeadline: previousIso,
+          proposedDeadline: newDueIso,
+          reason,
+          status: "approved",
+          createdAt: new Date().toISOString(),
+          approvedAt: new Date().toISOString(),
+          decidedBy: null,
+          /* Nobody decided this — it is the absence rule applying itself. The
+             flag is what lets a reader tell it from a negotiated extension. */
+          automatic: true,
+        }).catch((e) =>
+          console.error("[duty] deadline history write failed:", e?.message ?? e),
+        );
       }
     } catch (error) {
       console.error("[duty] deadline compensation failed:", error);
@@ -4650,6 +4858,56 @@ export class LegacyRepository {
    * that somebody's laptop shut. Without the timer a manager's screen would
    * hold a green dot until some unrelated document happened to change.
    */
+  /**
+   * This employee's own presence, live, with the start instants.
+   *
+   * One document, one listener — cheaper than `watchDutyModes` over a list of
+   * one, and it emits the whole snapshot rather than a mode, because the clocks
+   * are the point: a break's start belongs to the ACCOUNT, so every device
+   * counts from the same instant instead of from whenever it happened to find
+   * out.
+   *
+   * The periodic sweep is inherited from `watchDutyModes` for the same reason:
+   * staleness is a function of the clock, not of a write, so an `online` claim
+   * whose heartbeat stopped has to expire without anybody writing anything.
+   */
+  watchDutyStatus(
+    onChange: (snapshot: DutySnapshot) => void,
+    employeeId?: EmployeeId,
+  ): () => void {
+    const id = String(employeeId ?? this.#ctx.employeeId);
+    let doc: DutyDocument | null = null;
+    let stopped = false;
+    let unsub: (() => void) | null = null;
+
+    const emit = () => {
+      if (stopped) return;
+      onChange(readDutySnapshot(doc, Date.now()));
+    };
+
+    void (async () => {
+      const { doc: docRef, onSnapshot } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      if (stopped) return;
+      unsub = onSnapshot(
+        docRef(legacyDb(), ...(dutyStatusPath(id) as [string, string])),
+        (snap) => {
+          doc = snap.exists() ? (snap.data() as DutyDocument) : null;
+          emit();
+        },
+        (error) => console.error(`[duty] watch self ${id}:`, error.message),
+      );
+    })();
+
+    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
+
+    return () => {
+      stopped = true;
+      clearInterval(sweep);
+      unsub?.();
+    };
+  }
+
   watchDutyModes(
     employeeIds: EmployeeId[],
     onChange: (modes: Map<EmployeeId, DutyMode>) => void,
@@ -5563,6 +5821,9 @@ export class LegacyRepository {
       const shifted = await this.#compensateActiveDeadlines(
         String(request.employeeId),
         lostMs,
+        `Emergency approved (${Math.round(lostMs / 60000)}m)${
+          decisionReason ? ` — ${decisionReason}` : ""
+        }`,
       );
       console.info("[presence] EMERGENCY APPROVED, deadlines shifted:", {
         employeeId: request.employeeId,
@@ -7236,6 +7497,406 @@ export class LegacyRepository {
     return toMeeting((result.data ?? {}) as never);
   }
 
+  /* ── A task's own meeting ────────────────────────────────────────────────
+   *
+   * Written browser-to-Firestore, like duty status and timers, rather than
+   * through a route: the engine has no endpoint for a per-task room, and the
+   * arithmetic that matters — what a session is worth and who it reaches — is
+   * `settleSession`, which both this and the mock hand the same inputs.
+   *
+   * `cowork_task_meetings/{taskId}/sessions/{sessionId}`, beside every other
+   * Cowork collection.
+   */
+
+  #taskMeetingSessions(taskId: string) {
+    return ["cowork_task_meetings", taskId, "sessions"] as const;
+  }
+
+  async joinTaskMeeting(taskId: TaskId) {
+    const me = String(this.#ctx.employeeId);
+    try {
+      const { doc: fsDoc, getDoc: fsGetDoc } = await import("firebase/firestore");
+      const { legacyDb: fsDb } = await import("../../legacy/firebase.ts");
+
+      /* ── Membership before anything else.
+       *
+       * A task room's name is derivable from the task id, so nothing about it
+       * is secret; this is what stands between an authenticated employee and
+       * every task conversation in the organisation. Checked before the token
+       * is asked for, so a refusal costs one read and mints nothing. */
+      const hostSnap = await fsGetDoc(
+        fsDoc(fsDb(), "cowork_tasks", String(taskId)),
+      );
+      const host = hostSnap.exists()
+        ? readTask({ ...hostSnap.data(), id: String(taskId) } as never)
+        : null;
+      if (!host) {
+        return {
+          ok: false as const,
+          code: "not_found" as const,
+          message: "That task could not be found.",
+        };
+      }
+      const refusal = taskJoinRefusal(
+        {
+          createdById: host.createdById,
+          assigneeIds: host.assigneeIds.map(String),
+          pendingAssigneeIds: host.pendingAssigneeId
+            ? [String(host.pendingAssigneeId)]
+            : [],
+        },
+        me,
+      );
+      if (refusal) {
+        return {
+          ok: false as const,
+          code: "permission_denied" as const,
+          message: refusal,
+        };
+      }
+
+      /* ── The seat comes next, and attendance only after it is granted.
+       *
+       * Attendance is what moves deadlines. Writing "joined at 10:00" and then
+       * failing to get a token leaves a span open on a room the person never
+       * entered — and because a session stays open until somebody closes it,
+       * that phantom span keeps widening. Order it the other way and a refused
+       * join costs nothing: no row, no credit, no meeting that did not happen.
+       *
+       * The seat itself is the meeting stack's, unchanged. `POST` with the room
+       * in the BODY is what the route declares; identity is the server's
+       * business — it reads the principal from the cookie and ignores anything
+       * the caller says about who it is. */
+      const roomName = taskMeetingRoomName(String(taskId));
+      const res = await fetch("/api/meetings/token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ room: roomName }),
+      });
+      if (!res.ok) {
+        /* The route's own words, not a flat replacement for them. "Meetings are
+           not configured on this server" is a fixable sentence; "The meeting
+           room could not be joined" is a dead end, and that is exactly what
+           this returned while three separate things were wrong. */
+        const said: unknown = await res.json().catch(() => null);
+        const reason =
+          typeof said === "object" && said !== null && "error" in said
+            ? String((said as { error?: unknown }).error)
+            : `The room refused the connection (${res.status}).`;
+        return {
+          ok: false as const,
+          code: (res.status === 401 ? "permission_denied" : "conflict") as
+            | "permission_denied"
+            | "conflict",
+          message: reason,
+        };
+      }
+      const creds = (await res.json()) as { token: string; url: string };
+
+      const { addDoc, collection, doc, getDocs, query, updateDoc, where, arrayUnion } =
+        await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const db = legacyDb();
+      const path = this.#taskMeetingSessions(String(taskId));
+
+      /* Clock read here rather than at entry, so the recorded join is when the
+         person actually got in — not when they pressed a button that then spent
+         a round-trip being authorised. */
+      const nowIso = new Date().toISOString();
+
+      /* Re-enter the session already running rather than opening a second one:
+         two rooms for one task would split the attendance and credit each half
+         separately. */
+      const open = await getDocs(
+        query(collection(db, ...path), where("endedAt", "==", null)),
+      );
+      const existing = open.docs[0] ?? null;
+
+      const attendance = {
+        employeeId: me,
+        joinedAt: nowIso,
+        leftAt: null as string | null,
+      };
+
+      let sessionId: string;
+      if (existing) {
+        sessionId = existing.id;
+        /* A rejoin is a NEW span, never an edit of the old one —
+           `creditableSecs` merges overlaps, so recording both is safe and
+           losing one is not. */
+        await updateDoc(doc(db, ...path, sessionId), {
+          attendance: arrayUnion(attendance),
+        });
+      } else {
+        const created = await addDoc(collection(db, ...path), {
+          taskId: String(taskId),
+          startedAt: nowIso,
+          endedAt: null,
+          creditedSecs: 0,
+          attendance: [attendance],
+          creditedTaskIds: [],
+        });
+        sessionId = created.id;
+      }
+
+      return { ok: true as const, data: { sessionId, roomName, ...creds } };
+    } catch (error) {
+      return {
+        ok: false as const,
+        code: "conflict" as const,
+        message:
+          error instanceof Error
+            ? `The meeting could not be joined: ${error.message}`
+            : "The meeting could not be joined.",
+      };
+    }
+  }
+
+  async leaveTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
+    const me = String(this.#ctx.employeeId);
+    try {
+      const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const db = legacyDb();
+      const ref = doc(
+        db,
+        ...this.#taskMeetingSessions(String(input.taskId)),
+        input.sessionId,
+      );
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        return { ok: false as const, code: "not_found" as const, message: "That meeting could not be found." };
+      }
+      const data = snap.data() as { attendance?: unknown };
+      const rows = Array.isArray(data.attendance) ? [...data.attendance] : [];
+      /* The LAST open span for this person — a rejoin leaves earlier rows
+         already closed, and rewriting one of those would erase a real span. */
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i] as { employeeId?: unknown; leftAt?: unknown };
+        if (String(row.employeeId) === me && !row.leftAt) {
+          rows[i] = { ...(row as object), leftAt: new Date().toISOString() };
+          break;
+        }
+      }
+      await updateDoc(ref, { attendance: rows });
+      return { ok: true as const, data: undefined };
+    } catch (error) {
+      return {
+        ok: false as const,
+        code: "conflict" as const,
+        message: error instanceof Error ? error.message : "That could not be saved.",
+      };
+    }
+  }
+
+  async endTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
+    try {
+      const { collection, doc, getDoc, getDocs, query, updateDoc, where } =
+        await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const db = legacyDb();
+      const ref = doc(
+        db,
+        ...this.#taskMeetingSessions(String(input.taskId)),
+        input.sessionId,
+      );
+      const snap = await getDoc(ref);
+      if (!snap.exists()) {
+        return { ok: false as const, code: "not_found" as const, message: "That meeting could not be found." };
+      }
+      const session = snap.data() as Record<string, unknown>;
+
+      const hostTask = readTask({
+        ...(await getDoc(doc(db, "cowork_tasks", String(input.taskId)))).data(),
+        id: String(input.taskId),
+      } as never);
+      if (!hostTask) {
+        return { ok: false as const, code: "not_found" as const, message: "That task could not be found." };
+      }
+
+      /* Whose deadlines move: the RECEIVER of the work. */
+      const assigneeId = String(hostTask.assigneeIds[0] ?? "");
+      const mine = assigneeId
+        ? await getDocs(
+            query(
+              collection(db, "cowork_tasks"),
+              where("assigneeIds", "array-contains", assigneeId),
+            ),
+          )
+        : null;
+
+      const tasks = (mine?.docs ?? [])
+        .map((d) => readTask({ ...d.data(), id: d.id } as never))
+        .filter((t): t is NonNullable<typeof t> => t !== null && !t.isDeleted)
+        .map((t) => ({
+          taskId: t.id,
+          status: toTaskStatus(t),
+          assigneeIds: t.assigneeIds.map(String),
+          totals: {
+            firstStartedAtMs: t.meetingFirstStartedAtMs,
+            lastEndedAtMs: t.meetingLastEndedAtMs,
+            totalSecs: t.meetingTotalSecs ?? 0,
+          },
+          dueAtMs: t.dueAtMs,
+          /* The agreed window, read through the shared resolver so the queue is
+             laid out from the same seconds the Details panel shows. */
+          windowSecs: resolveTimeBudget(t) || null,
+          /* The queue position, from the SAME function the queue is sorted by —
+             `settleSession` grows exactly one window and this is what picks it.
+             A rank invented here would choose a different head than the chain
+             actually works through, and the shift would land behind the task
+             the person is on. */
+          rank: resolveTaskPriority(t as never, assigneeId),
+        }));
+
+      const endedAtMs = Date.now();
+      const rows = Array.isArray(session.attendance) ? session.attendance : [];
+
+      /* **The same composition the mock runs.** One decision, two persisters. */
+      const settlement = settleSession({
+        session: {
+          creatorId: String(hostTask.createdById ?? ""),
+          startedAtMs: readInstant(session.startedAt) ?? endedAtMs,
+          endedAtMs,
+          attendance: rows.map((r) => {
+            const row = r as Record<string, unknown>;
+            return {
+              employeeId: String(row.employeeId),
+              joinedAtMs: readInstant(row.joinedAt) ?? endedAtMs,
+              leftAtMs: readInstant(row.leftAt),
+            };
+          }),
+        },
+        onTaskId: String(input.taskId),
+        assigneeId,
+        alreadyCredited: Array.isArray(session.creditedTaskIds)
+          ? session.creditedTaskIds.map(String)
+          : [],
+        tasks,
+      });
+
+      await updateDoc(ref, {
+        endedAt: new Date(endedAtMs).toISOString(),
+        creditedSecs: settlement.creditedSecs,
+        creditedTaskIds: settlement.updates.map((u) => u.taskId),
+      });
+
+      for (const update of settlement.updates) {
+        await updateDoc(doc(db, "cowork_tasks", update.taskId), {
+          meetingFirstStartedAt:
+            update.totals.firstStartedAtMs === null
+              ? null
+              : new Date(update.totals.firstStartedAtMs).toISOString(),
+          meetingLastEndedAt:
+            update.totals.lastEndedAtMs === null
+              ? null
+              : new Date(update.totals.lastEndedAtMs).toISOString(),
+          meetingTotalSecs: update.totals.totalSecs,
+          updatedAt: new Date(),
+        }).catch((e: unknown) =>
+          console.error(
+            "[meeting] totals write failed",
+            update.taskId,
+            e instanceof Error ? e.message : e,
+          ),
+        );
+
+        /* The deadline moves through the SAME collection an approved extension
+           and a credited absence use, so one History tab answers "why is this
+           due later" whatever moved it.
+           **Either axis is enough to be worth writing.** This was gated on the
+           DATE alone, and a task whose date is derived from the queue rather
+           than stored reports `newDueAtMs: null` — so the grown window, the one
+           value Expected completion is actually computed from, was thrown away
+           on precisely the tasks people were meeting about. */
+        if (update.newDueAtMs !== null || update.newWindowSecs !== null) {
+          await this.#compensateOneDeadline({
+            taskId: update.taskId,
+            newDueAtMs: update.newDueAtMs,
+            /* The WINDOW too, not only the date. The queue is laid out from
+               windows, so a meeting that moved the date alone would never reach
+               Expected completion — and this repository used to do exactly
+               that while the mock did not. */
+            newWindowSecs: update.newWindowSecs,
+            reason: update.reason,
+            byEmployeeId: assigneeId,
+          }).catch((e: unknown) =>
+            console.error(
+              "[meeting] deadline shift failed",
+              update.taskId,
+              e instanceof Error ? e.message : e,
+            ),
+          );
+        }
+      }
+
+      /* **Every open screen has just gone stale.** This moved deadlines and
+         budgets on as many tasks as the person has running, and without this
+         the Details panel keeps rendering the figures it fetched before the
+         meeting — which reads as "the credit did not work" no matter how
+         correctly it was written. Every other mutation in this file ends here;
+         this one did not, and that alone made a working feature look broken. */
+      notifyRepositoryChanged();
+
+      return {
+        ok: true as const,
+        data: {
+          creditedSecs: settlement.creditedSecs,
+          creditedTaskIds: settlement.updates.map((u) => u.taskId),
+        },
+      };
+    } catch (error) {
+      return {
+        ok: false as const,
+        code: "conflict" as const,
+        message:
+          error instanceof Error
+            ? `The meeting could not be closed: ${error.message}`
+            : "The meeting could not be closed.",
+      };
+    }
+  }
+
+  async listTaskMeetingSessions(taskId: TaskId): Promise<TaskMeetingSession[]> {
+    try {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const snap = await getDocs(
+        collection(legacyDb(), ...this.#taskMeetingSessions(String(taskId))),
+      );
+      return snap.docs
+        .map((d) => {
+          const raw = d.data() as Record<string, unknown>;
+          return {
+            id: d.id,
+            taskId,
+            startedAt: String(raw.startedAt ?? ""),
+            endedAt: raw.endedAt ? String(raw.endedAt) : null,
+            creditedSecs:
+              typeof raw.creditedSecs === "number" ? raw.creditedSecs : 0,
+            attendance: (Array.isArray(raw.attendance) ? raw.attendance : []).map(
+              (r) => {
+                const row = r as Record<string, unknown>;
+                return {
+                  employeeId: String(row.employeeId),
+                  joinedAt: String(row.joinedAt ?? ""),
+                  leftAt: row.leftAt ? String(row.leftAt) : null,
+                };
+              },
+            ),
+            creditedTaskIds: (Array.isArray(raw.creditedTaskIds)
+              ? raw.creditedTaskIds
+              : []
+            ).map(String),
+          } as TaskMeetingSession;
+        })
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt));
+    } catch {
+      /* An unreadable log must not blank the tab that shows it. */
+      return [];
+    }
+  }
+
   async listMeetingsForTask(taskId: TaskId): Promise<Meeting[]> {
     const token = await this.#token();
     const result = await meetHttp.listMeetsForTask({
@@ -7873,6 +8534,7 @@ export class LegacyRepository {
               priority: number | null;
               agreedWindowSecs: number | null;
               senderWindowSecs: number | null;
+              createdAtMs: number | null;
             };
             return {
               taskId: x.id,
@@ -7883,6 +8545,10 @@ export class LegacyRepository {
                  seconds the Details panel shows. */
               senderTimerWindowSecs: resolveTimeBudget(x),
               loggedSecs: logged.get(x.id) ?? 0,
+              /* A task cannot be due before it existed. Without this a queue
+                 anchored at the office opening spent the morning against work
+                 that only arrived in the afternoon. */
+              createdAtMs: x.createdAtMs,
             };
           }) as never,
         anchorMs,
@@ -8115,6 +8781,9 @@ export class LegacyRepository {
            `FeasibilityTask.isContainer`. */
         isContainer: t.subtaskIds.length > 0,
         committedDueAt: t.dueAtMs === null ? null : new Date(t.dueAtMs).toISOString(),
+        /* A task cannot be due before it existed — the chain floors each task's
+           start at this. See `QueueTask.createdAtMs`. */
+        createdAtMs: t.createdAtMs,
       }));
 
     const { addWorkingSecs, explainAddWorkingSecs } = await import(
@@ -9294,12 +9963,16 @@ export class LegacyRepository {
         /* A paused session keeps its document. Without this check the most
            recently *touched* session would be reported as running forever. */
         if (data.isActive !== true) return;
-        const startedAtMs = readInstant(data.lastStartTime ?? data.startedAt);
-        if (startedAtMs === null) return;
-        const total =
-          firstNumber(data, "totalSecs", "totalSeconds") ?? 0;
-        if (!running || startedAtMs > running.startedAtMs) {
-          running = { taskId: d.id, startedAtMs, totalSecs: total };
+        /* The SAME reading the task page uses — see `readTimerFigures`. These
+           two read one document and used to disagree about it. */
+        const { accumulatedSecs, startedAtRealMs } = readTimerFigures(data);
+        if (startedAtRealMs === null) return;
+        if (!running || startedAtRealMs > running.startedAtMs) {
+          running = {
+            taskId: d.id,
+            startedAtMs: startedAtRealMs,
+            totalSecs: accumulatedSecs,
+          };
         }
       });
     } catch {

@@ -61,6 +61,22 @@ export interface RankDisplay {
    * screen and undoes the whole point of compacting the queue.
    */
   isHistoric: boolean;
+  /**
+   * The number counts a DIFFERENT sequence: work still awaiting acceptance.
+   *
+   * The same argument as `isHistoric`, arrived at from the other end. A task
+   * whose hours nobody has agreed is not in the running order, so it is numbered
+   * among its own kind — and the first of those is `1` exactly as the first of
+   * the live queue is. Rendered identically, a list showing one of each puts
+   * **two P1s on the screen**, which is what people report as "two tasks have
+   * the same priority". They do not: one is first in the queue, the other is
+   * first in line to be accepted.
+   *
+   * `displayPriority` has always known which sequence it answered from — it
+   * returns `scale` — and this is that fact reaching the renderer, which used to
+   * discard it here.
+   */
+  isProvisional: boolean;
 }
 
 /** Is this a rank a person could have been given? */
@@ -114,6 +130,7 @@ export function rankFor(view: TaskView, viewerId: string | null): RankDisplay {
     rank: resolved.rank,
     isMine: resolved.isMine,
     isHistoric: resolved.isHistoric,
+    isProvisional: resolved.scale === "provisional_position",
   };
 }
 
@@ -137,7 +154,14 @@ export function formatRank(rank: number | null): string {
  */
 export function formatRankDisplay(display: RankDisplay): string {
   if (display.rank === null) return "—";
-  return display.isHistoric ? `Was P${display.rank}` : `P${display.rank}`;
+  if (display.isHistoric) return `Was P${display.rank}`;
+  /* **Not `P1`.** This is first among work awaiting acceptance, not first in the
+     queue, and the two appear in the same list. The bare form was reported as
+     "two tasks have the same priority P1" — they did not, and nothing on screen
+     said so. `To accept` names the sequence in the two words that fit a chip;
+     the tooltip carries the full sentence. */
+  if (display.isProvisional) return `P${display.rank} to accept`;
+  return `P${display.rank}`;
 }
 
 /** What the control's tooltip should say about whose rank this is. */
@@ -145,6 +169,13 @@ export function rankTitle(display: RankDisplay): string {
   if (display.rank === null) return "No priority has been set for this task";
   if (display.isHistoric) {
     return `This task is closed. It was P${display.rank} when it left the queue.`;
+  }
+  if (display.isProvisional) {
+    return (
+      `Not in the running order yet — the hours are not agreed. ` +
+      `This is its position among your work still awaiting acceptance, ` +
+      `which is counted separately from the live queue.`
+    );
   }
   return display.isMine
     ? `Your priority on this task: P${display.rank}`

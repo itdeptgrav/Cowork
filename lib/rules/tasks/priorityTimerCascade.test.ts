@@ -251,17 +251,20 @@ test("10 · working seconds skip breaks and off-days", () => {
   );
 });
 
-test("11 · a running task's deadline projects from when work started", () => {
-  /* A queue whose leader started within the last day anchors at that start — the
-     work is already running, so it is measured from when it actually began. */
+test("11 · starting work does not re-anchor the deadline", () => {
+  /* The queue anchors at the day's opening whether or not anything is running.
+     Starting a timer used to pull the anchor to `startedAt`, which moved the
+     committed date at the moment work began — the reported 17:22 to 17:20. The
+     timer's own display is unaffected and still reads as running. */
   const nowMs = Date.parse("2026-07-30T12:00:00.000Z");
   const startedMs = Date.parse("2026-07-30T09:30:00.000Z");
+  const officeOpenMs = Date.parse("2026-07-30T04:00:00.000Z");
   const anchor = anchorMsFor({
     leader: { taskId: "A", startedAt: startedMs } as never,
-    officeOpenMs: Date.parse("2026-07-30T04:00:00.000Z"),
+    officeOpenMs,
     nowMs,
   });
-  assert.equal(anchor, startedMs, "a running leader must anchor at its start");
+  assert.equal(anchor, officeOpenMs, "starting work moved the anchor");
   assert.equal(
     timerDisplayState({ isActive: true, startedAtRealMs: startedMs }, 0, nowMs),
     "running",

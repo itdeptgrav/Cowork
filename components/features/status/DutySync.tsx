@@ -6,12 +6,11 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
 import { getRepository } from "@/lib/repositories";
 import {
   connectionId,
-  claimedOnlineHere,
   markClaimedOnlineHere,
   clearClaimedOnlineHere,
 } from "@/lib/status/connectionId";
 import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
-import { restorePresence } from "@/lib/status/employeeStatus";
+import { applyRemotePresence } from "@/lib/status/employeeStatus";
 import type { EmployeeStatus } from "@/lib/status/employeeStatus";
 import type { DutyMode } from "@/lib/rules/presence/duty";
 
@@ -47,43 +46,56 @@ export function DutySync() {
      happen constantly. */
   const published = useRef<DutyMode | null>(null);
 
-  /* ── Restore on load ────────────────────────────────────────────────────── */
-  /* A refresh must not read as going offline. The in-memory store re-initialises
-     to offline on every load, but the duty document survived — so on mount we
-     read it back once and restore the status, which is also what makes the
-     heartbeat below resume. Without this the claim goes stale after two missed
-     beats and the person really does go offline a couple of minutes after a
-     harmless refresh. */
-  const restored = useRef(false);
+  /* ── Follow the account ─────────────────────────────────────────────────── */
+  /**
+   * **A live subscription, not a read at mount.** This is the whole of the
+   * cross-device fix.
+   *
+   * It used to call `getDutyMode()` once, which was wrong in three ways at
+   * once, and all three were visible:
+   *
+   *  · One shot. A change made on the laptop never reached the phone, so the
+   *    second device kept showing whatever was true when it loaded.
+   *  · One WORD. The mode came back without the instant behind it, so a device
+   *    learning "break" started its own stopwatch from the moment it found out.
+   *    Two devices on one account showed 13 seconds and 4 seconds.
+   *  · Gated on `claimedOnlineHere()`. A phone opened while the laptop was
+   *    sharing deliberately ignored the account's `online` claim and showed
+   *    Offline.
+   *
+   * The gate is gone. It was protecting against offering a "resume sharing"
+   * prompt for a share the phone never had — a real concern, but `remoteOnline`
+   * answers it properly: the phone reports the account's presence, and
+   * `sharedElsewhere` keeps the sentence honest about whose screen it is. What
+   * the gate actually produced was one account showing two different presences
+   * at the same moment, which is not a thing presence is allowed to do.
+   */
   useEffect(() => {
-    if (!viewerId || restored.current) return;
-    restored.current = true;
-    void (async () => {
-      try {
-        const mode = await getRepository().getDutyMode();
-        console.info("[presence] SESSION RESTORE: fetched durable mode", {
-          employeeId: viewerId,
-          durableMode: mode,
-        });
-        /* `getDutyMode` has already applied the staleness window, so a genuinely
-           dead claim comes back as offline and restores nothing.
+    if (!viewerId) return;
+    return getRepository().watchDutyStatus((snapshot) => {
+      /* Whether the claim is THIS connection's. Only meaningful for `online`;
+         `readDutySnapshot` returns null for every other mode. */
+      const mine =
+        snapshot.presenceConnectionId !== null &&
+        snapshot.presenceConnectionId === connectionId();
 
-           An `online` claim is restored ONLY on the device that put itself
-           online — `claimedOnlineHere()`, a per-browser flag distinct from the
-           per-tab `connectionId()`. Without this check, opening Cowork on a
-           phone while a laptop is sharing reads the same "online" mode and
-           offers a "resume sharing" prompt for a share that phone never had.
-           break/emergency are NOT gated: they are claims about the person, not
-           a device, so every device restores them identically. */
-        if (mode === "break" || mode === "emergency") {
-          restorePresence({ mode });
-        } else if (mode === "online" && claimedOnlineHere()) {
-          restorePresence({ mode });
-        }
-      } catch (error) {
-        console.error("[presence] SESSION RESTORE failed:", error);
-      }
-    })();
+      applyRemotePresence({
+        mode: snapshot.mode,
+        breakStartedAtMs: snapshot.breakStartedAtMs,
+        emergencyStartedAtMs: snapshot.emergencyStartedAtMs,
+        onlineElsewhere: snapshot.mode === "online" && !mine,
+      });
+
+      /* The echo guard. Publishing what we were just told would be a write per
+         snapshot, and every device would answer every other device forever. */
+      published.current = snapshot.mode;
+
+      /* This device's own memory of whether IT is the one sharing, kept in step
+         with the account rather than only with our own writes — a claim taken
+         over by another device must stop this one believing it holds it. */
+      if (snapshot.mode === "online" && mine) markClaimedOnlineHere();
+      else if (snapshot.mode !== "online") clearClaimedOnlineHere();
+    }, viewerId);
   }, [viewerId]);
 
   /* ── Publish ────────────────────────────────────────────────────────────── */

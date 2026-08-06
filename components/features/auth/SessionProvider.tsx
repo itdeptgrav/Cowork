@@ -30,6 +30,7 @@ import { isConfigured } from "@/lib/legacy/config";
 import { PUBLIC_ENV } from "@/lib/legacy/publicEnv";
 import { clearFirebaseCookie, writeFirebaseCookie } from "@/lib/auth/firebaseCookie";
 import { notifyRepositoryChanged } from "@/lib/repositories/events";
+import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { RoleArchetype } from "@/lib/domain";
 
 /**
@@ -189,7 +190,36 @@ class WorkspaceUnreachable extends Error {
  * This watchdog is the only thing that catches that, which is why it is a wall
  * clock started at mount rather than a timeout on any particular await.
  */
+/**
+ * How long any ONE enrichment step may take before the sign-in stops waiting.
+ *
+ * Comfortably longer than a healthy Firestore round trip, and chosen so that
+ * ALL FOUR steps timing out in sequence still finishes inside the resolution
+ * watchdog — 4 x 6s = 24s against 30s. At 8s each the worst case was 32s, so a
+ * completely unreachable Firestore would have tripped the watchdog and shown a
+ * failure screen to somebody whose sign-in was about to succeed.
+ */
+const SESSION_STEP_TIMEOUT_MS = 6_000;
+
 const RESOLVE_WATCHDOG_MS = 30_000;
+
+/**
+ * How long to wait for `onAuthStateChanged` before asking Firebase directly.
+ *
+ * `watchAuth` is the SOLE trigger for resolution, and that is a single point of
+ * failure: if the callback never arrives, `load` is never called, nothing
+ * rejects, nothing retries, and the app sits on "Signing you in…". Every other
+ * step is bounded — `idToken` times out at 10s, `legacyFetch` at 20s, and a
+ * `/cowork/me` refusal resolves to anonymous — so a listener that does not fire
+ * is the only way to stay `loading`.
+ *
+ * The kick below only acts when `currentUser()` is already non-null, which means
+ * the SDK has finished restoring. That is exactly the condition the
+ * wait-for-Firebase rule exists to establish, so asking then cannot reintroduce
+ * the bounce it was written to prevent — it just stops us waiting for a
+ * notification about something that has already happened.
+ */
+const AUTH_LISTENER_GRACE_MS = 2_500;
 
 export function SessionProvider({
   children,
@@ -278,14 +308,32 @@ export function SessionProvider({
          query finds a real employee rather than falling through to the seeded
          default. */
       const repo = getRepository();
-      await repo.ensureSessionEmployee({
-        employeeId: data.employeeId,
-        displayName: data.displayName ?? "Administrator",
-        email: data.email ?? "",
-        archetype: data.archetype ?? "employee",
-        organisationName: data.organisationName ?? "",
-        organisationId: data.organisationId ?? "",
-      });
+      /**
+       * **Bounded, because a Firestore read does not reject when it cannot
+       * reach the server — it stays pending.**
+       *
+       * Everything from here to the `setState` below is ENRICHMENT: who you are
+       * is already known and the repository is already installed. But each step
+       * was awaited without a bound, so one unreachable Firestore call left the
+       * whole sign-in unfinished and the app on "Signing you in…" forever —
+       * nothing rejected, so the retry ladder never ran and the watchdog
+       * reported `listenerFired: true, firebaseHasUser: true`, which is exactly
+       * the state that describes.
+       *
+       * A timeout here costs a provisioning write that will happen on the next
+       * load anyway. Not timing out costs the workspace.
+       */
+      await settledWithin(
+        repo.ensureSessionEmployee({
+          employeeId: data.employeeId,
+          displayName: data.displayName ?? "Administrator",
+          email: data.email ?? "",
+          archetype: data.archetype ?? "employee",
+          organisationName: data.organisationName ?? "",
+          organisationId: data.organisationId ?? "",
+        }),
+        SESSION_STEP_TIMEOUT_MS,
+      ).catch(() => null);
       /* Employee AND organisation together. Setting the employee alone would
          leave the repository answering for whichever tenant it last saw, which
          is precisely the cross-tenant read this phase exists to prevent. */
@@ -309,7 +357,13 @@ export function SessionProvider({
        * re-auth (token refresh, profile switch) replaces rather than
        * accumulates listeners; leaked ones would each fire an invalidation and
        * turn one change into several refetches. */
-      await stopTaskWatch();
+      /* Bounded for the same reason: this awaits a PREVIOUS `startTaskWatch`
+         promise, and one that never resolved would hold the sign-in open
+         indefinitely. A timeout may leak that watch; an unusable workspace is
+         the worse trade. */
+      await settledWithin(stopTaskWatch(), SESSION_STEP_TIMEOUT_MS).catch(
+        () => null,
+      );
       taskWatchStop = startTaskWatch({
         employeeId: data.employeeId,
         role: String(legacyRoleOf(data.archetype) ?? "employee"),
@@ -332,7 +386,11 @@ export function SessionProvider({
        * defaults are a working configuration, and refusing to load the workspace
        * because one settings document was unreachable would be a worse trade. */
       try {
-        applyRuleOverrides(await repo.getRuleOverrides());
+        const overrides = await settledWithin(
+          repo.getRuleOverrides(),
+          SESSION_STEP_TIMEOUT_MS,
+        );
+        if (overrides) applyRuleOverrides(overrides);
       } catch {
         /* No document yet, or unreachable. The seeded placeholders apply, which
            is what `readRuleOverrides` returns for an absent document anyway. */
@@ -352,26 +410,39 @@ export function SessionProvider({
        * because one supplementary fetch failed would be a worse trade than a
        * People list that is briefly short. */
       try {
-        const dir = await fetch("/api/auth/directory", { cache: "no-store" });
-        if (dir.ok) {
-          const body = (await dir.json()) as {
-            ok?: boolean;
-            organisationName?: string;
-            members?: {
-              employeeId: string;
-              displayName: string;
-              email: string;
-              archetype: RoleArchetype;
-              isFounder?: boolean;
-            }[];
-          };
-          if (body.ok && body.members?.length) {
-            await repo.ensureDirectoryEmployees(
-              body.members,
-              body.organisationName ?? data.organisationName ?? "",
-              data.organisationId ?? "",
-            );
-          }
+        /* The whole widening bounded ONCE rather than each await inside it.
+           Three round trips — the fetch, reading its body, and a Firestore
+           write — are one logical step from the session's point of view, and
+           bounding them separately would let a fully unreachable backend spend
+           three timeouts here and trip the resolution watchdog. */
+        const widened = await settledWithin(
+          (async () => {
+            const dir = await fetch("/api/auth/directory", { cache: "no-store" });
+            if (!dir.ok) return false;
+            const body = (await dir.json()) as {
+              ok?: boolean;
+              organisationName?: string;
+              members?: {
+                employeeId: string;
+                displayName: string;
+                email: string;
+                archetype: RoleArchetype;
+                isFounder?: boolean;
+              }[];
+            };
+            if (body.ok && body.members?.length) {
+              await repo.ensureDirectoryEmployees(
+                body.members,
+                body.organisationName ?? data.organisationName ?? "",
+                data.organisationId ?? "",
+              );
+            }
+            return true;
+          })(),
+          SESSION_STEP_TIMEOUT_MS,
+        );
+        if (widened === null) {
+          console.warn("[session] directory widening timed out; continuing.");
         }
       } catch {
         /* Offline, or the route is unreachable. Nothing to repair here. */
@@ -454,6 +525,45 @@ export function SessionProvider({
   }, [anonymous, load]);
 
   /**
+   * **A second way in, because `watchAuth` is a single point of failure.**
+   *
+   * Everything else in this resolution is bounded: `idToken` times out at 10s,
+   * `legacyFetch` at 20s, and a `/cowork/me` refusal resolves to anonymous. So
+   * the ONLY way to sit on "Signing you in…" is for `onAuthStateChanged` never
+   * to fire — `load` is then never called, nothing rejects, and nothing retries.
+   *
+   * That is the reported fault: already signed in, open another tab, and the new
+   * one waits forever for a notification about a restoration that had already
+   * happened before the listener attached.
+   *
+   * The guard is what makes this safe. It acts only when `currentUser()` is
+   * already non-null, which means the SDK HAS finished restoring — precisely the
+   * condition the wait-for-Firebase rule exists to establish. So this cannot
+   * reintroduce the "signed in, sent to sign in" bounce that rule prevents; a
+   * null `currentUser` is still left entirely to the listener.
+   */
+  useEffect(() => {
+    if (anonymous || !isConfigured(PUBLIC_ENV)) return;
+    const kick = setTimeout(() => {
+      if (started.current) return; // the listener did its job
+      if (!currentUser()) return; // genuinely not signed in — not ours to answer
+      console.warn(
+        "[session] onAuthStateChanged did not fire within",
+        AUTH_LISTENER_GRACE_MS,
+        "ms but Firebase has a user — resolving directly.",
+      );
+      void load();
+    }, AUTH_LISTENER_GRACE_MS);
+    /* The handle is named `kick` rather than the obvious thing, and that is
+       deliberate: two tests in `authPersistence.test.ts` locate the resolution
+       watchdog by searching the source for its timer declaration, and this
+       effect sits earlier in the file. Sharing the name pointed them at this
+       block instead, where they read the early return above as the watchdog
+       standing down — the one thing they exist to forbid. */
+    return () => clearTimeout(kick);
+  }, [anonymous, load]);
+
+  /**
    * Keep the Edge's cookie copy alive across the SDK's silent token refreshes.
    *
    * `load` runs on `onAuthStateChanged`, which does NOT fire when Firebase renews
@@ -526,6 +636,14 @@ export function SessionProvider({
          authenticated one. Showing a way out after this long is right even when
          something is still technically in flight: thirty seconds of "Signing
          you in…" is already a failure to the person watching it. */
+      /* Diagnostic, because this is the state nobody could explain from the
+         outside — the screen said the same thing whether Firebase never
+         answered, the token never refreshed or the engine never replied. */
+      console.warn("[session] resolution watchdog fired", {
+        listenerFired: started.current,
+        firebaseHasUser: !!currentUser(),
+        afterMs: RESOLVE_WATCHDOG_MS,
+      });
       setState((prev) =>
         prev.status === "loading"
           ? {

@@ -19,6 +19,7 @@ import {
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
 import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
+import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -187,6 +188,10 @@ export function TimerControl({
   /* Re-entrancy guard, in a ref rather than `disabled`. The button stays live
      to the touch — it is the WRITE that must not overlap, not the press. */
   const inFlight = useRef(false);
+  /* A write that did not come back in time. Said out loud, because the display
+     has just reverted to the engine's state under the person's hands and an
+     unexplained jump back is worse than the delay itself. */
+  const [stalled, setStalled] = useState(false);
 
   /* The assignee's live session is the source of truth. `timer.data` (the
      viewer's own one-shot read) is kept only as the first paint before the
@@ -388,7 +393,13 @@ export function TimerControl({
   const startable = view.task.status === "in_progress" || needsStart;
   const pending =
     startState.isPending || pauseState.isPending || beginState.isPending;
-  const error = startState.error ?? pauseState.error ?? beginState.error;
+  const error =
+    startState.error ??
+    pauseState.error ??
+    beginState.error ??
+    (stalled
+      ? "That did not reach the server in time. The timer is showing what the server holds — try again."
+      : null);
 
   /* **The write half of the coupling.** The display froze the instant `away`
      went true; this makes it real — the running session is paused so the banked
@@ -485,26 +496,39 @@ export function TimerControl({
     });
 
     try {
+      /* Every write is raced against a clock — see `settledWithin`. A write that
+         never settles used to leave the guard held and the optimistic flip
+         asserted, so the button died and the page claimed a state the engine
+         did not have. */
+      const stalled = () => {
+        setPressed(null);
+        setStalled(true);
+      };
+
       if (wasRunning) {
-        const r = await pause();
+        const r = await settledWithin(pause());
+        if (r === null) return stalled();
         if (!r.ok) {
           setPressed(null);
           return;
         }
       } else {
         if (needsStart) {
-          const began = await beginTask();
+          const began = await settledWithin(beginTask());
+          if (began === null) return stalled();
           if (!began.ok) {
             setPressed(null);
             return;
           }
         }
-        const r = await start();
+        const r = await settledWithin(start());
+        if (r === null) return stalled();
         if (!r.ok) {
           setPressed(null);
           return;
         }
       }
+      setStalled(false);
       onChange?.();
     } finally {
       inFlight.current = false;
@@ -748,10 +772,51 @@ export function LiveDot({ className = "" }: { className?: string }) {
  * more than a glance away — and absent entirely when nothing is running, rather
  * than sitting there as an empty slot.
  */
+/**
+ * How often the top-bar pill re-asks the engine what is running.
+ *
+ * Well inside the heartbeat staleness window, so a session stopped by anything
+ * that does not bump the query version — a reconcile-pause, another device — is
+ * corrected long before it could mislead anybody about a day's work.
+ */
+const ACTIVE_PILL_REFRESH_MS = 20_000;
+
 export function ActiveWorkPill() {
   const active = useQuery((r) => r.getActiveTimer(), []);
   const data = active.data;
   const ticked = useTicker(data?.startedAtRealMs ?? null);
+
+  /**
+   * Re-read on a slow interval, because not every stop bumps the version.
+   *
+   * `useAction` invalidates every mounted query on a successful write, which
+   * covers a person pressing Pause. It does NOT cover the two paths that stop a
+   * session without one: the heartbeat's reconcile-pause, which
+   * `TimerControl` calls straight on the repository, and a pause performed on
+   * ANOTHER device. Both leave this pill holding a session the engine has
+   * already closed — and because it ticks from `startedAtRealMs`, it does not
+   * merely show a stale figure, it keeps counting up. That is the top bar
+   * reading 00:02:49 while the task page reads "Paused · 00:01:56".
+   *
+   * The task page solved this with a live listener per session. This is one
+   * pill over whichever task is running, so it re-asks instead — cheaply, and
+   * far inside the staleness window, so the pill can be briefly behind but
+   * never indefinitely wrong.
+   */
+  const refetch = active.refetch;
+  useEffect(() => {
+    const id = setInterval(() => refetch(), ACTIVE_PILL_REFRESH_MS);
+    /* Coming back to a backgrounded tab, whose timers were clamped while it
+       was away — the moment the figure is most likely to be stale. */
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refetch();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refetch]);
 
   if (!data) return null;
 

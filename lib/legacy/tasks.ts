@@ -49,6 +49,16 @@ import {
  * shipped simply lacks its fields.
  */
 export interface LegacyTaskDoc {
+  /**
+   * The task's meeting summary, written by the session-end credit.
+   *
+   * `unknown` like every other raw field here: the document is written by two
+   * applications and read tolerantly, so the parse decides the shape rather
+   * than the declaration promising one.
+   */
+  meetingFirstStartedAt?: unknown;
+  meetingLastEndedAt?: unknown;
+  meetingTotalSecs?: unknown;
   id?: string;
   title?: string;
   description?: string;
@@ -318,6 +328,17 @@ export interface LegacyTask {
    * separate two tasks, the one that has been waiting longer goes first.
    */
   createdAtMs: number | null;
+  /**
+   * The task's meeting summary, as stored.
+   *
+   * Absent on every task written before meetings existed, which is why all
+   * three are nullable rather than defaulted at this layer — the mapper decides
+   * what "no meetings" looks like in the domain, and a zero invented here would
+   * be indistinguishable from a task that genuinely had none.
+   */
+  meetingFirstStartedAtMs: number | null;
+  meetingLastEndedAtMs: number | null;
+  meetingTotalSecs: number | null;
   /** Legacy's only close stamp. There is no `completedAt` in the collection. */
   updatedAtMs: number | null;
   /** Per-person rank. Empty when the engine wrote none. */
@@ -614,6 +635,13 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
       .map((r) => (typeof r === "string" ? r.trim() : ""))
       .filter((r) => r !== ""),
     createdAtMs: readInstant(doc.createdAt),
+    meetingFirstStartedAtMs: readInstant(doc.meetingFirstStartedAt),
+    meetingLastEndedAtMs: readInstant(doc.meetingLastEndedAt),
+    meetingTotalSecs:
+      typeof doc.meetingTotalSecs === "number" &&
+      Number.isFinite(doc.meetingTotalSecs)
+        ? doc.meetingTotalSecs
+        : null,
     updatedAtMs: readInstant(doc.updatedAt),
     assigneePriorities:
       doc.assigneePriorities && typeof doc.assigneePriorities === "object"

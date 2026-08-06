@@ -129,7 +129,13 @@ test("nothing spreads an undefined id any more", () => {
     false,
     "the spread-and-blank pattern is back",
   );
-  /* All three writes go through the validator. */
+  /* Every record write goes through the validator.
+     A COUNT, not a magic number: it tracks call sites, so adding a write that
+     skips the validator leaves it short and the test says so. It briefly read 4,
+     while meeting credit filed its own budget-extension row; that row asked the
+     assignee to approve a meeting, so it was removed and the count went back.
+     Adjust it deliberately, alongside a check that the new write is wrapped,
+     never to make a red test green. */
   assert.equal((src.match(/documentBody\(/g) ?? []).length, 3);
 });
 

@@ -24,7 +24,7 @@ import type {
 } from "@/lib/help/types";
 import type { ActionableReason } from "@/lib/rules/tasks/actionable";
 import type { CompletionState } from "@/lib/rules/tasks/completion";
-import type { DutyMode, DutyHistoryEntry } from "@/lib/rules/presence/duty";
+import type { DutyMode, DutyHistoryEntry, DutySnapshot } from "@/lib/rules/presence/duty";
 import type { OfficePolicy } from "@/lib/legacy/officePolicy";
 import type {
   TimerSopConfig,
@@ -151,6 +151,7 @@ import type {
   Viewer,
   WorkCommit,
   WorkflowTrigger,
+  TaskMeetingSession,
 } from "@/lib/domain";
 
 /**
@@ -1041,6 +1042,23 @@ export interface CoworkRepository {
   watchDutyModes(
     employeeIds: EmployeeId[],
     onChange: (modes: Map<EmployeeId, DutyMode>) => void,
+  ): () => void;
+  /**
+   * The acting employee's OWN presence, live, with the clocks behind it.
+   *
+   * `getDutyMode` is a one-shot read answering one word, and both halves of that
+   * were faults across devices: a second device sat at its initial `offline`
+   * until the round trip landed and then corrected itself on screen, and it
+   * learned the person was on a break without learning WHEN — so each device
+   * started its own stopwatch and the two disagreed by however long they were
+   * apart.
+   *
+   * Same shape as `watchDutyModes`: subscribe, return the unsubscribe. Firestore's
+   * own listener is the live channel; there is no second realtime system here.
+   */
+  watchDutyStatus(
+    onChange: (snapshot: DutySnapshot) => void,
+    employeeId?: EmployeeId,
   ): () => void;
   /**
    * The acting employee's status changes for one day, newest first.
@@ -1938,6 +1956,55 @@ export interface CoworkRepository {
     present: boolean,
   ): Promise<ActionResult<MeetingParticipant>>;
   listMeetingsForTask(taskId: TaskId): Promise<Meeting[]>;
+
+  /* ── A task's own meeting ────────────────────────────────────────────────
+   *
+   * Every task has a room; nobody schedules it. The room is created by the
+   * first person to join and the session is what gets recorded — see
+   * `lib/rules/meetings/meetingCredit.ts` for what a session is worth and who
+   * it reaches.
+   */
+
+  /**
+   * Open (or re-open) this task's room and take a seat in it.
+   *
+   * Returns the credentials to connect with. Called on JOIN rather than at task
+   * creation: a room per task created up front would be thousands of rooms
+   * nobody entered, and LiveKit charges for what exists.
+   */
+  joinTaskMeeting(taskId: TaskId): Promise<
+    ActionResult<{ sessionId: string; roomName: string; token: string; url: string }>
+  >;
+
+  /**
+   * Leave the room, recording when.
+   *
+   * Attendance is what decides the credit — only the span the task's CREATOR
+   * was present counts — so a leave that is never recorded would leave somebody
+   * apparently in the room forever. The session's own close bounds that, which
+   * is why `creditableSecs` clamps to it.
+   */
+  leaveTaskMeeting(input: {
+    taskId: TaskId;
+    sessionId: string;
+  }): Promise<ActionResult<void>>;
+
+  /**
+   * Close the session and credit it.
+   *
+   * **The one call that moves deadlines.** It computes the creditable span,
+   * finds every live task of the assignee's, adds the seconds to each, and
+   * writes a deadline-history row per task so the History tab can say
+   * `previous → why → current`. Idempotent: a session already credited to a
+   * task is never credited to it twice.
+   */
+  endTaskMeeting(input: {
+    taskId: TaskId;
+    sessionId: string;
+  }): Promise<ActionResult<{ creditedSecs: number; creditedTaskIds: string[] }>>;
+
+  /** This task's meeting sessions, newest first — what the Meetings tab lists. */
+  listTaskMeetingSessions(taskId: TaskId): Promise<TaskMeetingSession[]>;
   getMeeting(id: string): Promise<Meeting | null>;
   getMeetingByToken(token: string): Promise<Meeting | null>;
   createMeeting(input: CreateMeetingInput): Promise<ActionResult<Meeting>>;

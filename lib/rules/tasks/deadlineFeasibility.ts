@@ -2,6 +2,7 @@ import { isLiveCandidate } from "./priorityQueue.ts";
 import {
   chainDeadlines,
   rankOf,
+  startedAtMs,
   windowSecsFor,
   type QueueTask,
 } from "./priorityDeadline.ts";
@@ -345,12 +346,55 @@ export function calculateDeadlineFeasibility(input: {
   );
   const simulatedPosition = simulatedIndex + 1;
 
+  /**
+   * **Where the chain starts — and why it is NOT `now`.**
+   *
+   * This anchored at `input.nowMs`, so *Expected completion* was `now` plus the
+   * remaining work: it walked forward one second per second, all day, every
+   * day. Two browsers open on the same task two minutes apart showed 16:50 and
+   * 16:52, and neither was stale — each had computed correctly, from a
+   * different instant.
+   *
+   * A completion date that advances on its own is not a date. So the anchor is
+   * the moment the work actually BEGAN, and the queue is laid out from there in
+   * FULL budgets rather than remainders. The two go together: a fixed origin
+   * with shrinking work would still move (earlier), and a moving origin with
+   * full budgets would still drift. Fixed origin plus fixed budgets is a plan —
+   * decided once when the work starts, and afterwards moved only by the things
+   * that are allowed to move it: a break, an offline span, an approved
+   * emergency, an approved extension.
+   *
+   * Nothing has started yet? Then there is no origin to hold and `nowMs` is the
+   * honest answer, exactly as before.
+   */
+  const startedAnchorMs = (() => {
+    /* Read from the REAL tasks, not from `simulated`. The subject in there is a
+       synthesised row carrying only what this function was asked about — it has
+       no `startedAt`, and the genuine task it stands for was filtered out of
+       `competing` by id. Scanning the simulation therefore found no start on the
+       one task most likely to have one, and the anchor silently fell back to
+       `now` — the very drift this exists to remove. */
+    const startsById = new Map<string, number>();
+    for (const t of input.tasks) {
+      const started = startedAtMs((t as QueueTask).startedAt);
+      if (started !== null) startsById.set(String(t.taskId), started);
+    }
+    /* Front of the queue first: the chain is anchored where it BEGAN, and that
+       is whichever task is leading it. */
+    for (const t of simulated) {
+      const started = startsById.get(String(t.taskId));
+      if (started !== undefined) return started;
+    }
+    return input.nowMs;
+  })();
+
   /* The real chain, over the simulated order. Each task starts when the one
      before it finishes — which is why a placement changes more than one date. */
   const chained = chainDeadlines({
     queue: simulated as QueueTask[],
-    anchorMs: input.nowMs,
+    anchorMs: startedAnchorMs,
     addWorkingSecs: input.addWorkingSecs,
+    budget: "full",
   });
 
   const mine = chained.find((c) => c.taskId === subject.taskId) ?? null;
@@ -380,8 +424,12 @@ export function calculateDeadlineFeasibility(input: {
      knock-on — the difference between the two is what "moved later" means. */
   const baseline = chainDeadlines({
     queue: ordered as QueueTask[],
-    anchorMs: input.nowMs,
+    /* The SAME anchor and the same budget rule as the chain above. "Moved
+       later" is a difference between two orders, so measuring them from two
+       different origins would report movement that nobody caused. */
+    anchorMs: startedAnchorMs,
     addWorkingSecs: input.addWorkingSecs,
+    budget: "full",
   });
   const baselineBy = new Map(baseline.map((b) => [b.taskId, b.dueDate]));
 

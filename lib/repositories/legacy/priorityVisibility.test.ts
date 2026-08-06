@@ -259,16 +259,23 @@ test("the list and the task page get their dates from one chain", () => {
   assert.match(seed, /dueDates: myDueDates,/);
   assert.match(src, /this\.#activeQueueOf\(subjectId\)/);
   assert.match(src, /queue: \(subjectId && queuesBySubject\.get\(subjectId\)\)/);
-  /* And the chain is seeded from settled budgets and a presence-frozen anchor —
-     the assignee's online-session start, so an available person's projection
-     does not creep — never a stored deadline, a creation time or an approval
-     time. */
+  /* And the chain is seeded from settled budgets and a fixed anchor — never from
+     a STORED DEADLINE. That last one is the circularity guard and it still
+     stands: `dueAtMs` and `fixedDeadline` are this chain's own output, so
+     reading them back would let a date drift a little further every time it was
+     recomputed. */
   const fn = src.slice(src.indexOf("async #chainQueue("), src.indexOf("async #chainQueue(") + 2600);
   assert.match(fn, /const anchorMs = queueAnchorMs\(duty, nowMs\)/);
   assert.match(fn, /senderTimerWindowSecs: resolveTimeBudget\(x\)/);
   assert.equal(
-    /dueAtMs|fixedDeadline|createdAtMs/.test(fn),
+    /dueAtMs|fixedDeadline/.test(fn),
     false,
-    "the chain is seeded from a stored date",
+    "the chain is seeded from a stored deadline — that is circular",
   );
+  /* `createdAtMs` IS an input, and deliberately. It is not circular — nothing
+     derives it, it never changes — and without it the chain started every queue
+     at the office opening, so a one-hour task assigned at 10:00 was due at 10:30
+     and one assigned at 15:00 arrived already overdue. A task cannot be due
+     before it existed. */
+  assert.match(fn, /createdAtMs: x\.createdAtMs/);
 });

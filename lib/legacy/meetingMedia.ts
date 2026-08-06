@@ -69,6 +69,87 @@ export async function getPublicMeetingSummary(input: {
   });
 }
 
+/* ── Transcript (verbatim / translated) ──────────────────────────────────────
+ * A DIFFERENT thing from the summary above, not a variant of it. The
+ * summary's own CONVERSATION section translates non-English speech and
+ * paraphrases anything unclear — right for a quick-scan summary, wrong for a
+ * record meant to be trusted word-for-word.
+ *
+ * Two independent modes, stored side by side — generating one never erases
+ * the other:
+ *  - "verbatim": exact words, original language preserved (Hindi/Odia/etc.
+ *    stay as spoken), explicit uncertainty instead of a guess.
+ *  - "translate": renders everything into English, but marks exactly which
+ *    words were translated with a `translated: true` flag rather than
+ *    silently blending them in — for a reader who doesn't read the original
+ *    language but still needs to know a translation happened.
+ * See `routes/task_routes/meetingTranscript.routes.js` on the engine. */
+
+export type TranscriptMode = "verbatim" | "translate";
+
+export interface TranscriptUtterance {
+  start: number;
+  end: number;
+  speaker: string;
+  text: string;
+  needsReview: boolean;
+  /** Only meaningful in "translate" mode — this line (or part of it) was
+   * translated from another language, not originally said in English. */
+  translated?: boolean;
+}
+
+export interface TranscriptModeResult {
+  utterances: TranscriptUtterance[];
+  unparsedLineCount: number;
+  createdAtMs: number;
+}
+
+export interface MeetingTranscript {
+  meetId: string;
+  participantNames: string[];
+  audioFileCount: number;
+  pipeline: string;
+  /** Present once that mode has been generated at least once; absent (not
+   * an empty array) until then — the UI reads absence as "not generated",
+   * not as "generated but empty". */
+  verbatim?: TranscriptModeResult;
+  translate?: TranscriptModeResult;
+}
+
+/** Whatever has been generated so far, in either mode —
+ * `GET /cowork/audio/transcript/:id`. 404 reads as "nothing generated yet". */
+export async function getMeetingTranscriptGemini(input: {
+  token: string;
+  meetId: string;
+}): Promise<LegacyResult<{ transcript?: MeetingTranscript }>> {
+  return legacyFetch({
+    path: `/cowork/audio/transcript/${encodeURIComponent(input.meetId)}`,
+    token: input.token,
+  });
+}
+
+/**
+ * Trigger (or force-regenerate) ONE mode's transcript —
+ * `POST /cowork/audio/transcript/:id?mode=verbatim|translate[&force=true]`.
+ * Slow for the same reason the summary is: it streams every participant's
+ * audio through the Gemini File API. Generating "translate" does not affect
+ * an already-generated "verbatim" on the same meeting, or vice versa.
+ */
+export async function generateMeetingTranscriptGemini(input: {
+  token: string;
+  meetId: string;
+  mode: TranscriptMode;
+  force?: boolean;
+}): Promise<LegacyResult<{ transcript?: MeetingTranscript; cached?: boolean }>> {
+  return legacyFetch({
+    path: `/cowork/audio/transcript/${encodeURIComponent(input.meetId)}`,
+    method: "POST",
+    query: { mode: input.mode, ...(input.force ? { force: "true" } : {}) },
+    token: input.token,
+    timeoutMs: 300_000,
+  });
+}
+
 /** Ask a follow-up question about the meeting — `POST /cowork/audio/ask/:id`. */
 export async function askMeetingAI(input: {
   token: string;

@@ -261,10 +261,17 @@ test("the chain schedules the remainder and the queue test reads the budget", ()
      fully-worked task out of the queue and pull everything behind it earlier,
      even though it has not been submitted. */
   const rule = code("lib/rules/tasks/priorityDeadline.ts");
+  /* Occupancy is still the ALLOCATED budget — a task worked to exhaustion stays
+     in the queue until it is submitted. */
   assert.match(rule, /const windowSecs = windowSecsFor\(task\);/);
   assert.match(rule, /if \(windowSecs <= 0\) continue;/);
-  assert.match(rule, /const remaining = remainingWorkSecs\(task\);/);
-  assert.match(rule, /input\.addWorkingSecs\(anchorMs, remaining\)/);
+  /* And the chain still schedules the REMAINDER by default. The projection
+     behind Expected completion opts into the full budget instead — it needs a
+     plan fixed at the moment work began rather than a running estimate — but it
+     has to ask, so nothing acquires that behaviour by accident. */
+  assert.match(rule, /remainingWorkSecs\(task\)/);
+  assert.match(rule, /input\.budget === "full" \? windowSecs : remainingWorkSecs\(task\)/);
+  assert.match(rule, /budget\?: "remaining" \| "full";/);
 });
 
 test("nothing reduces what a person logged", () => {

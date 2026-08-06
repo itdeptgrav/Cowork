@@ -161,10 +161,12 @@ import {
   heartbeatPatch,
   ownsClaim,
   readDutyMode,
+  readDutySnapshot,
   storedMode,
   type DutyDocument,
   type DutyHistoryEntry,
   type DutyMode,
+  type DutySnapshot,
 } from "@/lib/rules/presence/duty";
 import { presenceWriteRefusal } from "@/lib/rules/presence/taskGate";
 import {
@@ -253,6 +255,11 @@ import {
   emergencyRequestRefusal,
 } from "@/lib/rules/tasks/emergency";
 import { shiftableTasks, shiftedDueAt } from "@/lib/rules/tasks/deadlineShift";
+import { settleSession } from "@/lib/rules/meetings/meetingCredit";
+import {
+  taskJoinRefusal,
+  taskMeetingRoomName,
+} from "@/lib/rules/meetings/taskRoom";
 import {
   workingSecsInSpan,
   type WeekSchedule,
@@ -1164,6 +1171,8 @@ export class MockRepository implements CoworkRepository {
 
     const task: Task = {
       organisationId: actingOrganisationId(),
+      /* A new task has had no meetings. */
+      meetings: { firstStartedAt: null, lastEndedAt: null, totalSecs: 0 },
       id,
       reference: `CW-${id.split("-")[1]}`,
       type: input.type,
@@ -3856,6 +3865,23 @@ export class MockRepository implements CoworkRepository {
     };
   }
 
+  /** The acting employee's own presence, live — see the interface note. */
+  watchDutyStatus(
+    onChange: (snapshot: DutySnapshot) => void,
+    employeeId?: EmployeeId,
+  ): () => void {
+    const id = String(employeeId ?? actingId());
+    const emit = () =>
+      onChange(readDutySnapshot(this.#duty.get(id) ?? null, Date.now()));
+    this.#dutyWatchers.add(emit);
+    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
+    emit();
+    return () => {
+      this.#dutyWatchers.delete(emit);
+      clearInterval(sweep);
+    };
+  }
+
   async listDutyHistory(dayKey?: string): Promise<DutyHistoryEntry[]> {
     const id = String(actingId());
     const key = dayKey ?? dutyDayKey(Date.now());
@@ -4492,6 +4518,8 @@ export class MockRepository implements CoworkRepository {
         assigneeIds: [String(input.employeeId)],
         senderTimerWindowSecs: t.estimatedEffortSecs ?? 0,
         committedDueAt: t.deadline.dueAt,
+        /* A task cannot be due before it existed — see `QueueTask.createdAtMs`. */
+        createdAtMs: t.createdAt ? Date.parse(t.createdAt) : undefined,
       }));
     return calculateDeadlineFeasibility({
       taskId: input.taskId ? String(input.taskId) : undefined,
@@ -8081,6 +8109,197 @@ export class MockRepository implements CoworkRepository {
   }
 
   /** Meetings attached to one task, for the task detail panel. */
+  /* ── A task's own meeting ────────────────────────────────────────────────
+   *
+   * The fixture runs the REAL rules over the fixture's own tasks, so the flow
+   * is exercised against genuine arithmetic rather than a hand-written result
+   * that could drift from it.
+   */
+
+  async joinTaskMeeting(taskId: TaskId) {
+    const s = getStore();
+    const task = s.tasks.find((t) => t.id === taskId && !t.deletedAt);
+    if (!task) {
+      return fail("not_found", "That task could not be found.");
+    }
+    const me = String(actingId());
+
+    /* The same membership rule the legacy repository applies, from the same
+       module — a room joinable in one and refused in the other would make the
+       prototype disagree with the product about who is in a conversation. */
+    const refusal = taskJoinRefusal(
+      {
+        createdById: task.createdById ? String(task.createdById) : null,
+        /* Assignment is its own record in the mock store, the way it is its own
+           collection in the engine — the task does not carry the list. */
+        assigneeIds: s.assignments
+          .filter((a) => a.taskId === task.id)
+          .map((a) => String(a.employeeId)),
+        pendingAssigneeIds: task.pendingAssigneeIds.map(String),
+      },
+      me,
+    );
+    if (refusal) return fail("permission_denied", refusal);
+
+    const nowIso = new Date().toISOString();
+
+    /* Re-enter the session that is already running rather than opening a
+       second one — two rooms for one task would split the attendance and
+       credit each half separately. */
+    let session = s.taskMeetingSessions.find(
+      (x) => x.taskId === taskId && x.endedAt === null,
+    );
+    if (!session) {
+      session = {
+        id: `tms-${s.taskMeetingSessions.length + 1}`,
+        taskId,
+        startedAt: nowIso,
+        endedAt: null,
+        creditedSecs: 0,
+        attendance: [],
+        creditedTaskIds: [],
+      };
+      s.taskMeetingSessions.push(session);
+    }
+    /* A rejoin is a NEW span, not an edit of the old one — `creditableSecs`
+       merges overlaps, so recording both is safe and losing one is not. */
+    session.attendance.push({ employeeId: me, joinedAt: nowIso, leftAt: null });
+
+    return ok({
+      sessionId: session.id,
+      roomName: taskMeetingRoomName(String(taskId)),
+      token: `mock-token-${taskId}-${me}`,
+      url: "wss://mock.livekit.local",
+    });
+  }
+
+  async leaveTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
+    const s = getStore();
+    const session = s.taskMeetingSessions.find((x) => x.id === input.sessionId);
+    if (!session) return fail("not_found", "That meeting could not be found.");
+    const me = String(actingId());
+    const open = [...session.attendance]
+      .reverse()
+      .find((a) => a.employeeId === me && a.leftAt === null);
+    if (open) open.leftAt = new Date().toISOString();
+    return ok(undefined);
+  }
+
+  async endTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
+    const s = getStore();
+    const session = s.taskMeetingSessions.find((x) => x.id === input.sessionId);
+    if (!session) return fail("not_found", "That meeting could not be found.");
+    const task = s.tasks.find((t) => t.id === session.taskId);
+    if (!task) return fail("not_found", "That task could not be found.");
+
+    const endedAtMs = Date.now();
+    session.endedAt = new Date(endedAtMs).toISOString();
+
+    /* Whose deadlines move: the RECEIVER of the work, not the creator. */
+    const assigneeId = String(
+      s.assignments.find((a) => a.taskId === session.taskId)?.employeeId ?? "",
+    );
+
+    /* **One composition, shared with the engine.** `settleSession` decides what
+       changes; this only persists it. Two implementations each composing the
+       same three rules in their own order is how a mock and an engine come to
+       disagree about a number somebody is scored on. */
+    const iso = (ms: number | null) =>
+      ms === null ? null : new Date(ms).toISOString();
+    const settlement = settleSession({
+      session: {
+        creatorId: String(task.createdById),
+        endedAtMs,
+        startedAtMs: Date.parse(session.startedAt),
+        attendance: session.attendance.map((a) => ({
+          employeeId: String(a.employeeId),
+          joinedAtMs: Date.parse(a.joinedAt),
+          leftAtMs: a.leftAt === null ? null : Date.parse(a.leftAt),
+        })),
+      },
+      onTaskId: String(session.taskId),
+      assigneeId,
+      alreadyCredited: session.creditedTaskIds.map(String),
+      tasks: s.tasks
+        .filter((t) => !t.deletedAt)
+        .map((t) => ({
+          taskId: t.id,
+          status: t.status,
+          assigneeIds: s.assignments
+            .filter((a) => a.taskId === t.id)
+            .map((a) => String(a.employeeId)),
+          totals: {
+            firstStartedAtMs: t.meetings.firstStartedAt
+              ? Date.parse(t.meetings.firstStartedAt)
+              : null,
+            lastEndedAtMs: t.meetings.lastEndedAt
+              ? Date.parse(t.meetings.lastEndedAt)
+              : null,
+            totalSecs: t.meetings.totalSecs,
+          },
+          dueAtMs: t.deadline.dueAt ? Date.parse(t.deadline.dueAt) : null,
+          windowSecs: t.deadline.currentWindowSecs ?? null,
+          /* The assignee's own position, not the stored one — `settleSession`
+             grows exactly one window and this decides which. */
+          rank:
+            s.assignments.find(
+              (a) => a.taskId === t.id && a.employeeId === assigneeId,
+            )?.rank ?? 999,
+        })),
+    });
+
+    const creditedSecs = settlement.creditedSecs;
+    session.creditedSecs = creditedSecs;
+
+    for (const update of settlement.updates) {
+      const target = s.tasks.find((t) => t.id === update.taskId);
+      if (!target) continue;
+      target.meetings = {
+        firstStartedAt: iso(update.totals.firstStartedAtMs),
+        lastEndedAt: iso(update.totals.lastEndedAtMs),
+        totalSecs: update.totals.totalSecs,
+      };
+      /* The deadline moves through the SAME path a break or an offline span
+         uses, so the History tab gets its `previous → why → current` row for
+         free rather than growing a second way to say the same thing.
+         **Either axis is enough.** Gated on the DATE alone, a task carrying a
+         budget and no stored due date — the ordinary shape, since the date is
+         derived from the receiver's queue — had its grown window discarded, and
+         the window is what Expected completion is computed from. */
+      if (update.newDueAtMs !== null || update.newWindowSecs !== null) {
+        this.#extendDeadline({
+          task: target,
+          proposalId: null,
+          previousWindowSecs: target.deadline.currentWindowSecs ?? 0,
+          /* The settlement's figure, not one computed here — see
+             `Settlement.newWindowSecs`. */
+          newWindowSecs: update.newWindowSecs ?? target.deadline.currentWindowSecs,
+          /* Written back UNCHANGED rather than as null when there is no date to
+             move: `#extendDeadline` assigns `dueAt` outright, so passing null
+             would erase a date this credit had no business touching. */
+          newDueAt:
+            update.newDueAtMs !== null
+              ? new Date(update.newDueAtMs).toISOString()
+              : target.deadline.dueAt,
+          waivePenalty: false,
+        });
+        this.#event(target.id, "extension_decided", update.reason);
+      }
+      session.creditedTaskIds.push(update.taskId);
+    }
+
+    const targets = settlement.updates.map((u) => u.taskId);
+    return ok({ creditedSecs, creditedTaskIds: targets });
+  }
+
+  async listTaskMeetingSessions(taskId: TaskId) {
+    return delay(
+      getStore()
+        .taskMeetingSessions.filter((x) => x.taskId === taskId)
+        .sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+    );
+  }
+
   async listMeetingsForTask(taskId: TaskId) {
     const viewer = this.#meetingViewer();
     return delay(

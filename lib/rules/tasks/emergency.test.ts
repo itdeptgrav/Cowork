@@ -50,6 +50,7 @@ function req(over: Partial<EmergencyRequest> = {}): EmergencyRequest {
 function task(over: Partial<Task> = {}): Task {
   return {
     organisationId: "org-test",
+    meetings: { firstStartedAt: null, lastEndedAt: null, totalSecs: 0 },
     id: "t-1",
     reference: "CW-1",
     type: "standard",
