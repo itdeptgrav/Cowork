@@ -7,8 +7,11 @@ import {
   NODE_H,
   NODE_W,
   type MindMap,
-} from "./tree";
-import { PX_PER_INCH } from "@/lib/rules/documents/pageSetup";
+} from "./tree.ts";
+/* Relative and extensioned: the test runner is plain `node --test`, which
+   resolves neither the `@/` alias nor an extensionless path — and without it
+   this module cannot be loaded by a test at all. */
+import { PX_PER_INCH } from "../documents/pageSetup.ts";
 
 /**
  * SVG and PNG export.
@@ -61,8 +64,31 @@ function escapeXml(text: string): string {
     .replace(/"/g, "&quot;");
 }
 
-/** The map, as one self-contained SVG document string. */
-export function mindmapToSvg(map: MindMap): string {
+/**
+ * The map with every branch OPEN.
+ *
+ * `layoutMap` places nothing beneath a collapsed node — correctly, because on
+ * screen a collapsed branch is not there to be drawn. An export is a different
+ * question: it is the document, not the view of it, and a reader opening the
+ * PDF has no chevron to press. Exporting the collapsed shape silently dropped
+ * whole branches from the file, and nothing on the page said so — the map
+ * looked complete because it matched the screen it was taken from.
+ *
+ * Done on a COPY. Expanding the live map would open every branch under the
+ * person exporting it, which is a change to their view they did not ask for —
+ * and on a shared map, to everybody else's too.
+ */
+function fullyExpanded(map: MindMap): MindMap {
+  if (!map.nodes.some((n) => n.collapsed)) return map;
+  return {
+    ...map,
+    nodes: map.nodes.map((n) => (n.collapsed ? { ...n, collapsed: false } : n)),
+  };
+}
+
+/** The map, as one self-contained SVG document string. Every branch included. */
+export function mindmapToSvg(input: MindMap): string {
+  const map = fullyExpanded(input);
   const layout = layoutMap(map);
   const width = Math.max(1, layout.width);
   const height = Math.max(1, layout.height);
@@ -131,7 +157,11 @@ async function rasterizeMindmap(
   scale: number,
 ): Promise<{ canvas: HTMLCanvasElement; widthPx: number; heightPx: number }> {
   const svg = mindmapToSvg(map);
-  const layout = layoutMap(map);
+  /* **The SAME expansion the SVG was drawn from.** Measuring the collapsed map
+     here would size the canvas to the visible shape and scale a full-size
+     drawing into it — the branches would be present and squashed, which is
+     worse than the omission it replaced. */
+  const layout = layoutMap(fullyExpanded(map));
   const widthPx = Math.max(1, layout.width);
   const heightPx = Math.max(1, layout.height);
 
