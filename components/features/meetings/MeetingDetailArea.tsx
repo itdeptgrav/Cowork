@@ -304,28 +304,30 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
             </ul>
           </Panel>
 
-          <Panel>
-            <PanelHead
-              title="AI Summary"
-              sub="Generated from meeting audio"
-            />
-            <MeetingSummaryPanel
-              meetId={meetingId}
-              meetStatus={m.status}
-            />
-          </Panel>
-
-          {/* A separate panel, not a tab inside the summary above — see this
-              component's own header comment for why the two must not be
-              conflated: the summary translates and paraphrases by design;
-              this flags uncertainty instead of guessing, in either of its
-              own two modes (verbatim or translated). */}
+          {/* Transcript first, summary second. What was actually said is the
+              record; the summary is a reading of it, and putting the reading
+              above the record invites the reading to be taken for the record.
+              They stay two panels rather than tabs of one — see
+              VerbatimTranscriptPanel's own header for why they must not be
+              conflated: the summary paraphrases and translates by design,
+              while this flags uncertainty instead of guessing. */}
           <Panel>
             <PanelHead
               title="Transcript"
               sub="Verbatim or translated — never the summary's silent paraphrase"
             />
             <VerbatimTranscriptPanel
+              meetId={meetingId}
+              meetStatus={m.status}
+            />
+          </Panel>
+
+          <Panel>
+            <PanelHead
+              title="AI Summary"
+              sub="Generated from meeting audio"
+            />
+            <MeetingSummaryPanel
               meetId={meetingId}
               meetStatus={m.status}
             />

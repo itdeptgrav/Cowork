@@ -84,6 +84,7 @@ export function VerbatimTranscriptPanel({
   const [generating, setGenerating] = useState(false);
   const [step, setStep] = useState(0);
   const [genError, setGenError] = useState<string | null>(null);
+  const [dlLoading, setDlLoading] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -135,6 +136,47 @@ export function VerbatimTranscriptPanel({
       setGenError(e instanceof Error ? e.message : "Generation failed");
     } finally {
       setGenerating(false);
+    }
+  }
+
+  /* Download the tab being read. `mode` is whichever is open, so Verbatim
+     gives the verbatim document and Translated the translated one — the file
+     matches the screen rather than being one fixed export. */
+  async function downloadDocx() {
+    setDlLoading(true);
+    setGenError(null);
+    try {
+      const token = await getToken();
+      const base =
+        process.env.NEXT_PUBLIC_API_URL ||
+        process.env.NEXT_PUBLIC_LEGACY_API_URL ||
+        "http://localhost:5000";
+      const res = await fetch(
+        `${base}/cowork/audio/transcript/${encodeURIComponent(meetId)}/download?mode=${mode}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) {
+        /* The engine answers errors as JSON even here, and its reason is more
+           use than an HTTP number. */
+        let reason = `HTTP ${res.status}`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) reason = body.error;
+        } catch {
+          /* Not JSON — the status is all there is. */
+        }
+        throw new Error(reason);
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Meeting_Transcript_${mode === "translate" ? "Translated" : "Verbatim"}_${meetId}.docx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setGenError(e instanceof Error ? e.message : "Download failed");
+    } finally {
+      setDlLoading(false);
     }
   }
 
@@ -250,15 +292,30 @@ export function VerbatimTranscriptPanel({
           {modeResult.unparsedLineCount > 0 &&
             ` · ${modeResult.unparsedLineCount} line(s) the parser couldn't structure`}
         </p>
-        <Button
-          tone="ghost"
-          size="sm"
-          disabled={generating}
-          onClick={() => void generate(true)}
-        >
-          Regenerate
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button
+            tone="secondary"
+            size="sm"
+            disabled={dlLoading || generating}
+            onClick={() => void downloadDocx()}
+          >
+            {dlLoading ? "Downloading…" : "Download .docx"}
+          </Button>
+          <Button
+            tone="ghost"
+            size="sm"
+            disabled={generating}
+            onClick={() => void generate(true)}
+          >
+            Regenerate
+          </Button>
+        </div>
       </div>
+      {genError && (
+        <div className="mb-3">
+          <InlineError compact message={genError} />
+        </div>
+      )}
 
       <div className="flex flex-col divide-y divide-hairline">
         {modeResult.utterances.map((u, i) => (
