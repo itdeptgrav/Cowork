@@ -383,16 +383,26 @@ export function calculateDeadlineFeasibility(input: {
    * 16:52, and neither was stale — each had computed correctly, from a
    * different instant.
    *
-   * A completion date that advances on its own is not a date. So the anchor is
-   * the moment the work actually BEGAN, and the queue is laid out from there in
-   * FULL budgets rather than remainders. The two go together: a fixed origin
-   * with shrinking work would still move (earlier), and a moving origin with
-   * full budgets would still drift. Fixed origin plus fixed budgets is a plan —
-   * decided once when the work starts, and afterwards moved only by the things
-   * that are allowed to move it: a break, an offline span, an approved
-   * emergency, an approved extension.
+   * A completion date that advances on its own is not a date. So the queue is
+   * laid out in FULL budgets from ONE FIXED ORIGIN — the day's opening.
    *
-   * **Nothing has started yet? Still not `nowMs`.**
+   * **Not the leading task's `startedAt`, which is the second half of the same
+   * fault.** This preferred it, and `anchorMsFor` had already removed exactly
+   * that from the real chain for the reason its own comment gives: pressing
+   * play gives a task a `startedAt`, the anchor switches to it, and the
+   * completion date moves the moment work begins with nothing about the work
+   * having changed. A break is worse — it pauses the timer, so the anchor moved
+   * on the way IN to the break and again on the way out, and neither move had
+   * anything to do with the minutes being credited. Reported as "the deadline
+   * jumped when I went on break, and jumped again when I came back", with the
+   * two jumps adding to far more than the break.
+   *
+   * Fixed origin plus fixed budgets is a plan — decided once, and afterwards
+   * moved only by the things that are allowed to move it: a break, an offline
+   * span, an approved emergency, an approved extension. Starting a timer is not
+   * one of them, and neither is pausing one.
+   *
+   * **And never `nowMs`.**
    *
    * That was the remaining half of the creep, and it is the ordinary case — a
    * task sitting at `assigned` has no `startedAt`, so every read of it anchored
@@ -408,27 +418,7 @@ export function calculateDeadlineFeasibility(input: {
    * `chainDeadlines` then floors each task at its own `createdAtMs`, so work
    * handed over at 15:00 is still not scheduled from the morning.
    */
-  const startedAnchorMs = (() => {
-    /* Read from the REAL tasks, not from `simulated`. The subject in there is a
-       synthesised row carrying only what this function was asked about — it has
-       no `startedAt`, and the genuine task it stands for was filtered out of
-       `competing` by id. Scanning the simulation therefore found no start on the
-       one task most likely to have one, and the anchor silently fell back to
-       `now` — the very drift this exists to remove. */
-    const startsById = new Map<string, number>();
-    for (const t of input.tasks) {
-      const started = startedAtMs((t as QueueTask).startedAt);
-      if (started !== null) startsById.set(String(t.taskId), started);
-    }
-    /* Front of the queue first: the chain is anchored where it BEGAN, and that
-       is whichever task is leading it. */
-    for (const t of simulated) {
-      const started = startsById.get(String(t.taskId));
-      if (started !== undefined) return started;
-    }
-    /* The fixed origin. Never the wall clock — see the note above. */
-    return input.officeOpenMs ?? new Date(input.nowMs).setHours(0, 0, 0, 0);
-  })();
+  const startedAnchorMs = input.officeOpenMs ?? new Date(input.nowMs).setHours(0, 0, 0, 0);
 
   /* The real chain, over the simulated order. Each task starts when the one
      before it finishes — which is why a placement changes more than one date. */

@@ -252,6 +252,64 @@ async function main() {
     "was: nothing at all, assigneeIds was empty",
   );
 
+  /* ── A short visitor must not end the meeting ─────────────────────────────── */
+
+  heading("A ONE-MINUTE VISITOR  (the HOD looks in and leaves; the others talk on)");
+
+  /* Reported: the HOD joined for a minute and left, and the two people still
+     talking were credited ONE minute for a ten-minute conversation — because
+     his departure closed the session and clamped everybody's spans to it. */
+  const V = "V-CROSS";
+  const visited = giveTask(V, RECEIVER, "Cross-department, with a visitor");
+  visited.isCrossDepartment = true;
+  visited.approverIds = [APPROVER];
+  const vBefore = {
+    R: budgetOf("R-1"),
+    S: budgetOf("S-1"),
+    A: budgetOf("A-1"),
+  };
+
+  for (const who of [RECEIVER, SENDER, APPROVER]) {
+    setActingId(who);
+    const j = await repo.joinTaskMeeting(V as never);
+    if (!j.ok) throw new Error(`${who} could not join: ${j.message}`);
+  }
+  const vId = getStore().taskMeetingSessions.find(
+    (x) => x.taskId === V && x.endedAt === null,
+  )!.id;
+  const vSession = getStore().taskMeetingSessions.find((x) => x.id === vId)!;
+
+  /* The HOD is in for one minute of a ten-minute meeting and has left; the two
+     mandatory people are still in the room. */
+  vSession.startedAt = at(0);
+  vSession.attendance = [
+    { employeeId: RECEIVER, joinedAt: at(0), leftAt: null },
+    { employeeId: SENDER, joinedAt: at(0), leftAt: null },
+    { employeeId: APPROVER, joinedAt: at(1), leftAt: at(2) },
+  ];
+
+  setActingId(APPROVER);
+  const early = await repo.endTaskMeeting({ taskId: V as never, sessionId: vId });
+  if (!early.ok) throw new Error(early.message);
+  check("visitor leaves — session closed?", vSession.endedAt === null ? "no" : "yes", "no", "others are still talking");
+  check("visitor leaves — anybody credited?", mins(early.data.creditedSecs), "0m", "nothing settles yet");
+  check("the two are still counting", budgetOf("R-1") - vBefore.R, 0, "no premature credit");
+
+  /* Now the two finish, ten minutes in. */
+  vSession.attendance = [
+    { employeeId: RECEIVER, joinedAt: at(0), leftAt: at(10) },
+    { employeeId: SENDER, joinedAt: at(0), leftAt: at(10) },
+    { employeeId: APPROVER, joinedAt: at(1), leftAt: at(2) },
+  ];
+  setActingId(RECEIVER);
+  const done = await repo.endTaskMeeting({ taskId: V as never, sessionId: vId });
+  if (!done.ok) throw new Error(done.message);
+
+  check("last one out — session worth", mins(done.data.creditedSecs), "10m", "the whole conversation");
+  check("receiver credited", mins(budgetOf("R-1") - vBefore.R), "10m", "not 1m");
+  check("sender credited", mins(budgetOf("S-1") - vBefore.S), "10m", "not 1m");
+  check("the HOD credited", mins(budgetOf("A-1") - vBefore.A), "1m", "his own minute");
+
   /* ── The anti-cheat still holds ───────────────────────────────────────────── */
 
   heading("ANTI-CHEAT  (the same room, without the sender)");

@@ -8207,6 +8207,16 @@ export class MockRepository implements CoworkRepository {
     const task = s.tasks.find((t) => t.id === session.taskId);
     if (!task) return fail("not_found", "That task could not be found.");
 
+    /* **Closed by the LAST person out, not the first.** Everybody calls this on
+       their way out; closing on the first call clamped everybody still talking
+       to that instant, so a one-minute visitor ended a ten-minute meeting. */
+    if (
+      session.endedAt === null &&
+      session.attendance.some((a) => a.leftAt === null)
+    ) {
+      return ok({ creditedSecs: 0, creditedTaskIds: [] as string[] });
+    }
+
     /* Closed ONCE. Everybody in the room calls this on the way out, and reading
        the clock each time stretched the span of anybody still marked present —
        so the meeting was worth more with every person who left. */

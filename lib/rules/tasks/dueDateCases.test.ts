@@ -140,6 +140,13 @@ const started = (over: Record<string, unknown> = {}) => ({
   deadlineWindowSecs: 20 * 60,
   loggedSecs: 4 * 60 + 30,
   startedAt: "2026-08-04T16:30:00",
+  /* **When the work AROSE, which is what the plan runs from.** The fixture had
+     no created time, so these cases were anchored at the leading task's
+     `startedAt` — and that is the very preference `anchorMsFor` removed from
+     the real chain, because it makes the date jump the moment play is pressed.
+     A break pauses the timer, so it jumped on the way in and again on the way
+     out, neither move having anything to do with the minutes credited. */
+  createdAtMs: "2026-08-04T16:30:00",
   ...over,
 });
 
@@ -167,8 +174,8 @@ test("CASE 12 — Expected completion does not move with the clock", () => {
 });
 
 test("CASE 13 — it equals the start plus the FULL agreed budget", () => {
-  /* Work began 16:30 with a 20-minute budget, so the plan is 16:50 — and it
-     stays 16:50 whatever has been logged since. */
+  /* The work arose at 16:30 with a 20-minute budget, so the plan is 16:50 —
+     and it stays 16:50 whatever has been logged since. */
   /* Built from the same local-time parse as the fixture — a hardcoded `Z`
      string would assert the machine's timezone rather than the rule. */
   assert.equal(
@@ -318,4 +325,46 @@ test("CASE 20 — work assigned near closing rolls to the next morning", () => {
   /* Assigned 18:00 with an hour to do: 30 minutes today, 30 tomorrow. */
   const [only] = chainOf([queued("T1", 1, "18:00", 1)]);
   assert.equal(hhmm(only.dueDate), "10:00");
+});
+
+test("CASE 20 — starting or pausing the timer does not move it", () => {
+  /* **The reported fault.** Going on a break pauses the timer; coming back
+     leaves it unstarted. The anchor used to prefer the leading task's
+     `startedAt`, so it moved on the way into the break and again on the way
+     out — and the two jumps added to far more than the break was worth. The
+     break's own minutes are credited through the BUDGET, once, and nothing
+     about a timer is allowed to touch the date. */
+  const read = "2026-08-04T16:40:30";
+  const running = completionAt(read, started());
+  const paused = completionAt(read, started({ startedAt: undefined }));
+  const restarted = completionAt(read, started({ startedAt: "2026-08-04T16:38:00" }));
+
+  assert.equal(paused, running, "pausing the timer moved the completion date");
+  assert.equal(restarted, running, "restarting the timer moved it");
+});
+
+test("CASE 21 — only the BUDGET moves it, by exactly what was credited", () => {
+  /* A two-minute break credits two minutes, so the date moves two minutes —
+     not four, and not nine. The budget is read from `estimatedWorkSeconds`,
+     which is what the panel passes, so it is varied here rather than on the
+     fixture. */
+  const plan = (budgetSecs: number) =>
+    calculateDeadlineFeasibility({
+      taskId: "T005",
+      employeeId: "e1",
+      estimatedWorkSeconds: budgetSecs,
+      alreadyWorkedSeconds: 4 * 60 + 30,
+      committedDeadline: null,
+      tasks: [started({ deadlineWindowSecs: budgetSecs })] as never,
+      nowMs: at("2026-08-04T16:40:30"),
+      addWorkingSecs: plainWalk,
+    }).estimatedCompletionTime!;
+
+  const before = plan(20 * 60);
+  const after = plan(22 * 60);
+  assert.equal(
+    (Date.parse(after) - Date.parse(before)) / 60_000,
+    2,
+    "a two-minute credit did not move the date by two minutes",
+  );
 });

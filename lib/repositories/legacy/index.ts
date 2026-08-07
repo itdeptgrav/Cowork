@@ -7769,6 +7769,33 @@ export class LegacyRepository {
       }
       const session = snap.data() as Record<string, unknown>;
 
+      /**
+       * **A meeting closes when the LAST person leaves, not the first.**
+       *
+       * Every participant calls this on their way out, and it closed the session
+       * outright — so a head of department who looked in for one minute and left
+       * ended the meeting for everybody. The two people still talking had their
+       * spans clamped to that instant: a ten-minute conversation settled as one
+       * minute, and the live figure stopped counting while they were still in
+       * the room. Reported exactly that way.
+       *
+       * Their leave is already recorded by `leaveTaskMeeting`, so nothing is
+       * lost by returning here. Whoever is last out closes it, and by then every
+       * span is complete.
+       */
+      if (session.endedAt == null) {
+        const rows = Array.isArray(session.attendance) ? session.attendance : [];
+        const stillInside = rows.some(
+          (r) => (r as Record<string, unknown>).leftAt == null,
+        );
+        if (stillInside) {
+          return {
+            ok: true as const,
+            data: { creditedSecs: 0, creditedTaskIds: [] as string[] },
+          };
+        }
+      }
+
       const hostTask = readTask({
         ...(await getDoc(doc(db, "cowork_tasks", String(input.taskId)))).data(),
         id: String(input.taskId),

@@ -360,3 +360,34 @@ test("a task you ASSIGNED is fetched whatever your role", () => {
       "cannot see the work they gave to another department.",
   );
 });
+
+/* ── Who is allowed to end a meeting ──────────────────────────────────────── */
+
+test("a meeting is closed by the LAST person out, not the first", () => {
+  /* Reported: a head of department looked in for one minute and left, and the
+     two people still talking were credited ONE minute for a ten-minute
+     conversation — because every participant calls `endTaskMeeting` on their
+     way out and it closed the session outright, clamping every span still open
+     to that instant. The live figure stopped counting while they were still in
+     the room.
+
+     Their own departure is already recorded by `leaveTaskMeeting`, so nothing
+     is lost by returning early; whoever is last out closes it, and by then
+     every span is complete. */
+  for (const file of [LEGACY, MOCK]) {
+    const body = endTaskMeetingBody(file);
+    assert.match(
+      body,
+      /leftAt == null|leftAt === null/,
+      `${file}: nothing checks whether anybody is still in the room, so the ` +
+        `first person to leave ends the meeting for everybody.`,
+    );
+    /* And the check has to come BEFORE the settlement, or it settles anyway. */
+    const guard = body.search(/leftAt == null|leftAt === null/);
+    const settle = body.search(/settleCrossDeptSession\(|settleSession\(/);
+    assert.ok(
+      guard > 0 && guard < settle,
+      `${file}: the still-in-the-room check runs after the settlement`,
+    );
+  }
+});
