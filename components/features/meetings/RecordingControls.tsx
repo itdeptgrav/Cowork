@@ -28,8 +28,13 @@ export function RecordingControls({
   recording: Recording;
   isHost: boolean;
 }) {
-  const { isRecording, isUploading, uploadError, participantStatuses } =
-    recording;
+  const {
+    isRecording,
+    isUploading,
+    uploadError,
+    pendingUploads,
+    participantStatuses,
+  } = recording;
 
   return (
     <div className="flex items-center gap-2">
@@ -38,11 +43,37 @@ export function RecordingControls({
         <span className="text-[11px] text-slab-ink-muted">Uploading…</span>
       )}
       {uploadError && (
+        /**
+         * "Upload failed" read as "your recording is gone", and it never was:
+         * a failed finalize leaves every chunk on the server, and a chunk that
+         * fails to send is now written to disk here. Both are retried on a
+         * timer and on the next page load. Say what is true — it is saved and
+         * still going — and offer the manual nudge for someone who does not
+         * want to wait for the timer.
+         */
+        <span className="flex items-center gap-1.5">
+          <span
+            className="text-[11px] text-[var(--state-overdue-ink)]"
+            title={uploadError}
+          >
+            Upload failed — saved, retrying
+            {pendingUploads > 0 ? ` (${pendingUploads})` : ""}
+          </span>
+          <button
+            type="button"
+            onClick={() => void recording.retryUpload()}
+            className="rounded-md border border-slab-line px-1.5 py-0.5 text-[10px] text-slab-ink-muted hover:text-slab-ink"
+          >
+            Retry now
+          </button>
+        </span>
+      )}
+      {!uploadError && !isUploading && pendingUploads > 0 && (
         <span
-          className="text-[11px] text-[var(--state-overdue-ink)]"
-          title={uploadError}
+          className="text-[11px] text-slab-ink-muted"
+          title="Recorded audio still to be sent. It is saved on this device and will upload by itself."
         >
-          Upload failed
+          {pendingUploads} clip{pendingUploads === 1 ? "" : "s"} to upload
         </span>
       )}
 

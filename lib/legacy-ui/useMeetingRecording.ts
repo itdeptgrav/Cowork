@@ -3,6 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { firebaseAuth } from "./coworkFirebase";
 import {
+  allChunks,
+  allSessions,
+  deleteChunk,
+  deleteSession,
+  pendingCount,
+  putChunk,
+  putSession,
+  sessionMarkerKey,
+  sessionsReadyToFinalize,
+} from "./pendingAudio";
+import {
   emitParticipantStatus,
   emitRecordingStart,
   emitRecordingStop,
@@ -102,6 +113,21 @@ async function warmTokenCache(): Promise<void> {
     /* the finalize path surfaces auth failures; warming is best-effort */
   }
 }
+
+/**
+ * Finalizes currently in flight, keyed meet:employee.
+ *
+ * Finalize can take a while — it merges the chunks and pushes the file to
+ * Drive — and the backend only clears the chunk directory once that SUCCEEDS.
+ * So a drain firing mid-upload would find the chunks still there, merge the
+ * same audio again and write a SECOND Drive file. Not lost audio, but worse
+ * than it sounds: the summary reads every recording for a meeting, so a
+ * duplicate makes one person appear to say everything twice.
+ *
+ * Module scope rather than a ref because the guard has to hold across the
+ * whole page, not per mounted component.
+ */
+const finalizing = new Set<string>();
 
 /* ── Session persistence (rejoin) ─────────────────────────────────────────── */
 
@@ -285,6 +311,10 @@ export function useMeetingRecording({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadDone, setUploadDone] = useState(false);
   const [uploadError, setUploadError] = useState("");
+  /* How many clips are on disk waiting to be sent, so the room can say so
+     rather than showing a bare "Upload failed" with no idea what it cost. */
+  const [pendingUploads, setPendingUploads] = useState(0);
+  const drainingRef = useRef(false);
   const [uploadResult, setUploadResult] = useState<FinalizeResult | null>(null);
   const [participantStatuses, setParticipantStatuses] = useState<
     Map<string, PeerStatus>
@@ -386,6 +416,18 @@ export function useMeetingRecording({
     if (combined.size < 100) return;
 
     const idx = chunkIndexRef.current++;
+
+    /* Durable BEFORE the attempt, not after it fails: the window this closes is
+       the upload itself, which is exactly when the tab tends to be shut. */
+    const rowId = await putChunk({
+      meetId: meetIdRef.current,
+      employeeId: employeeIdRef.current,
+      chunkIndex: idx,
+      mimeType: mimeTypeRef.current,
+      blob: combined,
+      guestSessionId: guestSessionIdRef.current,
+    });
+
     const ok = await uploadChunkWithRetry({
       blob: combined,
       meetId: meetIdRef.current,
@@ -393,10 +435,21 @@ export function useMeetingRecording({
       mimeType: mimeTypeRef.current,
       guestSessionId: guestSessionIdRef.current,
     });
-    if (!ok) {
-      /* Keep it for the next flush rather than dropping the audio. */
+    if (ok) {
+      await deleteChunk(rowId);
+      return;
+    }
+
+    /* Failed. If it is on disk the DRAIN owns it from here — re-queuing in
+       memory as well would send the same audio twice under two indices, and
+       the server merges by index, so the recording would stutter. Only when
+       there is no durable copy (private mode, no IndexedDB) do we fall back to
+       holding it in memory the way this always did. */
+    if (rowId === null) {
       pendingChunksRef.current.push(combined);
       chunkIndexRef.current--;
+    } else {
+      setPendingUploads((n) => n + 1);
     }
   }, []);
 
@@ -528,34 +581,129 @@ export function useMeetingRecording({
     myUploadStateRef.current = "uploading";
     broadcastStatus("not_rec");
     setIsUploading(true);
+
+    /* Mark it BEFORE finalizing. When finalize fails the backend keeps the
+       chunk directory — it only cleans up on success — so the audio is whole
+       on the server and one more call rescues it. This marker is what makes
+       that call happen; without it "Upload failed" was terminal for a
+       recording that was never actually lost. */
+    const marker = {
+      meetId: meetIdRef.current,
+      employeeId: employeeIdRef.current,
+      firstName: firstNameRef.current,
+      mimeType: mimeTypeRef.current,
+      isRejoin: isRejoinRef.current,
+      speechIntervals: speechIntervalsRef.current,
+      guestSessionId: guestSessionIdRef.current,
+    };
+    await putSession(marker);
+    const markerKey = sessionMarkerKey(marker.meetId, marker.employeeId);
+    finalizing.add(markerKey);
+
     try {
       const result = await finalizeRecording({
-        meetId: meetIdRef.current,
-        firstName: firstNameRef.current,
-        mimeType: mimeTypeRef.current,
-        isRejoin: isRejoinRef.current,
-        speechIntervals: speechIntervalsRef.current,
-        guestSessionId: guestSessionIdRef.current,
+        meetId: marker.meetId,
+        firstName: marker.firstName,
+        mimeType: marker.mimeType,
+        isRejoin: marker.isRejoin,
+        speechIntervals: marker.speechIntervals,
+        guestSessionId: marker.guestSessionId,
       });
       setUploadResult(result);
       setUploadDone(true);
       myUploadStateRef.current = "uploaded";
       broadcastStatus("not_rec");
+      await deleteSession(markerKey);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
       if (msg.includes("No audio") || msg.includes("skipped")) {
         setUploadDone(true);
         myUploadStateRef.current = "uploaded";
         broadcastStatus("not_rec");
+        await deleteSession(markerKey);
       } else {
-        setUploadError("Upload failed: " + msg);
+        /* Kept, not lost. The drain retries this on a timer and on the next
+           page load, and the wording says so. */
+        setUploadError("Upload failed — saved, retrying: " + msg);
         myUploadStateRef.current = "failed";
         broadcastStatus("not_rec");
       }
     } finally {
+      finalizing.delete(markerKey);
       setIsUploading(false);
+      setPendingUploads(await pendingCount());
     }
   }, [stopChunkTimer, flushChunks, broadcastStatus]);
+
+  /**
+   * Re-send everything still on disk, then finalize anything still marked.
+   *
+   * Runs on mount, on a timer while the page lives, and from the Retry
+   * control. Safe to run at any moment: chunks are keyed by index server-side
+   * so a replay overwrites rather than appends, and a finalize whose chunks
+   * were already merged answers `skipped` instead of writing a second file.
+   */
+  const drainPending = useCallback(async () => {
+    if (drainingRef.current) return;
+    drainingRef.current = true;
+    try {
+      for (const c of await allChunks()) {
+        const ok = await uploadChunkWithRetry({
+          blob: c.blob,
+          meetId: c.meetId,
+          chunkIndex: c.chunkIndex,
+          mimeType: c.mimeType,
+          guestSessionId: c.guestSessionId,
+        });
+        if (ok) await deleteChunk(c.id ?? null);
+      }
+
+      /* Only finalize a recording whose audio is all through — merging while
+         a chunk is still outstanding would cut the end off the file. */
+      const stillWaiting = await allChunks();
+      const ready = sessionsReadyToFinalize(await allSessions(), stillWaiting);
+      for (const sess of ready) {
+        if (finalizing.has(sess.key)) continue;
+        finalizing.add(sess.key);
+        try {
+          await finalizeRecording({
+            meetId: sess.meetId,
+            firstName: sess.firstName,
+            mimeType: sess.mimeType,
+            isRejoin: sess.isRejoin,
+            speechIntervals: (sess.speechIntervals ?? []) as SpeechInterval[],
+            guestSessionId: sess.guestSessionId,
+          });
+          await deleteSession(sess.key);
+          if (sess.meetId === meetIdRef.current) {
+            setUploadError("");
+            setUploadDone(true);
+          }
+        } catch {
+          /* Drive still refusing. The marker stays, so the next load tries
+             again — the chunks are safe on the server meanwhile. */
+        } finally {
+          finalizing.delete(sess.key);
+        }
+      }
+      setPendingUploads(await pendingCount());
+    } finally {
+      drainingRef.current = false;
+    }
+  }, []);
+
+  /* Rescue on arrival, then keep trying while the page is open. A failed
+     upload used to wait for a person to notice it; now nothing has to. */
+  useEffect(() => {
+    void drainPending();
+    const t = setInterval(() => void drainPending(), 60_000);
+    const onOnline = () => void drainPending();
+    window.addEventListener("online", onOnline);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener("online", onOnline);
+    };
+  }, [drainPending]);
 
   /* Warn before a reload while recording. */
   useEffect(() => {
@@ -584,19 +732,54 @@ export function useMeetingRecording({
         }
       }
       const token = cachedToken;
-      if (!token) return;
       const allBlobs = [...pendingChunksRef.current, ...bufferedChunksRef.current];
       if (allBlobs.length > 0 && mimeTypeRef.current) {
         const combined = new Blob(allBlobs, { type: mimeTypeRef.current });
-        if (combined.size >= 100)
-          sendBeaconChunk({
-            blob: combined,
-            meetId: meetIdRef.current,
-            chunkIndex: chunkIndexRef.current,
-            mimeType: mimeTypeRef.current,
-            token,
-          });
+        if (combined.size >= 100) {
+          const idx = chunkIndexRef.current;
+          /* `sendBeacon` is capped at 64 KB for the whole payload and half a
+             minute of Opus is past that, so for any recording worth keeping
+             this returns false. The result used to be discarded, which is why
+             closing the tab lost the tail of the meeting. Take it as the
+             answer it is and write the audio to disk instead. */
+          const beaconed =
+            token !== null &&
+            sendBeaconChunk({
+              blob: combined,
+              meetId: meetIdRef.current,
+              chunkIndex: idx,
+              mimeType: mimeTypeRef.current,
+              token,
+            });
+          if (!beaconed) {
+            void putChunk({
+              meetId: meetIdRef.current,
+              employeeId: employeeIdRef.current,
+              chunkIndex: idx,
+              mimeType: mimeTypeRef.current,
+              blob: combined,
+              guestSessionId: guestSessionIdRef.current,
+            });
+          }
+          chunkIndexRef.current = idx + 1;
+        }
       }
+
+      /* Mark it for finalize regardless of whether the keepalive lands — an
+         unload is the one moment we cannot see the answer. Finalizing twice
+         is harmless (the second is answered `skipped`); not finalizing leaves
+         a whole recording on the server that never reaches Drive. */
+      void putSession({
+        meetId: meetIdRef.current,
+        employeeId: employeeIdRef.current,
+        firstName: firstNameRef.current,
+        mimeType: mimeTypeRef.current,
+        isRejoin: isRejoinRef.current,
+        speechIntervals: speechIntervalsRef.current,
+        guestSessionId: guestSessionIdRef.current,
+      });
+
+      if (!token) return;
       sendKeepaliveFinalize({
         meetId: meetIdRef.current,
         firstName: firstNameRef.current,
@@ -668,9 +851,36 @@ export function useMeetingRecording({
     };
   }, [meetId, employeeId, startRecording, stopRecording]);
 
+  /**
+   * Leaving the room, as opposed to closing the tab.
+   *
+   * This used to stop the recorder and the timer and nothing else. Everything
+   * captured since the last thirty-second flush went with the component, and
+   * because finalize never ran, the chunks already sitting on the server were
+   * never merged and never reached Drive. `pagehide` does not cover this —
+   * that fires when the DOCUMENT goes away, not when React unmounts a subtree,
+   * so pressing Leave was the one exit with nothing watching it.
+   *
+   * `stopRecording` does the whole sequence and is idempotent
+   * (`isFinalizedRef`), so a host stop followed by an unmount finalizes once.
+   * The component is gone by the time it resolves and its state updates are
+   * no-ops, but the parts that matter — flushing to disk, writing the marker,
+   * finalizing — do not need it to be mounted.
+   *
+   * Held in a ref, and the deps left alone deliberately: putting
+   * `stopRecording` in the array would re-run this effect whenever its
+   * identity changed, and the cleanup would end a recording mid-meeting.
+   */
+  const stopRef = useRef(stopRecording);
+  stopRef.current = stopRecording;
+
   useEffect(() => {
     return () => {
       stopChunkTimer();
+      if (isRecordingRef.current) {
+        void stopRef.current();
+        return;
+      }
       const recorder = mediaRecorderRef.current;
       if (recorder && recorder.state !== "inactive") {
         try {
@@ -703,6 +913,8 @@ export function useMeetingRecording({
     uploadDone,
     uploadError,
     uploadResult,
+    pendingUploads,
+    retryUpload: drainPending,
     setMuted,
     startRecording,
     stopRecording,
