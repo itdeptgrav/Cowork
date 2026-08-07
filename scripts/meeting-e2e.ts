@@ -310,6 +310,59 @@ async function main() {
   check("sender credited", mins(budgetOf("S-1") - vBefore.S), "10m", "not 1m");
   check("the HOD credited", mins(budgetOf("A-1") - vBefore.A), "1m", "his own minute");
 
+  /* ── Rejoining, and leaving by closing the tab ────────────────────────────── */
+
+  heading("REJOINS & TAB-CLOSE  (your two questions, answered by the product)");
+
+  const W = "W-CROSS";
+  const wTask = giveTask(W, RECEIVER, "Cross-department, with rejoins");
+  wTask.isCrossDepartment = true;
+  wTask.approverIds = [APPROVER];
+  const wBefore = { R: budgetOf("R-1"), S: budgetOf("S-1"), A: budgetOf("A-1") };
+
+  for (const who of [RECEIVER, SENDER, APPROVER]) {
+    setActingId(who);
+    const j = await repo.joinTaskMeeting(W as never);
+    if (!j.ok) throw new Error(`${who} could not join: ${j.message}`);
+  }
+  const wId = getStore().taskMeetingSessions.find(
+    (x) => x.taskId === W && x.endedAt === null,
+  )!.id;
+  const wSession = getStore().taskMeetingSessions.find((x) => x.id === wId)!;
+
+  /* Both mandatory people are in for the whole 20 minutes and never press
+     Leave. The HOD joins THREE times — 1m, then 2m, then 1m overlapping his
+     own second visit, which must merge rather than add. */
+  wSession.startedAt = at(0);
+  wSession.attendance = [
+    { employeeId: RECEIVER, joinedAt: at(0), leftAt: null },
+    { employeeId: SENDER, joinedAt: at(0), leftAt: null },
+    { employeeId: APPROVER, joinedAt: at(2), leftAt: at(3) },
+    { employeeId: APPROVER, joinedAt: at(6), leftAt: at(8) },
+    { employeeId: APPROVER, joinedAt: at(7), leftAt: at(8) },
+  ];
+
+  /* Everybody closes their tab — `beforeunload` records a departure and never
+     calls the explicit close. The LAST departure has to settle it. */
+  for (const who of [APPROVER, SENDER, RECEIVER]) {
+    setActingId(who);
+    /* The receiver is last, and is still marked present, so their leave stamps
+       now — 20 minutes in, per the fixture below. */
+    if (who === RECEIVER || who === SENDER) {
+      const row = wSession.attendance.find(
+        (a) => a.employeeId === who && a.leftAt === null,
+      )!;
+      row.leftAt = at(20);
+    }
+    const r = await repo.leaveTaskMeeting({ taskId: W as never, sessionId: wId });
+    if (!r.ok) throw new Error(`${who} could not leave: ${r.message}`);
+  }
+
+  check("nobody pressed Leave — did it settle?", wSession.endedAt === null ? "no" : "yes", "yes", "the last departure closed it");
+  check("the two who never left, credited", mins(budgetOf("R-1") - wBefore.R), "20m", "the whole meeting");
+  check("the sender, credited", mins(budgetOf("S-1") - wBefore.S), "20m");
+  check("HOD joined 3 times (1m + 2m, overlapping)", mins(budgetOf("A-1") - wBefore.A), "3m", "merged, not 4m");
+
   /* ── The anti-cheat still holds ───────────────────────────────────────────── */
 
   heading("ANTI-CHEAT  (the same room, without the sender)");

@@ -7730,7 +7730,7 @@ export class LegacyRepository {
       if (!snap.exists()) {
         return { ok: false as const, code: "not_found" as const, message: "That meeting could not be found." };
       }
-      const data = snap.data() as { attendance?: unknown };
+      const data = snap.data() as { attendance?: unknown; endedAt?: unknown };
       const rows = Array.isArray(data.attendance) ? [...data.attendance] : [];
       /* The LAST open span for this person — a rejoin leaves earlier rows
          already closed, and rewriting one of those would erase a real span. */
@@ -7742,6 +7742,30 @@ export class LegacyRepository {
         }
       }
       await updateDoc(ref, { attendance: rows });
+
+      /**
+       * **Leaving last CLOSES the meeting, so the credit does not wait for a
+       * button nobody presses.**
+       *
+       * `endTaskMeeting` is the explicit close, and it only acts once the room
+       * is empty. But the ordinary way out of a meeting is closing the tab, and
+       * that fires `beforeunload` — which can record a departure and cannot
+       * await a settlement. So everybody leaving by tab left the session open
+       * for ever and nobody was credited anything.
+       *
+       * Recording the departure and finding the room empty IS the last-one-out
+       * condition, so it settles here. Doing it through the same method rather
+       * than beside it keeps one implementation of what a meeting is worth.
+       */
+      const stillInside = rows.some(
+        (r) => (r as { leftAt?: unknown }).leftAt == null,
+      );
+      if (!stillInside && data.endedAt == null) {
+        await this.endTaskMeeting({
+          taskId: input.taskId,
+          sessionId: input.sessionId,
+        });
+      }
       return { ok: true as const, data: undefined };
     } catch (error) {
       return {

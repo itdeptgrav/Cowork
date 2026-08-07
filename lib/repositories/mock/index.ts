@@ -8197,6 +8197,16 @@ export class MockRepository implements CoworkRepository {
       .reverse()
       .find((a) => a.employeeId === me && a.leftAt === null);
     if (open) open.leftAt = new Date().toISOString();
+
+    /* Leaving LAST closes it — the ordinary way out of a meeting is closing the
+       tab, which can record a departure and cannot await a settlement. Without
+       this the room stays open for ever and nobody is credited. */
+    if (
+      session.endedAt === null &&
+      !session.attendance.some((a) => a.leftAt === null)
+    ) {
+      await this.endTaskMeeting(input);
+    }
     return ok(undefined);
   }
 

@@ -391,3 +391,30 @@ test("a meeting is closed by the LAST person out, not the first", () => {
     );
   }
 });
+
+test("the LAST departure settles it, so the credit never waits on a button", () => {
+  /* The ordinary way out of a meeting is closing the tab, which fires
+     `beforeunload` — that can record a departure and cannot await a
+     settlement. With the close gated on "the room is empty", everybody leaving
+     by tab left the session open for ever and nobody was credited anything.
+     Recording the last departure IS the last-one-out condition. */
+  for (const file of [LEGACY, MOCK]) {
+    const src = readFileSync(file, "utf8");
+    const from = src.indexOf("async leaveTaskMeeting");
+    assert.ok(from > 0, `${file}: leaveTaskMeeting is gone`);
+    const body = src.slice(from, src.indexOf("async endTaskMeeting", from));
+
+    assert.match(
+      body,
+      /endTaskMeeting\(/,
+      `${file}: leaving never settles, so a meeting everybody closed the tab ` +
+        `on stays open and credits nobody.`,
+    );
+    assert.match(
+      body,
+      /leftAt == null|leftAt === null/,
+      `${file}: leaving settles unconditionally, which ends the meeting for ` +
+        `everybody still in the room.`,
+    );
+  }
+});

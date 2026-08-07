@@ -264,7 +264,36 @@ export function ownsClaim(
   /* An online claim with no owner predates this field — the old app's manual
      toggle. Ours to correct, because nothing else will. */
   if (holder === null) return true;
-  return holder === connectionId;
+  if (holder === connectionId) return true;
+
+  /**
+   * **The holder has stopped beating, so the claim is adoptable.**
+   *
+   * A claim is renewed by its owner and by nobody else, so an owner quiet for
+   * longer than two beats is gone — a closed tab, or a RELOAD, which takes a
+   * fresh `connectionId` by design.
+   *
+   * Without this, reloading the page put somebody in a state they could not
+   * leave: the account still said online so the pill was right, but every beat
+   * this connection sent was refused in silence, nothing renewed the claim, and
+   * ten minutes later the staleness window marked them offline — after which
+   * the heartbeat stops entirely, because it only runs while online. It never
+   * recovered.
+   *
+   * It never bit while online MEANT a live screen share: a reload killed the
+   * share, so the person was honestly offline and had to go online again, which
+   * re-stamped the claim with the new id. The reload always re-claimed. Nothing
+   * re-claims now, so the claim has to be adoptable instead.
+   *
+   * Two beats rather than the staleness window, because ten minutes of looking
+   * present-but-dead is the thing being fixed. `heartbeatPatch` re-stamps
+   * `presenceConnectionId`, so the first adopted beat takes ownership outright
+   * and the next one needs no adoption. Two live tabs cannot fight over it: the
+   * one that adopts keeps it fresh, so the other never sees a quiet holder.
+   */
+  const beat = typeof doc.heartbeatAt === "number" ? doc.heartbeatAt : null;
+  if (beat === null) return true;
+  return nowMs - beat > 2 * HEARTBEAT_INTERVAL_MS;
 }
 
 /* ── Transitions ──────────────────────────────────────────────────────────── */
