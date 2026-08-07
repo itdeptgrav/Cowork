@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { Avatar } from "@/components/ui/Avatar";
 import { Breadcrumb } from "@/components/ui/Workspace";
@@ -31,6 +32,9 @@ import { PublicLinkPanel } from "./PublicLinkPanel";
  * enter, which is more useful than a Join button that fails.
  */
 export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
+  /* Whether this reader has left the room. Opening the page joins; pressing
+     Leave has to take you out and KEEP you out until you rejoin. */
+  const [left, setLeft] = useState(false);
   const meeting = useQuery((r) => r.getMeeting(meetingId), [meetingId]);
   const viewer = useQuery((r) => r.getViewer(), []);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
@@ -162,12 +166,45 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
         <div className="deck:col-span-2">
           {refusalToJoin ? (
             <RoomClosed reason={refusalToJoin} />
+          ) : left ? (
+            /**
+             * **Leaving has to UNMOUNT the room, not merely be noticed.**
+             *
+             * `onLeave` refetched the participant list and nothing else, so the
+             * room stayed mounted with `connect` still set — LiveKit dropped the
+             * connection and immediately made another. Pressing Leave put you
+             * straight back in the same call, which is what was reported.
+             *
+             * The guest view has always done this correctly by moving to a
+             * lobby phase; this one had no notion of being out of the room at
+             * all, and auto-joined the moment the page rendered.
+             */
+            <Panel>
+              <div className="grid place-items-center px-8 py-14 text-center">
+                <p className="text-[15px] font-medium text-ink">
+                  You have left this meeting
+                </p>
+                <p className="mt-1.5 max-w-[42ch] text-xs leading-relaxed text-ink-muted">
+                  Your camera and microphone are off and you are no longer in the
+                  room. The meeting carries on without you until the organiser
+                  ends it.
+                </p>
+                <div className="mt-4">
+                  <Button size="sm" onClick={() => setLeft(false)}>
+                    Rejoin
+                  </Button>
+                </div>
+              </div>
+            </Panel>
           ) : (
             <MeetingRoom
               meeting={m}
               isOrganiser={isOrganiser}
               displayName={me.data?.displayName ?? ""}
-              onLeave={() => parts.refetch()}
+              onLeave={() => {
+                setLeft(true);
+                parts.refetch();
+              }}
             />
           )}
         </div>

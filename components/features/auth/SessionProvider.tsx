@@ -29,6 +29,11 @@ import {
 import { isConfigured } from "@/lib/legacy/config";
 import { PUBLIC_ENV } from "@/lib/legacy/publicEnv";
 import { clearFirebaseCookie, writeFirebaseCookie } from "@/lib/auth/firebaseCookie";
+import {
+  clearCachedIdentity,
+  readCachedIdentity,
+  writeCachedIdentity,
+} from "@/lib/auth/sessionCache";
 import { notifyRepositoryChanged } from "@/lib/repositories/events";
 import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { RoleArchetype } from "@/lib/domain";
@@ -258,10 +263,57 @@ export function SessionProvider({
     if (anonymous) return;
     started.current = true;
     try {
+      /**
+       * **Paint from what we already knew, then go and check.**
+       *
+       * Nothing about the sign-in expires — Firebase holds the session and
+       * `onIdTokenChanged` keeps the mirrored cookie live. What was never kept
+       * is the ANSWER: which workspace employee this Firebase user is. So every
+       * reload sat on "Signing you in…" through `/cowork/me` and the enrichment
+       * behind it, re-earning an identity it had a moment ago.
+       *
+       * The uid comes from the SDK's own restored session, never from this
+       * cache and never from the cookie — this is not used to GUESS who is
+       * signed in, only to skip re-deriving it for somebody Firebase has
+       * already named. The ladder below still runs in full and overwrites all
+       * of this, so a role change or a transfer corrects itself within one
+       * round trip, and nothing is authorised from here: every read still
+       * carries a live token the engine verifies.
+       */
+      const remembered = readCachedIdentity(currentUser()?.uid ?? null);
+      if (remembered) {
+        setRepository(
+          toCoworkRepository(
+            new LegacyRepository({
+              getToken: () => idToken().catch(() => null),
+              employeeId: remembered.employeeId,
+              legacyRole: legacyRoleOf(
+                (remembered.archetype as RoleArchetype | null) ?? undefined,
+              ),
+              archetype: remembered.archetype as RoleArchetype | null,
+              hasManager: false,
+            }),
+          ),
+        );
+        setState({
+          status: "authenticated",
+          employeeId: remembered.employeeId,
+          displayName: remembered.displayName,
+          email: remembered.email,
+          archetype: remembered.archetype as RoleArchetype | null,
+          landing: remembered.landing,
+          stallReason: null,
+          stallKind: null,
+        });
+      }
+
       const data = await readIdentityPayload();
 
       if (!data.authenticated || !data.employeeId) {
         attempts.current = 0;
+        /* The remembered identity goes with it. A stale entry surviving a
+           sign-out would show the next person the shell of the last one. */
+        clearCachedIdentity();
         setState({
           status: "anonymous",
           employeeId: null,
@@ -460,6 +512,17 @@ export function SessionProvider({
         landing: data.landing ?? "/home",
         stallReason: null,
         stallKind: null,
+      });
+      /* Remembered only once the ladder has ANSWERED, so what is kept is a
+         verified identity rather than a guess — and so a resolution that ended
+         in a stall or a refusal leaves the previous entry to age out on its own
+         rather than replacing it with something worse. */
+      writeCachedIdentity(currentUser()?.uid ?? null, {
+        employeeId: data.employeeId,
+        displayName: data.displayName ?? null,
+        email: data.email ?? null,
+        archetype: data.archetype ?? null,
+        landing: data.landing ?? "/home",
       });
       notifyRepositoryChanged();
     } catch (error) {
@@ -753,6 +816,9 @@ export function SessionProvider({
     try {
       window.localStorage.removeItem(PROFILE_STORAGE_KEY);
       window.localStorage.removeItem(LENS_STORAGE_KEY);
+      /* And the remembered identity, or the next person to sign in on this
+         browser would see the last one's shell for a moment. */
+      clearCachedIdentity();
     } catch {
       /* Storage disabled or full. Signing out must still complete. */
     }
