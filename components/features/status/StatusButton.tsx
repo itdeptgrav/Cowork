@@ -182,7 +182,16 @@ export function StatusButton() {
   const [open, setOpen] = useState(false);
   /* The requirement step. Separate from `open` so dismissing the menu also
      abandons a half-started attempt rather than remembering it. */
-  const [confirming, setConfirming] = useState(false);
+  /**
+   * Which confirmation the menu is showing, if any.
+   *
+   * `"share"` is the resume-sharing prompt. `"offline"` is new: going offline
+   * used to happen on the single click that chose it, and that row sits in a
+   * menu one stray press away from the pill — so an accidental brush ended
+   * somebody's day, published it to their team, and opened the end-of-day
+   * report on the way out. It asks first now.
+   */
+  const [confirming, setConfirming] = useState<"share" | "offline" | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -279,7 +288,7 @@ export function StatusButton() {
     if (!reconnectingShare || autoPrompted.current) return;
     autoPrompted.current = true;
     setOpen(true);
-    setConfirming(true);
+    setConfirming("share");
   }, [reconnectingShare]);
 
   /* Keeps the menu on screen. Runs once on open (before paint, so there is no
@@ -307,13 +316,13 @@ export function StatusButton() {
     function onKey(e: KeyboardEvent) {
       if (e.key !== "Escape") return;
       setOpen(false);
-      setConfirming(false);
+      setConfirming(null);
       buttonRef.current?.focus();
     }
     function onDown(e: MouseEvent) {
       if (rootRef.current?.contains(e.target as Node)) return;
       setOpen(false);
-      setConfirming(false);
+      setConfirming(null);
     }
     document.addEventListener("keydown", onKey);
     document.addEventListener("mousedown", onDown);
@@ -351,7 +360,7 @@ export function StatusButton() {
        */
       goOnline();
       setOpen(false);
-      setConfirming(false);
+      setConfirming(null);
       return;
     }
     if (id === "break") startBreak();
@@ -361,13 +370,14 @@ export function StatusButton() {
        dismissing the modal leaves the person online rather than dropping them
        out with the account still owed. */
     if (id === "offline") {
-      setOpen(false);
-      setConfirming(false);
-      setReportOpen("offline");
+      /* Ask first. The report modal used to open straight from this click, and
+         leaving it — however you left it — went offline. */
+      setOpen(true);
+      setConfirming("offline");
       return;
     }
     setOpen(false);
-    setConfirming(false);
+    setConfirming(null);
   }
 
   function choose(id: EmployeeStatus) {
@@ -424,7 +434,7 @@ export function StatusButton() {
        browser withdraws the gesture and refuses the prompt. */
     if (!viewerId) return;
     const started = await startScreenShare(() => fetchRoomCredentials(viewerId));
-    setConfirming(false);
+    setConfirming(null);
     if (started) setOpen(false);
   }
 
@@ -442,7 +452,7 @@ export function StatusButton() {
             return;
           }
           setOpen((v) => !v);
-          setConfirming(false);
+          setConfirming(null);
         }}
         aria-haspopup="menu"
         aria-expanded={open}
@@ -496,7 +506,7 @@ export function StatusButton() {
           style={{ width: menuWidth, right: -menuShift }}
           className="frost-bar absolute top-[calc(100%+8px)] z-50 rounded-panel border border-hairline p-1.5 shadow-[var(--deck-seat)]"
         >
-          {confirming ? (
+          {confirming === "share" ? (
             <div className="px-2.5 py-2">
               <p className="text-xs font-medium text-ink">
                 Share your entire screen
@@ -527,10 +537,41 @@ export function StatusButton() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setConfirming(false)}
+                  onClick={() => setConfirming(null)}
                   className="rounded-full px-3 py-1.5 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
                 >
                   Cancel
+                </button>
+              </div>
+            </div>
+          ) : confirming === "offline" ? (
+            <div className="px-2.5 py-2">
+              <p className="text-xs font-medium text-ink">Go offline?</p>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-ink-muted">
+                Your team sees you leave, and any running timer stops. You will
+                be asked to write up the day next. The time you are away is
+                credited back to your deadlines when you return.
+              </p>
+              <div className="mt-3 flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setConfirming(null);
+                    setOpen(false);
+                    /* The end-of-day report, exactly as before — the change is
+                       only that it is no longer reached by a single click. */
+                    setReportOpen("offline");
+                  }}
+                  className="rounded-full bg-ink px-3 py-1.5 text-[11px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90"
+                >
+                  Yes, go offline
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirming(null)}
+                  className="rounded-full px-3 py-1.5 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
+                >
+                  Stay online
                 </button>
               </div>
             </div>
@@ -641,7 +682,7 @@ export function StatusButton() {
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
-                  setConfirming(false);
+                  setConfirming(null);
                   setReportOpen("standalone");
                 }}
                 className="mt-0.5 flex w-full items-center gap-2.5 rounded-inset px-2.5 py-2 text-left transition-colors hover:bg-[var(--control)]"
@@ -668,7 +709,7 @@ export function StatusButton() {
                 role="menuitem"
                 onClick={() => {
                   setOpen(false);
-                  setConfirming(false);
+                  setConfirming(null);
                   setHistoryOpen(true);
                 }}
                 className="mt-0.5 flex w-full items-center gap-2.5 rounded-inset px-2.5 py-2 text-left transition-colors hover:bg-[var(--control)]"

@@ -70,8 +70,12 @@ test("the confirm step is still only reachable while the popover is open", () =>
      test should fail loudly rather than quietly passing. */
   const src = code(STATUS_BUTTON);
   const openAt = src.indexOf("{open && (");
-  const confirmingAt = src.indexOf("{confirming ?");
+  /* `confirming` carries two questions now — the share prompt and the
+     go-offline confirmation — so the marker is the first of them rather than a
+     bare `{confirming ?`. Both render in the same place. */
+  const confirmingAt = src.indexOf('{confirming === "share" ?');
   assert.ok(openAt > 0, "the popover gate is gone");
+  assert.ok(confirmingAt > 0, "the confirm panel is gone");
   assert.ok(confirmingAt > openAt, "confirming no longer renders inside the popover");
 });
 
