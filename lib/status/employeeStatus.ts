@@ -516,6 +516,47 @@ export function shareInterrupted(): void {
   });
 }
 
+/**
+ * This device can no longer prove it is here, so it stops saying so.
+ *
+ * **The missing half of the heartbeat.** `duty.ts` expires an `online` claim
+ * that stops beating, and every reader applies that window — except the device
+ * the claim belongs to, which had no way to expire anything. Since online became
+ * a CHOICE (`derive`), nothing local could clear it either: a laptop whose
+ * network died, whose token expired, or whose writes were being refused kept a
+ * green pill up indefinitely while the rest of the company had already watched
+ * it go grey. One account, two answers, and the wrong one was on the screen of
+ * the only person who could act on it.
+ *
+ * Called by `DutySync` when no heartbeat has been ACKNOWLEDGED for
+ * `CLAIM_UNPROVEN_AFTER_MS`. Deliberately narrow:
+ *
+ *  · Only a manual `online` is cleared. A break and an emergency are claims
+ *    about the PERSON, not about a connection — somebody whose wifi drops on
+ *    their break is still on their break — and expiring one would resume their
+ *    deadlines and credit them nothing.
+ *  · `remoteOnline` is untouched. It is a fact about the ACCOUNT, restated by
+ *    the subscription on every snapshot; if another device of theirs really is
+ *    online, this device's pill should keep saying so rather than flicker grey
+ *    until the next emission.
+ *  · A live share still decides on its own. The room is a separate channel to a
+ *    separate service, so an unconfirmed presence write is no evidence at all
+ *    that the screen stopped going out — `derive` keeps them online, and the
+ *    notice is withheld rather than contradicting the pill.
+ */
+export function claimLapsed(): void {
+  if (state.manual !== "online") return;
+  const sharing = state.share.sharing && state.share.connected;
+  commit({
+    ...state,
+    manual: null,
+    notice: sharing
+      ? state.notice
+      : "Cowork could not confirm you were still here, so you were set to offline. Choose Go online when you are back.",
+    reconnecting: false,
+  });
+}
+
 /* ── Manual states ────────────────────────────────────────────────────────── */
 
 export function startBreak(): void {

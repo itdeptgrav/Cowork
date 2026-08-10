@@ -93,6 +93,9 @@ test("a missing document is offline with no clocks", () => {
     breakStartedAtMs: null,
     emergencyStartedAtMs: null,
     presenceConnectionId: null,
+    /* Nobody has ever been on duty, so there is no expired claim to tidy up
+       either — see `claimLapsedAtMs`. */
+    lapsedAtMs: null,
   });
 });
 

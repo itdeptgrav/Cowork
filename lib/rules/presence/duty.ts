@@ -82,6 +82,28 @@ export const STALE_AFTER_MS = 120_000;
 export const PRESENCE_STALE_AFTER_MS = 600_000;
 
 /**
+ * How long a device may go without a CONFIRMED heartbeat before it stops
+ * claiming to be online about itself.
+ *
+ * The two windows above are read-time rules: they decide how long somebody ELSE
+ * believes a claim after the beats stop. Neither of them can be applied by the
+ * device that has gone quiet, and that asymmetry was the fault — a laptop whose
+ * connection died kept a green pill up indefinitely, because online is a manual
+ * state now (`derive`) and nothing local ever expired it. The person looking at
+ * their own screen was the last to know they had dropped off.
+ *
+ * Deliberately SHORTER than `PRESENCE_STALE_AFTER_MS`. A device that knows its
+ * own writes are not landing has direct evidence; a reader watching from
+ * elsewhere only has silence, and silence deserves the longer benefit of the
+ * doubt. Demoting locally first also means the pill never claims something the
+ * rest of the company has already stopped believing.
+ *
+ * Three missed beats. Two is the ordinary throttle of a backgrounded tab, which
+ * this application is sometimes deliberately run as.
+ */
+export const CLAIM_UNPROVEN_AFTER_MS = 3 * HEARTBEAT_INTERVAL_MS;
+
+/**
  * The presence document, as legacy stores it.
  *
  * Field names are legacy's and are not up for tidying — the old app reads and
@@ -164,6 +186,38 @@ export function isStale(doc: DutyDocument | null, nowMs: number): boolean {
 }
 
 /**
+ * The instant an `online` claim expired, if it did and nobody has said so.
+ *
+ * **Staleness was read-only, and that was half a mechanism.** Every reader
+ * resolved an expired claim to offline correctly, and the document itself was
+ * left saying `mode: "online"` for ever — nothing has ever written the lapse.
+ * So the trail in `cowork_duty_history` showed a session still running, and the
+ * old application, which reads `mode` verbatim, showed a green dot for somebody
+ * whose laptop shut days ago.
+ *
+ * Returns the moment the claim ACTUALLY expired — the last heartbeat plus the
+ * window — rather than now, so the entry written from it reads "went offline at
+ * 18:05" instead of at whatever hour a browser next opened. `null` when the
+ * claim is live, when the mode is not online, or when the lapse has already been
+ * written, which is what stops a tidy-up write repeating.
+ *
+ * A claim with no heartbeat at all has no instant to attribute the lapse to —
+ * it is the old app's manual toggle, which never beat once — so it lapses as of
+ * now. Correcting it is ours to do for the reason `ownsClaim` already states:
+ * nothing else will.
+ */
+export function claimLapsedAtMs(
+  doc: DutyDocument | null,
+  nowMs: number,
+): number | null {
+  if (!doc || storedMode(doc) !== "online") return null;
+  const beat = typeof doc.heartbeatAt === "number" ? doc.heartbeatAt : null;
+  if (beat === null) return nowMs;
+  const expiresAt = beat + PRESENCE_STALE_AFTER_MS;
+  return nowMs > expiresAt ? expiresAt : null;
+}
+
+/**
  * What this person's presence actually is, right now.
  *
  * **The only function anything outside this module should ask.** Reading
@@ -211,6 +265,15 @@ export interface DutySnapshot {
    * account is" — the same fact, needing two different sentences on screen.
    */
   presenceConnectionId: string | null;
+  /**
+   * The document still SAYS online, but the claim expired at this instant.
+   *
+   * `mode` above already reads `offline`, so nothing on screen is wrong. What is
+   * wrong is the document, and this is what lets the person's own device tidy it
+   * up when it next opens — see `claimLapsedAtMs`. `null` whenever there is
+   * nothing to correct.
+   */
+  lapsedAtMs: number | null;
 }
 
 /**
@@ -236,6 +299,7 @@ export function readDutySnapshot(
       mode === "online" && typeof doc?.presenceConnectionId === "string"
         ? doc.presenceConnectionId
         : null,
+    lapsedAtMs: claimLapsedAtMs(doc, nowMs),
   };
 }
 

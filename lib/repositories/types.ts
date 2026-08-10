@@ -1042,9 +1042,28 @@ export interface CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    /**
+     * This write TIDIES UP an `online` claim that expired at this instant,
+     * rather than somebody choosing to leave now.
+     *
+     * Only the history entry uses it, so the day's trail reads "went offline at
+     * 18:05" instead of at whatever hour a browser next opened. The absence's
+     * own start is deliberately not backdated with it: deadline credit is owed
+     * for time somebody DECLARED away, and a lapsed claim declares nothing —
+     * the same reasoning the compensation note in `setDutyMode` already gives
+     * for a browser that was simply closed.
+     */
+    lapsedAtMs?: number | null;
   }): Promise<ActionResult<DutyMode>>;
-  /** Restate a live claim. Never moves the mode; cheap enough to run on a timer. */
-  heartbeatDuty(connectionId: string): Promise<ActionResult<void>>;
+  /**
+   * Restate a live claim. Never moves the mode; cheap enough to run on a timer.
+   *
+   * Answers whether the beat was actually RECORDED. A beat is declined in
+   * silence when the claim belongs to another connection or has already
+   * expired, and a caller that read those as success would treat a refusal as
+   * proof of life — which is precisely what `DutySync`'s watchdog is measuring.
+   */
+  heartbeatDuty(connectionId: string): Promise<ActionResult<boolean>>;
   /**
    * Live presence for a set of people, for a manager's view.
    *

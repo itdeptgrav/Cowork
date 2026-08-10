@@ -4352,6 +4352,7 @@ export class LegacyRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    lapsedAtMs?: number | null;
   }): Promise<ActionResult<DutyMode>> {
     const employeeId = String(this.#ctx.employeeId);
     const now = Date.now();
@@ -4407,13 +4408,23 @@ export class LegacyRepository {
      * the only place that ever sees the transition happen. Not awaited into
      * the caller's success: a person's presence changing is real the moment
      * the document above is written, and a history write failing must not
-     * turn that into an error on screen. */
+     * turn that into an error on screen.
+     *
+     * A tidy-up of a LAPSED claim is stamped at the instant it lapsed, not at
+     * the instant somebody's browser next opened — `lapsedAtMs`. The day's
+     * trail is a record of what happened, and "went offline at 09:14 this
+     * morning" for a laptop that shut at 18:05 yesterday is a false one, filed
+     * under the wrong day. */
+    const historyAt =
+      input.mode === "offline" && typeof input.lapsedAtMs === "number"
+        ? input.lapsedAtMs
+        : now;
     void (async () => {
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await addDoc(collection(legacyDb(), "cowork_duty_history"), {
         employeeId,
         mode: input.mode,
-        at: now,
+        at: historyAt,
         reason: input.mode === "emergency" ? (input.reason ?? null) : null,
       });
     })().catch((error) => console.error("[duty] history write failed:", error));
@@ -4887,13 +4898,27 @@ export class LegacyRepository {
    *
    * Silent when the claim is not ours — a second tab beating on the first one's
    * session would keep a dead share looking alive.
+   *
+   * **An EXPIRED claim is not restated either**, which is why the guard reads
+   * through `readDutyMode` rather than `storedMode`. `ownsClaim` deliberately
+   * hands a stale claim to whoever asks — that is its adoption path — so a
+   * laptop that slept for three hours woke up, beat on `visibilitychange`, and
+   * stamped a fresh heartbeat onto a claim that had died before lunch. The
+   * absence retroactively never happened: no lapse, no history entry, and a
+   * manager's afternoon showed somebody who had not been at their desk. Presence
+   * that can be resurrected by a timer is not presence. Coming back means
+   * choosing Online again, which writes a new claim through `setDutyMode`.
+   *
+   * Answers whether the beat was recorded, because "declined" and "written" are
+   * the difference between a live session and a dead one to the watchdog that
+   * calls this.
    */
-  async heartbeatDuty(connectionId: string): Promise<ActionResult<void>> {
+  async heartbeatDuty(connectionId: string): Promise<ActionResult<boolean>> {
     const employeeId = String(this.#ctx.employeeId);
     const now = Date.now();
     const previous = await this.#readDutyDoc(employeeId);
-    if (storedMode(previous) !== "online") return { ok: true, data: undefined };
-    if (!ownsClaim(previous, connectionId, now)) return { ok: true, data: undefined };
+    if (readDutyMode(previous, now) !== "online") return { ok: true, data: false };
+    if (!ownsClaim(previous, connectionId, now)) return { ok: true, data: false };
 
     const { setDoc } = await import("firebase/firestore");
     await setDoc(
@@ -4901,7 +4926,7 @@ export class LegacyRepository {
       heartbeatPatch(now, connectionId),
       { merge: true },
     );
-    return { ok: true, data: undefined };
+    return { ok: true, data: true };
   }
 
   /**

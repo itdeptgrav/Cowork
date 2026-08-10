@@ -162,7 +162,6 @@ import {
   ownsClaim,
   readDutyMode,
   readDutySnapshot,
-  storedMode,
   type DutyDocument,
   type DutyHistoryEntry,
   type DutyMode,
@@ -3763,6 +3762,7 @@ export class MockRepository implements CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    lapsedAtMs?: number | null;
   }): Promise<ActionResult<DutyMode>> {
     const id = String(actingId());
     const now = Date.now();
@@ -3785,7 +3785,12 @@ export class MockRepository implements CoworkRepository {
     history.push({
       id: nextId("dh"),
       mode: input.mode,
-      at: now,
+      /* A lapsed claim is filed at the moment it lapsed — see the legacy
+         implementation's note. */
+      at:
+        input.mode === "offline" && typeof input.lapsedAtMs === "number"
+          ? input.lapsedAtMs
+          : now,
       reason: input.mode === "emergency" ? (input.reason ?? null) : null,
     });
     this.#dutyHistory.set(id, history);
@@ -3843,14 +3848,15 @@ export class MockRepository implements CoworkRepository {
     return ok(input.mode);
   }
 
-  async heartbeatDuty(connectionId: string): Promise<ActionResult<void>> {
+  /** See the legacy implementation: an expired claim is never restated. */
+  async heartbeatDuty(connectionId: string): Promise<ActionResult<boolean>> {
     const id = String(actingId());
     const now = Date.now();
     const previous = this.#duty.get(id) ?? null;
-    if (storedMode(previous) !== "online") return ok(undefined);
-    if (!ownsClaim(previous, connectionId, now)) return ok(undefined);
+    if (readDutyMode(previous, now) !== "online") return ok(false);
+    if (!ownsClaim(previous, connectionId, now)) return ok(false);
     this.#duty.set(id, { ...previous, ...heartbeatPatch(now, connectionId) });
-    return ok(undefined);
+    return ok(true);
   }
 
   watchDutyModes(

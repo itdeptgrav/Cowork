@@ -9,8 +9,15 @@ import {
   markClaimedOnlineHere,
   clearClaimedOnlineHere,
 } from "@/lib/status/connectionId";
-import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
-import { applyRemotePresence } from "@/lib/status/employeeStatus";
+import {
+  CLAIM_UNPROVEN_AFTER_MS,
+  HEARTBEAT_INTERVAL_MS,
+} from "@/lib/rules/presence/duty";
+import {
+  applyRemotePresence,
+  claimLapsed,
+  getSnapshot,
+} from "@/lib/status/employeeStatus";
 import type { EmployeeStatus } from "@/lib/status/employeeStatus";
 import type { DutyMode } from "@/lib/rules/presence/duty";
 
@@ -38,6 +45,16 @@ function dutyModeOf(status: EmployeeStatus): DutyMode {
   return status;
 }
 
+/**
+ * How often the watchdog asks whether this device can still prove it is here.
+ *
+ * Arithmetic over two numbers already in memory — it writes nothing and reads
+ * nothing — so it runs several times per beat rather than once, and the moment
+ * a claim becomes unprovable is noticed within a third of a heartbeat instead of
+ * a whole one.
+ */
+const WATCHDOG_INTERVAL_MS = Math.floor(HEARTBEAT_INTERVAL_MS / 3);
+
 export function DutySync() {
   const { status, session, reconnecting } = useEmployeeStatus();
   const viewerId = useViewerId();
@@ -45,6 +62,10 @@ export function DutySync() {
      write that has not changed anything — presence changes rarely and renders
      happen constantly. */
   const published = useRef<DutyMode | null>(null);
+  /* The lapse instant this device has already written the tidy-up for. The
+     watcher re-emits on its own sweep, and the same expired claim would
+     otherwise be corrected once a minute until the write landed. */
+  const committedLapse = useRef<number | null>(null);
 
   /* ── Follow the account ─────────────────────────────────────────────────── */
   /**
@@ -95,6 +116,50 @@ export function DutySync() {
          over by another device must stop this one believing it holds it. */
       if (snapshot.mode === "online" && mine) markClaimedOnlineHere();
       else if (snapshot.mode !== "online") clearClaimedOnlineHere();
+
+      /**
+       * **Write the lapse the staleness window only ever implied.**
+       *
+       * Everything above resolves an expired claim to offline on the way past,
+       * and until now that was the whole mechanism: the document went on saying
+       * `mode: "online"` for ever, because expiry is the ABSENCE of a write and
+       * a browser that was closed does not get to write a farewell. So the day's
+       * trail showed a session still running, and the old application — which
+       * reads `mode` verbatim, with no window — showed a green dot for somebody
+       * whose laptop shut days ago.
+       *
+       * The person's own device closes it when it next opens. It is entitled to:
+       * `ownsClaim` hands an expired claim to whoever asks, precisely because
+       * the connection that made it is gone. Nobody ELSE's device does this —
+       * `setDutyMode` writes only the acting employee's own document — so a
+       * claim whose owner never returns is still left to the staleness window,
+       * which every reader here applies. Closing that last case needs something
+       * that runs without a browser, and there is no such thing in this product
+       * yet.
+       */
+      if (
+        snapshot.lapsedAtMs !== null &&
+        committedLapse.current !== snapshot.lapsedAtMs
+      ) {
+        const lapsedAtMs = snapshot.lapsedAtMs;
+        committedLapse.current = lapsedAtMs;
+        console.info("[presence] EXPIRED CLAIM tidied up:", {
+          employeeId: viewerId,
+          lapsedAt: new Date(lapsedAtMs).toISOString(),
+        });
+        void getRepository()
+          .setDutyMode({
+            mode: "offline",
+            connectionId: connectionId(),
+            lapsedAtMs,
+          })
+          .catch((error) => {
+            /* Left for the next emission rather than swallowed: the document is
+               still wrong, and the sweep will offer it again. */
+            committedLapse.current = null;
+            console.error("[duty] could not close an expired claim:", error);
+          });
+      }
     }, viewerId);
   }, [viewerId]);
 
@@ -167,13 +232,39 @@ export function DutySync() {
     };
   }, [status, session, viewerId, reconnecting]);
 
-  /* ── Heartbeat ──────────────────────────────────────────────────────────── */
+  /* ── Heartbeat, and the watchdog over it ────────────────────────────────── */
+  /**
+   * **A claim this device cannot prove is one it stops making.**
+   *
+   * The beat was fire-and-forget: its failure was logged and nothing followed
+   * from it. Combined with online being a CHOICE rather than a consequence of a
+   * live share, that left the one device that could act on the truth as the only
+   * one not told it — a laptop whose wifi died, whose token expired, or whose
+   * writes were being refused kept a green pill up indefinitely, while everybody
+   * else's screen went grey ten minutes later. "The system should notice I have
+   * dropped off" is exactly this, and it is measured here rather than guessed
+   * from `navigator.onLine`: a write the server acknowledged is proof, and a
+   * link-state flag is a rumour about one network interface.
+   */
   useEffect(() => {
     if (!viewerId || status !== "online") return;
+
+    /* The transition that put this person online wrote its own heartbeat, so the
+       claim begins proven. Measuring from zero would demote everybody three
+       beats after they arrived. */
+    let lastAck = Date.now();
 
     const beat = () => {
       void getRepository()
         .heartbeatDuty(connectionId())
+        .then((result) => {
+          /* Only a beat that was WRITTEN counts. `heartbeatDuty` answers false
+             in the two cases that both mean this device is no longer the live
+             one — the claim belongs to another connection, or it has already
+             expired — and reading either as proof of life is how a device goes
+             on asserting a session it has lost. */
+          if (result.ok && result.data) lastAck = Date.now();
+        })
         .catch((error) => console.error("[duty] heartbeat failed:", error));
     };
 
@@ -184,19 +275,57 @@ export function DutySync() {
     beat();
     const id = setInterval(beat, HEARTBEAT_INTERVAL_MS);
 
+    const watchdog = setInterval(() => {
+      const quietForMs = Date.now() - lastAck;
+      if (quietForMs <= CLAIM_UNPROVEN_AFTER_MS) return;
+      /**
+       * Re-armed rather than left tripped, and BEFORE anything is decided.
+       *
+       * Standing a claim down does not always end the session this effect is
+       * watching: a device kept online by a live share, or by the same account
+       * being online on another device, is still online afterwards — so nothing
+       * tears this down, and a tripped watchdog would fire every fifteen seconds
+       * for as long as that lasted. Re-arming makes it ask again a full window
+       * later instead, which is also what lets a connection that comes back get
+       * a fresh hearing.
+       */
+      lastAck = Date.now();
+      /* Read live rather than from the render closure: `claimLapsed` changes
+         `manual` without necessarily changing `status`, so the captured value
+         goes stale exactly when it matters. A device that never held the claim —
+         the phone mirroring an account its laptop is keeping alive — has nothing
+         to stand down and says nothing about it. */
+      if (getSnapshot().manual !== "online") return;
+      console.info("[presence] CLAIM UNPROVEN — standing down:", {
+        employeeId: viewerId,
+        quietForMs,
+        allowedMs: CLAIM_UNPROVEN_AFTER_MS,
+      });
+      /* Drops this device to offline and, through the publish effect above,
+         writes it — a write that queues while the connection is down and lands
+         the moment it returns. `claimLapsed` leaves a break, an emergency and a
+         live share alone; see the store. */
+      claimLapsed();
+    }, WATCHDOG_INTERVAL_MS);
+
     /* A backgrounded tab has its timers clamped — this application is
        sometimes deliberately run that way — so returning to it beats
        immediately rather than waiting out a clamped interval. The staleness
        window already tolerates two missed beats; this shortens the recovery
-       rather than being the thing that prevents the problem. */
+       rather than being the thing that prevents the problem. The same for the
+       browser reporting the network back: the first beat after it is what saves
+       a session the watchdog is otherwise seconds from standing down. */
     const onVisible = () => {
       if (document.visibilityState === "visible") beat();
     };
     document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("online", beat);
 
     return () => {
       clearInterval(id);
+      clearInterval(watchdog);
       document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("online", beat);
     };
   }, [status, viewerId]);
 
