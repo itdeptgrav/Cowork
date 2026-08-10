@@ -630,10 +630,6 @@ export function StatusButton() {
           );
           return;
         }
-        /* The held seat goes with it. A publish that failed on an expired or
-           refused token would fail the same way on every retry while the same
-           seat is being handed back — see `prefetchShareSeat`. */
-        releaseShareSeat();
         sessionFailed(shareRefusal(error));
       })
       /* Whichever way it went, the picker is closed and the ordinary rules

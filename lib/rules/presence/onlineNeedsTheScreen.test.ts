@@ -125,6 +125,40 @@ test("the SDK is pointed at the realtime server, not the embed page", () => {
   assert.match(code(TOKEN_ROUTE), /url: credentials\.url,/);
 });
 
+test("the seat is in hand before the menu is even opened", () => {
+  /**
+   * **Reported as "Preparing… takes too long and never shows the picker".**
+   *
+   * Asking for a seat is four hops — this route, the engine's `/cowork/me`,
+   * Grav Stream's room listing, then the mint — and it began when the menu
+   * opened. Press Go online straight after opening it and you waited for all
+   * four behind a button reading "Preparing…".
+   *
+   * It is fetched when the PILL mounts now and held for five minutes. Crucially
+   * not through `startScreenShare`: that moves the session to `connecting`, and
+   * `DutySync` publishes nothing in that state — warming a seat must never
+   * silence somebody's presence.
+   */
+  const button = code(BUTTON);
+  const at = button.indexOf("prefetchShareSeat(viewerId);");
+  assert.ok(at > 0, "the seat is only fetched when the menu opens again");
+  const effect = button.slice(at, button.indexOf("}, [viewerId]);", at));
+  assert.ok(
+    !/startScreenShare/.test(effect),
+    "warming holds a connecting session, which stops DutySync publishing at all",
+  );
+  assert.match(effect, /loadPublisherSdk\(\)/);
+
+  const seat = code("lib/integrations/grav/credentials.ts");
+  assert.match(seat, /export function prefetchShareSeat/);
+  assert.match(seat, /const held = heldSeat\(employeeId\);\s*if \(held\) return held;/);
+  /* The in-flight promise is held, not just the result: opening the menu and
+     pressing immediately would otherwise mint two seats for one person, and the
+     second evicts the first from the room. */
+  assert.match(seat, /asking: Promise<RoomSeat>/);
+  assert.match(button, /releaseShareSeat\(\)/, "a failed publish keeps a bad seat");
+});
+
 test("the room and the library are warmed up before the press, and given back after", () => {
   /* Warming up is fetching a seat and parsing a script, which is NOT being
      online — the service decides that on a live screen. A menu opened and closed

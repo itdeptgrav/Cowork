@@ -33,7 +33,71 @@ export interface RoomSeat {
  * person live" is asked and answered about one name.
  */
 export function fetchShareSeat(employeeId: string): Promise<RoomSeat> {
-  return ask({ subject: employeeId, role: "publish" });
+  const held = heldSeat(employeeId);
+  if (held) return held;
+  const asking = ask({ subject: employeeId, role: "publish" });
+  seat = { employeeId, at: Date.now(), asking };
+  /* A failure must not be remembered as a seat. Dropped so the next press asks
+     again rather than re-throwing something that has since been fixed. */
+  void asking.catch(() => {
+    if (seat?.asking === asking) seat = null;
+  });
+  return asking;
+}
+
+/* ── Having the seat BEFORE it is needed ───────────────────────────────────── */
+
+/**
+ * One seat, kept for as long as it is worth keeping.
+ *
+ * **This is the "Preparing…" fix.** Asking for a seat is four hops — this
+ * route, the engine's `/cowork/me`, Grav Stream's room listing, then the mint —
+ * and the person is watching a button while all four happen. None is slow on
+ * its own; together they are long enough that the picker does not feel like it
+ * belongs to the press that asked for it.
+ *
+ * So it is fetched ahead of the press and held. A publisher's seat lasts a day
+ * (`PUBLISH_TTL_SECONDS`), and this keeps one for five minutes — short enough
+ * that a revoked account or a changed room is never held onto, long enough that
+ * opening the menu is instant.
+ *
+ * The in-flight promise is cached too, not just the result: opening the menu
+ * and pressing immediately would otherwise mint two seats for one person, and
+ * the second would evict the first from the room.
+ */
+const SEAT_HELD_MS = 5 * 60_000;
+
+let seat: {
+  employeeId: string;
+  at: number;
+  asking: Promise<RoomSeat>;
+} | null = null;
+
+function heldSeat(employeeId: string): Promise<RoomSeat> | null {
+  if (!seat || seat.employeeId !== employeeId) return null;
+  if (Date.now() - seat.at > SEAT_HELD_MS) return null;
+  return seat.asking;
+}
+
+/**
+ * Get the seat ready. Called when the presence pill mounts, so the request —
+ * and, in development, the route's first compile — happens while somebody is
+ * reading their dashboard rather than while they wait on a menu.
+ *
+ * Deliberately NOT `startScreenShare`: that moves the session to `connecting`,
+ * and `DutySync` publishes nothing in that state. Warming a seat must not
+ * silence somebody's presence.
+ */
+export function prefetchShareSeat(employeeId: string): void {
+  if (!employeeId || heldSeat(employeeId)) return;
+  void fetchShareSeat(employeeId).catch(() => {
+    /* Warming is best-effort. The press asks again and reports the reason. */
+  });
+}
+
+/** Forget the held seat — after a failed publish, or on signing out. */
+export function releaseShareSeat(): void {
+  seat = null;
 }
 
 /**
