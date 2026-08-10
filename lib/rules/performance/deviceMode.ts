@@ -17,10 +17,10 @@ import {
  * one has a guard below:
  *
  *  · **The presence heartbeat.** "Reduce polling frequency" is the obvious
- *    saving and it is a trap: `readDutyMode` treats a beat older than
- *    `STALE_AFTER_MS` as offline, so slowing the heartbeat past that window
- *    marks working people as away. Their timer then refuses to start. A
- *    performance setting that logs somebody out is not a performance setting.
+ *    saving and it is a trap. It no longer expires anybody's status — nothing
+ *    does — but a beat that falls behind `2 * HEARTBEAT_INTERVAL_MS` makes the
+ *    claim adoptable (`ownsClaim`), so another tab can take the session over
+ *    while the one actually working still holds it.
  *  · **Timer accuracy.** The elapsed figure is computed from `startedAt` and the
  *    wall clock, never accumulated from ticks — so a slower tick redraws less
  *    often and stays exactly as correct. That is why it is safe to slow and why
@@ -178,12 +178,11 @@ export function performanceProfile(mode: DeviceMode): PerformanceProfile {
  * greppable: somebody adding `heartbeatMs` to the profile above will find this
  * and the reason.
  *
- * `readDutyMode` treats a beat older than `PRESENCE_STALE_AFTER_MS` (600s) as
- * offline. The interval is 45s, which lands well inside that window. Slowing it
- * to save a request would mark working people as offline — and the offline gate
- * then refuses to start their timer. The clamp below still divides the tighter
- * `STALE_AFTER_MS` on purpose: beating inside the shorter window costs nothing
- * and is what keeps the timer's own bankable grace honest.
+ * The beat names the connection holding the claim, and a claim quiet for two
+ * intervals is adoptable by another tab (`ownsClaim`). The interval is 45s,
+ * which lands well inside every window that reads it. The clamp below divides
+ * the tighter `STALE_AFTER_MS` on purpose: beating inside the shorter window
+ * costs nothing and is what keeps the timer's own bankable grace honest.
  */
 export function heartbeatIntervalMs(_mode: DeviceMode): number {
   void _mode;
@@ -195,8 +194,8 @@ export function heartbeatIntervalMs(_mode: DeviceMode): number {
  *
  * The test is whether the value is DERIVED or ACCUMULATED. A timer computed from
  * `startedAt` and the wall clock is derived, so redrawing less often is a
- * cosmetic change. A heartbeat is a claim that expires, so slowing it changes
- * what the system believes.
+ * cosmetic change. A heartbeat is a claim of ownership that another tab may take
+ * over once it falls behind, so slowing it changes who the session belongs to.
  */
 export function mayThrottle(interval: {
   /** Milliseconds the caller wants to use. */
@@ -205,9 +204,10 @@ export function mayThrottle(interval: {
   affectsCorrectness: boolean;
 }): number {
   if (!interval.affectsCorrectness) return interval.ms;
-  /* Clamped to something that cannot outlive the staleness window, whatever a
-     caller passes. Belt and braces: the profile has no such field, and if one is
-     ever added this stops it silently expiring somebody's presence. */
+  /* Clamped to something that stays well inside every window that reads a beat,
+     whatever a caller passes. Belt and braces: the profile has no such field,
+     and if one is ever added this stops it silently handing somebody's session
+     to another tab. */
   return Math.min(interval.ms, Math.floor(STALE_AFTER_MS / 3));
 }
 

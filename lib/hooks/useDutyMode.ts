@@ -6,15 +6,14 @@ import type { DutyMode } from "@/lib/rules/presence/duty";
 import type { EmployeeId } from "@/lib/domain";
 
 /**
- * Somebody's presence, live, with the staleness window applied.
+ * Somebody's presence, live.
  *
- * **Replaces reading `cowork_duty_status` directly.** The ported
- * `lib/legacy-ui/useDutyStatus.js` reads the document and returns `doc.mode`
- * verbatim, which is what legacy did and what left a green dot on screen for
- * anybody whose browser had been closed rather than switched to offline. That
- * hook is still the old app's behaviour and is left where it is; nothing on a
- * task surface should use it, because a stale claim is exactly the input that
- * would unlock a task for somebody who is not there.
+ * **Replaces reading `cowork_duty_status` directly.** Not because the answer
+ * differs any more — nothing expires a status, so the mode is the document's
+ * own — but because every surface should ask one question of one place. The
+ * ported `lib/legacy-ui/useDutyStatus.js` is left where it is; a screen reaching
+ * into Firestore itself is a screen that will not notice when a presence rule
+ * changes underneath it.
  *
  * `null` while the first read is in flight, and that null is load-bearing — see
  * `presenceRefusal`. Unknown is not away, and refusing during the attach window
@@ -33,7 +32,7 @@ export function useDutyMode(employeeId: EmployeeId | null): DutyMode | null {
     /* One id, one watcher. `watchDutyModes` takes a list because a manager's
        screen needs several at once; a single subscriber is the same machinery
        with one entry, rather than a second code path that could disagree with
-       it about staleness. */
+       it. */
     const unsubscribe = getRepository().watchDutyModes([employeeId], (modes) => {
       if (stopped) return;
       setMode(modes.get(employeeId) ?? "offline");
@@ -54,9 +53,8 @@ export function useDutyMode(employeeId: EmployeeId | null): DutyMode | null {
  * Presence for several people at once, for a roster.
  *
  * One subscription rather than one per row: a team of thirty rendered with a
- * per-row hook opens thirty listeners and thirty staleness sweeps, and every
- * one of them re-renders its row on any change. The repository already takes a
- * list for exactly this reason.
+ * per-row hook opens thirty listeners, and every one of them re-renders its row
+ * on any change. The repository already takes a list for exactly this reason.
  *
  * `ids` is joined into the dependency rather than passed by reference, because
  * a caller computing it inline — `reports.map(p => p.id)` — hands over a new

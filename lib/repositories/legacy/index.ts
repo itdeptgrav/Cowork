@@ -4352,7 +4352,6 @@ export class LegacyRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
-    lapsedAtMs?: number | null;
   }): Promise<ActionResult<DutyMode>> {
     const employeeId = String(this.#ctx.employeeId);
     const now = Date.now();
@@ -4408,23 +4407,13 @@ export class LegacyRepository {
      * the only place that ever sees the transition happen. Not awaited into
      * the caller's success: a person's presence changing is real the moment
      * the document above is written, and a history write failing must not
-     * turn that into an error on screen.
-     *
-     * A tidy-up of a LAPSED claim is stamped at the instant it lapsed, not at
-     * the instant somebody's browser next opened — `lapsedAtMs`. The day's
-     * trail is a record of what happened, and "went offline at 09:14 this
-     * morning" for a laptop that shut at 18:05 yesterday is a false one, filed
-     * under the wrong day. */
-    const historyAt =
-      input.mode === "offline" && typeof input.lapsedAtMs === "number"
-        ? input.lapsedAtMs
-        : now;
+     * turn that into an error on screen. */
     void (async () => {
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await addDoc(collection(legacyDb(), "cowork_duty_history"), {
         employeeId,
         mode: input.mode,
-        at: historyAt,
+        at: now,
         reason: input.mode === "emergency" ? (input.reason ?? null) : null,
       });
     })().catch((error) => console.error("[duty] history write failed:", error));
@@ -4898,27 +4887,13 @@ export class LegacyRepository {
    *
    * Silent when the claim is not ours — a second tab beating on the first one's
    * session would keep a dead share looking alive.
-   *
-   * **An EXPIRED claim is not restated either**, which is why the guard reads
-   * through `readDutyMode` rather than `storedMode`. `ownsClaim` deliberately
-   * hands a stale claim to whoever asks — that is its adoption path — so a
-   * laptop that slept for three hours woke up, beat on `visibilitychange`, and
-   * stamped a fresh heartbeat onto a claim that had died before lunch. The
-   * absence retroactively never happened: no lapse, no history entry, and a
-   * manager's afternoon showed somebody who had not been at their desk. Presence
-   * that can be resurrected by a timer is not presence. Coming back means
-   * choosing Online again, which writes a new claim through `setDutyMode`.
-   *
-   * Answers whether the beat was recorded, because "declined" and "written" are
-   * the difference between a live session and a dead one to the watchdog that
-   * calls this.
    */
-  async heartbeatDuty(connectionId: string): Promise<ActionResult<boolean>> {
+  async heartbeatDuty(connectionId: string): Promise<ActionResult<void>> {
     const employeeId = String(this.#ctx.employeeId);
     const now = Date.now();
     const previous = await this.#readDutyDoc(employeeId);
-    if (readDutyMode(previous, now) !== "online") return { ok: true, data: false };
-    if (!ownsClaim(previous, connectionId, now)) return { ok: true, data: false };
+    if (storedMode(previous) !== "online") return { ok: true, data: undefined };
+    if (!ownsClaim(previous, connectionId, now)) return { ok: true, data: undefined };
 
     const { setDoc } = await import("firebase/firestore");
     await setDoc(
@@ -4926,7 +4901,7 @@ export class LegacyRepository {
       heartbeatPatch(now, connectionId),
       { merge: true },
     );
-    return { ok: true, data: true };
+    return { ok: true, data: undefined };
   }
 
   /**
@@ -4935,11 +4910,6 @@ export class LegacyRepository {
    * One listener per person, matching `useDutyStatus` — legacy has no query
    * across the collection and the documents are keyed by employee, so a
    * collection query would read the whole company to render one team.
-   *
-   * The staleness window is applied **per emission and on a timer**, because a
-   * claim going stale is the absence of a write: nobody is going to notify us
-   * that somebody's laptop shut. Without the timer a manager's screen would
-   * hold a green dot until some unrelated document happened to change.
    */
   /**
    * This employee's own presence, live, with the start instants.
@@ -4950,9 +4920,12 @@ export class LegacyRepository {
    * counts from the same instant instead of from whenever it happened to find
    * out.
    *
-   * The periodic sweep is inherited from `watchDutyModes` for the same reason:
-   * staleness is a function of the clock, not of a write, so an `online` claim
-   * whose heartbeat stopped has to expire without anybody writing anything.
+   * **No periodic sweep.** Both watchers used to re-emit on a timer so that an
+   * `online` claim whose heartbeat had stopped would expire without anybody
+   * writing anything. Nothing expires now — a status is changed by the person
+   * whose status it is — so a timed re-emission has nothing left to say, and
+   * saying it anyway is how a snapshot from before somebody's own choice
+   * arrived after it and undid it. Emissions follow the document.
    */
   watchDutyStatus(
     onChange: (snapshot: DutySnapshot) => void,
@@ -4982,11 +4955,8 @@ export class LegacyRepository {
       );
     })();
 
-    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
-
     return () => {
       stopped = true;
-      clearInterval(sweep);
       unsub?.();
     };
   }
@@ -5025,13 +4995,10 @@ export class LegacyRepository {
       }
     })();
 
-    /* Half the staleness window, so a dot is never more than that much out of
-       date. Cheap — it re-reads documents already in memory and writes nothing. */
-    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
-
+    /* No sweep — see `watchDutyStatus`. A dot changes when somebody changes
+       their own status, and at no other time. */
     return () => {
       stopped = true;
-      clearInterval(sweep);
       for (const unsub of unsubscribers) unsub();
     };
   }

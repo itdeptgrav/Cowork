@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 import { TopBar } from "./TopBar";
 import { DemoBar } from "./DemoBar";
 import { PlayerEngine } from "@/components/features/music/PlayerEngine";
-import { PresenceRoom } from "@/components/features/status/PresenceRoom";
 import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
@@ -240,11 +239,13 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
         video slot, and everywhere else it runs audio-only behind a quiet
         bar. See `PlayerEngine` for what that costs. */}
       <PlayerEngine />
-      {/* Presence, for the same reason and with the same shape: a sibling of
-        the shell rather than a wrapper around it, so a token arriving does
-        not remount every page. It renders nothing until someone has agreed
-        to share a screen, and nothing visible even then. */}
-      <PresenceRoom />
+      {/* **No presence room here any more, and that is the point.** Sharing a
+        screen used to need a Grav Stream iframe mounted beside the shell,
+        because the capture prompt can only be opened from inside the frame
+        that calls it. Their publisher SDK runs in THIS document, so the status
+        menu's own button opens the picker and there is nothing to render —
+        see `lib/integrations/grav/publisher.ts`. Watching still uses an
+        iframe, and that one belongs to the monitoring panel that shows it. */}
       {/* Publishes what the room decided to `cowork_duty_status`, so a
         colleague, a manager and the old app read one presence rather than
         three. Separate from the room because presence has to be published

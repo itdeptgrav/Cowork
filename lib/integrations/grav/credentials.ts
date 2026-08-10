@@ -14,7 +14,13 @@ export interface RoomSeat {
   /** Grav Stream's own id for the room. */
   roomId: string;
   token: string;
-  /** The page to load in an iframe. Built server-side — see the token route. */
+  /**
+   * The realtime server the media connects to — `serverUrl` for the publisher
+   * SDK. Explicitly NOT a page to load; their documentation says so twice,
+   * because it is the field most likely to be mistaken for the embed.
+   */
+  url: string;
+  /** The page a WATCHER loads in an iframe. Built server-side. */
   embedUrl: string;
 }
 
@@ -56,7 +62,15 @@ export function fetchWatchSeat(subjectEmployeeId: string): Promise<RoomSeat> {
 export async function fetchRoomPresence(input: {
   subject: string;
   role: "publish" | "watch";
-}): Promise<{ present: boolean; participantCount: number }> {
+}): Promise<{
+  /** In the room at all — connected, not necessarily sharing. */
+  present: boolean;
+  /** A screen is going out RIGHT NOW. This is what Online is decided on. */
+  sharing: boolean;
+  /** "monitor", "window" or "browser" — or null where it is not known. */
+  surface: string | null;
+  participantCount: number;
+}> {
   const data = await request(
     `/api/stream/presence?subject=${encodeURIComponent(
       input.subject,
@@ -68,6 +82,8 @@ export async function fetchRoomPresence(input: {
       : undefined;
   return {
     present: read("present") === true,
+    sharing: read("sharing") === true,
+    surface: typeof read("surface") === "string" ? (read("surface") as string) : null,
     participantCount:
       typeof read("participantCount") === "number"
         ? (read("participantCount") as number)
@@ -94,6 +110,7 @@ async function ask(params: {
 
   const roomId = read("roomId");
   const token = read("token");
+  const url = read("url");
   const embedUrl = read("embedUrl");
   if (typeof token !== "string" || !token) throw new Error("No token returned");
   if (typeof embedUrl !== "string" || !embedUrl)
@@ -102,6 +119,7 @@ async function ask(params: {
   return {
     roomId: typeof roomId === "string" ? roomId : "",
     token,
+    url: typeof url === "string" ? url : "",
     embedUrl,
   };
 }

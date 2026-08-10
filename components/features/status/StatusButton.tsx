@@ -6,8 +6,12 @@ import {
   STATUS_META,
   clearManual,
   declareEmergency,
+  endSession,
   goOffline,
-  goOnline,
+  reportProblem,
+  reportShare,
+  sessionFailed,
+  sessionLive,
   startScreenShare,
   startBreak,
   takeBreakStart,
@@ -18,7 +22,15 @@ import {
   SURFACE_LABEL,
   isIOS,
 } from "@/lib/integrations/livekit/screenShare";
-import { fetchRoomCredentials } from "@/lib/integrations/livekit/credentials";
+import { fetchShareSeat } from "@/lib/integrations/grav/credentials";
+import {
+  loadPublisherSdk,
+  publisherReady,
+  shareRefusal,
+  startPublishing,
+  wasCancelled,
+} from "@/lib/integrations/grav/publisher";
+import { fetchRoomPresence } from "@/lib/integrations/grav/credentials";
 import {
   isNativeShell,
   setNativeResumeHandler,
@@ -58,14 +70,15 @@ const CHOICES: {
   label: string;
   hint: string;
 }[] = [
-  /* The hints describe what each choice DOES. "Requires sharing your entire
-     screen" and "sharing stops" were true while online was a consequence of a
-     live share; a menu still saying so beside a button that no longer asks is
-     the fault people report as "it did nothing". */
+  /* The hints describe what each choice DOES. This one states the requirement
+     rather than the outcome, because the outcome is not in the person's gift:
+     the browser's picker decides, and a menu promising "available and working"
+     beside a button that opens a capture prompt is the fault people report as
+     "it did nothing". */
   {
     id: "online",
     label: "Go online",
-    hint: "Available and working",
+    hint: "Share your entire screen — that is what being online is",
   },
   { id: "break", label: "Break", hint: "Step away — your deadlines are credited" },
   {
@@ -85,6 +98,12 @@ const CHOICES: {
 const MENU_WIDTH = 290;
 const MENU_MARGIN = 12;
 
+/* How long the service is given to notice a new producer — see `confirmSharing`.
+   Six seconds of asking, then a sentence. Long enough that a slow room is not
+   reported as a fault, short enough that a real one is not left unsaid. */
+const CONFIRM_ATTEMPTS = 6;
+const CONFIRM_INTERVAL_MS = 1000;
+
 function elapsed(since: number, now: number): string {
   const secs = Math.max(0, Math.floor((now - since) / 1000));
   const m = Math.floor(secs / 60);
@@ -103,7 +122,10 @@ export function StatusButton() {
     notice,
     reconnecting,
     hydrated,
-    remoteOnline,
+    /* The seat, fetched when this menu opened. Held here so the press that
+       shares does not have to wait for it — see `openPicker`. */
+    token,
+    url,
   } = useEmployeeStatus();
   /* WHO is publishing. The room identity is derived from this, so a manager
      watching this person's profile matches this person's track and nobody
@@ -192,6 +214,8 @@ export function StatusButton() {
    * report on the way out. It asks first now.
    */
   const [confirming, setConfirming] = useState<"share" | "offline" | null>(null);
+  /* The picker is open and nothing has been chosen yet — see `openPicker`. */
+  const [starting, setStarting] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -224,7 +248,16 @@ export function StatusButton() {
   const displayStatus: EmployeeStatus =
     status !== "offline" ? status : (legacyMode ?? "offline");
   const meta = STATUS_META[displayStatus];
-  const busy = session === "requesting" || session === "connecting";
+  /**
+   * The room is coming up.
+   *
+   * **Nothing is disabled by it, and that is the point.** It used to gate Go
+   * online — and then the seat began being fetched the moment this menu opens,
+   * so the one control the menu exists for was greyed out for everybody who
+   * opened it, with no explanation. It is a LABEL now: the button still works,
+   * and pressing it early opens the confirmation step instead of the picker.
+   */
+  const warming = session === "connecting";
   /* After a refresh the share is gone and cannot be reasserted without a click,
      so presence is honestly offline — but rather than a cold "Offline" we show a
      "Reconnecting" prompt whose one purpose is a one-click resume of sharing.
@@ -272,13 +305,13 @@ export function StatusButton() {
    * track — nothing can reassert `getDisplayMedia()` without a fresh click,
    * that is the browser's own security rule, not a choice this app makes. So
    * a refresh can never look fully "still online" the way signing back in
-   * does. What it CAN do is make the one remaining step unmissable: without
-   * this, the claim sits quietly alive on a 120-second grace window while
-   * the pill just says "Reconnecting", and someone who does not spot it in
-   * time watches their status lapse to Offline with no idea why — which is
-   * exactly the "refreshed and got logged out" report this answers. Firing
-   * the picker immediately turns a state somebody has to notice into one
-   * they cannot avoid seeing.
+   * does. What it CAN do is make the one remaining step unmissable, rather
+   * than leaving somebody looking at a pill reading "Reconnecting" with no
+   * idea that it is waiting on them — which is the "refreshed and got logged
+   * out" report this answers. Their status is not at risk while they take
+   * their time over it (nothing expires it any more); the share is simply not
+   * running until they say so. Firing the picker immediately turns a state
+   * somebody has to notice into one they cannot avoid seeing.
    *
    * Once per mount: a person who dismisses it with Cancel gets their pill
    * back, not a dialog that keeps reopening under them.
@@ -351,16 +384,24 @@ export function StatusButton() {
   function applyTransition(id: EmployeeStatus) {
     if (id === "online") {
       /**
-       * **Immediate — OWNER DECISION.**
+       * **Going online is sharing your screen — OWNER DECISION, restored.**
        *
-       * This used to open a confirmation panel and then the browser's capture
-       * picker, and you were not online until a whole-screen track was live.
-       * Pressing Online now simply makes you online. Sharing is still available
-       * from the same menu, and is no longer what online means.
+       * For a period this set the status directly and asked for nothing. It
+       * asks again: the panel states the requirement first, and the second
+       * click — still inside a user gesture, which is what `getDisplayMedia`
+       * needs — opens the browser's picker. Only a live ENTIRE-screen share
+       * turns the pill green.
+       *
+       * **The picker opens from THIS press.** There is no meeting to create, no
+       * room to join and no confirmation step: the room was warmed up when the
+       * menu opened, so the only thing this does is ask for the screen. The
+       * panel below is the fallback for the one case that remains — a press that
+       * lands before the room is up — and it says so rather than pretending to
+       * be a step.
        */
-      goOnline();
-      setOpen(false);
-      setConfirming(null);
+      if (openPicker()) return;
+      setOpen(true);
+      setConfirming("share");
       return;
     }
     if (id === "break") startBreak();
@@ -416,27 +457,224 @@ export function StatusButton() {
     applyTransition(id);
   }
 
-  /* The native shell cannot restart a broadcast by itself — ReplayKit only
-     starts from a user tap — so after the phone is unlocked it shows its own
-     "resume" prompt and calls back here. Going through `startSharing` means
-     the resume path is the same path as going online: fresh credentials, same
-     publish, no second implementation to drift. */
+  /* The native shell has no path to a `screen` room — `startScreenShare` refuses
+     it with a sentence rather than starting a broadcast that goes nowhere — so
+     its resume prompt is left unhandled rather than wired to something that
+     cannot work. */
   useEffect(() => {
     if (!isNativeShell()) return;
-    setNativeResumeHandler(() => {
-      void startSharing();
-    });
+    setNativeResumeHandler(null);
     return () => setNativeResumeHandler(null);
   });
 
-  async function startSharing() {
-    /* The picker opens inside this click. Nothing is awaited before it, or the
-       browser withdraws the gesture and refuses the prompt. */
-    if (!viewerId) return;
-    const started = await startScreenShare(() => fetchRoomCredentials(viewerId));
-    setConfirming(null);
-    if (started) setOpen(false);
+  /**
+   * Open the browser's capture picker. **Synchronous, and it has to be.**
+   *
+   * A capture prompt only opens inside a user gesture, and a gesture does not
+   * survive an `await` — so the seat cannot be fetched and the picker opened on
+   * the same press. The room is warmed up when the menu OPENS (the effect below)
+   * so that by the time somebody presses Go online there is a frame to ask, and
+   * this posts to it without awaiting anything.
+   *
+   * Returns false when the room is not up yet, which is the only case the
+   * confirmation panel exists for now.
+   */
+  /**
+   * Ask the SERVICE whether the screen is really reaching the room.
+   *
+   * The SDK's own `capture` says what this browser grabbed. This says what Grav
+   * Stream can SEE — `participants[].sharing.screen`, the same fact a manager's
+   * panel reads — and it is worth asking separately because the two came apart
+   * once: a realtime server that accepted the socket and answered nothing left
+   * the browser's "sharing your screen" bar up over a room with nothing in it.
+   *
+   * **It can only confirm, never contradict.** Two rules meet here:
+   *
+   *  · Nothing takes a status away from somebody who chose it. A check that
+   *    could write `sharing: false` would be an auto-offline with extra steps.
+   *  · The room takes a moment to register a new producer, so the first read
+   *    after a publish is expected to come back empty. Believing it would knock
+   *    people offline a second after they went online — which is precisely the
+   *    fault this whole area exists to have fixed.
+   *
+   * So it polls, reports the moment the service agrees, and if it never does,
+   * says so in the notice line while leaving the share alone. A screen that is
+   * captured but not arriving is worth reading about; it is not worth being
+   * silently marked offline for.
+   */
+  async function confirmSharing(subject: string | null) {
+    if (!subject) return;
+    for (let attempt = 0; attempt < CONFIRM_ATTEMPTS; attempt++) {
+      if (attempt > 0)
+        await new Promise((r) => setTimeout(r, CONFIRM_INTERVAL_MS));
+      try {
+        const { sharing, surface } = await fetchRoomPresence({
+          subject,
+          role: "publish",
+        });
+        if (!sharing) continue;
+        reportShare({
+          sharing: true,
+          connected: true,
+          surface:
+            surface === "monitor"
+              ? "entire_screen"
+              : surface === "window"
+                ? "window"
+                : surface === "browser"
+                  ? "browser_tab"
+                  : null,
+          detail: "Your screen is going out through Grav Stream.",
+        });
+        return;
+      } catch (error) {
+        /* A check that could not be made is not evidence of absence. Keep
+           trying; the capture the SDK reported stands either way. */
+        console.error("[stream] could not confirm the room:", error);
+      }
+    }
+    reportProblem(
+      "Your screen is being captured, but the service has not registered it yet. Your manager may not be able to see it — if this stays, stop sharing and go online again.",
+    );
   }
+
+  function openPicker(): boolean {
+    /**
+     * **Nothing is awaited before `startPublishing`.** A capture prompt needs
+     * the user activation this press carries, and activation expires in about
+     * five seconds — so the token was fetched when the menu opened and the SDK
+     * was preloaded there too. Putting a fetch here would spend the gesture and
+     * the browser would refuse the prompt with nothing to show for it.
+     */
+    /**
+     * A press that cannot proceed says so. It used to return quietly, and the
+     * panel then sat on "Preparing…" or offered a Choose screen button that did
+     * nothing when pressed — the two cases below are different problems and
+     * neither is visible from the outside.
+     */
+    if (!token || !url) {
+      reportProblem(
+        session === "error"
+          ? notice ??
+              "Your room could not be reached, so there is nothing to share into. Close this menu and open it again."
+          : "Still getting your room ready — press Go online again in a moment.",
+      );
+      return false;
+    }
+    if (!publisherReady()) {
+      reportProblem(
+        "The screen-sharing library is still loading — press Go online again in a moment.",
+      );
+      return false;
+    }
+    setConfirming(null);
+    setOpen(false);
+    /**
+     * **The menu is closing, and that used to end the session right here.**
+     *
+     * The effect below gives the room back when the menu closes without a
+     * share — correct on its own, and wrong for the two or ten seconds somebody
+     * spends looking at the picker, because the menu closes the instant the
+     * prompt opens. It ran `endSession()`: credentials dropped, session `idle`,
+     * and `DutySync` — which stays quiet only while the session is `connecting`
+     * — published OFFLINE for a person who was in the middle of going online.
+     * This flag is what tells the two apart.
+     */
+    setStarting(true);
+    void startPublishing({
+      token,
+      serverUrl: url,
+      /* The browser's own Stop sharing bar, and a dropped connection, both
+         arrive here. Sharing is what Online means, so either ends the session. */
+      onEnded: () => endSession(),
+    })
+      .then((capture) => {
+        /**
+         * **`sessionLive()` is not decoration.** Nothing else calls it now that
+         * the embed is gone, and `DutySync` refuses to publish anything while
+         * the session reads `connecting` — deliberately, so a token fetch never
+         * announces "offline". Left at `connecting` for the whole share, the
+         * pill would read Online on this device and NOBODY else would ever be
+         * told: not the manager, not the team, not the old app.
+         */
+        sessionLive();
+        /* Their report of what was actually captured. The status still waits on
+           the SERVICE confirming a live screen — `confirmSharing` — because a
+           browser's word about itself is not what a manager should be reading. */
+        reportShare({
+          sharing: true,
+          connected: true,
+          surface:
+            capture.displaySurface === "monitor"
+              ? "entire_screen"
+              : capture.displaySurface === "window"
+                ? "window"
+                : capture.displaySurface === "browser"
+                  ? "browser_tab"
+                  : null,
+          detail:
+            capture.isEntireScreen === false
+              ? "Sharing part of your screen."
+              : "Sharing your entire screen.",
+        });
+        void confirmSharing(viewerId);
+      })
+      .catch((error: unknown) => {
+        if (wasCancelled(error)) {
+          reportProblem(
+            "You did not pick a screen, so you are not online yet. Choose Go online and pick your entire screen.",
+          );
+          return;
+        }
+        sessionFailed(shareRefusal(error));
+      })
+      /* Whichever way it went, the picker is closed and the ordinary rules
+         apply again — including giving the room back if nothing came of it. */
+      .finally(() => setStarting(false));
+    return true;
+  }
+
+  /**
+   * Warm the room up while the menu is open.
+   *
+   * This is what removes the old two-step. There is no meeting to create and no
+   * join screen to get past — a `screen` room asks for no devices — so the only
+   * thing standing between the press and the picker is a token, and that is
+   * fetched here rather than on the press.
+   *
+   * Nothing about presence changes: joining a room is not sharing a screen, and
+   * Online is decided by `sharing.screen` at the service. Somebody who opens the
+   * menu and closes it again is never online, and the effect below puts the room
+   * back.
+   */
+  useEffect(() => {
+    if (!open || !viewerId) return;
+    /* The library, in parallel with the seat. Both have to be in hand before the
+       press: `share()` cannot be reached through an `await` without spending the
+       activation the capture prompt needs. */
+    void loadPublisherSdk().catch((error: unknown) => {
+      console.error("[stream] the publisher library did not load:", error);
+    });
+    if (status === "online" || manual !== null) return;
+    if (session !== "idle") return;
+    void startScreenShare(() => fetchShareSeat(viewerId));
+  }, [open, viewerId, status, manual, session]);
+
+  /**
+   * Closing the menu WITHOUT sharing gives the room back. A session held open
+   * for somebody who is not online is a participant in a room doing nothing.
+   *
+   * The two exclusions carry the whole meaning of "without sharing":
+   * `starting` is the picker being on screen — the menu has closed and nothing
+   * has been chosen yet — and `share.sharing` is a capture that is already
+   * running. Ending either is ending a share somebody is in the middle of, and
+   * it is what made going online last a few seconds and then stop.
+   */
+  useEffect(() => {
+    if (open || starting || share.sharing) return;
+    if (status === "online" || session === "idle") return;
+    endSession();
+  }, [open, starting, share.sharing, status, session]);
 
   return (
     <div ref={rootRef} className="relative">
@@ -448,8 +686,9 @@ export function StatusButton() {
              honour the screen-capture prompt (it refuses one not tied to a
              click). Everything else just toggles the menu. */
           if (reconnectingShare && viewerId) {
-            void startSharing();
-            return;
+            /* The room is already warm in this state, so the picker opens from
+               this very click. */
+            if (openPicker()) return;
           }
           setOpen((v) => !v);
           setConfirming(null);
@@ -519,21 +758,20 @@ export function StatusButton() {
               ) : (
                 <p className="mt-1.5 text-[11px] leading-relaxed text-ink-muted">
                   {ENTIRE_SCREEN_REQUIREMENT} Your browser will ask next —
-                  choose <span className="text-ink">Entire Screen</span>.
+                  choose <span className="text-ink">Entire Screen</span>. A
+                  window or a tab is refused by the service, not just by us.
                 </p>
               )}
               <div className="mt-3 flex items-center gap-2">
                 <button
                   type="button"
-                  disabled={busy}
-                  onClick={() => void startSharing()}
+                  /* Never disabled while the room comes up: this button IS the
+                     retry for that case, and one that greys itself out while
+                     the thing it waits for is happening is a dead end. */
+                  onClick={() => openPicker()}
                   className="rounded-full bg-ink px-3 py-1.5 text-[11px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90 disabled:opacity-45"
                 >
-                  {session === "requesting"
-                    ? "Waiting for your screen…"
-                    : session === "connecting"
-                      ? "Connecting…"
-                      : "Choose screen"}
+                  {warming ? "Preparing…" : "Choose screen"}
                 </button>
                 <button
                   type="button"
@@ -589,12 +827,10 @@ export function StatusButton() {
               {budget.isUnavailable && (
                 <p className="mb-1 rounded-inset bg-[var(--surface-sunken)] px-2.5 py-2 text-[11px] text-ink-faint">
                   {/* The allowance itself has no endpoint, but presence does —
-                      live from `cowork_duty_status`, with the staleness window
-                      applied. Read through `useMyDutyMode` rather than the
-                      ported listener: that one returns the document's `mode`
-                      verbatim, so a claim left behind by a closed browser reads
-                      as online — the one answer this line must not give about
-                      somebody's own duty state. */}
+                      live from `cowork_duty_status`. Read through
+                      `useMyDutyMode` rather than the ported listener, so this
+                      line answers with the same machinery every other surface
+                      uses rather than its own reading of the document. */}
                   {legacyMode === null
                     ? "Checking your duty status\u2026"
                     : `Cowork has you ${legacyMode}. Break allowance is not available yet.`}
@@ -644,7 +880,29 @@ export function StatusButton() {
                     type="button"
                     role="menuitemradio"
                     aria-checked={current}
-                    disabled={c.id === "online" && busy}
+                    /**
+                     * **Go online is never disabled by the room warming up.**
+                     *
+                     * It used to be `c.id === "online" && busy`, and `busy`
+                     * covers `session === "connecting"` — which is exactly what
+                     * opening this menu now causes, because the seat is fetched
+                     * the moment it opens so the picker can be opened by the
+                     * press. The result was a greyed-out Go online for anybody
+                     * who opened the menu: the one control the menu exists for,
+                     * unusable, with no explanation.
+                     *
+                     * There is nothing to guard against. Pressing it while the
+                     * room is still coming up opens the confirmation panel
+                     * instead of the picker (`openPicker` answers false), which
+                     * is a step rather than a failure. The only real
+                     * precondition is knowing WHO is sharing.
+                     */
+                    disabled={c.id === "online" && !viewerId}
+                    title={
+                      c.id === "online" && !viewerId
+                        ? "Still working out who you are — try again in a moment."
+                        : undefined
+                    }
                     onClick={() => choose(c.id)}
                     className={`flex w-full items-start gap-2.5 rounded-inset px-2.5 py-2 text-left transition-colors disabled:opacity-60 ${
                       current
@@ -662,7 +920,12 @@ export function StatusButton() {
                         {c.label}
                       </span>
                       <span className="mt-0.5 block text-[11px] text-ink-faint">
-                        {c.hint}
+                        {/* Said rather than shown by disabling it: the control
+                            works either way, and this is only why the picker
+                            might take a beat. */}
+                        {c.id === "online" && warming
+                          ? "Getting your room ready — you can press this now"
+                          : c.hint}
                       </span>
                     </span>
                     {current && (

@@ -71,9 +71,11 @@ test("the online claim names the connection holding it", () => {
   assert.equal(snap.presenceConnectionId, "conn-a");
 });
 
-test("a stale online claim reports offline and names nobody", () => {
-  /* Staleness is applied before anything else, so a laptop that was shut does
-     not keep a phone showing Online. */
+test("a quiet online claim still reports online, and still names its holder", () => {
+  /* It used to resolve to offline here, which is the fault people reported as
+     "it goes offline by itself" — a beat can stop for entirely ordinary reasons.
+     Only the person changes their own status now. The holder is still named,
+     because a second device needs to know whose screen is whose. */
   const snap = readDutySnapshot(
     doc({
       mode: "online",
@@ -82,8 +84,8 @@ test("a stale online claim reports offline and names nobody", () => {
     }),
     NOW,
   );
-  assert.equal(snap.mode, "offline");
-  assert.equal(snap.presenceConnectionId, null);
+  assert.equal(snap.mode, "online");
+  assert.equal(snap.presenceConnectionId, "conn-a");
 });
 
 test("a missing document is offline with no clocks", () => {
@@ -93,9 +95,6 @@ test("a missing document is offline with no clocks", () => {
     breakStartedAtMs: null,
     emergencyStartedAtMs: null,
     presenceConnectionId: null,
-    /* Nobody has ever been on duty, so there is no expired claim to tidy up
-       either — see `claimLapsedAtMs`. */
-    lapsedAtMs: null,
   });
 });
 

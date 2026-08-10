@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { LEGACY_LANDING } from "@/lib/auth/roleMap";
 import { signIn } from "@/lib/legacy/firebase";
 import { writeFirebaseCookie } from "@/lib/auth/firebaseCookie";
+import { clearSignInNotice, readSignInNotice } from "@/lib/auth/sessionCache";
 import { useSearchParams } from "next/navigation";
 import { AuthFrame, AuthSwitch } from "./AuthFrame";
 import { Button, Field, InlineError, Input } from "@/components/ui/Primitives";
@@ -26,6 +27,24 @@ export function SignInForm() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+
+  /**
+   * Why you were sent back here, if you were.
+   *
+   * **The silent bounce.** Signing in with a correct password for an account the
+   * workspace does not recognise as an employee authenticates fine, resolves,
+   * finds no employee, and returns you to this form — historically with nothing
+   * said, which is indistinguishable from a button that did nothing. The session
+   * that gave up leaves the sentence behind (`leaveSignInNotice`), and this is
+   * where it is read.
+   *
+   * Read during render, cleared in an effect: reading is repeatable, removing is
+   * not, and doing both in one place would make the message vanish on React's
+   * second development render. It is dropped as soon as it has been shown, so it
+   * belongs to this bounce rather than to the page.
+   */
+  const [bounced] = useState(readSignInNotice);
+  useEffect(clearSignInNotice, []);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -69,7 +88,9 @@ export function SignInForm() {
       }
     >
       <form onSubmit={submit} noValidate className="flex flex-col gap-4">
-        {error && <InlineError message={error} />}
+        {/* A fresh failure outranks the reason you arrived with: once you have
+            pressed the button, what just happened is the thing to read. */}
+        {(error ?? bounced) && <InlineError message={(error ?? bounced)!} />}
 
         <Field label="Email">
           <Input

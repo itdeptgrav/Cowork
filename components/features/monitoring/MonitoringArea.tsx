@@ -150,8 +150,8 @@ export function MonitoringArea() {
   }
 
   return (
-    <MonitorRoom>
-      {({ inRoom, connecting, error: roomError }) => (
+    <MonitorRoom subjectId={employeeId}>
+      {({ embedUrl, connecting, error: roomError }) => (
         <>
           <WorkspaceHead title="Monitoring" count={date} />
 
@@ -260,10 +260,9 @@ export function MonitoringArea() {
           <ScreenDialog
             open={screenOpen}
             onClose={() => setScreenOpen(false)}
-            inRoom={inRoom}
+            embedUrl={embedUrl}
             connecting={connecting}
             error={roomError}
-            presenceIdentity={subject?.presenceIdentity ?? ""}
             displayName={subject?.displayName ?? "This person"}
             presence={subject?.presence ?? "offline"}
           />

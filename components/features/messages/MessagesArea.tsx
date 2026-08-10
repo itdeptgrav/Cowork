@@ -18,6 +18,11 @@ import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { NewChatDialog } from "./NewChatDialog";
 import { GroupSettings } from "./GroupSettings";
+import { ForwardDialog } from "./ForwardDialog";
+import {
+  MessageContextMenu,
+  type MessageMenuItem,
+} from "./MessageContextMenu";
 import {
   MessageAttachments,
   filesFromClipboard,
@@ -431,6 +436,26 @@ function Thread({
     { id: string; name: string; sizeBytes: number; fraction: number }[]
   >([]);
   const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
+  /** The message a right-click opened a menu on, and where the pointer was. */
+  const [menu, setMenu] = useState<{
+    message: Message;
+    x: number;
+    y: number;
+  } | null>(null);
+  /** The message being forwarded, while the destination is being chosen. */
+  const [forwarding, setForwarding] = useState<Message | null>(null);
+  /**
+   * One line of feedback for an action that has no other visible result.
+   *
+   * Copying, and a refusal to delete, both leave the thread looking exactly as
+   * it did. Without this the menu item is indistinguishable from a broken one.
+   */
+  const [messageNotice, setMessageNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!messageNotice) return;
+    const id = setTimeout(() => setMessageNotice(null), 3200);
+    return () => clearTimeout(id);
+  }, [messageNotice]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = editingId !== null;
   const [typingIds, setTypingIds] = useState<string[]>([]);
@@ -658,6 +683,98 @@ function Thread({
       return;
     const r = await repo.deleteMessage(c.id, m.id);
     if (r.ok) messages.refetch();
+    /* The repository's own sentence — "You can only delete your own messages."
+       A refusal that produced no visible change was indistinguishable from a
+       button that did nothing. */
+    else setMessageNotice(r.message ?? "That message could not be deleted.");
+  }
+
+  /**
+   * Copy the text of a message.
+   *
+   * Text only, and the menu greys the item out when there is none: `writeText`
+   * on an empty string succeeds and silently replaces whatever the person had
+   * on their clipboard, which is a worse outcome than the action being
+   * unavailable. Attachments are not copied — a file is not a clipboard string,
+   * and pretending otherwise would put a filename where people expect a file.
+   */
+  async function copyMessage(m: Message) {
+    try {
+      await navigator.clipboard.writeText(m.text);
+      setMessageNotice("Message copied.");
+    } catch {
+      /* Denied permission, or a browser without the API on an insecure origin. */
+      setMessageNotice("This browser would not let Cowork use the clipboard.");
+    }
+  }
+
+  /**
+   * What the right-click menu offers for ONE message.
+   *
+   * Built here rather than in the list because these are the thread's own
+   * actions — the composer it replies into, the repository it deletes through,
+   * the dialog it forwards from — and a list that owned them would need all
+   * three passed down anyway.
+   *
+   * **Both sides get the same menu.** Reply, Forward and Copy are the same act
+   * whoever wrote the message. Delete is the one that differs, and it is shown
+   * on both sides rather than hidden on one: an item missing from someone else's
+   * message reads as a bug, where the greyed item and its sentence state the
+   * rule the engine actually enforces.
+   */
+  function menuFor(m: Message): MessageMenuItem[] {
+    const mine = m.senderId === viewerId;
+    const deleted = m.isDeleted === true;
+    return [
+      {
+        id: "reply",
+        label: "Reply",
+        disabled: deleted,
+        reason: deleted ? "This message was deleted." : undefined,
+        run: () => startReply(m),
+      },
+      {
+        id: "forward",
+        label: "Forward",
+        disabled: deleted,
+        reason: deleted ? "This message was deleted." : undefined,
+        run: () => setForwarding(m),
+      },
+      {
+        id: "copy",
+        label: "Copy text",
+        disabled: deleted || !m.text,
+        reason: deleted
+          ? "This message was deleted."
+          : !m.text
+            ? "This message has no text to copy."
+            : undefined,
+        run: () => void copyMessage(m),
+      },
+      ...(mine
+        ? [
+            {
+              id: "edit",
+              label: "Edit",
+              disabled: deleted,
+              reason: deleted ? "This message was deleted." : undefined,
+              run: () => startEdit(m),
+            },
+          ]
+        : []),
+      {
+        id: "delete",
+        label: "Delete",
+        danger: true,
+        disabled: !mine || deleted,
+        reason: deleted
+          ? "This message was already deleted."
+          : !mine
+            ? "You can only delete your own messages."
+            : undefined,
+        run: () => void removeMessage(m),
+      },
+    ];
   }
 
   /* Typing is signalled at most once every few seconds while the box has content,
@@ -838,6 +955,8 @@ function Thread({
               onReply={startReply}
               onEdit={startEdit}
               onDelete={removeMessage}
+              onForward={setForwarding}
+              onContextMenu={(m, x, y) => setMenu({ message: m, x, y })}
             />
           </>
         )}
@@ -1066,6 +1185,37 @@ function Thread({
           </button>
         </div>
       </div>
+
+      {/* The right-click menu, the forward destination picker, and the one line
+          of feedback for actions that leave the thread looking unchanged. All
+          three are portals or fixed, so none of them affects the layout of the
+          conversation behind them. */}
+      {menu && (
+        <MessageContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={menuFor(menu.message)}
+          onClose={() => setMenu(null)}
+        />
+      )}
+
+      {forwarding && (
+        <ForwardDialog
+          message={forwarding}
+          fromConversationId={c.id}
+          onClose={() => setForwarding(null)}
+          onForwarded={(where) => setMessageNotice(`Forwarded to ${where}.`)}
+        />
+      )}
+
+      {messageNotice && (
+        <div
+          role="status"
+          className="frost-bar pointer-events-none fixed bottom-6 left-1/2 z-[75] -translate-x-1/2 rounded-full border border-hairline px-3.5 py-2 text-xs text-ink shadow-[var(--deck-seat)]"
+        >
+          {messageNotice}
+        </div>
+      )}
     </Panel>
   );
 }
@@ -1087,6 +1237,8 @@ function MessageList({
   onReply,
   onEdit,
   onDelete,
+  onForward,
+  onContextMenu,
 }: {
   messages: Message[];
   participants: Employee[];
@@ -1095,6 +1247,9 @@ function MessageList({
   onReply: (m: Message) => void;
   onEdit: (m: Message) => void;
   onDelete: (m: Message) => void;
+  onForward: (m: Message) => void;
+  /** Where the pointer was, so the menu opens under it. */
+  onContextMenu: (m: Message, x: number, y: number) => void;
 }) {
   /* Clicking a reply quote scrolls its original into view. An imperative read is
      the right tool: the target is a sibling `<li>`, not state this list owns. */
@@ -1154,6 +1309,21 @@ function MessageList({
 
               {/* `group` so the actions reveal on hovering this one message. */}
               <div
+                /**
+                 * **Right-click anywhere on the message — either side of the
+                 * thread.** The handler sits on the row rather than on the
+                 * bubble so the avatar and the gap answer to it too: a menu that
+                 * only opens on the coloured rectangle is a menu people think is
+                 * broken when they aim slightly wide.
+                 *
+                 * A deleted message keeps its menu, and every item in it is
+                 * greyed with the reason. Suppressing the gesture entirely would
+                 * be the same silence the hover row had.
+                 */
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  onContextMenu(m, e.clientX, e.clientY);
+                }}
                 className={`group flex max-w-[min(78%,60ch)] items-end gap-2 ${mine ? "flex-row-reverse" : ""}`}
               >
                 {/* Always present, so every bubble in a run keeps one edge;
@@ -1221,12 +1391,25 @@ function MessageList({
 
                 {!deleted && (
                   <span className="flex shrink-0 items-center gap-1.5 self-center text-[11px] text-ink-faint opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    {/* The keyboard path to the same actions the right-click
+                        menu offers — `focus-within` reveals this row, and a
+                        context menu cannot be reached by tabbing. Delete stays
+                        conditional here: an item that only ever refuses is
+                        noise in a row this small, and the menu is where the
+                        rule is explained. */}
                     <button
                       type="button"
                       onClick={() => onReply(m)}
                       className="hover:text-ink"
                     >
                       Reply
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onForward(m)}
+                      className="hover:text-ink"
+                    >
+                      Forward
                     </button>
                     {mine && (
                       <>

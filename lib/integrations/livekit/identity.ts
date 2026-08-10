@@ -23,6 +23,25 @@
 export const ROOM_NAME = "cowork-demo";
 
 /**
+ * The room one person's screen is published into.
+ *
+ * **One room per employee, not one for the company.** `ROOM_NAME` above is what
+ * presence used to use, and it made the permission a rendering decision: every
+ * watcher's token could subscribe to everybody's track, and only the viewer's
+ * identity match decided what appeared on screen. A room per person means the
+ * seat itself carries the permission — `/api/stream/token` will not mint one
+ * for a room the caller is not entitled to be in, so a mistake in a component
+ * cannot put the wrong screen in front of anybody.
+ *
+ * Derived from the employee id rather than stored, for the same reason
+ * `presenceIdentityFor` is: there is no table to fall out of date and nothing to
+ * migrate when somebody joins.
+ */
+export function presenceRoomName(employeeId: string): string {
+  return `cowork-presence-${employeeId}`;
+}
+
+/**
  * The watching identity.
  *
  * Distinct from any employee's on purpose: a manager joins to subscribe, never

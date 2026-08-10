@@ -85,11 +85,61 @@ test("sign-out clears the per-browser identity carriers", () => {
   /* `signOut` does a hard navigation, which drops React state and every module
      singleton — but not `localStorage`. A saved acting-profile id and a saved
      lens outlived the person who chose them, so the next account on a shared
-     machine inherited both. */
+     machine inherited both.
+   *
+   * Both keys used to be removed inline here, one `removeItem` each. They are
+   * handed to `forgetAccountScopedState` now, because sign-out is no longer the
+   * only way an account leaves this browser — signing in AS SOMEBODY ELSE does
+   * it too, without a sign-out in between, and the two paths had to clear the
+   * same list. This asserts the routing rather than the call, and the list
+   * itself is asserted below. */
   const source = readFileSync(
     new URL("../../components/features/auth/SessionProvider.tsx", import.meta.url),
     "utf8",
   );
-  assert.ok(source.includes("removeItem(PROFILE_STORAGE_KEY)"));
-  assert.ok(source.includes("removeItem(LENS_STORAGE_KEY)"));
+  assert.ok(
+    source.includes("forgetAccountScopedState([PROFILE_STORAGE_KEY, LENS_STORAGE_KEY])"),
+  );
+});
+
+test("the residue an account leaves behind is named and removed", async () => {
+  /* The behaviour the source check above cannot see. Run against a stub store,
+     because the point is which keys survive — and a key that is merely listed
+     in a constant is not a key that was removed. */
+  const store = new Map<string, string>([
+    ["cowork:session:identity", "somebody's cached identity"],
+    ["cowork:presence:claimedOnlineHere", "1"],
+    ["cowork.assignments.announced.v1", "[\"task-1\"]"],
+    ["selectedTaskId", "task-1"],
+    ["cowork.profile.actingAs", "emp-1"],
+    ["cowork.theme", "dark"],
+  ]);
+  const original = (globalThis as { window?: unknown }).window;
+  (globalThis as { window?: unknown }).window = {
+    localStorage: {
+      getItem: (k: string) => store.get(k) ?? null,
+      setItem: (k: string, v: string) => void store.set(k, v),
+      removeItem: (k: string) => void store.delete(k),
+    },
+  };
+  try {
+    const { forgetAccountScopedState } = await import("../auth/sessionCache.ts");
+    forgetAccountScopedState(["cowork.profile.actingAs"]);
+
+    for (const gone of [
+      "cowork:session:identity",
+      "cowork:presence:claimedOnlineHere",
+      "cowork.assignments.announced.v1",
+      "selectedTaskId",
+      "cowork.profile.actingAs",
+    ])
+      assert.equal(store.has(gone), false, `${gone} outlived the account`);
+
+    /* And the machine's own preferences stay. Clearing everything would be a
+       different bug: the next person arrives to a workspace that has forgotten
+       the display it is running on. */
+    assert.equal(store.get("cowork.theme"), "dark");
+  } finally {
+    (globalThis as { window?: unknown }).window = original;
+  }
 });

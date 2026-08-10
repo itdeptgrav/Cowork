@@ -1018,15 +1018,15 @@ export interface CoworkRepository {
 
   /* Duty presence */
   /**
-   * This employee's presence, with the staleness window already applied.
+   * This employee's presence, as they last set it.
    *
    * Reads `cowork_duty_status/{employeeId}` — the presence store legacy already
    * has. There is **no second collection**: the old app writes this document,
    * the new app writes this document, and both read one answer.
    *
-   * Never returns a raw `mode`. A claim whose heartbeat has expired is offline,
-   * and resolving that here rather than at each call site is what stops a
-   * closed browser leaving a green dot behind.
+   * The mode is the document's own, exactly as the person last set it. Nothing
+   * expires it: a status is changed by the person whose status it is, and by
+   * nobody else — see `readDutyMode`.
    */
   getDutyMode(employeeId?: EmployeeId): Promise<DutyMode>;
   /**
@@ -1042,34 +1042,17 @@ export interface CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
-    /**
-     * This write TIDIES UP an `online` claim that expired at this instant,
-     * rather than somebody choosing to leave now.
-     *
-     * Only the history entry uses it, so the day's trail reads "went offline at
-     * 18:05" instead of at whatever hour a browser next opened. The absence's
-     * own start is deliberately not backdated with it: deadline credit is owed
-     * for time somebody DECLARED away, and a lapsed claim declares nothing —
-     * the same reasoning the compensation note in `setDutyMode` already gives
-     * for a browser that was simply closed.
-     */
-    lapsedAtMs?: number | null;
   }): Promise<ActionResult<DutyMode>>;
   /**
-   * Restate a live claim. Never moves the mode; cheap enough to run on a timer.
-   *
-   * Answers whether the beat was actually RECORDED. A beat is declined in
-   * silence when the claim belongs to another connection or has already
-   * expired, and a caller that read those as success would treat a refusal as
-   * proof of life — which is precisely what `DutySync`'s watchdog is measuring.
+   * Stamp which connection holds a live `online` claim. Never moves the mode,
+   * and nobody's presence expires without one — see `PRESENCE_STALE_AFTER_MS`.
    */
-  heartbeatDuty(connectionId: string): Promise<ActionResult<boolean>>;
+  heartbeatDuty(connectionId: string): Promise<ActionResult<void>>;
   /**
    * Live presence for a set of people, for a manager's view.
    *
-   * Returns an unsubscribe. The staleness window is applied per emission, so a
-   * watcher's dot goes grey on its own when somebody's laptop shuts — without
-   * anything being written by the person who left.
+   * Returns an unsubscribe. Emissions follow the documents and nothing else: a
+   * dot changes when somebody changes their own status, never on a timer.
    */
   watchDutyModes(
     employeeIds: EmployeeId[],

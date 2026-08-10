@@ -122,3 +122,137 @@ export function clearCachedIdentity(): void {
     /* Nothing to do. */
   }
 }
+
+/* ── One account at a time ─────────────────────────────────────────────────── */
+
+/** The uid this browser last resolved a session for. */
+const LAST_UID_KEY = "cowork:auth:lastUid";
+
+/**
+ * Everything in `localStorage` that belongs to a PERSON rather than to this
+ * machine.
+ *
+ * The distinction is the whole of it. A theme and a device mode are choices
+ * about this screen and should survive whoever is at it; a remembered identity,
+ * an acting profile, a lens, "I was the one sharing my screen" and "these
+ * assignments have been announced to me" are all about one employee, and
+ * carrying them into somebody else's session shows that person another
+ * person's workspace.
+ *
+ * Listed here, once, because the two callers had drifted: signing out cleared
+ * three of them and switching account cleared none.
+ */
+const ACCOUNT_SCOPED_KEYS = [
+  KEY,
+  /* `lib/status/connectionId.ts` — whether THIS browser put itself online. */
+  "cowork:presence:claimedOnlineHere",
+  /* `NewAssignmentGate` — which assignments have already been announced. */
+  "cowork.assignments.announced.v1",
+  /* `useCoworkNotifications` — the task a notification was about. */
+  "selectedTaskId",
+] as const;
+
+/**
+ * Forget the person, keep the machine.
+ *
+ * Called on sign-out, and on any resolution where the signed-in uid is not the
+ * one this browser last resolved for — see `noteSignedInUid`.
+ */
+export function forgetAccountScopedState(extraKeys: readonly string[] = []): void {
+  try {
+    for (const key of [...ACCOUNT_SCOPED_KEYS, ...extraKeys])
+      window.localStorage.removeItem(key);
+  } catch {
+    /* Storage disabled. Nothing here is required for correctness of the new
+       session — it is the OLD one's residue — so failing to clear it must not
+       fail a sign-in. */
+  }
+}
+
+/**
+ * Record who is signed in, and say whether that is somebody new.
+ *
+ * **Only one account is open at a time, and the previous one leaves nothing
+ * behind.** Firebase holds a single user per browser profile, so signing in as
+ * somebody else replaces the session — but `localStorage` is not replaced with
+ * it. Without this, the second person inherits the first's acting profile,
+ * lens, announced assignments and presence claim, and the app shows them a
+ * workspace that is partly somebody else's.
+ *
+ * It answers on the FIRST resolution too: no stored uid and a signed-in user is
+ * a switch as far as this is concerned, which is the safe direction — a browser
+ * that has never recorded one may still be carrying residue from before this
+ * existed.
+ */
+export function noteSignedInUid(uid: string | null): boolean {
+  if (!uid) return false;
+  try {
+    const previous = window.localStorage.getItem(LAST_UID_KEY);
+    window.localStorage.setItem(LAST_UID_KEY, uid);
+    return previous !== uid;
+  } catch {
+    return false;
+  }
+}
+
+/** Sign-out: the next person must not be treated as a continuation of this one. */
+export function clearSignedInUid(): void {
+  try {
+    window.localStorage.removeItem(LAST_UID_KEY);
+  } catch {
+    /* Nothing to do. */
+  }
+}
+
+/* ── Why you were sent back to the sign-in page ────────────────────────────── */
+
+const NOTICE_KEY = "cowork:auth:notice";
+
+/**
+ * A sentence for the sign-in page, left by the session that could not resolve.
+ *
+ * **The silent bounce is the thing this fixes.** Sign in with correct
+ * credentials for an account the engine does not recognise as an employee, and
+ * the app authenticates, resolves, finds no employee, and returns you to the
+ * form — with nothing said. From the outside that is indistinguishable from a
+ * form that ignored the button, and it is what "it just keeps going back to
+ * sign in" means.
+ *
+ * `sessionStorage`, not `localStorage`: it belongs to this tab and this attempt,
+ * and a reason that outlived either would be shown to somebody it is not about.
+ * Read once and removed, so a later visit to the page is not haunted by it.
+ */
+export function leaveSignInNotice(text: string): void {
+  try {
+    window.sessionStorage.setItem(NOTICE_KEY, text);
+  } catch {
+    /* Storage disabled — the person still reaches the form, just without the
+       explanation. */
+  }
+}
+
+/**
+ * Read the sentence WITHOUT consuming it.
+ *
+ * Split from the removal on purpose. The form reads this while it renders, and
+ * a render must be repeatable — React renders components twice in development
+ * to prove they are, so a read that also deleted would leave the second pass
+ * with nothing and the explanation would flash and disappear. Clearing is an
+ * effect, which runs once.
+ */
+export function readSignInNotice(): string | null {
+  try {
+    return window.sessionStorage.getItem(NOTICE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+/** Forget it, so a later visit to the form is not haunted by it. */
+export function clearSignInNotice(): void {
+  try {
+    window.sessionStorage.removeItem(NOTICE_KEY);
+  } catch {
+    /* Storage disabled. Nothing was stored either. */
+  }
+}

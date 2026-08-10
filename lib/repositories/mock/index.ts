@@ -155,7 +155,6 @@ import {
   tick,
 } from "./store";
 import {
-  STALE_AFTER_MS,
   dutyDayKey,
   dutyTransition,
   heartbeatPatch,
@@ -3762,7 +3761,6 @@ export class MockRepository implements CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
-    lapsedAtMs?: number | null;
   }): Promise<ActionResult<DutyMode>> {
     const id = String(actingId());
     const now = Date.now();
@@ -3785,12 +3783,7 @@ export class MockRepository implements CoworkRepository {
     history.push({
       id: nextId("dh"),
       mode: input.mode,
-      /* A lapsed claim is filed at the moment it lapsed — see the legacy
-         implementation's note. */
-      at:
-        input.mode === "offline" && typeof input.lapsedAtMs === "number"
-          ? input.lapsedAtMs
-          : now,
+      at: now,
       reason: input.mode === "emergency" ? (input.reason ?? null) : null,
     });
     this.#dutyHistory.set(id, history);
@@ -3848,15 +3841,14 @@ export class MockRepository implements CoworkRepository {
     return ok(input.mode);
   }
 
-  /** See the legacy implementation: an expired claim is never restated. */
-  async heartbeatDuty(connectionId: string): Promise<ActionResult<boolean>> {
+  async heartbeatDuty(connectionId: string): Promise<ActionResult<void>> {
     const id = String(actingId());
     const now = Date.now();
     const previous = this.#duty.get(id) ?? null;
-    if (readDutyMode(previous, now) !== "online") return ok(false);
-    if (!ownsClaim(previous, connectionId, now)) return ok(false);
+    if (readDutyMode(previous, now) !== "online") return ok(undefined);
+    if (!ownsClaim(previous, connectionId, now)) return ok(undefined);
     this.#duty.set(id, { ...previous, ...heartbeatPatch(now, connectionId) });
-    return ok(true);
+    return ok(undefined);
   }
 
   watchDutyModes(
@@ -3872,13 +3864,11 @@ export class MockRepository implements CoworkRepository {
       onChange(modes);
     };
     this.#dutyWatchers.add(emit);
-    /* The same sweep the legacy watcher runs: a claim going stale is the
-       ABSENCE of a write, so nothing will notify us that it happened. */
-    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
+    /* No sweep, matching the legacy watcher: nothing expires on a clock, so a
+       timed re-emission has nothing to say — see its note. */
     emit();
     return () => {
       this.#dutyWatchers.delete(emit);
-      clearInterval(sweep);
     };
   }
 
@@ -3891,11 +3881,9 @@ export class MockRepository implements CoworkRepository {
     const emit = () =>
       onChange(readDutySnapshot(this.#duty.get(id) ?? null, Date.now()));
     this.#dutyWatchers.add(emit);
-    const sweep = setInterval(emit, STALE_AFTER_MS / 2);
     emit();
     return () => {
       this.#dutyWatchers.delete(emit);
-      clearInterval(sweep);
     };
   }
 

@@ -26,7 +26,7 @@ import { existsSync, readFileSync } from "node:fs";
  */
 
 const apiAuth = readFileSync("lib/server/apiAuth.ts", "utf8");
-const livekit = readFileSync("app/api/livekit/token/route.ts", "utf8");
+const stream = readFileSync("app/api/stream/token/route.ts", "utf8");
 const meetings = readFileSync("app/api/meetings/token/route.ts", "utf8");
 /* Renamed from `middleware.ts` to `proxy.ts` (exporting `proxy`). The test
    reads whichever is present, so the rename does not silently stop this from
@@ -60,21 +60,54 @@ test("it fails closed on every path that cannot verify", () => {
   assert.match(apiAuth, /catch \{\s*return false;\s*\}/);
 });
 
-test("the presence token route uses it", () => {
-  assert.match(livekit, /isSignedInRequest/);
-  assert.equal(
-    livekit.includes("currentSession"),
-    false,
-    "the route still has the one-system check that 401'd every employee",
+test("the presence token route authenticates AND authorises", () => {
+  /* It used to check only that somebody was signed in, in one system, which
+     401'd every employee who had signed in through the other. The route that
+     replaced it resolves the caller through the engine — the same exchange the
+     session bootstrap performs — so a seat is always minted for a NAMED person,
+     and naming them is what makes the authorisation below possible at all. */
+  assert.match(
+    stream,
+    /authoriseSeat\(request/,
+    "the route decides access itself again, so the two rules can drift",
+  );
+  const seatAuth = readFileSync("lib/server/streamSeatAuth.ts", "utf8");
+  assert.match(seatAuth, /readFirebaseCookie/);
+  assert.match(seatAuth, /fetchIdentity\(idToken\)/);
+  assert.match(
+    seatAuth,
+    /input\.subject !== caller/,
+    "a publisher's seat is no longer pinned to the caller",
+  );
+  assert.match(
+    seatAuth,
+    /primaryManager\?\.employeeId/,
+    "the watching seat no longer checks the reporting line",
   );
 });
 
-test("the seat split is untouched by the auth change", () => {
-  /* Widening WHO may ask for a token must not widen what a token can do. A
-     watcher still cannot publish and a publisher still cannot subscribe. */
-  assert.match(livekit, /canPublish: isPublisher/);
-  assert.match(livekit, /canSubscribe: isWatcher/);
-  assert.match(livekit, /room: ROOM_NAME/, "the room is still pinned");
+test("the ROOM is the boundary, and it is pinned to the subject", () => {
+  /**
+   * **The publish/subscribe split is gone and the room replaced it.** A watcher
+   * was minted `canPublish: false`, which their embed cannot use: its join takes
+   * the camera and microphone first and publishes them as part of joining, so
+   * the seat was refused — "This token does not grant publish permission" — and
+   * a manager saw that instead of a screen.
+   *
+   * What holds instead: a seat is minted for ONE person's room, `authoriseSeat`
+   * will not issue one to anybody but that person or their primary manager, and
+   * every room holds exactly one subject. So this is the assertion that matters
+   * now, and it must never be relaxed to take a room from the caller.
+   */
+  assert.match(
+    stream,
+    /roomName: presenceRoomName\(subject\)/,
+    "the room is no longer pinned to the subject server-side",
+  );
+  assert.ok(
+    !/searchParams\.get\("room"\)/.test(stream),
+    "the room is being taken from the query string again",
+  );
 });
 
 test("the meetings route resolves an identity instead of refusing", () => {

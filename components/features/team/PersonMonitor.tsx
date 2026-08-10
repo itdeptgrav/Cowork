@@ -141,8 +141,8 @@ export function PersonMonitor({
   if (subjectQ.isLoading && !subject) return <SkeletonRows rows={8} />;
 
   return (
-    <MonitorRoom>
-      {({ inRoom, connecting, error: roomError }) => (
+    <MonitorRoom subjectId={employeeId}>
+      {({ embedUrl, connecting, error: roomError }) => (
         <>
           <PersonHero
             subject={subject}
@@ -195,8 +195,7 @@ export function PersonMonitor({
             >
               {subject ? (
                 <LiveScreenViewer
-                  inRoom={inRoom}
-                  presenceIdentity={subject.presenceIdentity}
+                  embedUrl={embedUrl}
                   displayName={subject.displayName}
                   presence={subject.presence}
                   connecting={connecting}
@@ -294,10 +293,9 @@ export function PersonMonitor({
           <ScreenDialog
             open={screenOpen}
             onClose={() => setScreenOpen(false)}
-            inRoom={inRoom}
+            embedUrl={embedUrl}
             connecting={connecting}
             error={roomError}
-            presenceIdentity={subject?.presenceIdentity ?? ""}
             displayName={subject?.displayName ?? "This person"}
             presence={subject?.presence ?? "offline"}
           />

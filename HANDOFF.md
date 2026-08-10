@@ -165,15 +165,87 @@ They are now one system:
 
 - **The share decides, the legacy document carries.** `DutySync` publishes what
   `employeeStatus.ts` derived into `cowork_duty_status` — same collection, same
-  field names, plus two additive fields the old app ignores. `mode: "online"`
-  is written only while a whole-screen share is live.
-- **Heartbeat + staleness window** (`HEARTBEAT_INTERVAL_MS` 45s,
-  `STALE_AFTER_MS` 120s). A crash, a force-quit or a sleeping laptop resolves
-  on its own, because nothing has to run at shutdown for presence to become
-  correct. **Never read `doc.mode` directly** — `readDutyMode()` applies the
-  window, and skipping it is what leaves a green dot for somebody who went home.
-- **Only `online` expires.** A break and an emergency are claims about a person,
-  not a connection; expiring one would silently resume their deadlines.
+  field names, plus two additive fields the old app ignores.
+- **Online is a live, whole-screen share — OWNER DECISION (2026-08-10),
+  restored.** For a period it was a plain choice with no prompt; presence was
+  self-declared and a manager opening a screen found nothing. Pressing Go online
+  opens the browser's picker, `capture.ts` hands back anything that is not an
+  entire screen, and only a live track turns the pill green. There is no
+  `goOnline()` to call.
+- **Grav Stream carries the screen — OWNER DECISION (2026-08-10).**
+  `GRAV_STREAM_API_KEY`, server-side only. `lib/integrations/grav/stream.ts`
+  creates the room and mints the seat; `/api/stream/token` returns
+  `{roomId, token, embedUrl}` and the browser loads that page in an iframe.
+- **The embed is the only way in — MEASURED, do not try the direct route
+  again.** Their REST API answers with `{token, url: "wss://stream.grav.in"}`,
+  which looks connectable. It is not: the JWT carries flat claims and no `video`
+  grant, and `/rtc?access_token=…` upgrades the socket for ANY token — a garbage
+  one included — then sends nothing. It fails **silently**: the screen captures,
+  the browser shows its "sharing your screen" bar, the pill stays Offline.
+- **`mode: "screen"` removed the meeting, and with it three limitations that
+  had to be written down as permanent.** A screen room never asks for a camera
+  or a microphone, has no join gate, enforces `requireEntireScreen` at their
+  SFU, and reports the share itself. So: Go online opens the picker directly;
+  a window or a tab is refused server-side (`ENTIRE_SCREEN_REQUIRED`, which we
+  only explain); and Online means `participants[].sharing.screen` is present —
+  a live screen, not a browser's word about itself.
+- **The share is started by the EMBED's own button, not by ours.** Their
+  reference is explicit: *"user activation does not cross a postMessage
+  boundary… `start-screen-share` cannot reliably START a share — the user must
+  press the embed's own button. Stop, mute and leave always work."* And: *"The
+  embed must also be visible when a share starts. A display:none, zero-sized or
+  fully covered frame gets no picker; the embed reports `EMBED_NOT_VISIBLE`."*
+  So the sharer's panel is on screen while a screen is being chosen — stripped
+  by `embedUrlFor` to their state line and one relabelled button — and collapses
+  to a pixel the moment the service confirms a live screen. Cowork still posts
+  `start-screen-share` on the press, which works where a browser carries the
+  activation; the button is what makes it reliable where it does not.
+- **The seat is fetched when the status MENU opens**, so the press has a joined
+  frame to talk to. Warming up is not being online: joining a room is `present`,
+  sharing is `sharing`, and only the second moves the pill. Closing the menu
+  without sharing gives the room back.
+- **The vendor reference is in the repository** — `docs/integrations/grav-stream.md`,
+  copied from https://live.grav.in/docs. Dashboard: https://live.grav.in/dashboard
+  (keys under `/dashboard/keys`, rooms under `/dashboard/rooms`). Read it before
+  changing anything here; every hard-won fact above is one line in it.
+- **`live` is a status, `endedAt` is the lifecycle — and this INVERTED with
+  their release.** An earlier version ended a room permanently when it emptied
+  (`live: false`, `endedAt` still null, rejoin refused with "Room does not
+  exist"), so `ensureRoom` matched on `live === true`. Today a room is
+  `live: false` when empty and joins again fine, so the match is `!endedAt`.
+  Still **no room-id cache**: a stale id is a whole class of bug that cost a day.
+- **`role: "publisher" | "viewer"` is an access-control boundary.** A viewer is
+  never prompted for a device and their SFU rejects any publish from that token,
+  so the manual mute in `LiveScreenViewer` is gone. The room is still the outer
+  boundary — one per person, `authoriseSeat` decides who may have a seat in it.
+- **Silent failure is closed, three ways.** An embed `error` is a notice
+  (`reportProblem`), not a teardown — treating it as fatal dropped the
+  credentials, unmounted the frame, and ended a working session. The sharing
+  panel is never hidden automatically. And every teardown calls
+  `releasePendingTrack()`, since dropping the reference left a live capture
+  running behind an Offline pill.
+- **One room per employee** (`presenceRoomName`), not one for the company. The
+  service caps a room at 30 participants — and a seat minted for one person's
+  room cannot show anybody else's screen however a component misbehaves.
+- **Only the PRIMARY manager may watch.** `/api/stream/token` resolves the
+  caller through `/cowork/me` and refuses a watch seat unless
+  `/cowork/employee/my-managers/:id` names them as the subject's primary
+  manager. This closes the hole the old route documented and could not fix.
+- **Nothing expires — OWNER DECISION (2026-08-10).** A status is changed by the
+  person whose status it is, and by nothing else. `readDutyMode()` returns the
+  stored mode; the ten-minute window that used to demote a quiet `online` claim
+  is gone, along with the timed re-emission in both duty watchers. It read as a
+  safety net and behaved as a trapdoor: a backgrounded tab with clamped timers,
+  a sleeping laptop or a minute of refused writes all look identical to going
+  home, so people at their desks were marked away, auto-paused and refused their
+  task actions. **The accepted cost**: somebody who closes their browser without
+  choosing Offline stays Online for everybody, including overnight.
+- **`PRESENCE_STALE_AFTER_MS` still exists, for ownership only.** `ownsClaim()`
+  uses it to decide which connection may WRITE a claim — never what anybody
+  reads. A reloaded tab adopts its own quiet claim after two missed beats.
+- **Never publish a guess.** `DutySync` writes nothing until the store is
+  `hydrated`. The store initialises to `offline`, so a publish before the first
+  snapshot announced offline for somebody who was online — every page load.
 - **Multi-tab**: the document records which connection holds the claim, and a
   tab may only clear one it owns. Otherwise opening a second tab — which has no
   room, so honestly sees "not sharing" — would end the first tab's live share.
@@ -429,8 +501,10 @@ Two consequences worth knowing:
   this"
 - ❌ A second presence collection. `cowork_duty_status` is it. The old app reads
   and writes the same document, and anything we write elsewhere it will never see
-- ❌ Reading `doc.mode` directly. `readDutyMode()` / `useDutyMode()` apply the
-  staleness window; bypassing them is how a closed browser stays green
+- ❌ Any rule that moves somebody to Offline without them choosing it — a
+  staleness window, an idle timer, an unload handler, a connection watchdog.
+  Each was tried; each ended sessions nobody ended. `readDutyMode()` /
+  `useDutyMode()` are still the one door, so a future rule has one place to live
 - ❌ Re-adding break credit or auto-pause to `StatusButton`. `setDutyMode` owns
   every consequence of a transition, and it derives them from the stored
   document so it stays idempotent

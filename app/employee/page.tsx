@@ -8,11 +8,11 @@ import {
   endSession,
   startScreenShare,
 } from "@/lib/status/employeeStatus";
+import { fetchShareSeat } from "@/lib/integrations/grav/credentials";
 import {
-  ROOM_NAME,
-  fetchRoomCredentials,
   presenceIdentityFor,
-} from "@/lib/integrations/livekit/credentials";
+  presenceRoomName,
+} from "@/lib/integrations/livekit/identity";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 
 /**
@@ -26,10 +26,10 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
  * the track and the publish are behaving, from the same controls the top bar
  * uses.
  *
- * Nothing here is required to go online — and since Online became a choice
- * rather than a consequence of sharing, nothing here changes your status at
- * all. This page starts and stops the SHARE, which is what a diagnostics page
- * for screen sharing should do; the pill in the top bar owns presence.
+ * This page starts and stops the SHARE — which, since Online is a live share
+ * again, is the same act as going online and offline. It is the same store, the
+ * same room and the same publish the top-bar pill uses; only the framing is
+ * diagnostic.
  */
 export default function EmployeePage() {
   const { status, share, session, token, url, notice } = useEmployeeStatus();
@@ -55,7 +55,7 @@ export default function EmployeePage() {
               disabled={connecting || !viewerId}
               onClick={() =>
                 viewerId &&
-                void startScreenShare(() => fetchRoomCredentials(viewerId))
+                void startScreenShare(() => fetchShareSeat(viewerId))
               }
             >
               {connecting ? "Waiting for your screen…" : "Start sharing"}
@@ -112,7 +112,10 @@ export default function EmployeePage() {
           <PanelHead title="Connection" sub="Where this session is pointed" />
           <dl className="divide-y divide-[var(--hairline)] text-sm">
             <Fact label="Identity" value={identity} />
-            <Fact label="Room name" value={ROOM_NAME} />
+            <Fact
+              label="Room name"
+              value={viewerId ? presenceRoomName(viewerId) : "—"}
+            />
             <Fact label="Server" value={url ?? "—"} />
             {/* The token is a credential. Its presence is the useful fact; its
                 value is never printed. */}

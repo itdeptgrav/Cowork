@@ -32,12 +32,12 @@ export type DutyMode = "online" | "break" | "emergency" | "offline";
 /**
  * How often a live tab restamps its claim.
  *
- * Chosen against the staleness window below, not for its own sake: the window
- * has to survive a missed beat, so it is comfortably more than twice this. A
- * backgrounded tab is throttled — `setInterval` in an inactive tab is clamped,
- * and this application is sometimes deliberately backgrounded (the automation
- * browser runs it that way) — so the margin is what stops a throttled tab
- * reporting its own user offline.
+ * Nobody's status depends on it any more — a missed beat costs a person nothing,
+ * because nothing here reads a beat to decide a mode. What it still does is say
+ * which connection is the live one, so a reloaded tab can take its own claim
+ * back (`ownsClaim`) rather than two tabs writing over each other. Left at this
+ * cadence because a backgrounded tab has its timers clamped, and the beat should
+ * still land often enough to be current when it matters.
  */
 export const HEARTBEAT_INTERVAL_MS = 45_000;
 
@@ -56,52 +56,30 @@ export const HEARTBEAT_INTERVAL_MS = 45_000;
 export const STALE_AFTER_MS = 120_000;
 
 /**
- * How old a heartbeat may be before **presence** stops believing "online".
+ * How quiet a heartbeat has to be before another connection may take the claim
+ * over — **ownership only, never what anybody is shown.**
  *
- * Deliberately LONGER than `STALE_AFTER_MS`, and deliberately a separate
- * constant rather than a wider value for that one — the two answer different
- * questions and only one of them is safe to loosen:
+ * This used to expire the claim itself: a `mode: "online"` whose beats stopped
+ * for this long READ as offline, everywhere, for everybody. That is removed —
+ * **OWNER DECISION: nothing puts a person offline except the person.** Online is
+ * self-declared (see `derive`), and a declared status that a timer can revoke is
+ * not a declaration. What the window did in practice was end sessions nobody
+ * ended: a tab left in the background has its timers clamped, a laptop sleeps, a
+ * write is refused for a minute — and ten minutes later somebody who never left
+ * their desk was marked away, their timer auto-paused, and their task actions
+ * refused. It is not a window that can be tuned to tell those apart from a
+ * person going home, because they look identical from here.
  *
- *  · `STALE_AFTER_MS` also caps how much of a running timer is BANKABLE
- *    (`graceMs` in `pauseTimer`). Widening it would credit up to this long of
- *    unworked time every time a device slept, which is the "1:59:39 for a
- *    five-minute run" fault its own comment describes. It stays at two minutes.
- *  · This one only decides how long a dot stays green after the beats stop.
- *    Nothing is paid, credited or gated on it.
+ * It is kept for `ownsClaim`, where the question is different and safe: not "is
+ * this person here" but "may this connection write over that one's claim". The
+ * worst case there is a tab correcting a record for a tab that is gone.
  *
- * Ten minutes, because a phone that locks kills the ReplayKit broadcast
- * immediately and iOS will not let it restart without a fresh tap — so a
- * screen going dark for a moment is a routine event, not evidence somebody
- * left. Two minutes turned every pocket-lock into a departure.
- *
- * **The cost is stated rather than hidden**: for up to this long, a manager can
- * read someone as online and find no live screen if they open it. That is a
- * real widening of the rule `derive()` states — online is a live share — and it
- * is accepted here only because the alternative marked present people absent.
+ * **The cost is stated rather than hidden**: somebody who closes their browser
+ * without choosing Offline stays Online on everybody's screen until they say
+ * otherwise, including overnight. That is the accepted price of never taking a
+ * status away from somebody who did not ask to lose it.
  */
 export const PRESENCE_STALE_AFTER_MS = 600_000;
-
-/**
- * How long a device may go without a CONFIRMED heartbeat before it stops
- * claiming to be online about itself.
- *
- * The two windows above are read-time rules: they decide how long somebody ELSE
- * believes a claim after the beats stop. Neither of them can be applied by the
- * device that has gone quiet, and that asymmetry was the fault — a laptop whose
- * connection died kept a green pill up indefinitely, because online is a manual
- * state now (`derive`) and nothing local ever expired it. The person looking at
- * their own screen was the last to know they had dropped off.
- *
- * Deliberately SHORTER than `PRESENCE_STALE_AFTER_MS`. A device that knows its
- * own writes are not landing has direct evidence; a reader watching from
- * elsewhere only has silence, and silence deserves the longer benefit of the
- * doubt. Demoting locally first also means the pill never claims something the
- * rest of the company has already stopped believing.
- *
- * Three missed beats. Two is the ordinary throttle of a backgrounded tab, which
- * this application is sometimes deliberately run as.
- */
-export const CLAIM_UNPROVEN_AFTER_MS = 3 * HEARTBEAT_INTERVAL_MS;
 
 /**
  * The presence document, as legacy stores it.
@@ -162,20 +140,17 @@ export function storedMode(doc: DutyDocument | null): DutyMode {
 }
 
 /**
- * Is this claim still alive?
+ * Has this claim's connection gone quiet?
  *
- * Only `online` expires. A break and an emergency are **claims about a person,
- * not about a connection** — somebody who shuts their laptop while on a break
- * is still on a break, and expiring it would quietly resume their deadlines and
- * credit them nothing. Legacy agrees: it clears both only when the person
- * leaves the state, and it carries an unfinished one across sessions in
- * `pendingBreakGapMs` / `pendingEmergencyGapMs` precisely so nothing is lost.
+ * **Read this as "is the owner still writing", not as "is the person still
+ * here".** It answers one question, for `ownsClaim`: may another connection take
+ * this claim over. It no longer decides anybody's mode — see
+ * `PRESENCE_STALE_AFTER_MS` and `readDutyMode`.
  *
- * A document with no heartbeat at all is treated as fresh when it claims
- * something other than online, and as **stale** when it claims online — that is
- * the old app's manual toggle, which has no heartbeat and can leave "online"
- * behind indefinitely. Believing it is how a manager ends up watching a green
- * dot for somebody who went home three days ago.
+ * Only `online` has an owner to go quiet. A break and an emergency are **claims
+ * about a person, not about a connection** — somebody who shuts their laptop
+ * while on a break is still on a break — so they are never quiet and never
+ * adoptable.
  */
 export function isStale(doc: DutyDocument | null, nowMs: number): boolean {
   if (!doc) return false;
@@ -186,51 +161,31 @@ export function isStale(doc: DutyDocument | null, nowMs: number): boolean {
 }
 
 /**
- * The instant an `online` claim expired, if it did and nobody has said so.
- *
- * **Staleness was read-only, and that was half a mechanism.** Every reader
- * resolved an expired claim to offline correctly, and the document itself was
- * left saying `mode: "online"` for ever — nothing has ever written the lapse.
- * So the trail in `cowork_duty_history` showed a session still running, and the
- * old application, which reads `mode` verbatim, showed a green dot for somebody
- * whose laptop shut days ago.
- *
- * Returns the moment the claim ACTUALLY expired — the last heartbeat plus the
- * window — rather than now, so the entry written from it reads "went offline at
- * 18:05" instead of at whatever hour a browser next opened. `null` when the
- * claim is live, when the mode is not online, or when the lapse has already been
- * written, which is what stops a tidy-up write repeating.
- *
- * A claim with no heartbeat at all has no instant to attribute the lapse to —
- * it is the old app's manual toggle, which never beat once — so it lapses as of
- * now. Correcting it is ours to do for the reason `ownsClaim` already states:
- * nothing else will.
- */
-export function claimLapsedAtMs(
-  doc: DutyDocument | null,
-  nowMs: number,
-): number | null {
-  if (!doc || storedMode(doc) !== "online") return null;
-  const beat = typeof doc.heartbeatAt === "number" ? doc.heartbeatAt : null;
-  if (beat === null) return nowMs;
-  const expiresAt = beat + PRESENCE_STALE_AFTER_MS;
-  return nowMs > expiresAt ? expiresAt : null;
-}
-
-/**
  * What this person's presence actually is, right now.
  *
- * **The only function anything outside this module should ask.** Reading
- * `doc.mode` directly is what would put a stale claim on screen, and it is the
- * single mistake this whole heartbeat design exists to prevent.
+ * **A status is only ever changed by the person whose status it is — OWNER
+ * DECISION.** This used to downgrade an `online` claim whose heartbeat had
+ * stopped for `PRESENCE_STALE_AFTER_MS`, and that is gone. It read as a safety
+ * net and behaved as a trapdoor: a backgrounded tab with clamped timers, a
+ * laptop that slept, a minute of refused writes, and somebody sitting at their
+ * desk was marked away — their timer auto-paused and their task actions refused
+ * — with nothing on screen to explain it, because nothing had happened. Ten
+ * minutes was reported as "it goes offline by itself after a while", and it was.
+ *
+ * So this is now `storedMode` with a name that says who may ask it. The one
+ * clock left in presence belongs to `ownsClaim`, which decides which connection
+ * may WRITE — never what anybody reads.
+ *
+ * The parameter stays: every call site passes it, the signature is load-bearing
+ * across two repositories, and a rule that needs the clock again should find the
+ * door already open rather than change fifty callers to reopen it.
  */
 export function readDutyMode(
   doc: DutyDocument | null,
   nowMs: number,
 ): DutyMode {
-  const mode = storedMode(doc);
-  if (mode === "online" && isStale(doc, nowMs)) return "offline";
-  return mode;
+  void nowMs;
+  return storedMode(doc);
 }
 
 /**
@@ -265,19 +220,10 @@ export interface DutySnapshot {
    * account is" — the same fact, needing two different sentences on screen.
    */
   presenceConnectionId: string | null;
-  /**
-   * The document still SAYS online, but the claim expired at this instant.
-   *
-   * `mode` above already reads `offline`, so nothing on screen is wrong. What is
-   * wrong is the document, and this is what lets the person's own device tidy it
-   * up when it next opens — see `claimLapsedAtMs`. `null` whenever there is
-   * nothing to correct.
-   */
-  lapsedAtMs: number | null;
 }
 
 /**
- * Read the whole of it, staleness already applied.
+ * Read the whole of it — the mode exactly as the document states it.
  *
  * The start timestamps are returned only for the mode actually in force: a
  * `breakStartedAtMs` left behind by a break that ended is not a live clock, and
@@ -299,7 +245,6 @@ export function readDutySnapshot(
       mode === "online" && typeof doc?.presenceConnectionId === "string"
         ? doc.presenceConnectionId
         : null,
-    lapsedAtMs: claimLapsedAtMs(doc, nowMs),
   };
 }
 
@@ -638,9 +583,12 @@ export function heartbeatPatch(nowMs: number, connectionId: string | null) {
  * exactly the lost time. An offline or unknown caller gets `now`: there is no
  * live session to freeze against, and their work genuinely slips with the clock.
  *
- * A stale online claim (a tab that went home without saying so) resolves through
- * `readDutyMode` to offline, so it gets `now` too rather than a frozen anchor
- * from whenever they were last really here.
+ * An online claim left behind by a browser that was closed without choosing
+ * Offline now stays online — nothing expires it any more — so its anchor stays
+ * frozen at that session's start until the person says otherwise. That is the
+ * accepted consequence of the same owner decision `readDutyMode` states: a
+ * projection reading slightly optimistic is a smaller wrong than a status
+ * somebody never asked to lose.
  */
 export function queueAnchorMs(doc: DutyDocument | null, nowMs: number): number {
   if (!doc || readDutyMode(doc, nowMs) !== "online") return nowMs;

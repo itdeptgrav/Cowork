@@ -1,12 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  VideoTrack,
-  useTracks,
-  type TrackReference,
-} from "@livekit/components-react";
-import { Track } from "livekit-client";
 import { Icon } from "@/components/ui/Icons";
 import type { MonitoredPresence } from "@/lib/domain";
 
@@ -17,12 +11,14 @@ import type { MonitoredPresence } from "@/lib/domain";
  * is the thing itself — so it gets the largest area, the darkest material and
  * the only moving content. Everything else on the page explains it.
  *
- * It consumes the existing LiveKit implementation and adds nothing to it:
- * `useTracks` for the screen-share source, `VideoTrack` to render. The only
- * judgement it makes is *whose* track to show — tracks are matched against the
- * subject's `presenceIdentity`, because a monitoring view that renders whatever
- * screen happens to be in the room would eventually put one person's work under
- * another person's name.
+ * **It is Grav Stream's own page, in a frame.** Presence runs on their service —
+ * OWNER DECISION — and their realtime media is reachable only through the embed,
+ * so there is no track to subscribe to and no video element to place. What used
+ * to happen here was an identity match against `presenceIdentity`, filtering one
+ * shared room down to the right person. Losing that is a strengthening: the seat
+ * this manager holds is for ONE person's room and the server refuses to issue it
+ * to anybody but their primary manager, so the permission is carried by the
+ * credential rather than by a component getting a filter right.
  *
  * The frame is a slab rather than a frosted panel. docs/architecture/DESIGN.md reserves the slab
  * for measurement, and a live screen is the most literal measurement in the
@@ -31,49 +27,21 @@ import type { MonitoredPresence } from "@/lib/domain";
  */
 
 interface ViewerProps {
-  presenceIdentity: string;
   displayName: string;
   presence: MonitoredPresence;
   connecting: boolean;
   error: string | null;
+  /**
+   * The page this manager was granted for THIS person's room, or null.
+   *
+   * Null covers the server render, a seat still being minted, and a refusal —
+   * `MonitorRoom` decides which, and `error` carries the reason.
+   */
+  embedUrl: string | null;
 }
 
-/**
- * The public component. It decides only one thing: whether there is a room to
- * ask.
- *
- * `useTracks` throws outside a `<LiveKitRoom>`, and there is legitimately no
- * room during the server render, before the token lands, or after a connection
- * failure. Rather than guard the hook — which cannot be done, hooks are not
- * conditional — the two cases are two components, and this picks between them.
- * The frame is identical either way, so the switch is invisible.
- */
-export function LiveScreenViewer(props: ViewerProps & { inRoom: boolean }) {
-  const { inRoom, ...rest } = props;
-  return inRoom ? (
-    <SubscribedViewer {...rest} />
-  ) : (
-    <ViewerFrame {...rest} match={null} />
-  );
-}
-
-function SubscribedViewer(props: ViewerProps) {
-  const tracks = useTracks([
-    { source: Track.Source.ScreenShare, withPlaceholder: false },
-  ]);
-
-  /* `withPlaceholder: false` means every entry here has a real publication, but
-     the hook's return type keeps `publication` optional for the placeholder
-     case. Narrowing once, here, is what lets `VideoTrack` be called without a
-     cast — and it is also where the identity match happens, so there is exactly
-     one place that decides whose screen this is. */
-  const match =
-    tracks.find(
-      (t): t is TrackReference =>
-        t.participant.identity === props.presenceIdentity && !!t.publication,
-    ) ?? null;
-
-  return <ViewerFrame {...props} match={match} />;
+export function LiveScreenViewer(props: ViewerProps) {
+  return <ViewerFrame {...props} />;
 }
 
 function ViewerFrame({
@@ -81,8 +49,21 @@ function ViewerFrame({
   presence,
   connecting,
   error,
-  match,
-}: ViewerProps & { match: TrackReference | null }) {
+  embedUrl,
+}: ViewerProps) {
+  /* Whether their room is on screen at all. NOT whether a screen is arriving —
+     that is inside the frame now, and this component cannot see it. */
+  const room = embedUrl !== null && !error;
+  /**
+   * The badge answers "is this person sharing", and the only thing that knows is
+   * their published presence.
+   *
+   * It used to read `room` — which lit "Live" the moment a URL existed, over a
+   * frame still showing its own "Ready to join?" screen. A badge that says Live
+   * above a join button is worse than no badge: it is the one thing on the panel
+   * a manager would take on trust.
+   */
+  const live = room && presence === "online";
   return (
     <section
       aria-label={`${displayName} — live screen`}
@@ -93,31 +74,44 @@ function ViewerFrame({
           reference puts its status and controls inside the frame, and a bar
           stacked on top would cost the screen the height it exists for. */}
       <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start gap-3 bg-gradient-to-b from-black/55 to-transparent px-4 pt-3.5 pb-8">
-        <LiveBadge live={!!match} presence={presence} />
+        <LiveBadge live={live} presence={presence} />
         <p className="min-w-0 flex-1 truncate pt-0.5 text-xs text-slab-ink-muted">
-          {match
-            ? "Entire screen · publishing now"
+          {room
+            ? live
+              ? "Their room — press Join to watch what they are sharing"
+              : "Their room — they are not sharing a screen right now"
             : connecting
-              ? "Joining the monitoring room…"
+              ? "Opening their room…"
               : "No screen is being shared"}
         </p>
-        {match && <Elapsed />}
+        {live && <Elapsed />}
       </header>
 
-      {match ? (
-        /* `absolute inset-0` rather than a normal flow child with `h-full`:
-           a screen shared from a phone or an iPad in portrait has a native
-           resolution far taller than it is wide, and a plain `<video>` sized
-           by `height: 100%` inside a container whose own height derives from
-           its content falls back to the video's OWN intrinsic aspect ratio —
-           which then dictates this section's height instead of the other way
-           around, turning one portrait share into a tile hundreds of pixels
-           taller than every other. Taking it out of flow entirely means it
-           can only ever fill whatever box this section already has (from
-           `min-h-[320px]` / `flex-1` above), for any source aspect ratio. */
-        <VideoTrack
-          trackRef={match}
-          className="absolute inset-0 h-full w-full object-contain"
+      {room && embedUrl ? (
+        /* `absolute inset-0` rather than a flow child with `h-full`: a frame
+           sized by `height: 100%` inside a container whose own height derives
+           from its content collapses, and this section's height comes from
+           `min-h-[320px]` / `flex-1` above. Out of flow, it can only ever fill
+           the box that already exists. */
+        <iframe
+          title={`${displayName} — live screen`}
+          src={embedUrl}
+          /**
+           * The same permissions the sharer's frame gets, and the reason is
+           * worth stating because withholding them looks safer and is not.
+           *
+           * Without this the embed refuses at its own join screen — "Camera and
+           * microphone are blocked. If this meeting is embedded, the iframe
+           * needs allow=…" — and a manager sees that instead of a screen. What
+           * actually stops a watcher publishing anything is the SEAT: their
+           * token is minted `canPublish: false`, server-side, in a route that
+           * will not issue it to anybody but this person's primary manager. An
+           * iframe attribute was never the guard; it only decided whether their
+           * own devices could be reached, and their own devices are not what
+           * this panel is about.
+           */
+          allow="camera; microphone; display-capture; autoplay"
+          className="absolute inset-0 h-full w-full border-0"
         />
       ) : (
         <ViewerPlaceholder

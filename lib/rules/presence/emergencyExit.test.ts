@@ -40,27 +40,24 @@ function applyTransitionBody(src: string): string {
 }
 
 test("leaving an emergency for online actually takes effect", () => {
-  /* **This used to assert that the branch REOPENED the popover**, because going
-     online owed a screen share and the picker lived inside a panel that
-     `choose` had already closed — a flag set on an unmounted panel meant
-     pressing "Send for approval" appeared to do nothing.
-
-     Online no longer owes anything (OWNER DECISION), so there is no panel to
-     reopen and the old assertion would be demanding a step that has been
-     deleted. The guarantee underneath it is unchanged and is what is checked
-     now: the deferred exit must PERFORM the transition rather than merely
-     arrange for a later one. */
+  /* **The panel must be REOPENED, not merely armed.** Going online owes a
+     screen share again (OWNER DECISION, restored), and the picker lives inside
+     a panel that `choose` has already closed on its way to the emergency
+     dialog. Setting the confirmation flag on a panel that is not mounted is how
+     pressing "Send for approval" came to appear to do nothing: the transition
+     ran, and the step that would have finished it was invisible. */
   const body = applyTransitionBody(code(STATUS_BUTTON));
   const online = body.slice(0, body.indexOf('if (id === "break")'));
   assert.match(
     online,
-    /goOnline\(\)/,
-    "the online branch does not actually go online, so an emergency exit to " +
-      "online leaves the person where they were",
+    /setOpen\(true\)/,
+    "the online branch arms a confirmation on a panel it never reopens, so an " +
+      "emergency exit to online leaves the person looking at nothing",
   );
-  assert.ok(
-    !/setConfirming\(true\)/.test(online),
-    "the online branch still arranges a confirmation step that no longer exists",
+  assert.match(
+    online,
+    /setConfirming\("share"\)/,
+    "the online branch does not ask for the screen, so nothing makes them online",
   );
 });
 

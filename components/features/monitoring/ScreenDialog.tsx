@@ -24,19 +24,18 @@ import type { MonitoredPresence } from "@/lib/domain";
 export function ScreenDialog({
   open,
   onClose,
-  inRoom,
+  embedUrl,
   connecting,
   error,
-  presenceIdentity,
   displayName,
   presence,
 }: {
   open: boolean;
   onClose: () => void;
-  inRoom: boolean;
+  /** The page for this person's room, or null while there is no seat. */
+  embedUrl: string | null;
   connecting: boolean;
   error: string | null;
-  presenceIdentity: string;
   displayName: string;
   presence: MonitoredPresence;
 }) {
@@ -99,10 +98,9 @@ export function ScreenDialog({
           </button>
         </div>
         <LiveScreenViewer
-          inRoom={inRoom}
+          embedUrl={embedUrl}
           connecting={connecting}
           error={error}
-          presenceIdentity={presenceIdentity}
           displayName={displayName}
           presence={presence}
         />

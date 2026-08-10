@@ -1,14 +1,7 @@
-import {
-  ENTIRE_SCREEN_REQUIREMENT,
-  ScreenShareCancelled,
-  ScreenShareWrongSurface,
-  requestScreenShare,
-  type SharedSurface,
-} from "../integrations/livekit/capture.ts";
+import { type SharedSurface } from "../integrations/livekit/capture.ts";
+import { stopPublishing } from "../integrations/grav/publisher.ts";
 import {
   isNativeShell,
-  nativeStartScreenShare,
-  setNativeScreenShareListener,
   /* `.ts`, like `capture.ts` above. Without it `node --test` cannot resolve the
      module, so every test that reaches this file failed to load at all — which
      is why `employeeStatus.test.ts` was among the suite's standing failures. */
@@ -22,6 +15,11 @@ import {
  * suppress Online, and the button can *start* the sharing that produces it, but
  * nothing can assert it — and a share of a single window or a browser tab does
  * not produce it, because a curated view is not the thing being promised.
+ *
+ * The track is carried into a room belonging to that one employee, where their
+ * primary manager and nobody else may join to watch — `/api/stream/token`. The
+ * capture itself stays here, because the surface rule is only enforceable where
+ * `getDisplayMedia` is called.
  *
  * Why a store rather than a React context: the facts come from LiveKit hooks
  * that only work inside `<LiveKitRoom>`, while the pill that displays them
@@ -42,7 +40,7 @@ import {
 export type EmployeeStatus = "online" | "break" | "emergency" | "offline";
 
 /** What the person asked for. Never includes "online" — see the module note. */
-export type ManualStatus = "online" | "break" | "emergency" | null;
+export type ManualStatus = "break" | "emergency" | null;
 
 /**
  * Where the connect-and-share attempt has got to.
@@ -54,16 +52,28 @@ export type ManualStatus = "online" | "break" | "emergency" | null;
 export type SessionPhase =
   "idle" | "requesting" | "connecting" | "live" | "error";
 
-/** What LiveKit actually reports. Written only by `ScreenShareBridge`. */
+/**
+ * What the room actually reports. Written by the status button after the
+ * publisher SDK starts a capture, and confirmed against the service.
+ *
+ * `sharing` means **a screen is going out right now, as the SERVICE reports it**
+ * — `participants[].sharing.screen` on the room, read through
+ * `/api/stream/presence`. Not "connected", and not the browser's word about
+ * itself: a tab can be wrong or stale, and this is the fact a manager reads.
+ *
+ * For a period it could only mean "present in the room", because the only room
+ * type was a meeting and nothing reported the share. A `screen` room reports it,
+ * so the gap that had to be documented is closed.
+ */
 export interface ShareFacts {
-  /**
-   * A screen-share publication exists, its track is live and unmuted, and the
-   * surface is the entire screen. All four, or this is false.
-   */
+  /** A screen is live, per the service. This is what Online is. */
   sharing: boolean;
-  /** The room is connected. False also covers "never joined". */
+  /** In the room. False also covers "never joined". */
   connected: boolean;
-  /** What is actually being shared, as the browser reports it. */
+  /**
+   * What is being shared — the surface the browser reported, through their
+   * `screen-share-started` event and the room's own record of it.
+   */
   surface: SharedSurface | null;
   /** Why sharing is false, in the reader's language. */
   detail: string;
@@ -76,6 +86,19 @@ export interface EmployeeStatusState {
   session: SessionPhase;
   /** Credentials for the room. Present only while a session is being held. */
   token: string | null;
+  /**
+   * The REALTIME SERVER the media connects to — `wss://stream.grav.in`, their
+   * `url` field, what the publisher SDK is given as `serverUrl`.
+   *
+   * **It held the embed page for a while, and that is a bug worth naming**
+   * because the two are one field apart and their documentation warns about it
+   * twice. Every visible step still worked: the picker opened, the screen was
+   * granted, the browser put its "sharing your screen" bar up — and then the
+   * SDK could not reach a realtime server at an HTML page's address, the
+   * session ended, and the share stopped about a second after it started. The
+   * sharer no longer loads the embed at all (see `publisher.ts`), so this field
+   * means one thing.
+   */
   url: string | null;
   /** Epoch ms the current break began, or null. */
   breakStartedAt: number | null;
@@ -140,7 +163,9 @@ const IDLE_SHARE: ShareFacts = {
  * every one STOP THE SCREEN RECORDING**, because an unavailable person is not
  * being watched. Offline additionally clears the manual state; break and
  * emergency keep it. Factored out so the three cannot drift on what "stop
- * sharing" means. Callers set `pendingTrack = null` alongside it.
+ * sharing" means. Callers call `releasePendingTrack()` alongside it — dropping
+ * the reference is not releasing the capture, and the browser's own "sharing
+ * your screen" bar is what tells the difference.
  */
 const IDLE_SESSION = {
   session: "idle" as const,
@@ -167,25 +192,21 @@ export function derive(
   if (manual === "emergency") return "emergency";
   if (manual === "break") return "break";
   /**
-   * **Online is now a CHOICE — OWNER DECISION, and a reversal.**
+   * **Online is a live, whole-screen share — OWNER DECISION, restored.**
    *
-   * This module was built on the opposite rule: online was a consequence of a
-   * live whole-screen share and nothing a person said could assert it. Pressing
-   * Online opened the browser's capture picker, and cancelling it left you
-   * offline. That has been removed at the owner's instruction: pressing Online
-   * makes you online, immediately, with no prompt.
+   * For a period this was a plain choice: pressing Online made you online with
+   * no prompt and nothing verified it. That has been reversed at the owner's
+   * instruction. Pressing Go online asks for your screen first, the browser's
+   * picker must return an ENTIRE screen (`capture.ts` hands anything else
+   * straight back), and only a track that is actually flowing into the room
+   * puts the pill green. Nothing a person types or clicks can assert it.
    *
-   * What that costs, stated where the rule lives rather than left to be
-   * discovered: presence is now SELF-DECLARED. Nothing verifies it, and a
-   * manager opening somebody's screen finds one only if that person chose to
-   * share. Screen sharing still exists and still works — it is simply no longer
-   * what online MEANS.
-   *
-   * A live share still reports online on its own, so somebody who shares
-   * without pressing anything is online exactly as before, and `remoteOnline`
-   * still carries the account's claim from another device.
+   * `remoteOnline` is the account's own answer, for a device that is not the
+   * one sharing — a phone in somebody's pocket while their laptop shares. It is
+   * not a second way to be online: somewhere a screen IS being shared, and the
+   * manager who opens it finds it. What it decides is only which device may say
+   * so.
    */
-  if (manual === "online") return "online";
   if (share.sharing && share.connected) return "online";
   return remoteOnline ? "online" : "offline";
 }
@@ -221,6 +242,45 @@ export function takePendingTrack(): MediaStreamTrack | null {
 }
 export function clearPendingTrack(): void {
   pendingTrack = null;
+}
+
+/**
+ * Give the capture back to the browser.
+ *
+ * **Dropping the reference is not releasing the track**, and the difference is
+ * visible to the person: every teardown below used to set `pendingTrack = null`,
+ * which orphaned a live `MediaStreamTrack` if the publisher had never taken it —
+ * a room that failed to connect, a token that never arrived. Chrome went on
+ * showing "localhost is sharing your screen" for a share Cowork had already
+ * given up on, and the pill said Offline beside it. Whoever saw that had no way
+ * to reconcile the two.
+ *
+ * A no-op once the publisher has taken the track: ownership moved with it, and
+ * `ScreenSharePublisher` stops it on unpublish and on unmount.
+ */
+function releasePendingTrack(): void {
+  /**
+   * **The live share goes with it.**
+   *
+   * Nothing unmounts a frame to end a capture any more — the publisher SDK runs
+   * in this document and holds the session itself — so every path that tears a
+   * session down has to say so. Break, emergency, offline and a failed publish
+   * all reach here, which is why the stop belongs here rather than at four call
+   * sites that could each forget it.
+   *
+   * Safe when nothing is sharing: `stopPublishing` is a no-op then.
+   */
+  stopPublishing();
+
+  const track = pendingTrack;
+  pendingTrack = null;
+  if (!track) return;
+  try {
+    track.stop();
+  } catch {
+    /* Already ended — the browser's own Stop sharing bar, or a device that went
+       away. Nothing to release. */
+  }
 }
 
 const listeners = new Set<() => void>();
@@ -282,166 +342,121 @@ export function getServerSnapshot(): EmployeeStatusState {
  * did. Both are cleared by the person, or by ending the session.
  */
 export function reportShare(share: ShareFacts): void {
-  commit({ ...state, share, notice: null });
+  commit({
+    ...state,
+    share,
+    /* A live track is a FACT about this device, not the initial guess the
+       publish gate exists to hold back — so reporting one settles the question
+       `hydrated` asks even if the account subscription never answered. See
+       `goOffline`. */
+    hydrated: state.hydrated || (share.sharing && share.connected),
+    notice: null,
+  });
 }
 
 /* ── The go-online flow ───────────────────────────────────────────────────── */
 
 /**
- * Go online.
+ * Go online — which is to say, join your presence room and share your screen
+ * into it.
  *
- * **No screen-share prompt — OWNER DECISION, and a deliberate reversal.**
+ * **There is no other way to be online, and no `goOnline()` to call.** A
+ * function that set the status directly existed for a period and is gone: while
+ * it did, presence was self-declared, and a manager opening somebody's screen
+ * found nothing there.
  *
- * This used to open the browser's capture picker first and hold the whole
- * transition behind it: cancel the picker and you stayed offline, pick a single
- * window rather than the whole screen and you stayed offline. Online meant a
- * live whole-screen track and nothing else could assert it.
+ * **The picker is no longer ours, and the rule is stronger for it.** Cowork used
+ * to call `getDisplayMedia` itself and hand back anything that was not an entire
+ * screen — a check in a browser, which a modified client could simply not make.
+ * Presence runs on Grav Stream now, in a room created `mode: "screen"` with
+ * `requireEntireScreen: true`, so their SFU refuses a window or a browser tab
+ * before the producer exists. A screen room also never asks for a camera or a
+ * microphone, which is why there is no longer a meeting to create or a join
+ * screen to get past.
  *
- * Pressing Online now simply makes you online. It commits synchronously and
- * takes no argument, because there is nothing left to await — no picker, no
- * token, no room. The old signature accepted a credential fetcher, and callers
- * that still pass one are unaffected: it is ignored rather than called, so
- * nothing mints a token for a room nobody is joining.
- *
- * **Sharing is not gone, only unhooked.** `startScreenShare` below is the same
- * flow under its own name, for anybody who wants to be watched or is asked to
- * be; a live share still reports online through `derive` on its own. What has
- * gone is the requirement.
- */
-export function goOnline(_unused?: unknown): boolean {
-  void _unused;
-  commit({
-    ...state,
-    manual: "online",
-    breakStartedAt: null,
-    emergencyStartedAt: null,
-    notice: null,
-    /* Choosing to be online settles the question a reconnect was holding open. */
-    reconnecting: false,
-  });
-  return true;
-}
-
-/**
- * Start sharing this screen — the old `goOnline`, under the name it always
- * deserved.
- *
- * Kept whole because monitoring still runs on it: `requestScreenShare` refuses
- * anything but the entire screen, the token is fetched only once a track
- * exists, and a cancelled picker costs nothing. It no longer decides presence.
- *
- * MUST be called straight from a click — `requestScreenShare` needs the gesture.
+ * This function only fetches the seat and holds it. The room comes up, and the
+ * PICKER is opened separately by the press that asked for it — see
+ * `startScreenShareNow`, and the note in `StatusButton` about why a capture
+ * prompt cannot survive an `await`.
  */
 export async function startScreenShare(
-  fetchCredentials: () => Promise<{ token: string; url: string }>,
+  /**
+   * **`url`, not `embedUrl`.** The seat carries both and they are not
+   * interchangeable: `url` is the realtime server the media connects to, and
+   * `embedUrl` is an HTML page for a WATCHER's iframe. This used to take the
+   * embed page and store it as `url`, which is what the publisher SDK was then
+   * handed as `serverUrl` — see the field's note above for what that looked
+   * like from the outside.
+   */
+  fetchSeat: () => Promise<{ token: string; url: string }>,
 ): Promise<boolean> {
   if (state.session === "requesting" || state.session === "connecting")
     return false;
 
   if (state.share.sharing && state.share.connected) return true;
 
-  commit({ ...state, session: "requesting", notice: null });
-
   if (isNativeShell()) {
-    try {
-      const { token, url } = await fetchCredentials();
-      if (!token || !url) throw new Error("no credentials");
-
-      /* The native Room reports its own state changes (e.g. the system
-         "Stop Broadcast" bar) for as long as this session lasts — mirroring
-         what `ScreenShareBridge` does by watching the web room directly. */
-      setNativeScreenShareListener((isSharing) => {
-        if (isSharing) {
-          reportShare({
-            sharing: true,
-            connected: true,
-            surface: "entire_screen",
-            detail: "Sharing your entire screen.",
-          });
-        } else {
-          /* Not `endSession()`: on iOS this fires every time the phone locks,
-             and ending the session would publish offline instantly. Suspending
-             it keeps the durable claim alive for the grace window instead —
-             see `shareInterrupted`. */
-          shareInterrupted();
-        }
-      });
-
-      await nativeStartScreenShare(url, token);
-      commit({ ...state, session: "live", token, url, notice: null });
-      reportShare({
-        sharing: true,
-        connected: true,
-        surface: "entire_screen",
-        detail: "Sharing your entire screen.",
-      });
-      return true;
-    } catch (e) {
-      commit({
-        ...state,
-        session: "idle",
-        notice: e instanceof Error ? e.message : "That app could not start a screen share.",
-      });
-      return false;
-    }
-  }
-
-  let track: MediaStreamTrack;
-  try {
-    track = await requestScreenShare();
-  } catch (e) {
-    /* Three different sentences, because they are three different situations
-       and one generic failure message would leave someone who picked a window
-       with no idea what to do differently. */
+    /* The iOS shell publishes a ReplayKit broadcast into a LiveKit room, which
+       is not what a Grav Stream seat is. Refused with the reason rather than
+       started with credentials it cannot use — a broadcast that goes nowhere
+       looks exactly like one that works. */
     commit({
       ...state,
-      session: "idle",
-      share: { ...state.share, surface: surfaceOf(e) },
+      session: "error",
       notice:
-        e instanceof ScreenShareCancelled
-          ? "Screen sharing was cancelled."
-          : e instanceof ScreenShareWrongSurface
-            ? `${e.message} ${ENTIRE_SCREEN_REQUIREMENT}`
-            : (e instanceof Error && e.message)
-              ? e.message
-              : "That browser could not start a screen share.",
+        "This app cannot share its screen yet. Open Cowork in a browser to go online.",
     });
     return false;
   }
 
-  pendingTrack = track;
-  commit({ ...state, session: "connecting" });
+  commit({ ...state, session: "connecting", notice: null });
 
   try {
-    const { token, url } = await fetchCredentials();
+    const { token, url } = await fetchSeat();
     if (!token || !url) throw new Error("no credentials");
     commit({ ...state, session: "connecting", token, url, notice: null });
     return true;
-  } catch {
-    track.stop();
-    pendingTrack = null;
+  } catch (e) {
     commit({
       ...state,
       session: "error",
       token: null,
       url: null,
-      notice: "Could not reach the room, so your screen is not being shared.",
+      /* The route's own sentence where there is one — "Only their primary
+         manager…", "Screen sharing is unavailable: …" — because a status code
+         tells the reader nothing they can act on. */
+      notice:
+        e instanceof Error && e.message
+          ? e.message
+          : "Could not reach the room, so your screen is not being shared.",
     });
     return false;
   }
-}
-
-function surfaceOf(e: unknown): SharedSurface | null {
-  return e instanceof ScreenShareWrongSurface ? e.surface : null;
 }
 
 export function sessionLive(): void {
   commit({ ...state, session: "live", notice: null });
 }
 
+/**
+ * Something went wrong inside the room, and the session is still worth keeping.
+ *
+ * **The difference between this and `sessionFailed` is a session that survives.**
+ * Grav Stream's embed posts `error` for anything it wants to tell the host —
+ * media it could not reach, a share the person cancelled, a message from their
+ * server. Treating every one of them as fatal dropped the credentials, which
+ * unmounted the frame, which ended a session that was working: press Join, go
+ * online, and watch the whole thing vanish a second later. Only `left` and a
+ * deliberate choice end a session now; everything else is a sentence under the
+ * pill.
+ */
+export function reportProblem(reason: string): void {
+  commit({ ...state, notice: reason });
+}
+
 /** The publish itself failed, after the room was up. */
 export function sessionFailed(reason: string): void {
-  pendingTrack = null;
+  releasePendingTrack();
   commit({
     ...state,
     session: "error",
@@ -458,10 +473,12 @@ export function sessionFailed(reason: string): void {
  * does not hold an open room for someone who is not sharing.
  */
 export function goOffline(): void {
-  pendingTrack = null;
+  releasePendingTrack();
   commit({
     ...state,
     ...IDLE_SESSION,
+    /* The person said so — see `goOnline`. */
+    hydrated: true,
     manual: null,
     breakStartedAt: null,
     emergencyStartedAt: null,
@@ -481,7 +498,7 @@ export function goOffline(): void {
  * state, falls to offline here, which is correct.
  */
 export function endSession(): void {
-  pendingTrack = null;
+  releasePendingTrack();
   commit({ ...state, ...IDLE_SESSION, notice: null });
 }
 
@@ -491,10 +508,10 @@ export function endSession(): void {
  *
  * Distinct from `endSession` in exactly one respect, and it is the whole point:
  * it leaves `reconnecting` set. `DutySync` publishes nothing while that flag is
- * up, so the durable `cowork_duty_status` claim is neither renewed nor revoked
- * — it simply keeps its last heartbeat and lapses on its own once
- * `PRESENCE_STALE_AFTER_MS` has passed. Resume inside that window and the claim
- * was never broken; stay away and it expires without anybody writing anything.
+ * up, so the durable `cowork_duty_status` claim is neither renewed nor revoked —
+ * it is simply left exactly as the person set it. Resume and nothing was ever
+ * broken; stay away and it stands until they say otherwise, because nothing here
+ * takes a status away from the person who chose it.
  *
  * **Why not just write offline immediately.** On iOS a locked screen kills the
  * broadcast every single time, and ReplayKit will not restart without a fresh
@@ -507,7 +524,7 @@ export function endSession(): void {
  * the share.
  */
 export function shareInterrupted(): void {
-  pendingTrack = null;
+  releasePendingTrack();
   commit({
     ...state,
     ...IDLE_SESSION,
@@ -516,56 +533,17 @@ export function shareInterrupted(): void {
   });
 }
 
-/**
- * This device can no longer prove it is here, so it stops saying so.
- *
- * **The missing half of the heartbeat.** `duty.ts` expires an `online` claim
- * that stops beating, and every reader applies that window — except the device
- * the claim belongs to, which had no way to expire anything. Since online became
- * a CHOICE (`derive`), nothing local could clear it either: a laptop whose
- * network died, whose token expired, or whose writes were being refused kept a
- * green pill up indefinitely while the rest of the company had already watched
- * it go grey. One account, two answers, and the wrong one was on the screen of
- * the only person who could act on it.
- *
- * Called by `DutySync` when no heartbeat has been ACKNOWLEDGED for
- * `CLAIM_UNPROVEN_AFTER_MS`. Deliberately narrow:
- *
- *  · Only a manual `online` is cleared. A break and an emergency are claims
- *    about the PERSON, not about a connection — somebody whose wifi drops on
- *    their break is still on their break — and expiring one would resume their
- *    deadlines and credit them nothing.
- *  · `remoteOnline` is untouched. It is a fact about the ACCOUNT, restated by
- *    the subscription on every snapshot; if another device of theirs really is
- *    online, this device's pill should keep saying so rather than flicker grey
- *    until the next emission.
- *  · A live share still decides on its own. The room is a separate channel to a
- *    separate service, so an unconfirmed presence write is no evidence at all
- *    that the screen stopped going out — `derive` keeps them online, and the
- *    notice is withheld rather than contradicting the pill.
- */
-export function claimLapsed(): void {
-  if (state.manual !== "online") return;
-  const sharing = state.share.sharing && state.share.connected;
-  commit({
-    ...state,
-    manual: null,
-    notice: sharing
-      ? state.notice
-      : "Cowork could not confirm you were still here, so you were set to offline. Choose Go online when you are back.",
-    reconnecting: false,
-  });
-}
-
 /* ── Manual states ────────────────────────────────────────────────────────── */
 
 export function startBreak(): void {
   /* Stop the recording, keep the person on their break. Clearing the
      credentials unmounts the room, whose publisher stops the track. */
-  pendingTrack = null;
+  releasePendingTrack();
   commit({
     ...state,
     ...IDLE_SESSION,
+    /* The person said so — see `goOnline`. */
+    hydrated: true,
     manual: "break",
     breakStartedAt: Date.now(),
     emergencyStartedAt: null,
@@ -577,10 +555,12 @@ export function startBreak(): void {
 export function declareEmergency(): void {
   /* Stops the recording like the other unavailable states — an emergency is not
      a moment to keep broadcasting someone's screen. The manual state is kept. */
-  pendingTrack = null;
+  releasePendingTrack();
   commit({
     ...state,
     ...IDLE_SESSION,
+    /* The person said so — see `goOnline`. */
+    hydrated: true,
     manual: "emergency",
     breakStartedAt: null,
     /* Re-declaring while already in an emergency keeps the original start. The
@@ -627,6 +607,8 @@ export function emergencyElapsedSecs(nowMs = Date.now()): number | null {
 export function clearManual(): void {
   commit({
     ...state,
+    /* The person said so — see `goOnline`. */
+    hydrated: true,
     manual: null,
     breakStartedAt: null,
     emergencyStartedAt: null,
@@ -755,28 +737,34 @@ export function applyRemotePresence(input: {
     commit({
       ...state,
       hydrated: true,
-      /**
-       * **A locally CHOSEN online survives its own echo.**
-       *
-       * This cleared `manual` unconditionally, which was right while online was
-       * a consequence of sharing and could never be a manual state. It is one
-       * now — and the account echoing back the very claim this device just
-       * published then wiped the choice that produced it. `derive(null, not
-       * sharing, remoteOnline: false)` is `offline`, so pressing Online lit the
-       * pill green and dropped it to grey a moment later, which is what was
-       * reported.
-       *
-       * Cleared only when this device is genuinely SHARING, where the track says
-       * online on its own and a manual flag would outlive it.
-       */
-      manual: !sharingHere && state.manual === "online" ? "online" : null,
+      /* Online is never a manual state — it is the track, or it is the
+         account's word through `remoteOnline` below. */
+      manual: null,
       breakStartedAt: null,
       emergencyStartedAt: null,
-      /* Only when the claim is somebody ELSE's connection. If this device is the
-         one sharing, its own share already says so and `remoteOnline` would be
-         a second, redundant reason for the same truth — one that would outlive
-         the share if the document were slow to catch up. */
-      remoteOnline: !sharingHere && input.onlineElsewhere,
+      /**
+       * **The ACCOUNT is online, so this device says online — whoever holds the
+       * claim.**
+       *
+       * This read `!sharingHere && input.onlineElsewhere`, and that second term
+       * is the reported "it goes offline by itself". Reload the page: the store
+       * re-initialises empty, the account still says online, and the first
+       * snapshot carries `onlineElsewhere: true` because the claim is stamped
+       * with the OLD tab's connection id — so the pill is green. Then the
+       * heartbeat adopts the quiet claim and re-stamps it with THIS tab's id,
+       * and the very next snapshot is `online` with `onlineElsewhere: false`.
+       * Under the old term that left no share and no remote claim, which
+       * derives to `offline`; the pill went grey and the publish effect wrote
+       * that offline to `cowork_duty_status`. From a page reload, having
+       * touched nothing.
+       *
+       * Whose connection holds the claim decides which device may STOP it, not
+       * which device may report it. Cleared only when this device is the one
+       * sharing, where the track says online on its own and this would be a
+       * second, redundant reason for the same truth — one that would outlive
+       * the share if the document were slow to catch up.
+       */
+      remoteOnline: !sharingHere,
       reconnecting: false,
       notice: null,
     });

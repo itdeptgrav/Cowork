@@ -54,38 +54,45 @@ test("an unrecognised mode withholds rather than grants", () => {
   assert.equal(storedMode({ mode: "" }), "offline");
 });
 
-/* ── Staleness — the closed-browser case ──────────────────────────────────── */
+/* ── Nothing expires — OWNER DECISION ─────────────────────────────────────── */
 
-test("a heartbeat older than the window stops being believed", () => {
+test("a quiet heartbeat does not take somebody's status away", () => {
+  /**
+   * **The reported fault: "it goes offline by itself after a while."** It did.
+   * A beat older than the window resolved to offline for everybody, and the
+   * things that stop a beat are ordinary — a backgrounded tab with clamped
+   * timers, a laptop asleep, a minute of refused writes — so people sitting at
+   * their desks were marked away, their timers auto-paused and their task
+   * actions refused, with nothing on screen to explain it.
+   */
   const doc: DutyDocument = { mode: "online", heartbeatAt: T0 };
   assert.equal(readDutyMode(doc, T0 + 1_000), "online");
+  assert.equal(readDutyMode(doc, T0 + PRESENCE_STALE_AFTER_MS + 1), "online");
   assert.equal(
-    readDutyMode(doc, T0 + PRESENCE_STALE_AFTER_MS),
+    readDutyMode(doc, T0 + PRESENCE_STALE_AFTER_MS * 1_000),
     "online",
-    "the edge is inclusive",
+    "a status is changed by the person whose status it is, and by nobody else",
   );
-  assert.equal(readDutyMode(doc, T0 + PRESENCE_STALE_AFTER_MS + 1), "offline");
 });
 
-test("the window survives a missed beat, so a throttled tab is not reported away", () => {
-  /* This application is sometimes deliberately backgrounded, where timers are
-     clamped. A window that only just cleared one interval would read an
-     ordinary throttle as a disconnection. */
+test("an online claim with no heartbeat at all is still online", () => {
+  /* The old app's manual toggle writes no heartbeat. It is somebody saying they
+     are online, which is the whole of what online means here. */
+  assert.equal(readDutyMode({ mode: "online" }, T0), "online");
+});
+
+test("the quiet window still decides who may WRITE the claim", () => {
+  /* `isStale` survives for `ownsClaim` alone — not "is this person here" but
+     "may this connection write over that one's claim", where the worst case is
+     a tab correcting a record for a tab that is gone. */
+  assert.equal(isStale({ mode: "online" }, T0), true);
   assert.ok(
     PRESENCE_STALE_AFTER_MS > HEARTBEAT_INTERVAL_MS * 2,
-    "the staleness window must tolerate two missed beats",
+    "adoption must tolerate two missed beats",
   );
 });
 
-test("an online claim with no heartbeat at all is stale immediately", () => {
-  /* The old app's manual toggle writes no heartbeat and never expires. That is
-     how a manager ends up watching a green dot for somebody who went home on
-     Friday. */
-  assert.equal(readDutyMode({ mode: "online" }, T0), "offline");
-  assert.equal(isStale({ mode: "online" }, T0), true);
-});
-
-test("a break and an emergency never expire", () => {
+test("a break and an emergency are unchanged by any clock", () => {
   /* They are claims about a PERSON, not about a connection. Somebody who shuts
      their laptop mid-break is still on a break — expiring it would resume their
      deadlines silently and credit them nothing. Legacy carries an unfinished
@@ -348,16 +355,18 @@ test("a break or emergency anchors at now — only online is frozen", () => {
   }
 });
 
-test("a stale online claim is not frozen at whenever they were last here", () => {
-  /* `readDutyMode` resolves a stale online claim to offline, so the anchor is
-     now — freezing at a session start from before they vanished would hold the
-     projection at a time that is no longer true. */
+test("an online claim stays frozen at its session start however quiet it is", () => {
+  /* This used to resolve to offline and anchor at `now`. Nothing expires an
+     online claim any more, so the anchor stays where the session began — the
+     accepted consequence of the same owner decision `readDutyMode` states: a
+     projection reading slightly optimistic is a smaller wrong than a status
+     somebody never asked to lose. */
   const doc: DutyDocument & { updatedAt: number } = {
     mode: "online",
     heartbeatAt: T0 - (PRESENCE_STALE_AFTER_MS + 60_000),
     updatedAt: T0 - 7_200_000,
   };
-  assert.equal(queueAnchorMs(doc, T0), T0);
+  assert.equal(queueAnchorMs(doc, T0), T0 - 7_200_000);
 });
 
 test("an untrustworthy session start falls back to now, never past the clock", () => {

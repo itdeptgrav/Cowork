@@ -1087,14 +1087,20 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "online without screen share",
       "no screen share prompt",
       "why is it not asking for my screen",
+      "small box in the corner",
+      "sharing panel gone",
+      "service has not registered it yet",
+      "you did not pick a screen",
     ],
     examples: [
       "How do I go online?",
       "Why am I still offline?",
       "Why does it no longer ask to share my screen?",
+      "Where did the little sharing box go?",
+      "What does “the service has not registered it yet” mean?",
     ],
     answer:
-      "Choose Go online in the status menu and you are Online straight away. Nothing is asked of you — no screen-share prompt, no waiting, no confirmation step. This changed: Online used to be a consequence of sharing your whole screen rather than something you could set, and cancelling the picker left you Offline. It no longer works that way. Screen sharing is still there and still does what it did — you can start it from the same menu, and a manager can watch a screen that is being shared — but it is no longer what Online means, and stopping a share no longer drops you to Offline. The honest consequence, so nobody is surprised by it: your status is now something you declare rather than something the system verifies. What is still checked is that your session is actually there — if Cowork stops being able to confirm it, because the network dropped or the machine slept, you are set to Offline and told why, and you come back by choosing Go online again. See “Why you went offline”. Your status is published for everyone, so your colleagues, your manager and your own record all read the same thing rather than each guessing — and that includes your own other devices: if you go online on one computer and then open Cowork on your phone, the phone shows the same Online status straight away rather than asking you to reconnect anything, because only the device that is actually sharing is ever asked to resume the share. That works in both directions and while you watch: change your status on one device and every other device you are signed in on follows within a moment, without refreshing. Until a device has heard what your status actually is, its pill shows a dash rather than guessing — which is why a second device no longer flashes “Offline” for a second before settling on the truth. Being online is also what unlocks your own task actions — see “Task actions while you are away”. Every change to your status is kept in a log for the day — see “Your status history”.",
+      "Choose Go online in the status menu and your browser asks for your screen straight away. There is no meeting to create, no room to join, no camera or microphone prompt, and nothing appears in the corner of the page — the menu states the requirement, and the next thing you see is your browser's own picker. Nothing else is drawn at any point, either while you choose or while you share. Choose your entire screen and you are Online the moment the screen is actually going out. Dismiss the picker and nothing happened; you stay exactly as you were, and the menu says so — “You did not pick a screen, so you are not online yet.” There is one more message worth recognising: “Your screen is being captured, but the service has not registered it yet.” That means your browser is sharing but the picture is not reaching the room, so your manager may see nothing. It does not take your status away — nothing does that but you — and the fix is to stop sharing and go online again. A window or a browser tab is refused — not by Cowork being strict, but by the sharing service itself, which will not carry anything but a whole display for a monitoring session. If you pick one you are told to share your entire screen instead, and you are not online until you do. Stopping is stopping: the browser's own “Stop sharing” bar takes you offline the same as choosing Go offline does, because being online IS your screen being shared. Being Online IS your screen being shared: it is a consequence of the share rather than a setting, so there is no way to declare it and nothing to type. Your primary manager — and only your primary manager — can open that screen while it is running. One thing is worth knowing rather than discovering: the picker belongs to the sharing service, so Cowork asks for your whole screen but cannot refuse a window or a tab if you pick one. What your manager sees is exactly what you shared. Stopping the share takes you back to Offline; nothing else does it for you, and no timer or inactivity check can. See “Why you went offline”. Your status is published for everyone, so your colleagues, your manager and your own record all read the same thing rather than each guessing — and that includes your own other devices: if you go online on one computer and then open Cowork on your phone, the phone shows the same Online status straight away rather than asking you to reconnect anything, because only the device that is actually sharing is ever asked to resume the share. That works in both directions and while you watch: change your status on one device and every other device you are signed in on follows within a moment, without refreshing. Until a device has heard what your status actually is, its pill shows a dash rather than guessing — which is why a second device no longer flashes “Offline” for a second before settling on the truth. Being online is also what unlocks your own task actions — see “Task actions while you are away”. Every change to your status is kept in a log for the day — see “Your status history”.",
     related: [
       "status-entire-screen",
       "status-break",
@@ -1103,7 +1109,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "status-history",
     ],
     source:
-      "employeeStatus derive() with remoteOnline; Online requires a live share plus a connected room on SOME device; DutySync subscribes to cowork_duty_status via watchDutyStatus and applies it with applyRemotePresence, so every device follows the account live",
+      "employeeStatus derive() — online is share.sharing && share.connected, or the account's own word through remoteOnline; StatusButton warms the seat and preloads grav-stream.js when the menu opens, then calls the publisher SDK's share() straight from the Go online press (a capture prompt needs the gesture, and the SDK runs in this page so there is no iframe); the seat comes from /api/stream/token (Grav Stream, GRAV_STREAM_API_KEY, server-side, role publisher|viewer); /api/stream/presence reads participants[].sharing.screen, so Online means a screen is live",
   },
   {
     id: "status-entire-screen",
@@ -1122,9 +1128,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "I shared a tab but I'm still offline.",
     ],
     answer:
-      "Only sharing your entire screen counts as sharing. A single window or a browser tab is a curated view, so accepting one would make a shared screen mean something different from what it claims. This is about SHARING, not about being Online: since Online became something you simply choose, refusing a window share no longer leaves you Offline — it leaves you online and not sharing. Cowork checks what you actually picked rather than what was requested, stops the capture immediately if it is not a whole screen, and tells you so. The check also runs continuously, so a share that stops being a whole screen stops counting.",
+      "Share your entire screen, not a single window and not a browser tab. A window or a tab is a curated view — you would be choosing what your manager sees — so it is not what going online is meant to show. **It is enforced, not merely asked for.** The sharing service refuses to carry anything but a whole display for a monitoring session: the share never starts, and you are told “Share your entire screen, not a single window or a browser tab.” The check happens on their servers after the capture begins, so it is not something a browser setting or a modified page can get around. Your browser will pre-select the right option, but it still offers the others, which is why the refusal exists at all. One honest limit, so nobody reads more into it than is there: this guarantees the captured surface is a whole display. It cannot tell what is on that display, whether it is a second monitor, or whether somebody is looking at something else on another device.",
     related: ["status-online", "status-offline"],
-    source: "readSurface + isEntireScreen; ScreenShareWrongSurface",
+    source:
+      "SCREEN_CAPTURE + readSurface + isEntireScreen in lib/integrations/livekit/capture.ts; ScreenShareWrongSurface; the surface is re-read from the live track, and surfaceSwitching is excluded",
   },
   {
     id: "status-break",
@@ -1229,20 +1236,21 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "offline by itself",
       "wifi dropped",
       "lost connection",
-      "set to offline automatically",
-      "could not confirm you were still here",
+      "went offline on its own",
+      "offline after 10 minutes",
       "laptop went to sleep",
+      "still online overnight",
     ],
     examples: [
       "Why did I go offline?",
       "I didn't change anything and I'm offline.",
       "My status keeps flicking between Online and Offline.",
       "What does “Reconnecting to the room” mean?",
+      "Does Cowork put me offline if I close my laptop?",
       "My internet dropped — am I still showing as online?",
-      "I was set to offline while I was working.",
     ],
     answer:
-      "Offline is never chosen for you arbitrarily, but it is not only ever chosen by you either. While you are online, Cowork restates your status about every forty-five seconds, and a session that stops proving it is there stops counting as online. If those messages stop getting through — the network dropped, the laptop slept, the sign-in expired — your pill turns Offline within about two and a half minutes and the status menu says why, in these words: “Cowork could not confirm you were still here, so you were set to offline. Choose Go online when you are back.” Any running timer stops at the same time, exactly as it would if you had chosen Offline yourself. You come back by choosing Go online again. That is deliberate: coming back is something you do, not something a laptop does quietly on your behalf by waking up — a machine that had been asleep for hours used to restore its own status simply by reconnecting, which left an afternoon looking worked. If your computer crashes, is closed or sleeps without a chance to sign out, everybody else sees you go offline about ten minutes after your last sign of life. That is longer than your own screen takes, on purpose: your device knows its own messages are not landing, while everyone else has only silence to go on. Your record is corrected as well, and it is dated when you actually stopped rather than when you next opened Cowork — so a laptop that shut at 18:05 reads “Offline 18:05” in your status history, on that day. Stopping a screen share does NOT put you offline: since Online became a choice rather than a consequence of sharing, ending a share leaves you online and not sharing. A brief wobble does not either — if your connection drops for a moment, the status menu says “Reconnecting to the room…” and you stay as you were, because the share has not actually stopped and nobody has observed you leave; it reconnects on its own and the message clears. Refreshing the page does not do it: a refresh gives the tab a new identity, and the tab that is actually there takes over keeping your status alive within about a minute and a half. Having several tabs open is fine, and every one of them shows the same status; so is being signed in on two devices, where your phone shows Online because your account is, even while it is your laptop keeping the session alive. The status menu always states the reason underneath, so Offline is never left to be inferred. Choosing Offline yourself asks you twice, on purpose. First a short confirmation — “Go offline? Your team sees you leave, and any running timer stops” — with “Yes, go offline” and “Stay online”. That step exists because the row sits in a menu one press away from your status pill, and a stray click used to end somebody's day outright. Only after you confirm does it open the end-of-day report over the tasks your timer ran on that day, and you go offline whether you fill it in or skip it.",
+      "Two things put you Offline, and both of them are you. Stopping the screen share is one — from the status menu, or from your browser's own “Stop sharing” bar, or by closing the tab that was sharing — because Online IS your screen being shared, so when it stops there is nothing left to be online about. Choosing Go offline is the other. Nothing else does it: no timer, no inactivity check and no connection test can move you. Your status used to lapse if your browser stopped checking in for about ten minutes, and the ordinary causes of that are indistinguishable from going home — a background tab whose timers the browser has slowed down, a sleeping laptop, a minute of writes that did not get through. People sitting at their desks were marked away, their running timer was paused and their task actions were refused, with nothing on screen to explain it because nothing had actually happened. That is gone. A brief wobble does not touch you either: if the connection drops for a moment the status menu says “Reconnecting to the room…” and you stay as you were, because the share has not actually stopped and nobody has observed you leave. Refreshing the page is the one case worth knowing about. The browser always drops a screen share on reload — no page can restart one without a fresh click, which is the browser's own rule and not something Cowork chose — so after a refresh your status stays as it was but your screen is no longer going out. The status menu says so plainly: “Screen shared: No”. Choose Go online again to start sharing. Opening Cowork on a second device is fine and changes nothing: the status belongs to your account rather than to one browser, so both show the same thing and neither ends the other's session. Choosing Offline asks you twice, on purpose. First a short confirmation — “Go offline? Your team sees you leave, and any running timer stops” — with “Yes, go offline” and “Stay online”. That step exists because the row sits in a menu one press away from your status pill, and a stray click used to end somebody's day outright. Only after you confirm does it open the end-of-day report over the tasks your timer ran on that day, and you go offline whether you fill it in or skip it.",
     related: [
       "status-online",
       "status-entire-screen",
@@ -1251,7 +1259,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "status-history",
     ],
     source:
-      "ScreenShareBridge reportShare detail; lib/rules/status/reconnect.ts holds presence through a reconnect; CLAIM_UNPROVEN_AFTER_MS watchdog in DutySync over acknowledged heartbeats, standing the local claim down through claimLapsed() in lib/status/employeeStatus.ts; PRESENCE_STALE_AFTER_MS and claimLapsedAtMs in rules/presence/duty.ts, written back by DutySync's tidy-up so the record and the history entry are dated at the lapse",
+      "employeeStatus derive() — losing the track drops to offline, and endSession/goOffline are the only writers; readDutyMode in lib/rules/presence/duty.ts returns the stored mode and expires nothing — PRESENCE_STALE_AFTER_MS governs claim OWNERSHIP only, through ownsClaim; neither duty watcher re-emits on a timer; DutySync publishes nothing before the store is hydrated; lib/rules/status/reconnect.ts holds presence through a reconnect",
   },
 
   {
@@ -1273,10 +1281,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Do I need to sign in again?",
     ],
     answer:
-      "Two different things can interrupt signing in, and Cowork now names which. “Could not reach the workspace” means the connection to the server failed — your sign-in is almost certainly fine, and nothing is wrong with your account. It retries on its own as soon as the connection is back, and it also retries the moment you return to the tab, so usually you do nothing at all; Try again asks immediately if you would rather not wait. There is deliberately no Sign in again button on that message, because signing out would throw away a session that was never broken and make you type your password to fix a network problem. “Signing you in did not finish” is the other case: the sign-in saved in this browser did not restore. That one does offer Sign in again, which clears the saved session and starts fresh, and it is the thing that repairs it. Either way your work is safe — neither message means anything was lost. Previously both cases showed the same wording and both offered to sign you out, so a brief connection drop just after signing in read as a broken account.",
+      "There is a third case worth naming first, because it looks like neither: you type the right password, the sign-in is accepted, and you land straight back on the sign-in form. That means the account is not registered as an employee of this workspace — a real answer rather than a failure — and the form now says so: “That account signed in, but it is not registered as an employee of this workspace. Ask an administrator to add it, or sign in with your work account.” It used to say nothing at all, which was indistinguishable from a button that did nothing, and on some accounts it looped between “Signing you in…” and “Redirecting to sign in…” without ever reaching the form. Only one account is signed in at a time: signing in as somebody else replaces the previous session and clears what it left in this browser, so you never see a mixture of two people's workspaces. Two other things can interrupt signing in, and Cowork names which. “Could not reach the workspace” means the connection to the server failed — your sign-in is almost certainly fine, and nothing is wrong with your account. It retries on its own as soon as the connection is back, and it also retries the moment you return to the tab, so usually you do nothing at all; Try again asks immediately if you would rather not wait. There is deliberately no Sign in again button on that message, because signing out would throw away a session that was never broken and make you type your password to fix a network problem. “Signing you in did not finish” is the other case: the sign-in saved in this browser did not restore. That one does offer Sign in again, which clears the saved session and starts fresh, and it is the thing that repairs it. Either way your work is safe — neither message means anything was lost. Previously both cases showed the same wording and both offered to sign you out, so a brief connection drop just after signing in read as a broken account.",
     related: ["general-what-is-cowork", "status-offline"],
     source:
-      "SessionProvider WorkspaceUnreachable and stallKind; ShellFrame stalled screen",
+      "SessionProvider WorkspaceUnreachable and stallKind; ShellFrame stalled screen; the refusal path clears the Firebase cookie and leaves leaveSignInNotice() for SignInForm, which is what stopped the /signin <-> /home loop; noteSignedInUid + forgetAccountScopedState clear the previous account on a switch",
   },
 
   {
@@ -1298,10 +1306,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I see when I went offline?",
     ],
     answer:
-      "The status menu has a History button that opens today's log of your own status changes — every time you went Online, took a Break, declared an Emergency or went Offline, with the time each one began and how long it lasted. It covers today only; nothing from earlier days is kept there. The most recent entry is marked as still going rather than given a length, because it has not ended yet. A session that ended because your computer was closed or lost its connection is logged too, and it is dated when it actually stopped rather than when you next opened Cowork — so it is filed on the day it happened, and no session is left reading “still going” for a laptop that shut hours ago. The pill in the top bar only ever shows what your status is right now — History is where you go to see what it has already been today, on any device, since it reads the same record every device publishes to.",
+      "The status menu has a History button that opens today's log of your own status changes — every time you went Online, took a Break, declared an Emergency or went Offline, with the time each one began and how long it lasted. It covers today only; nothing from earlier days is kept there. The most recent entry is marked as still going rather than given a length, because it has not ended yet — and it stays that way until you change your status yourself, so a day you never signed off from reads as one long session rather than being closed for you. The pill in the top bar only ever shows what your status is right now — History is where you go to see what it has already been today, on any device, since it reads the same record every device publishes to.",
     related: ["status-online", "status-break", "status-offline"],
     source:
-      "listDutyHistory in both repositories; entries written inside setDutyMode alongside the presence document patch, stamped at setDutyMode's lapsedAtMs when the entry closes an expired claim; StatusHistoryModal opened from the History item in StatusButton's menu",
+      "listDutyHistory in both repositories; entries written inside setDutyMode alongside the presence document patch, so an entry exists only where somebody made a transition; StatusHistoryModal opened from the History item in StatusButton's menu",
   },
 
   {
@@ -1345,7 +1353,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "I can't see my report's screen.",
     ],
     answer:
-      "The monitoring view shows a screen only while that person is actually publishing one. It appears in two places and behaves identically in both: the Monitoring page, and the Overview of a person's record under Team. If it says they are on a break, their share is paused but their connection is held. If it says no feed while they are reported online, they have most likely stopped sharing or are connected from another session — the view reports what is reaching it rather than what the status says. Nothing is shown for someone who is offline, because going online is what starts the share in the first place. Underneath the frame, the Session panel states what is actually being captured: the screen they chose, and Camera and Microphone both Off, because Cowork monitoring is screen-only and never turns on a camera or a microphone.",
+      "The monitoring view shows a screen only while that person is actually sharing one, and only to the one person entitled to see it. What you are looking at is their room on Grav Stream, the service Cowork shares screens through, opened with a seat minted for that one person's room. You join it silently: no camera or microphone is ever asked for, and the seat you are given cannot publish anything into their room even if something tried. You are a watcher, not a caller. **Only their primary manager can open somebody's screen** — not a secondary manager, not somebody further up the chain, not an administrator. Anybody else is refused with “Only their primary manager can watch this screen”, and that refusal comes from the server: the seat is never issued, so there is nothing to render. If nobody is recorded as their primary manager the answer names that instead, because an incomplete reporting line is something an administrator can fix. It appears in two places and behaves identically in both: the Monitoring page, and the Overview of a person's record under Team. If it says they are on a break, their share is stopped and their status says so. If it says no feed while they are reported online, they have most likely stopped sharing — after a page refresh, for instance, which always ends a share — or are connected from another session; the view reports what is reaching it rather than what the status says. Nothing is shown for someone who is offline, because going online IS starting the share. Underneath the frame, the Session panel states what is actually being captured: the screen they chose, and Camera and Microphone both Off, because Cowork monitoring is screen-only and never turns on a camera or a microphone.",
     related: [
       "status-online",
       "status-offline",
@@ -1353,7 +1361,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "team-person-record",
     ],
     source:
-      "LiveScreenViewer placeholder states; tracks matched by presenceIdentity; SessionDeck capture cells",
+      "LiveScreenViewer placeholder states; tracks matched by presenceIdentity; SessionDeck capture cells; /api/stream/token refuses a watch seat unless fetchHierarchy names the caller as the subject's primaryManager, and MonitorRoom renders that refusal verbatim",
   },
 
   {
@@ -1374,7 +1382,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why can't I open this person's record?",
     ],
     answer:
-      "Team, then the person, opens their record. Overview is the whole working day in one place: their live screen with the session beneath it, what they are working on right now — the task, its running clock, and how the time it was given is going — the day's activity in order, the moments that stood out, how loaded they are, what stands out about the day, who they are working with, and their performance — score contribution across C1–C4, the trailing trend, goals, and what landed today. Tasks, Score and Attendance sit behind their own tabs. Everything on it follows the same boundary as every other team surface: you see the people in your own reporting line and your own record, and nobody else. Opening someone outside it shows the boundary rather than an error, because not being their manager is not a fault. Live monitoring is narrower still — it reaches only the people beneath you, so a record you can read may show performance without a screen.",
+      "Team, then the person, opens their record. Overview is the whole working day in one place: their live screen with the session beneath it, what they are working on right now — the task, its running clock, and how the time it was given is going — the day's activity in order, the moments that stood out, how loaded they are, what stands out about the day, who they are working with, and their performance — score contribution across C1–C4, the trailing trend, goals, and what landed today. Tasks, Score and Attendance sit behind their own tabs. Everything on it follows the same boundary as every other team surface: you see the people in your own reporting line and your own record, and nobody else. Opening someone outside it shows the boundary rather than an error, because not being their manager is not a fault. Live monitoring is narrower still — their live screen opens only for their PRIMARY manager, so a record you can read may show their whole day and no screen, and that is the rule working rather than a fault.",
     related: [
       "roles-scopes",
       "status-no-feed",
@@ -1988,10 +1996,37 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "What is the difference between a group chat and a Group?",
     ],
     answer:
-      "A group chat is a conversation with a name and the people in it — you create one from Messages and anybody can. A Group under Groups is an administered object with an owner and a managed membership, and creating or changing one needs the group-management capability. Naming three people and typing a title does not make an administered Group, so a chat you start in Messages stays in Messages. Attachments in a conversation are not available yet; the control is visible and disabled rather than missing, so it is clear the place exists.",
+      "A group chat is a conversation with a name and the people in it — you create one from Messages and anybody can. A Group under Groups is an administered object with an owner and a managed membership, and creating or changing one needs the group-management capability. Naming three people and typing a title does not make an administered Group, so a chat you start in Messages stays in Messages.",
     related: ["general-start-conversation", "roles-scopes"],
     source:
       "Conversation.groupId stays null for chats started in Messages; group.manage governs Groups",
+  },
+  {
+    id: "general-message-actions",
+    category: "general",
+    title: "What you can do with a message",
+    keywords: [
+      "right click a message",
+      "message options",
+      "message menu",
+      "reply to a message",
+      "forward a message",
+      "copy a message",
+      "delete a message",
+      "edit a message",
+      "delete someone else's message",
+    ],
+    examples: [
+      "How do I forward a message?",
+      "Can I delete a message somebody sent me?",
+      "How do I reply to one particular message?",
+      "Where are the message options?",
+    ],
+    answer:
+      "Right-click any message — yours or somebody else's — and a menu opens with what you can do with it: Reply, Forward, Copy text, and Delete. The same actions appear as small links beside a message when you hover over it, which is also how you reach them from the keyboard: tab to the message and they appear. Reply quotes that one message above the box you type in, and the person reading it can click the quote to jump to the original. Forward asks which conversation to send it to and writes a copy there — the original stays where it is, the copy carries the same text and the same attachments, and it is sent as a new message from you rather than labelled as forwarded. Copy text puts the words on your clipboard; it is unavailable on a message that is only attachments, because there is nothing to copy and quietly replacing what you had on your clipboard would be worse. Edit is offered on your own messages and re-stamps the message as edited, which everyone in the thread can see. Delete works on your own messages only — on somebody else's it is shown but greyed, with the reason, because a missing option reads as a fault where a stated rule does not. Deleting is a soft delete: the message keeps its place in the thread and reads as deleted, so a conversation never silently loses a line and nobody is left wondering what was said. Every action is greyed on a message that has already been deleted, each saying “This message was deleted.” — you can still see where it was, but there is nothing left to reply to, forward or copy. There is no way to delete a message for everybody except your own, and no way to remove one from your own view alone.",
+    related: ["general-start-conversation", "general-group-chat-vs-group"],
+    source:
+      "MessageContextMenu items built by menuFor() in MessagesArea; deleteMessage refuses another sender with \"You can only delete your own messages.\"; ForwardDialog sends text + attachments through sendMessage; soft delete keeps the tombstone (Message.isDeleted)",
   },
   {
     id: "general-lens",

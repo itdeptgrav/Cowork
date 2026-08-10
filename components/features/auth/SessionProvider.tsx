@@ -31,6 +31,10 @@ import { PUBLIC_ENV } from "@/lib/legacy/publicEnv";
 import { clearFirebaseCookie, writeFirebaseCookie } from "@/lib/auth/firebaseCookie";
 import {
   clearCachedIdentity,
+  clearSignedInUid,
+  forgetAccountScopedState,
+  leaveSignInNotice,
+  noteSignedInUid,
   readCachedIdentity,
   writeCachedIdentity,
 } from "@/lib/auth/sessionCache";
@@ -143,6 +147,17 @@ async function stopTaskWatch(): Promise<void> {
 
 interface Payload {
   authenticated: boolean;
+  /**
+   * WHY there is no session, when there is none.
+   *
+   * `no-session` is nobody signed in — the ordinary case, and nothing to say
+   * about it. `refused` is the engine answering that this Firebase user is not
+   * an employee of this Cowork, and it needs a sentence: the person typed a
+   * correct password, watched the app think about it, and arrived back at the
+   * sign-in form. Without this that round trip is silent, and it looks exactly
+   * like the form ignoring them.
+   */
+  reason?: "no-session" | "refused";
   employeeId?: string;
   displayName?: string;
   email?: string;
@@ -264,6 +279,22 @@ export function SessionProvider({
     started.current = true;
     try {
       /**
+       * **A different person is signed in, so the last one's residue goes.**
+       *
+       * Firebase holds one user per browser profile, so signing in as somebody
+       * else replaces the session — but `localStorage` survives it, and a hard
+       * navigation only clears React state and module singletons. The second
+       * person inherited the first's acting profile, lens, announced
+       * assignments and "this browser was the one sharing" claim, which reads
+       * as the app showing them somebody else's workspace.
+       *
+       * Before the cache is read, so a switch can never be answered from what
+       * the previous account left behind.
+       */
+      if (noteSignedInUid(currentUser()?.uid ?? null)) {
+        forgetAccountScopedState([PROFILE_STORAGE_KEY, LENS_STORAGE_KEY]);
+      }
+      /**
        * **Paint from what we already knew, then go and check.**
        *
        * Nothing about the sign-in expires — Firebase holds the session and
@@ -314,6 +345,39 @@ export function SessionProvider({
         /* The remembered identity goes with it. A stale entry surviving a
            sign-out would show the next person the shell of the last one. */
         clearCachedIdentity();
+        /**
+         * **And the cookie, or this becomes an infinite redirect.**
+         *
+         * `readIdentityPayload` writes the Firebase cookie BEFORE asking
+         * `/cowork/me`, so that middleware's copy stays fresh through the SDK's
+         * silent refreshes. When the engine then refuses the token — a real
+         * answer, meaning this person is not an employee of this Cowork — the
+         * cookie is left behind, valid and signed.
+         *
+         * The shell reads `anonymous` and navigates to `/signin`. `proxy.ts`
+         * sees the still-valid cookie and sends it straight back to `/home`.
+         * The screen alternates between "Signing you in…" and "Redirecting to
+         * sign in…" for ever, and the sign-in form — the one thing that could
+         * fix it — is the one page the person can never reach.
+         *
+         * The credential that no longer buys anything is dropped here, so the
+         * redirect lands where it was aimed.
+         */
+        clearFirebaseCookie();
+        /**
+         * And a sentence to arrive with.
+         *
+         * `refused` means the password was RIGHT and the workspace still said
+         * no — the account is not an employee of this Cowork. Landing back on
+         * the form with nothing said is indistinguishable from a button that
+         * did nothing, which is what "it just keeps sending me back to sign in"
+         * describes. `no-session` leaves nothing: there is nothing to explain
+         * about a browser that was simply not signed in.
+         */
+        if (data.reason === "refused")
+          leaveSignInNotice(
+            "That account signed in, but it is not registered as an employee of this workspace. Ask an administrator to add it, or sign in with your work account.",
+          );
         setState({
           status: "anonymous",
           employeeId: null,
@@ -813,15 +877,14 @@ export function SessionProvider({
      * lens outlived the person who chose them. The next account to sign in on
      * this machine inherited both, which on a shared desk reads as the app
      * showing somebody else's identity. */
-    try {
-      window.localStorage.removeItem(PROFILE_STORAGE_KEY);
-      window.localStorage.removeItem(LENS_STORAGE_KEY);
-      /* And the remembered identity, or the next person to sign in on this
-         browser would see the last one's shell for a moment. */
-      clearCachedIdentity();
-    } catch {
-      /* Storage disabled or full. Signing out must still complete. */
-    }
+    /* One list, shared with the account-switch path — see
+       `forgetAccountScopedState`. These two had drifted: signing out cleared
+       three keys and switching account cleared none, so the residue that
+       mattered depended on how the last person left. */
+    forgetAccountScopedState([PROFILE_STORAGE_KEY, LENS_STORAGE_KEY]);
+    /* And the record of WHO was here, or the next sign-in would look like a
+       continuation of this one and skip the wipe above. */
+    clearSignedInUid();
     await fetch("/api/auth/signout", { method: "POST" }).catch(() => {});
     /* A hard navigation, not a router push: it drops every module singleton
        holding the old identity — the repository's acting id, the mock store,
@@ -872,14 +935,14 @@ export const LEGACY_ORGANISATION_NAME = "Cowork";
  * than as an error.
  */
 async function readIdentityPayload(): Promise<Payload> {
-  if (!isConfigured(PUBLIC_ENV)) return { authenticated: false };
+  if (!isConfigured(PUBLIC_ENV)) return { authenticated: false, reason: "no-session" };
 
   /* A rejected token read is not an error to surface: it means no usable
      session, which the caller handles as unauthenticated. */
   const token = await idToken().catch(() => null);
   if (!token) {
     clearFirebaseCookie();
-    return { authenticated: false };
+    return { authenticated: false, reason: "no-session" };
   }
   /* Mirror it where middleware can see it. Written on every resolution, not
      only at sign-in, so the SDK's silent refreshes keep the Edge's copy live —
@@ -893,7 +956,7 @@ async function readIdentityPayload(): Promise<Payload> {
        Cowork. A transport failure is not, and must not sign anybody out — so
        it throws, and `load`'s catch leaves the session in `loading`. */
     if (result.error.kind === "auth" || result.error.kind === "permission") {
-      return { authenticated: false };
+      return { authenticated: false, reason: "refused" };
     }
     /* Tagged, so `load` can tell "we could not reach it" from "the saved
        sign-in is stale" — they need opposite advice. */
