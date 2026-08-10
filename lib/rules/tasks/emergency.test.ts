@@ -118,16 +118,28 @@ test("a reason is required", () => {
   assert.match(r ?? "", /Explain what happened/);
 });
 
-test("a supporting document is required, and must be PDF or DOCX", () => {
-  assert.match(
+test("a supporting document is optional, and must be PDF or DOCX if given", () => {
+  /**
+   * **It was required, and that was wrong — OWNER DECISION.**
+   *
+   * The exit became unreachable in exactly the situations the mode exists for:
+   * a building evacuated, a power cut, a hospital waiting room. Nobody has a PDF
+   * at that moment, so people stayed in Emergency Mode for the lack of a file
+   * rather than the lack of an explanation — which the manager decides from, and
+   * which is still required.
+   */
+  assert.equal(
     emergencyRequestRefusal({
       durationSecs: 3600,
       reason: "Flooding.",
       document: null,
       managerId: "rakesh",
-    }) ?? "",
-    /Attach a supporting document/,
+    }),
+    null,
+    "a request with no document is refused again",
   );
+  /* A file that IS attached is still checked. An unreadable attachment is worse
+     than none, because it looks like evidence. */
   assert.match(
     emergencyRequestRefusal({
       durationSecs: 3600,

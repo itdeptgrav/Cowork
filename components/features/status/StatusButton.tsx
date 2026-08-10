@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { useEmployeeStatus } from "./useEmployeeStatus";
 import {
   STATUS_META,
@@ -8,11 +15,11 @@ import {
   declareEmergency,
   endSession,
   goOffline,
+  holdSeat,
   reportProblem,
   reportShare,
   sessionFailed,
   sessionLive,
-  startScreenShare,
   startBreak,
   takeBreakStart,
   type EmployeeStatus,
@@ -24,6 +31,7 @@ import {
 } from "@/lib/integrations/livekit/screenShare";
 import {
   fetchShareSeat,
+  heldSeatNow,
   prefetchShareSeat,
   releaseShareSeat,
 } from "@/lib/integrations/grav/credentials";
@@ -40,6 +48,7 @@ import {
   setNativeResumeHandler,
 } from "@/lib/integrations/livekit/nativeBridge";
 import { EmergencyEndDialog } from "./EmergencyEndDialog";
+import { ShareLostDialog } from "./ShareLostDialog";
 import { DailyReportModal } from "./DailyReportModal";
 import { StatusHistoryModal } from "./StatusHistoryModal";
 import { useQuery } from "@/lib/hooks/useRepository";
@@ -48,6 +57,9 @@ import { breakBudgetWarning } from "@/lib/rules/tasks/breakMode";
 import { formatDuration } from "@/lib/utils/format";
 import type { BreakSession } from "@/lib/domain";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { shareLostHere } from "@/lib/rules/presence/shareLost";
+import { cancelShareLostSound, soundShareLost } from "@/lib/status/shareAlarm";
+import { claimedOnlineHere } from "@/lib/status/connectionId";
 
 /**
  * The presence pill.
@@ -107,6 +119,16 @@ const MENU_MARGIN = 12;
    reported as a fault, short enough that a real one is not left unsaid. */
 const CONFIRM_ATTEMPTS = 6;
 const CONFIRM_INTERVAL_MS = 1000;
+
+/* Stable identities for `useSyncExternalStore` — a new function per render
+   would resubscribe on every one. Nothing else writes the claim flag while the
+   pill is mounted, and the writer re-renders it anyway. */
+function subscribeNever(): () => void {
+  return () => {};
+}
+function claimedFalse(): boolean {
+  return false;
+}
 
 function elapsed(since: number, now: number): string {
   const secs = Math.max(0, Math.floor((now - since) / 1000));
@@ -220,6 +242,8 @@ export function StatusButton() {
   const [confirming, setConfirming] = useState<"share" | "offline" | null>(null);
   /* The picker is open and nothing has been chosen yet — see `openPicker`. */
   const [starting, setStarting] = useState(false);
+  /* Whether a seat is in hand. A label, never a gate — see `warming`. */
+  const [seatReady, setSeatReady] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -260,8 +284,11 @@ export function StatusButton() {
    * so the one control the menu exists for was greyed out for everybody who
    * opened it, with no explanation. It is a LABEL now: the button still works,
    * and pressing it early opens the confirmation step instead of the picker.
+   *
+   * Read from whether the SEAT is in hand rather than from the session, because
+   * warming no longer moves the session at all — see the effect that does it.
    */
-  const warming = session === "connecting";
+  const warming = !seatReady && session !== "live";
   /* After a refresh the share is gone and cannot be reasserted without a click,
      so presence is honestly offline — but rather than a cold "Offline" we show a
      "Reconnecting" prompt whose one purpose is a one-click resume of sharing.
@@ -279,11 +306,16 @@ export function StatusButton() {
    * has been told something.
    */
   const settling = !hydrated && status === "offline" && !legacyMode;
-  const pillLabel = settling
-    ? "…"
-    : reconnectingShare
-      ? "Reconnecting"
-      : meta.label;
+  /* The pill says it too, because the menu can be scrolled away from or covered
+     by the browser's own prompt — and the one thing always on screen should not
+     read "Offline" while somebody is halfway into going online. */
+  const pillLabel = starting
+    ? "Connecting…"
+    : settling
+      ? "…"
+      : reconnectingShare
+        ? "Reconnecting"
+        : meta.label;
   const pillDot = settling
     ? "var(--ink-faint)"
     : reconnectingShare
@@ -328,6 +360,62 @@ export function StatusButton() {
     setConfirming("share");
   }, [reconnectingShare]);
 
+  /**
+   * **Online, with nothing going out — say so, once, out loud.**
+   *
+   * A browser always drops a screen share on reload. The durable claim survives
+   * it, correctly: nothing takes a status away from the person who chose it, so
+   * the pill still reads Online and their team still sees them online. What
+   * cannot be allowed to survive it is the BELIEF that a manager can see
+   * something, when the panel they would open is blank.
+   *
+   * So this device — and only this device, the one that claimed the session —
+   * plays a tone and raises a dialog. No status changes: the person stays
+   * Online until they act, which is the whole point.
+   *
+   * Once per page load. The condition holds until they actually share, and a
+   * dialog that reopened every render would be a wall rather than a warning;
+   * the menu keeps saying "Screen shared: No" for anybody who dismisses it.
+   */
+  const [shareLostDismissed, setShareLostDismissed] = useState(false);
+  /**
+   * Whether THIS browser is the one that claimed the session.
+   *
+   * Read through `useSyncExternalStore` rather than in an effect: it lives in
+   * `localStorage`, which is exactly the "external mutable source" that hook
+   * exists for, and it gives an SSR snapshot (`false`) so the server never
+   * renders a dialog the client would then have to take back. The subscribe is
+   * a no-op because nothing else writes it while this component is mounted —
+   * `DutySync` sets it on a publish, and that publish re-renders this anyway.
+   */
+  const claimedHere = useSyncExternalStore(
+    subscribeNever,
+    claimedOnlineHere,
+    claimedFalse,
+  );
+  const shareLost =
+    !shareLostDismissed &&
+    shareLostHere({
+      hydrated,
+      /* This device's own derivation, or what everybody else can read about
+         this person — either counts as the account claiming online. */
+      accountOnline: status === "online" || legacyMode === "online",
+      sharingHere: share.sharing && share.connected,
+      /* Survives the reload, which is what makes this answerable at all. */
+      claimedHere,
+      starting,
+    });
+
+  /* The tone, once. A dialog somebody has to notice is not much better than a
+     pill somebody has to notice, and a person who reloaded is looking at the
+     page they were reading rather than at the top bar. */
+  const sounded = useRef(false);
+  useEffect(() => {
+    if (!shareLost || sounded.current) return;
+    sounded.current = true;
+    soundShareLost();
+  }, [shareLost]);
+
   /* Keeps the menu on screen. Runs once on open (before paint, so there is no
      flash at the wrong position) and again on resize/rotate, since the same
      pill can end up in a different spot relative to the viewport. */
@@ -350,13 +438,18 @@ export function StatusButton() {
   /* Escape closes and returns focus; a click outside closes. */
   useEffect(() => {
     if (!open) return;
+    /* Neither dismissal applies while a share is being started. The panel is
+       reporting a step somebody is in the middle of — the browser's own prompt
+       takes the keystrokes and the clicks anyway, and closing underneath it
+       would leave them with no idea whether anything was still happening. */
     function onKey(e: KeyboardEvent) {
-      if (e.key !== "Escape") return;
+      if (e.key !== "Escape" || starting) return;
       setOpen(false);
       setConfirming(null);
       buttonRef.current?.focus();
     }
     function onDown(e: MouseEvent) {
+      if (starting) return;
       if (rootRef.current?.contains(e.target as Node)) return;
       setOpen(false);
       setConfirming(null);
@@ -367,7 +460,7 @@ export function StatusButton() {
       document.removeEventListener("keydown", onKey);
       document.removeEventListener("mousedown", onDown);
     };
-  }, [open]);
+  }, [open, starting]);
 
   /* Leaving Emergency Mode is the one transition that owes an account of
      itself. The elapsed duration is read BEFORE the state is cleared — clearing
@@ -454,9 +547,18 @@ export function StatusButton() {
      * VALUE is only used to know a break just ended, so the panel can report what
      * came of it. Crediting and stopping the clock are `setDutyMode`'s job, from
      * the stored document, so they are idempotent.
+     *
+     * **Only where the transition happens on this press.** It used to run for
+     * every target, and two of them do not finish here: online waits on the
+     * picker, offline waits on the daily report. Cancelling either left somebody
+     * still on a break with their stopwatch reset to nothing — the break they
+     * were in the middle of, silently uncounted. Those two take it where they
+     * complete: `openPicker`'s success path, and the report's `onComplete`.
      */
-    const breakStart = id !== "break" ? takeBreakStart() : null;
-    if (breakStart !== null) setJustEndedBreak(true);
+    if (id === "emergency") {
+      const breakStart = takeBreakStart();
+      if (breakStart !== null) setJustEndedBreak(true);
+    }
 
     applyTransition(id);
   }
@@ -556,7 +658,29 @@ export function StatusButton() {
      * nothing when pressed — the two cases below are different problems and
      * neither is visible from the outside.
      */
-    if (!token || !url) {
+    /**
+     * **The seat is read from the held one, not from the store — and that is
+     * what makes Break → Online possible at all.**
+     *
+     * The store's copy is filled by `startScreenShare`, which refuses to run
+     * while a manual state is set. On a break it therefore held nothing, the
+     * press had nothing to share with, and Go online did nothing whatsoever —
+     * permanently, because the guard that stopped it was also the only thing
+     * that would ever have fetched one. `prefetchShareSeat` holds a seat for
+     * anybody signed in, whatever their status.
+     */
+    const seat = viewerId ? heldSeatNow(viewerId) : null;
+    const useToken = seat?.token ?? token;
+    const useUrl = seat?.url ?? url;
+
+    /**
+     * A press that cannot proceed says so. It used to return quietly, and the
+     * panel then sat on "Preparing…" or offered a Choose screen button that did
+     * nothing when pressed — the two cases below are different problems and
+     * neither is visible from the outside.
+     */
+    if (!useToken || !useUrl) {
+      if (viewerId) prefetchShareSeat(viewerId);
       reportProblem(
         session === "error"
           ? notice ??
@@ -566,33 +690,62 @@ export function StatusButton() {
       return false;
     }
     if (!publisherReady()) {
+      void loadPublisherSdk().catch(() => {});
       reportProblem(
         "The screen-sharing library is still loading — press Go online again in a moment.",
       );
       return false;
     }
     setConfirming(null);
-    setOpen(false);
     /**
-     * **The menu is closing, and that used to end the session right here.**
+     * **The menu STAYS OPEN, showing what is happening.**
      *
-     * The effect below gives the room back when the menu closes without a
-     * share — correct on its own, and wrong for the two or ten seconds somebody
-     * spends looking at the picker, because the menu closes the instant the
-     * prompt opens. It ran `endSession()`: credentials dropped, session `idle`,
-     * and `DutySync` — which stays quiet only while the session is `connecting`
-     * — published OFFLINE for a person who was in the middle of going online.
-     * This flag is what tells the two apart.
+     * It used to close on this press, and the person was then looking at an
+     * unchanged page while the browser prepared its prompt and — after they
+     * chose a screen — while the publish went through. Both take a moment, and
+     * a moment with nothing on screen reads as a button that did nothing. The
+     * panel below reports each step instead, and the menu closes itself once
+     * the screen is actually going out.
      */
     setStarting(true);
+    /* Written down AFTER the call above has been decided on and BEFORE it is
+       made — a state commit is synchronous, so it costs the gesture nothing. */
+    holdSeat({ token: useToken, url: useUrl });
+    /**
+     * `starting` above is also what stops the room being given back underneath
+     * this. The effect that does it fires when the menu closes without a share
+     * — correct on its own, and wrong for the seconds somebody spends looking at
+     * the picker. It ran `endSession()`: credentials dropped, session `idle`,
+     * and `DutySync` — quiet only while the session is `connecting` — published
+     * OFFLINE for a person in the middle of coming online.
+     */
     void startPublishing({
-      token,
-      serverUrl: url,
+      token: useToken,
+      serverUrl: useUrl,
       /* The browser's own Stop sharing bar, and a dropped connection, both
          arrive here. Sharing is what Online means, so either ends the session. */
       onEnded: () => endSession(),
     })
       .then((capture) => {
+        /**
+         * **The break, or the emergency, ends HERE — not when the button was
+         * pressed.**
+         *
+         * `derive` puts a manual state above the share, so a screen going out
+         * while `manual` still reads "break" leaves the pill on Break: the
+         * capture runs, the manager can watch it, and the person is told they
+         * are on a break. It is cleared at this point rather than on the press
+         * because the press might come to nothing — somebody who opens the
+         * picker and closes it again is still on their break, exactly as they
+         * were, which is the honest outcome and the one nobody has to undo.
+         *
+         * Leaving an EMERGENCY is still gated: `choose` holds that transition
+         * behind the end-emergency dialog and only runs this once the request
+         * has been raised. This clears the state; it does not decide who may.
+         */
+        const wasOnBreak = takeBreakStart();
+        if (wasOnBreak !== null) setJustEndedBreak(true);
+        clearManual();
         /**
          * **`sessionLive()` is not decoration.** Nothing else calls it now that
          * the embed is gone, and `DutySync` refuses to publish anything while
@@ -602,6 +755,8 @@ export function StatusButton() {
          * told: not the manager, not the team, not the old app.
          */
         sessionLive();
+        /* The screen is going out, so the panel has nothing left to report. */
+        setOpen(false);
         /* Their report of what was actually captured. The status still waits on
            the SERVICE confirming a live screen — `confirmSharing` — because a
            browser's word about itself is not what a manager should be reading. */
@@ -678,17 +833,33 @@ export function StatusButton() {
     });
   }, [viewerId]);
 
+  /**
+   * And again when the menu opens, in case the pill mounted before the viewer
+   * resolved or the held seat has since expired. Calling either is free.
+   *
+   * **No `manual !== null` guard, and no `startScreenShare`.** There was one of
+   * each, and together they were the Break → Online bug: `startScreenShare`
+   * refuses while a manual state is set, so on a break no seat was ever fetched,
+   * the press had nothing to share with, and the panel said "Still getting your
+   * room ready" for ever. Warming is not a status change — nothing here joins a
+   * room, publishes anything, or touches the session — so there is no state it
+   * needs to be withheld from.
+   */
   useEffect(() => {
     if (!open || !viewerId) return;
-    /* Both again, in case the pill mounted before the viewer resolved or the
-       held seat has since expired. Calling either twice is free. */
+    prefetchShareSeat(viewerId);
     void loadPublisherSdk().catch((error: unknown) => {
       console.error("[stream] the publisher library did not load:", error);
     });
-    if (status === "online" || manual !== null) return;
-    if (session !== "idle") return;
-    void startScreenShare(() => fetchShareSeat(viewerId));
-  }, [open, viewerId, status, manual, session]);
+    /* Whether the seat has actually landed, for the button's own label. */
+    let cancelled = false;
+    void fetchShareSeat(viewerId)
+      .then(() => !cancelled && setSeatReady(true))
+      .catch(() => !cancelled && setSeatReady(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [open, viewerId]);
 
   /**
    * Closing the menu WITHOUT sharing gives the room back. A session held open
@@ -775,7 +946,37 @@ export function StatusButton() {
           style={{ width: menuWidth, right: -menuShift }}
           className="frost-bar absolute top-[calc(100%+8px)] z-50 rounded-panel border border-hairline p-1.5 shadow-[var(--deck-seat)]"
         >
-          {confirming === "share" ? (
+          {/**
+           * **Going online is not instant, so it is not silent.**
+           *
+           * Between the press and a live screen there are three waits nobody
+           * can see from outside: the browser preparing its capture prompt, the
+           * person choosing a display, and the publish reaching Grav Stream.
+           * Each is a second or two, and together they were a page that did not
+           * change — which reads as a button that did nothing. This says which
+           * step is running, and clears itself when the screen is going out.
+           */}
+          {starting ? (
+            <div className="px-2.5 py-3" role="status" aria-live="polite">
+              <p className="flex items-center gap-2 text-xs font-medium text-ink">
+                <span
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-[var(--ink-faint)] border-t-ink"
+                />
+                Processing your request…
+              </p>
+              <p className="mt-1.5 text-[11px] leading-relaxed text-ink-muted">
+                {share.sharing
+                  ? "Your screen is going out. Checking that the service has it."
+                  : "Choose "}
+                {!share.sharing && (
+                  <span className="text-ink">Entire Screen</span>
+                )}
+                {!share.sharing &&
+                  " in your browser’s prompt. Connecting can take a few seconds after you do — this panel closes itself when your screen is live."}
+              </p>
+            </div>
+          ) : confirming === "share" ? (
             <div className="px-2.5 py-2">
               <p className="text-xs font-medium text-ink">
                 Share your entire screen
@@ -1105,7 +1306,11 @@ export function StatusButton() {
           onComplete={() => {
             const wasOffline = reportOpen === "offline";
             setReportOpen(null);
-            if (wasOffline) goOffline();
+            if (!wasOffline) return;
+            /* Read before `goOffline` clears it — the panel reports what the
+               break came to, and going offline from one is a way to end it. */
+            if (takeBreakStart() !== null) setJustEndedBreak(true);
+            goOffline();
           }}
         />
       )}
@@ -1127,6 +1332,27 @@ export function StatusButton() {
             setEndedEmergency(null);
             setPendingExit(null);
             if (target) applyTransition(target);
+          }}
+        />
+      )}
+
+      {/* "Your screen is not being shared." Raised after a reload ended the
+          capture while the account stayed online — see the effect above. It
+          changes no status: dismissing leaves the person Online, and sharing
+          from it closes the gap. */}
+      {shareLost && (
+        <ShareLostDialog
+          onShare={() => {
+            /* Straight from the click, so the browser honours the capture
+               prompt. If the seat is not in hand yet the picker cannot open —
+               `openPicker` says why in the pill's notice — so the dialog stays
+               up rather than closing on a press that achieved nothing. */
+            cancelShareLostSound();
+            if (openPicker()) setShareLostDismissed(true);
+          }}
+          onDismiss={() => {
+            cancelShareLostSound();
+            setShareLostDismissed(true);
           }}
         />
       )}

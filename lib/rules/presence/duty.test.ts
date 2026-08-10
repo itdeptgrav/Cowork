@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 import {
   HEARTBEAT_INTERVAL_MS,
@@ -382,4 +383,48 @@ test("an untrustworthy session start falls back to now, never past the clock", (
     ),
     T0,
   );
+});
+
+/* ── The history log, and why Online was missing from it ──────────────────── */
+
+test("every transition writes a history row, Online included", () => {
+  /**
+   * **Reported as: History never shows Online.**
+   *
+   * Nothing filtered it out. The row is written inside `setDutyMode`, beside
+   * the presence patch — one row per transition, whatever the mode — so the
+   * only way Online could be absent is if `setDutyMode("online")` was never
+   * called. It was not: `DutySync` refuses to publish while the session reads
+   * `connecting`, and after the sharer's iframe was removed nothing moved the
+   * session on to `live`. The status went green on that one device and no
+   * publish, and therefore no history row, ever happened.
+   *
+   * Asserted against source because the write is a Firestore call inside a
+   * repository this suite does not stand up. What is protected is the shape:
+   * the mode is passed through rather than filtered, and something marks the
+   * session live.
+   */
+  const repo = readFileSync("lib/repositories/legacy/index.ts", "utf8");
+  const at = repo.indexOf('collection(legacyDb(), "cowork_duty_history")');
+  assert.ok(at > 0, "the history write is gone");
+  const write = repo.slice(at, repo.indexOf("})", at));
+  assert.match(write, /mode: input\.mode/, "the mode is being rewritten on the way in");
+
+  const button = readFileSync(
+    "components/features/status/StatusButton.tsx",
+    "utf8",
+  );
+  assert.match(
+    button,
+    /sessionLive\(\);/,
+    "nothing marks the session live, so DutySync never publishes online and the log stays empty",
+  );
+
+  /* And the log must survive a mode it does not recognise — an older row, or
+     one written by the legacy app — rather than throwing on a missing label. */
+  const modal = readFileSync(
+    "components/features/status/StatusHistoryModal.tsx",
+    "utf8",
+  );
+  assert.match(modal, /STATUS_META\[entry\.mode as EmployeeStatus\] \?\?/);
 });

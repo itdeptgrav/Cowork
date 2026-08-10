@@ -434,6 +434,26 @@ export async function startScreenShare(
   }
 }
 
+/**
+ * Record the seat a share is being started with.
+ *
+ * Called from the press, AFTER the picker has been asked for, so nothing is
+ * awaited in front of the capture prompt. `startScreenShare` above does the
+ * same thing for the diagnostics page, but it will not run while a manual state
+ * is set — and going online is exactly what someone on a break is trying to do.
+ * This makes no judgement about who may share: it writes down what is being
+ * shared with.
+ */
+export function holdSeat(seat: { token: string; url: string }): void {
+  commit({
+    ...state,
+    session: "connecting",
+    token: seat.token,
+    url: seat.url,
+    notice: null,
+  });
+}
+
 export function sessionLive(): void {
   commit({ ...state, session: "live", notice: null });
 }

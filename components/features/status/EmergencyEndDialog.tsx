@@ -27,11 +27,17 @@ import { EMERGENCY_DOC_TYPES } from "@/lib/domain";
  * emergency had happened, so what it recorded was a prediction. Asked at the
  * end, it describes something.
  *
- * The document is required and must be a PDF or a Word file. It is RECORDED,
- * not uploaded — `Attachment.storageKey` is a synthetic handle throughout this
- * prototype, so what is kept is that a file of this name, type and size was
- * supplied. The dialog says so rather than implying a transfer that is not
- * happening.
+ * **The document is optional — OWNER DECISION.** It was required, and that made
+ * the exit unreachable in exactly the situations the mode exists for: a building
+ * evacuated, a power cut, a hospital waiting room. Nobody has a PDF at that
+ * moment, and people were held in Emergency Mode for the lack of a file rather
+ * than the lack of an explanation. A file that IS attached must still be a PDF
+ * or a Word document.
+ *
+ * It is RECORDED, not uploaded — `Attachment.storageKey` is a synthetic handle
+ * throughout this prototype, so what is kept is that a file of this name, type
+ * and size was supplied. The dialog says so rather than implying a transfer that
+ * is not happening.
  */
 export function EmergencyEndDialog({
   startedAt,
@@ -104,8 +110,9 @@ export function EmergencyEndDialog({
         <p className="mt-1.5 max-w-[56ch] text-sm leading-relaxed text-ink-muted">
           You have been in Emergency Mode for{" "}
           <span className="text-ink">{formatDuration(durationSecs)}</span>. To
-          leave it you must record what happened and attach proof — you stay in
-          Emergency Mode until this is sent.
+          leave it, record what happened — you stay in Emergency Mode until this
+          is sent. A supporting document helps your manager decide, but it is not
+          required.
         </p>
 
         <Field label="What happened" required className="mt-4">
@@ -120,11 +127,12 @@ export function EmergencyEndDialog({
 
         <div className="mt-4">
           <p className="text-sm font-medium text-ink">
-            Supporting document <span className="text-ink-faint">— required</span>
+            Supporting document <span className="text-ink-faint">— optional</span>
           </p>
           <p className="mt-0.5 text-[11px] text-ink-faint">
-            PDF or Word. The file is not uploaded in this prototype — its name,
-            type and size are recorded against the request.
+            PDF or Word, if you have one — you can send this without it. The file
+            is not uploaded in this prototype — its name, type and size are
+            recorded against the request.
           </p>
           <label className="mt-2 flex cursor-pointer items-center gap-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5 transition-colors hover:bg-[var(--control)]">
             <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--control)] text-ink-faint">
@@ -132,12 +140,12 @@ export function EmergencyEndDialog({
             </span>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm text-ink">
-                {file ? file.filename : "Choose a file"}
+                {file ? file.filename : "Choose a file (optional)"}
               </span>
               <span className="block text-[11px] text-ink-faint">
                 {file
                   ? `${Math.max(1, Math.round(file.sizeBytes / 1024))} KB`
-                  : "PDF or DOCX"}
+                  : "PDF or DOCX — or send without one"}
               </span>
             </span>
             <input

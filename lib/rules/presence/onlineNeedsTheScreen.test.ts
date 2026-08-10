@@ -91,8 +91,11 @@ test("the picker is opened by the press, with nothing awaited in front of it", (
     "something is awaited inside openPicker, so the gesture is spent before the prompt",
   );
   /* The seat and the library both have to be in hand, and a press that cannot
-     proceed says which is missing rather than doing nothing. */
-  assert.match(body, /if \(!token \|\| !url\)/);
+     proceed says which is missing rather than doing nothing. The seat is read
+     from the held one — synchronously, and NOT from the store, which holds none
+     while somebody is on a break. */
+  assert.match(body, /const seat = viewerId \? heldSeatNow\(viewerId\) : null;/);
+  assert.match(body, /if \(!useToken \|\| !useUrl\)/);
   assert.match(body, /if \(!publisherReady\(\)\)/);
   assert.match(body, /Still getting your room ready/);
   assert.match(body, /library is still loading/);
@@ -113,16 +116,63 @@ test("the SDK is pointed at the realtime server, not the embed page", () => {
    */
   const store = code(STORE);
   const at = store.indexOf("export async function startScreenShare");
-  const body = store.slice(at, store.indexOf("export function sessionLive", at));
+  const body = store.slice(at, store.indexOf("export function holdSeat", at));
   assert.match(body, /const \{ token, url \} = await fetchSeat\(\);/);
   assert.ok(
     !/embedUrl/.test(body),
     "the sharer is holding the embed page again — the SDK cannot connect to it",
   );
+  /* The press uses the seat's own two fields, whichever way it got them. */
+  assert.match(code(BUTTON), /serverUrl: useUrl,/);
   /* And the seat really does carry both, so this is a choice rather than an
      accident of what was available. */
   assert.match(code("lib/integrations/grav/credentials.ts"), /url: string;/);
   assert.match(code(TOKEN_ROUTE), /url: credentials\.url,/);
+});
+
+test("going online from a break or an emergency is possible, and clears it", () => {
+  /**
+   * **Reported as: on a break, Go online does nothing at all.** And it never
+   * would have: the seat was fetched by `startScreenShare`, which refuses to
+   * run while a manual state is set, so on a break the store held no token, the
+   * press had nothing to share with, and the panel said "Still getting your
+   * room ready" for ever — the guard that blocked it was also the only thing
+   * that would ever have lifted it.
+   *
+   * Underneath that sat a second one, invisible until the first was fixed:
+   * `derive` puts a manual state ABOVE the share, so a screen going out with
+   * `manual` still reading "break" leaves the pill on Break. The capture runs,
+   * the manager can watch it, and the person is told they are on a break.
+   */
+  const button = code(BUTTON);
+
+  /* Nothing about warming may be withheld from somebody on a break. */
+  const warm = button.slice(
+    button.indexOf("if (!open || !viewerId) return;"),
+    button.indexOf("}, [open, viewerId]);"),
+  );
+  assert.match(warm, /prefetchShareSeat\(viewerId\)/);
+  assert.ok(
+    !/manual !== null/.test(warm),
+    "the warm-up refuses to fetch a seat while a manual state is set again",
+  );
+
+  /* And the manual state is cleared where the share actually starts, not on the
+     press — a picker that was cancelled leaves the break exactly as it was. */
+  const started = button.slice(button.indexOf(".then((capture) =>"));
+  assert.match(started, /clearManual\(\);/);
+  assert.match(started, /const wasOnBreak = takeBreakStart\(\);/);
+
+  const cancelled = button.slice(button.indexOf("if (wasCancelled(error))"));
+  assert.ok(
+    !/clearManual/.test(cancelled.slice(0, cancelled.indexOf("}"))),
+    "cancelling the picker ends somebody's break for them",
+  );
+
+  /* Leaving an emergency stays gated on the dialog: the transition is held in
+     `pendingExit` and applied only once the request has been raised. */
+  assert.match(button, /const ending = id !== "emergency" \? captureEmergencyEnd\(\) : null;/);
+  assert.match(button, /if \(ending\) \{\s*setPendingExit\(id\);/);
 });
 
 test("the seat is in hand before the menu is even opened", () => {
@@ -168,7 +218,11 @@ test("the room and the library are warmed up before the press, and given back af
   assert.ok(at > 0, "the warm-up effect is gone");
   const effect = button.slice(at, button.indexOf("}, [open, viewerId", at));
   assert.match(effect, /loadPublisherSdk\(\)/, "the library is not preloaded");
-  assert.match(effect, /startScreenShare\(/, "the seat is not fetched early");
+  assert.match(
+    effect,
+    /prefetchShareSeat\(viewerId\)/,
+    "the seat is not fetched early",
+  );
 
   /* Given back when the menu closes with nothing running — the exclusions that
      make "nothing running" honest are asserted in their own test below. */
@@ -202,7 +256,7 @@ test("closing the menu to show the picker does not end the session", () => {
     /if \(open \|\| starting \|\| share\.sharing\) return;/,
     "the room is given back while the picker is open or a screen is live",
   );
-  assert.match(button, /setStarting\(true\);\s*void startPublishing\(/);
+  assert.match(button, /setStarting\(true\);[\s\S]{0,400}void startPublishing\(/);
   assert.match(button, /\.finally\(\(\) => setStarting\(false\)\)/);
 
   const started = button.slice(button.indexOf(".then((capture) =>"));
@@ -218,6 +272,31 @@ test("closing the menu to show the picker does not end the session", () => {
     code("components/features/status/DutySync.tsx"),
     /session === "requesting" \|\| session === "connecting"/,
   );
+});
+
+test("going online reports itself while it is happening", () => {
+  /**
+   * Three waits sit between the press and a live screen, and none is visible
+   * from outside: the browser preparing its capture prompt, the person choosing
+   * a display, and the publish reaching Grav Stream. The menu used to close on
+   * the press, so all three happened against an unchanged page — which reads as
+   * a button that did nothing.
+   */
+  const button = code(BUTTON);
+  assert.match(button, /Processing your request…/);
+  assert.match(button, /aria-live="polite"/);
+  /* The pill says it too: the menu can be covered by the browser's own prompt,
+     and the one thing always on screen must not read "Offline" meanwhile. */
+  assert.match(button, /starting\s*\?\s*"Connecting…"/);
+
+  /* The panel must not be dismissable out from under a step in progress. */
+  assert.match(button, /if \(e\.key !== "Escape" \|\| starting\) return;/);
+  assert.match(button, /function onDown\(e: MouseEvent\) \{\s*if \(starting\) return;/);
+
+  /* And it closes itself when there is nothing left to report. */
+  const started = button.slice(button.indexOf(".then((capture) =>"));
+  assert.match(started, /setOpen\(false\);/);
+  assert.match(button, /\.finally\(\(\) => setStarting\(false\)\)/);
 });
 
 test("nothing is rendered for the person sharing", () => {
@@ -384,7 +463,7 @@ test("the realtime server and the embed page are not the same field", () => {
      token. Both are named at the seat, so nothing downstream assembles either. */
   const seat = code("lib/integrations/grav/credentials.ts");
   assert.match(seat, /roomId: string;[\s\S]{0,600}url: string;[\s\S]{0,400}embedUrl: string;/);
-  assert.match(code(BUTTON), /serverUrl: url,/);
+  assert.match(code(BUTTON), /serverUrl: useUrl,/);
 });
 
 /* ── The failure that wasted a day ────────────────────────────────────────── */

@@ -36,12 +36,17 @@ export function fetchShareSeat(employeeId: string): Promise<RoomSeat> {
   const held = heldSeat(employeeId);
   if (held) return held;
   const asking = ask({ subject: employeeId, role: "publish" });
-  seat = { employeeId, at: Date.now(), asking };
-  /* A failure must not be remembered as a seat. Dropped so the next press asks
-     again rather than re-throwing something that has since been fixed. */
-  void asking.catch(() => {
-    if (seat?.asking === asking) seat = null;
-  });
+  seat = { employeeId, at: Date.now(), asking, ready: null };
+  void asking.then(
+    (answer) => {
+      if (seat?.asking === asking) seat.ready = answer;
+    },
+    () => {
+      /* A failure must not be remembered as a seat. Dropped so the next press
+         asks again rather than re-throwing something since fixed. */
+      if (seat?.asking === asking) seat = null;
+    },
+  );
   return asking;
 }
 
@@ -71,12 +76,34 @@ let seat: {
   employeeId: string;
   at: number;
   asking: Promise<RoomSeat>;
+  /** The answer, once it has arrived. See `heldSeatNow`. */
+  ready: RoomSeat | null;
 } | null = null;
 
 function heldSeat(employeeId: string): Promise<RoomSeat> | null {
   if (!seat || seat.employeeId !== employeeId) return null;
   if (Date.now() - seat.at > SEAT_HELD_MS) return null;
   return seat.asking;
+}
+
+/**
+ * The seat, SYNCHRONOUSLY, or null if it is not in hand yet.
+ *
+ * **This exists because of the five seconds.** A capture prompt opens only
+ * inside a user gesture and a gesture does not survive an `await` — so the
+ * press that shares cannot read a promise, however fast it would resolve. It
+ * has to find the answer already sitting here or give up and say so.
+ *
+ * It is also what unblocked going online FROM A BREAK. The seat used to be
+ * fetched into the presence store by `startScreenShare`, which refuses to run
+ * while a manual state is set; on a break the store therefore never held one,
+ * the press had nothing to read, and Go online did nothing at all — for ever,
+ * because nothing was ever going to fetch it.
+ */
+export function heldSeatNow(employeeId: string): RoomSeat | null {
+  if (!seat || seat.employeeId !== employeeId) return null;
+  if (Date.now() - seat.at > SEAT_HELD_MS) return null;
+  return seat.ready;
 }
 
 /**

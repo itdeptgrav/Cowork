@@ -5,7 +5,13 @@ import { useQuery } from "@/lib/hooks/useRepository";
 import { useLiveNow } from "@/lib/hooks/useLiveNow";
 import { Icon } from "@/components/ui/Icons";
 import { STATUS_META, type EmployeeStatus } from "@/lib/status/employeeStatus";
-import { formatDuration, formatTimeOfDay } from "@/lib/utils/format";
+import { formatTimeOfDay } from "@/lib/utils/format";
+import {
+  hoursMinutes,
+  onlineSecondsToday,
+  spanRows,
+  spanSeconds,
+} from "@/lib/rules/presence/historyLog";
 
 /**
  * Today's status log — when this person went online, took a break, declared
@@ -25,17 +31,10 @@ export function StatusHistoryModal({ onClose }: { onClose: () => void }) {
      — memoised on the one thing that actually identifies it. */
   const entries = useMemo(() => history.data ?? [], [history.data]);
 
-  /* Each entry only stamps when a mode BEGAN. The length of that mode is the
-     gap to the next (more recent) entry — or, for the most recent one, the
-     gap to right now, since that mode is still running. */
-  const rows = useMemo(
-    () =>
-      entries.map((entry, i) => ({
-        entry,
-        untilMs: i === 0 ? nowMs : entries[i - 1].at,
-      })),
-    [entries, nowMs],
-  );
+  /* The arithmetic lives in `lib/rules/presence/historyLog.ts`, where it can be
+     tested at a fixed instant. This component reads the clock and draws. */
+  const rows = useMemo(() => spanRows(entries, nowMs), [entries, nowMs]);
+  const onlineSecs = useMemo(() => onlineSecondsToday(rows), [rows]);
 
   return (
     <div
@@ -58,11 +57,15 @@ export function StatusHistoryModal({ onClose }: { onClose: () => void }) {
               Status history
             </h2>
             <p className="mt-0.5 text-[12px] text-ink-faint">
+              {/* Counts the STRETCHES shown, not the stored rows. Those differ
+                  once repeats are merged, and a header saying "85 changes"
+                  above a list of twenty is the kind of small lie that makes a
+                  reader distrust the numbers underneath it. */}
               {history.isLoading
                 ? "Reading today's changes…"
-                : entries.length === 0
+                : rows.length === 0
                   ? "No status changes today"
-                  : `${entries.length} change${entries.length !== 1 ? "s" : ""} today`}
+                  : `${rows.length} change${rows.length !== 1 ? "s" : ""} today`}
             </p>
           </div>
           <button
@@ -74,6 +77,28 @@ export function StatusHistoryModal({ onClose }: { onClose: () => void }) {
             <Icon.close className="h-4 w-4" />
           </button>
         </div>
+
+        {/* The day's headline figure, above the log that explains it. Only
+            Online is totalled: it is the one people are counting, and a row of
+            four totals would bury it among numbers nobody came for. */}
+        {!history.isLoading && entries.length > 0 && (
+          <div className="mx-6 mb-4 flex items-baseline justify-between gap-3 rounded-2xl bg-black/5 px-4 py-3 dark:bg-white/6">
+            <span className="flex items-center gap-2 text-[12px] text-ink-muted">
+              <span
+                aria-hidden="true"
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: STATUS_META.online.dot }}
+              />
+              Online today
+            </span>
+            <span
+              data-figure
+              className="text-[17px] leading-none font-medium tracking-[-0.01em] text-ink"
+            >
+              {hoursMinutes(onlineSecs)}
+            </span>
+          </div>
+        )}
 
         <div className="shrink-0 border-t border-black/8 dark:border-white/8" />
 
@@ -92,11 +117,30 @@ export function StatusHistoryModal({ onClose }: { onClose: () => void }) {
             </div>
           ) : (
             <ul className="divide-y divide-black/6 dark:divide-white/6">
-              {rows.map(({ entry, untilMs }) => {
-                const meta = STATUS_META[entry.mode as EmployeeStatus];
-                const isCurrent = untilMs === nowMs && entry === entries[0];
+              {rows.map((span) => {
+                const { entry, untilMs, ongoing } = span;
+                /**
+                 * **Online appears here like any other mode**, and for a while
+                 * it did not — not because this list filtered it out, but
+                 * because nothing ever published it: the session sat at
+                 * `connecting` for the whole share and `DutySync` is silent in
+                 * that state, so `setDutyMode("online")` was never called and no
+                 * row was ever written. See `sessionLive` in `StatusButton`.
+                 *
+                 * The fallback is for a mode this build does not know — an older
+                 * row, or one written by the legacy app. A missing entry in
+                 * `STATUS_META` would otherwise throw while reading `.dot` and
+                 * take the whole log down with it.
+                 */
+                const meta =
+                  STATUS_META[entry.mode as EmployeeStatus] ??
+                  ({
+                    label: entry.mode,
+                    dot: "var(--ink-faint)",
+                  } as (typeof STATUS_META)[EmployeeStatus]);
+                const secs = spanSeconds(span);
                 return (
-                  <li key={entry.id} className="flex items-start gap-3 px-6 py-3">
+                  <li key={entry.id} className="flex items-start gap-3 px-6 py-3.5">
                     <span
                       aria-hidden="true"
                       className="mt-1.5 h-2 w-2 shrink-0 rounded-full"
@@ -105,17 +149,40 @@ export function StatusHistoryModal({ onClose }: { onClose: () => void }) {
                     <div className="min-w-0 flex-1">
                       <p className="flex items-baseline justify-between gap-2 text-[13px] font-medium text-ink">
                         <span>{meta.label}</span>
-                        <span data-figure className="text-[11px] font-normal text-ink-faint">
-                          {formatTimeOfDay(entry.at)}
-                        </span>
-                      </p>
-                      <p className="mt-0.5 text-[11px] text-ink-faint">
-                        {isCurrent ? "Ongoing — " : ""}
-                        {formatDuration(
-                          Math.max(0, Math.round((untilMs - entry.at) / 1000)),
+                        {ongoing && (
+                          <span className="text-[11px] font-normal text-ink-faint">
+                            Ongoing
+                          </span>
                         )}
-                        {entry.reason ? ` · ${entry.reason}` : ""}
                       </p>
+                      {/**
+                       * **In, Out and Total, in three fixed columns.**
+                       *
+                       * It was one prose line — a start time on the right and a
+                       * duration underneath — which meant the two clock readings
+                       * that bound a stretch of work were never next to each
+                       * other, and nothing lined up between rows. A day is read
+                       * by scanning down a column, so the columns have to exist
+                       * and hold their width whatever is in them.
+                       *
+                       * The running stretch has no out time. It says "Now"
+                       * rather than borrowing the current clock, because that
+                       * would be a reading of something that has not happened.
+                       */}
+                      <div className="mt-1.5 grid grid-cols-3 gap-2">
+                        <Cell label="In" value={clock(entry.at)} />
+                        <Cell
+                          label="Out"
+                          value={ongoing ? "Now" : clock(untilMs)}
+                          muted={ongoing}
+                        />
+                        <Cell label="Total" value={hoursMinutes(secs)} strong />
+                      </div>
+                      {entry.reason && (
+                        <p className="mt-1.5 text-[11px] leading-relaxed text-ink-faint">
+                          {entry.reason}
+                        </p>
+                      )}
                     </div>
                   </li>
                 );
@@ -127,3 +194,52 @@ export function StatusHistoryModal({ onClose }: { onClose: () => void }) {
     </div>
   );
 }
+
+/**
+ * One labelled figure in the In / Out / Total row.
+ *
+ * The label is above the value rather than beside it so the three read as
+ * columns of a table — a day is scanned downwards, and a caption sitting in
+ * front of each number would break the alignment that makes that possible.
+ */
+function Cell({
+  label,
+  value,
+  muted = false,
+  strong = false,
+}: {
+  label: string;
+  value: string;
+  muted?: boolean;
+  strong?: boolean;
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-[9px] font-medium tracking-[0.08em] text-ink-faint uppercase">
+        {label}
+      </p>
+      <p
+        data-figure
+        className={`mt-0.5 truncate text-[12px] ${
+          strong ? "font-medium text-ink" : muted ? "text-ink-faint" : "text-ink-muted"
+        }`}
+      >
+        {value}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * A wall-clock reading, without the timezone suffix.
+ *
+ * `formatTimeOfDay` is the product's one conversion to IST and stays that way —
+ * a second implementation is how two screens come to disagree about what time
+ * something happened. What is dropped here is only its " IST" suffix, because
+ * this table prints three readings per row and the zone belongs in the column
+ * heading rather than three times over.
+ */
+function clock(ms: number): string {
+  return formatTimeOfDay(ms).replace(" IST", "");
+}
+

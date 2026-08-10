@@ -20,6 +20,8 @@ import type { EmergencyRequest } from "@/lib/domain";
  * way out — so the record explaining what happened was written before it had
  * happened. The reason and the document are collected at the end, when there is
  * something to describe.
+ *
+ * The REASON is required. The DOCUMENT is not — see the note on that branch.
  */
 export function emergencyRequestRefusal(input: {
   durationSecs: number;
@@ -31,9 +33,19 @@ export function emergencyRequestRefusal(input: {
     return "Emergency Mode has not been running, so there is nothing to review.";
   if (!input.reason.trim())
     return "Explain what happened. Your manager decides from this.";
-  if (!input.document)
-    return "Attach a supporting document — a PDF or a Word file.";
-  if (!isAcceptedDocument(input.document.mimeType))
+  /**
+   * **The document is OPTIONAL — owner decision.**
+   *
+   * It was required, and that made the exit unreachable in the cases the mode
+   * exists for: a building evacuated, a power cut, a hospital waiting room.
+   * Nobody has a PDF at that moment, and demanding one kept people in Emergency
+   * Mode for the lack of a file rather than the lack of an explanation.
+   *
+   * The explanation is still required, because that is what the manager decides
+   * from. A file that IS attached must still be a PDF or a Word document — an
+   * unreadable attachment is worse than none, since it looks like evidence.
+   */
+  if (input.document && !isAcceptedDocument(input.document.mimeType))
     return "That file is not a PDF or a Word document.";
   if (!input.managerId)
     return "You have no manager on record, so there is nobody to review this. Ask an administrator to set your reporting line.";
