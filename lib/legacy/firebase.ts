@@ -7,6 +7,7 @@ import {
   getAuth,
   onAuthStateChanged,
   onIdTokenChanged,
+  signInWithCustomToken,
   signInWithEmailAndPassword,
   signOut as fbSignOut,
 } from "firebase/auth";
@@ -148,6 +149,20 @@ export async function signIn(
 ): Promise<User> {
   const { auth } = legacyFirebase();
   const credential = await signInWithEmailAndPassword(auth, email, password);
+  return credential.user;
+}
+
+/**
+ * Sign in with a Firebase custom token, minted server-side by the CMS backend.
+ *
+ * The SSO handoff from the CMS onboarding page: the CMS already knows who
+ * somebody is and holds the Firebase Admin service account, so it mints a
+ * custom token for their already-linked CoWork account and this exchanges it
+ * for a real session, the same way `signIn` does for a typed password.
+ */
+export async function signInWithToken(customToken: string): Promise<User> {
+  const { auth } = legacyFirebase();
+  const credential = await signInWithCustomToken(auth, customToken);
   return credential.user;
 }
 

@@ -22,7 +22,7 @@ import { decode, checkClaims, verifyIdToken } from "@/lib/auth/firebaseToken";
  * only checking a signature, would be trusted for more than it can carry.
  */
 
-const PUBLIC_PATHS = new Set(["/signin", "/signup", "/reset-password"]);
+const PUBLIC_PATHS = new Set(["/signin", "/signup", "/reset-password", "/sso"]);
 
 /**
  * The legacy-migration operator surfaces, open in development only.
