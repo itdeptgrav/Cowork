@@ -43,6 +43,11 @@ const AUTH_ROUTES = new Set([
   "/signup",
   "/reset-password",
   "/offline",
+  // The SSO handoff from the CMS onboarding page arrives with a Firebase
+  // custom token and no session yet — it exists to CREATE one, same as
+  // /signin, so it needs the same bare shell rather than WorkspaceShell
+  // bouncing it to /signin the instant it sees `anonymous`.
+  "/sso",
 ]);
 
 /**
