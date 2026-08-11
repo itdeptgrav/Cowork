@@ -591,3 +591,81 @@ test("the vendor reference is in the repository", () => {
   assert.match(doc, /user activation does not cross a postMessage boundary/);
   assert.match(doc, /grav-stream\.js/);
 });
+
+/* ── Their release of 11 Aug 2026 ─────────────────────────────────────────── */
+
+test("share() is called with no capture constraints and no bitrate", () => {
+  /**
+   * **Their instruction, and the reason for it.** The SDK caps capture at
+   * 1920×1080, sets `contentHint: "detail"` and pins `scaleResolutionDownBy` to
+   * 1, so that under pressure the encoder drops FRAMES rather than sharpness —
+   * which is what keeps small text legible on the watching side. Passing our
+   * own constraints or a `maxBitrate` defeats all three: *"you will defeat the
+   * resolution cap and the anti-downscale setting, and the text problem will
+   * come back."*
+   *
+   * `requireEntireScreen` is not a constraint and is deliberately still passed:
+   * their reference says `ENTIRE_SCREEN_REQUIRED` is raised *"only when you
+   * pass requireEntireScreen: true"*, so without it a window is accepted here
+   * and refused later by the SFU as a failed publish.
+   */
+  const src = code(PUBLISHER);
+  const at = src.indexOf("sdk.share({");
+  assert.ok(at > 0, "the share call is gone");
+  const call = src.slice(at, src.indexOf("})", at));
+  assert.match(call, /token: input\.token/);
+  assert.match(call, /serverUrl: input\.serverUrl/);
+  assert.match(call, /requireEntireScreen: true/);
+  for (const forbidden of ["maxBitrate", "video:", "constraints", "frameRate"])
+    assert.ok(
+      !call.includes(forbidden),
+      `${forbidden} is being passed to share() — the 1080p cap and the ` +
+        "anti-downscale setting are defeated, and text goes unreadable",
+    );
+});
+
+test("the SDK is fetched past the browser cache", () => {
+  /* They rebuild the file in place at a stable URL — the path carries a major
+     version, not a build — and the rebuild is what moves encoding to H.264.
+     Nothing here can hard-refresh somebody else's browser; a changed URL can. */
+  const src = code(PUBLISHER);
+  assert.match(src, /const SDK_BUILD = "\d{4}-\d{2}-\d{2}";/);
+  assert.match(
+    src,
+    /const SDK_URL = `https:\/\/live\.grav\.in\/v1\/grav-stream\.js\?v=\$\{SDK_BUILD\}`;/,
+  );
+});
+
+test("only one live viewer frame decodes at a time", () => {
+  /**
+   * Each viewer iframe decodes its own copy of the stream, so two of them for
+   * one person cost the MANAGER's machine twice — their guidance is explicit
+   * that a wall of live screens is what makes a manager's machine slow. The
+   * person page had exactly that: a panel in the column and an expanded dialog
+   * over it, both live, for as long as the dialog was open.
+   */
+  const person = code("components/features/team/PersonMonitor.tsx");
+  assert.match(person, /suspended=\{screenOpen\}/);
+
+  const viewer = code("components/features/monitoring/LiveScreenViewer.tsx");
+  assert.match(viewer, /const room = embedUrl !== null && !error && !suspended;/);
+  assert.match(
+    viewer,
+    /useEmbedReport\(suspended \? null : embedUrl\)/,
+    "a suspended panel still listens, so it is still a second frame",
+  );
+});
+
+test("a picture that never arrives is rejoined once, automatically", () => {
+  /**
+   * Reported as "sometimes the receiver's screen is black, sometimes it works"
+   * — same room, same two people, different outcome. That is a subscription
+   * that began without a keyframe to decode.
+   *
+   * Once, not in a loop: every rejoin costs the SHARER a keyframe, and a
+   * keyframe is bitrate taken from the sharpness everybody else is watching.
+   */
+  const viewer = code("components/features/monitoring/LiveScreenViewer.tsx");
+  assert.match(viewer, /if \(!late \|\| healed\.current === key \|\| attempt > 0\) return;/);
+  assert.match(viewer, /waited: late && attempt > 0,/);
+});

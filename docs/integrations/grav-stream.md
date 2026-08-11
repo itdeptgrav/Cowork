@@ -8,6 +8,34 @@
      a room's mode and a token's role are fixed when they are created.
      Cowork uses mode: "screen" with requireEntireScreen: true — lib/integrations/grav/. -->
 
+## Their release of 11 Aug 2026, and the four rules it leaves us
+
+The sections below predate it. Where they disagree, this wins.
+
+1. **Do not pass capture constraints or `maxBitrate` to `share()`.** The SDK caps
+   capture at 1920x1080, sets `contentHint: "detail"` and pins
+   `scaleResolutionDownBy` to 1, so pressure costs frames rather than sharpness.
+   Passing your own defeats all three, and unreadable text is what that looks
+   like. `{ token, serverUrl, requireEntireScreen }` only — the third is a policy
+   flag, not a constraint, and `ENTIRE_SCREEN_REQUIRED` is raised *"only when you
+   pass requireEntireScreen: true"*.
+2. **H.264 is negotiated at JOIN.** A session already running keeps VP8 — which
+   browsers encode in software, saturating a CPU core on a whole desktop — until
+   it reconnects. Every sharer has to stop and start once after a rebuild.
+3. **The SDK is rebuilt in place at a stable URL.** `publisher.ts` appends a
+   dated query string so browsers do not serve a cached copy; bump `SDK_BUILD`
+   when they ship.
+4. **One live viewer frame at a time.** Each decodes its own stream, so a wall of
+   eight screens slows the MANAGER's machine exactly as encoding slows the
+   sharer's. `LiveScreenViewer` takes `suspended` for this.
+
+What their release fixed on their side, so nothing here should work around it:
+capture is capped and no longer downscales under pressure; H.264 moves encoding
+to hardware; the signaling socket gets a server-side keepalive every 25s and the
+proxy's idle ceiling is a day — **that idle proxy timeout at exactly one hour is
+what silently killed long shares**, and it is the same event Cowork now reads as
+`dropped` rather than as somebody going offline.
+
 # Grav Stream — complete integration reference
 
 Self-hosted screen sharing and video. A product integrates with two
