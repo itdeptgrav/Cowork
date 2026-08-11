@@ -1,7 +1,10 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { fetchWatchSeat } from "@/lib/integrations/grav/credentials";
+import {
+  fetchRoomPresence,
+  fetchWatchSeat,
+} from "@/lib/integrations/grav/credentials";
 
 /**
  * The manager's seat in ONE person's room.
@@ -38,6 +41,19 @@ export function MonitorRoom({
     embedUrl: string | null;
     connecting: boolean;
     error: string | null;
+    /**
+     * Is a screen going out RIGHT NOW, as the SERVICE reports it — `null` until
+     * it has been asked.
+     *
+     * **This is here because the frame cannot be trusted to say so.** Their
+     * embed renders a share that was already running when a viewer joined, and
+     * does not post `remote-screen-started` for it — so a panel that believed
+     * only the frame's events covered a perfectly good picture with "Their
+     * screen is not reaching this view". `participants[].sharing.screen` is the
+     * same fact the sharer's own confirmation uses, and it is true whoever is
+     * looking.
+     */
+    sharing: boolean | null;
   }) => ReactNode;
 }) {
   /**
@@ -82,6 +98,41 @@ export function MonitorRoom({
     };
   }, [subjectId]);
 
+  /**
+   * Ask the service whether a screen is actually going out, and keep asking.
+   *
+   * Stamped with the subject for the same reason the seat is: an answer about
+   * the person who was on screen a moment ago must never be read as an answer
+   * about the person on screen now.
+   *
+   * Polled rather than pushed because there is nothing to push it: the room's
+   * participant list is a REST read, and the one thing that would have told us
+   * live — the embed's own event — is precisely what does not arrive for a
+   * share that started before the viewer opened.
+   */
+  const [live, setLive] = useState<{ subject: string; sharing: boolean } | null>(
+    null,
+  );
+  useEffect(() => {
+    if (!subjectId) return;
+    let cancelled = false;
+    async function ask(subject: string) {
+      try {
+        const room = await fetchRoomPresence({ subject, role: "watch" });
+        if (!cancelled) setLive({ subject, sharing: room.sharing });
+      } catch {
+        /* A question that could not be asked is not a no. The previous answer
+           stands, and the next tick asks again. */
+      }
+    }
+    void ask(subjectId);
+    const id = setInterval(() => void ask(subjectId), SHARING_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [subjectId]);
+
   const current = seat && seat.subject === subjectId ? seat : null;
   const error =
     failure && failure.subject === subjectId ? failure.message : null;
@@ -92,7 +143,12 @@ export function MonitorRoom({
         embedUrl: current?.embedUrl ?? null,
         connecting: subjectId !== null && current === null && error === null,
         error,
+        sharing: live && live.subject === subjectId ? live.sharing : null,
       })}
     </>
   );
 }
+
+/* Often enough that a screen appearing is noticed within a few seconds, rarely
+   enough that a manager watching for an hour is not a stream of requests. */
+const SHARING_POLL_MS = 5000;

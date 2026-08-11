@@ -16,6 +16,61 @@
 
 export const EMBED_ORIGIN = "https://live.grav.in";
 
+/** The surface the browser says was captured. `null` where it will not say. */
+export type EmbedSurface = "monitor" | "window" | "browser" | null;
+
+/**
+ * What the embed tells the page hosting it.
+ *
+ * A watcher's frame is not silent, and for a while nothing on this side was
+ * listening — so a manager whose view failed got a black rectangle and no
+ * sentence anywhere, while the frame was posting the reason out loud. Only the
+ * events a WATCHER can see are listed; the publisher's half went with the
+ * publisher's frame.
+ */
+export interface EmbedEvent {
+  type:
+    | "ready"
+    | "joined"
+    | "remote-screen-started"
+    | "remote-screen-stopped"
+    | "screen-share-stopped"
+    | "participant-joined"
+    | "participant-left"
+    | "left"
+    | "error";
+  roomId?: string;
+  role?: "publisher" | "viewer";
+  mode?: "screen" | "meeting";
+  identity?: string;
+  peerId?: string;
+  displaySurface?: EmbedSurface;
+  width?: number;
+  height?: number;
+  message?: string;
+  code?: string;
+}
+
+/**
+ * Is this a message from the embed, and which one?
+ *
+ * Any frame on the page can post to this window, so the ORIGIN is checked as
+ * well as the marker their documentation describes — a check on the marker
+ * alone would trust anything that knew the string.
+ */
+export function readEmbedEvent(event: MessageEvent): EmbedEvent | null {
+  if (event.origin !== EMBED_ORIGIN) return null;
+  const data: unknown = event.data;
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    (data as { source?: unknown }).source !== "grav-stream" ||
+    typeof (data as { type?: unknown }).type !== "string"
+  )
+    return null;
+  return data as EmbedEvent;
+}
+
 /**
  * The embed page for a room.
  *

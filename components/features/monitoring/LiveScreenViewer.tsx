@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Icon } from "@/components/ui/Icons";
+import { readEmbedEvent } from "@/lib/integrations/grav/embed";
 import type { MonitoredPresence } from "@/lib/domain";
 
 /**
@@ -38,6 +39,17 @@ interface ViewerProps {
    * `MonitorRoom` decides which, and `error` carries the reason.
    */
   embedUrl: string | null;
+  /**
+   * A screen is going out, as the SERVICE reports it — `null` until asked.
+   *
+   * **The frame is not the only witness, and it turned out not to be a reliable
+   * one.** Their embed renders a share that was already running when a viewer
+   * joined, but posts no `remote-screen-started` for it: the picture is on
+   * screen and the event never comes. A panel that believed only the events
+   * covered a working screen with "Their screen is not reaching this view" and
+   * a Join again button, which is worse than the silence it replaced.
+   */
+  sharing: boolean | null;
 }
 
 export function LiveScreenViewer(props: ViewerProps) {
@@ -50,20 +62,52 @@ function ViewerFrame({
   connecting,
   error,
   embedUrl,
+  sharing,
 }: ViewerProps) {
   /* Whether their room is on screen at all. NOT whether a screen is arriving —
-     that is inside the frame now, and this component cannot see it. */
+     that is inside the frame, and only the frame's own messages say so. */
   const room = embedUrl !== null && !error;
   /**
-   * The badge answers "is this person sharing", and the only thing that knows is
-   * their published presence.
+   * **What the frame itself reports.** For a while nothing on this side
+   * listened, and that is what produced the fault this exists to answer: a
+   * manager watching somebody who was demonstrably sharing — the service showed
+   * the producer, the room showed both of them in it — saw a black rectangle
+   * and no sentence anywhere, while the embed was posting its state out loud.
    *
-   * It used to read `room` — which lit "Live" the moment a URL existed, over a
-   * frame still showing its own "Ready to join?" screen. A badge that says Live
-   * above a join button is worse than no badge: it is the one thing on the panel
-   * a manager would take on trust.
+   * A frame that has joined and has no screen is a different thing from one
+   * that failed, and both are different from one that never loaded. Each says
+   * so now.
    */
-  const live = room && presence === "online";
+  const frame = useEmbedReport(embedUrl);
+  /**
+   * The badge answers "is this person sharing", and two sources can say so: the
+   * frame, which knows what it is rendering, and the published presence, which
+   * is what everybody else reads. The frame wins when it has spoken — it is the
+   * one looking at the picture.
+   *
+   * It used to read `room`, which lit "Live" the moment a URL existed. A badge
+   * saying Live over an empty rectangle is worse than no badge: it is the one
+   * thing on the panel a manager would take on trust.
+   */
+  /**
+   * **Live means a picture is going out, and two witnesses can say so.**
+   *
+   * The frame knows what it is rendering — when it speaks, it is right, and it
+   * is instant. But it says nothing at all about a share that was already
+   * running when this view joined, which is the ordinary case for a manager
+   * opening somebody's panel mid-morning. So the SERVICE answers for it: the
+   * room's own `participants[].sharing.screen`, polled by `MonitorRoom`.
+   *
+   * `??` and not `||`: an explicit `false` from the frame — it saw the share
+   * stop — is an answer, and must not be overruled by a poll taken seconds
+   * before. Only silence falls through to the service.
+   *
+   * What is NOT consulted is their published presence. That is what everybody
+   * reads about the person, not about the picture, and believing it is how a
+   * green "Live" badge came to sit over a black rectangle.
+   */
+  const picture = room && (frame.remoteScreen ?? sharing) === true;
+  const live = picture;
   return (
     <section
       aria-label={`${displayName} — live screen`}
@@ -76,10 +120,15 @@ function ViewerFrame({
       <header className="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-start gap-3 bg-gradient-to-b from-black/55 to-transparent px-4 pt-3.5 pb-8">
         <LiveBadge live={live} presence={presence} />
         <p className="min-w-0 flex-1 truncate pt-0.5 text-xs text-slab-ink-muted">
+          {/* No "press Join" any more — there is no Join. That copy was left
+              over from the meeting rooms, and it sent managers looking for a
+              button that does not exist on a screen room. */}
           {room
             ? live
-              ? "Their room — press Join to watch what they are sharing"
-              : "Their room — they are not sharing a screen right now"
+              ? "Their screen, live"
+              : frame.joined
+                ? "In their room — nothing is being shared into it"
+                : "Opening their room…"
             : connecting
               ? "Opening their room…"
               : "No screen is being shared"}
@@ -94,6 +143,15 @@ function ViewerFrame({
            `min-h-[320px]` / `flex-1` above. Out of flow, it can only ever fill
            the box that already exists. */
         <iframe
+          /**
+           * **Keyed on the attempt, so a retry really is a fresh join.**
+           *
+           * Changing the `src` of a live frame is not reliably a reload, and
+           * this is the one lever the host page has: their embed subscribes
+           * when it joins, so a view that joined and never received the screen
+           * has nothing to do but join again. See `useEmbedReport`.
+           */
+          key={frame.attempt}
           title={`${displayName} — live screen`}
           src={embedUrl}
           /**
@@ -113,7 +171,21 @@ function ViewerFrame({
           allow="camera; microphone; display-capture; autoplay"
           className="absolute inset-0 h-full w-full border-0"
         />
-      ) : (
+      ) : null}
+
+      {/* Over the frame, never instead of it: unmounting the frame to show a
+          message would drop the connection that is about to deliver the very
+          thing being waited for. */}
+      {room && embedUrl && !picture && (
+        <FrameReport
+          displayName={displayName}
+          presence={presence}
+          sharing={sharing}
+          report={frame}
+        />
+      )}
+
+      {!(room && embedUrl) && (
         <ViewerPlaceholder
           displayName={displayName}
           presence={presence}
@@ -122,6 +194,261 @@ function ViewerFrame({
         />
       )}
     </section>
+  );
+}
+
+/**
+ * How long a joined frame is given to produce a picture before this says so.
+ *
+ * Their embed subscribes when it joins, so a screen that is already going out
+ * should arrive within a second or two of `joined`. Eight seconds is long
+ * enough that a slow network is not reported as a fault, short enough that a
+ * manager is not left studying a black rectangle wondering whose fault it is.
+ */
+const SCREEN_WAIT_MS = 8000;
+
+interface EmbedReport {
+  /** The frame has answered at all. */
+  ready: boolean;
+  /** The frame is in the room. */
+  joined: boolean;
+  /**
+   * Whether a remote screen is being rendered, per the frame — `null` until it
+   * has said either way, which is different from "no".
+   */
+  remoteScreen: boolean | null;
+  /** The embed's own words for a failure, if it reported one. */
+  failure: string | null;
+  /** Bumped to remount the frame. See `key` on the iframe. */
+  attempt: number;
+  /** Joined, a share is expected, and nothing has arrived. */
+  waited: boolean;
+  retry: () => void;
+}
+
+/**
+ * Listen to the watcher's frame.
+ *
+ * **The fault this answers.** A manager opened somebody's screen while that
+ * person was demonstrably sharing — the service reported the producer, and both
+ * of them in the same room — and saw black. Nothing was wrong with the token,
+ * the room or the identity, and nothing on this side was listening to the one
+ * thing that could have explained it: the frame's own messages.
+ *
+ * It also gives the view its single retry. Their embed subscribes to what is in
+ * the room when it JOINS, so a view that joined and never received the screen
+ * has exactly one move — join again — and a manager should not have to know
+ * that reloading the page is what does it.
+ */
+interface FrameState {
+  /**
+   * Which frame this describes — the URL and the attempt number.
+   *
+   * **Carried in the state rather than reset by an effect.** A new person, a
+   * fresh seat or a retry is a new conversation, and the old frame's answers
+   * must not be read as the new one's. Clearing them in an effect would mean a
+   * render in between that still showed the previous frame's verdict, which is
+   * how a stale "not reaching this view" ends up over a working screen.
+   */
+  key: string;
+  ready: boolean;
+  joined: boolean;
+  remoteScreen: boolean | null;
+  failure: string | null;
+}
+
+const BLANK: Omit<FrameState, "key"> = {
+  ready: false,
+  joined: false,
+  remoteScreen: null,
+  failure: null,
+};
+
+function useEmbedReport(embedUrl: string | null): EmbedReport {
+  const [attempt, setAttempt] = useState(0);
+  const [state, setState] = useState<FrameState>({ key: "", ...BLANK });
+  const [waited, setWaited] = useState<string | null>(null);
+
+  const key = `${embedUrl ?? ""}#${attempt}`;
+  /* Derived, not reset: anything recorded against another frame is not about
+     this one. */
+  const current = state.key === key ? state : { key, ...BLANK };
+
+  useEffect(() => {
+    if (!embedUrl) return;
+    function onMessage(event: MessageEvent) {
+      const message = readEmbedEvent(event);
+      if (!message) return;
+      /* Logged as well as rendered: the codes are theirs, and the console is
+         where a second pair of eyes will look first. */
+      console.info("[stream] embed →", message.type, message.code ?? "");
+      const patch = ((): Partial<FrameState> | null => {
+        switch (message.type) {
+          case "ready":
+            return { ready: true };
+          case "joined":
+            return { ready: true, joined: true };
+          case "remote-screen-started":
+            return { remoteScreen: true, failure: null };
+          case "remote-screen-stopped":
+          case "screen-share-stopped":
+          case "participant-left":
+            return { remoteScreen: false };
+          case "left":
+            return { joined: false, remoteScreen: false };
+          case "error":
+            /* Their message, verbatim. A code with no sentence is what made
+               this panel unreadable in the first place. */
+            return {
+              failure:
+                message.message ??
+                `The screen-sharing service reported ${message.code ?? "an error"}.`,
+            };
+          default:
+            return null;
+        }
+      })();
+      if (!patch) return;
+      setState((prev) => ({
+        ...(prev.key === key ? prev : { key, ...BLANK }),
+        key,
+        ...patch,
+      }));
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [embedUrl, key]);
+
+  /* The deadline. Starts at `joined`, because a frame that has not joined is
+     not late — it is loading. Recorded as the key it applies to, so a retry
+     does not inherit the previous attempt's verdict. */
+  const pending = current.joined && current.remoteScreen === null;
+  useEffect(() => {
+    if (!pending) return;
+    const id = setTimeout(() => setWaited(key), SCREEN_WAIT_MS);
+    return () => clearTimeout(id);
+  }, [pending, key]);
+
+  const retry = useCallback(() => setAttempt((n) => n + 1), []);
+  return {
+    ...current,
+    attempt,
+    waited: waited === key && pending,
+    retry,
+  };
+}
+
+/**
+ * What is on the panel when there is no picture.
+ *
+ * Never a bare black rectangle. Each state gets its own sentence, because the
+ * difference between "they stopped sharing", "the room will not connect" and
+ * "their screen is not reaching this view" decides what a manager does next —
+ * wait, message them, or press retry.
+ */
+function FrameReport({
+  displayName,
+  presence,
+  sharing,
+  report,
+}: {
+  displayName: string;
+  presence: MonitoredPresence;
+  sharing: boolean | null;
+  report: EmbedReport;
+}) {
+  const first = displayName.split(" ")[0];
+  /**
+   * **Two weights, and the difference matters.**
+   *
+   * A settled state — it failed, they stopped, they are on a break — earns a
+   * full cover: there is nothing behind it to look at. The first seconds after
+   * joining do not: the picture may be arriving, and their embed could render
+   * one without announcing it. So that one is a quiet line at the bottom that
+   * takes no clicks and hides nothing.
+   */
+  const settled =
+    report.failure !== null ||
+    !report.ready ||
+    report.remoteScreen === false ||
+    sharing === false ||
+    report.waited ||
+    presence !== "online";
+  const { title, detail, showRetry } = report.failure
+    ? {
+        title: "Their screen could not be shown",
+        detail: report.failure,
+        showRetry: true,
+      }
+    : !report.ready
+      ? {
+          title: "Opening their room…",
+          detail: "Connecting to the screen-sharing service.",
+          showRetry: false,
+        }
+      : sharing === false
+        ? {
+            /* The SERVICE says nothing is going out. That is not this view
+               failing, and calling it a failure would send a manager chasing a
+               connection problem that does not exist. */
+            title: `${first} is not sharing a screen`,
+            detail:
+              presence === "online"
+                ? "They are online, but nothing is being published into their room right now."
+                : "Nothing is being published into their room right now.",
+            showRetry: false,
+          }
+        : report.waited
+          ? {
+              title: "Their screen is not reaching this view",
+              detail: `Nothing has arrived here, and the service could not confirm what ${first} is sharing. Joining again usually picks it up.`,
+              showRetry: true,
+            }
+          : presence === "break"
+          ? {
+              title: `${first} is on a break`,
+              detail: "The room stays open. Sharing resumes on their return.",
+              showRetry: false,
+            }
+          : presence === "emergency"
+            ? {
+                title: `${first} has flagged an emergency`,
+                detail: "Screen sharing is unchanged. Reach them directly.",
+                showRetry: false,
+              }
+            : {
+                title: `Waiting for ${first}’s screen`,
+                detail:
+                  "You are in their room. Anything they share appears here on its own.",
+                showRetry: false,
+              };
+
+  if (!settled) {
+    return (
+      <p className="pointer-events-none absolute inset-x-0 bottom-0 z-10 bg-gradient-to-t from-black/55 to-transparent px-4 pt-8 pb-3.5 text-center text-[11px] text-slab-ink-muted">
+        {title}
+      </p>
+    );
+  }
+
+  return (
+    <div className="absolute inset-0 grid place-items-center bg-black/70 px-8 text-center">
+      <div className="max-w-[40ch]">
+        <p className="text-[15px] font-medium text-slab-ink">{title}</p>
+        <p className="mt-1.5 text-xs leading-relaxed text-slab-ink-muted">
+          {detail}
+        </p>
+        {showRetry && (
+          <button
+            type="button"
+            onClick={report.retry}
+            className="mt-3.5 rounded-full bg-white/12 px-3.5 py-1.5 text-xs font-medium text-slab-ink transition-colors hover:bg-white/20"
+          >
+            Join again
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

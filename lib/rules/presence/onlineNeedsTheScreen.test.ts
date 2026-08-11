@@ -355,12 +355,21 @@ test("a window or a tab is refused by the service, and explained here", () => {
   assert.match(code("lib/integrations/grav/stream.ts"), /requireEntireScreen: true/);
 });
 
-test("the browser's own Stop sharing bar ends the session", () => {
-  /* Their `ended` event covers the browser's bar and a dropped connection.
-     Sharing is what Online means, so either ends the session rather than leaving
-     a room open for somebody who has stopped. */
+test("the browser's own Stop sharing bar ends the session — and only it", () => {
+  /**
+   * Their `ended` covers two unrelated things: the browser's bar and a dropped
+   * connection. Sharing is what Online means, so a real STOP ends the session.
+   * A drop must not: nobody decided anything, and taking somebody offline for a
+   * network blip is the auto-offline this product has ruled out twice. The two
+   * are told apart by the capture's own `ended` — see `shareLost.test.ts`.
+   */
   assert.match(code(PUBLISHER), /live\.on\("ended"/);
-  assert.match(code(BUTTON), /onEnded: \(\) => endSession\(\)/);
+  const button = code(BUTTON);
+  assert.match(button, /if \(reason === "stopped"\) \{\s*endSession\(\);/);
+  assert.ok(
+    !/onEnded: \(\) => endSession\(\)/.test(button),
+    "both endings are being treated as a stop again",
+  );
 });
 
 test("a dismissed picker is a sentence, not a failure", () => {

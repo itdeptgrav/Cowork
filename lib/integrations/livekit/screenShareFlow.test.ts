@@ -166,9 +166,36 @@ test("the viewer renders the room it was granted", () => {
   );
 });
 
-test("the badge does not claim Live over a join screen", () => {
-  /* A URL is not a stream. The badge lit the moment a seat existed, above a
-     frame still showing "Ready to join?" — the one thing on the panel a manager
-     would take on trust. It follows their published presence instead. */
-  assert.match(viewer, /const live = room && presence === "online"/);
+test("the badge claims Live only over an actual picture", () => {
+  /**
+   * A URL is not a stream — the badge used to light the moment a seat existed.
+   * Then it followed their published PRESENCE, which was better and still not
+   * good enough: a manager watched somebody who was genuinely online and
+   * genuinely sharing, and the panel showed a black rectangle with a green
+   * "Live" badge over it. Presence was right and the picture was absent, and
+   * the badge was reporting the wrong one of the two.
+   *
+   * Only the frame knows what it is rendering, so only the frame may say Live.
+   */
+  /**
+   * Two witnesses, and neither of them is the presence feed. The frame is
+   * instant and right when it speaks — but it says NOTHING about a share that
+   * was already running when this view joined, which is the ordinary case for a
+   * manager opening somebody's panel mid-morning. That silence covered a
+   * perfectly good picture with "Their screen is not reaching this view". The
+   * service answers for it: `participants[].sharing.screen`, polled by
+   * `MonitorRoom`.
+   *
+   * `??` and not `||`: an explicit `false` from the frame is an answer and must
+   * not be overruled by a poll taken seconds earlier.
+   */
+  assert.match(
+    viewer,
+    /const picture = room && \(frame\.remoteScreen \?\? sharing\) === true;/,
+  );
+  assert.match(viewer, /const live = picture;/);
+  /* And whenever there is no picture, something says why — a black rectangle
+     with no sentence is the fault this whole area exists to have fixed. */
+  assert.match(viewer, /!picture && \(\s*<FrameReport/);
+  assert.match(viewer, /readEmbedEvent\(event\)/, "nothing listens to the frame");
 });

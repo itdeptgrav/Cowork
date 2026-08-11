@@ -142,7 +142,7 @@ export function PersonMonitor({
 
   return (
     <MonitorRoom subjectId={employeeId}>
-      {({ embedUrl, connecting, error: roomError }) => (
+      {({ embedUrl, connecting, error: roomError, sharing }) => (
         <>
           <PersonHero
             subject={subject}
@@ -200,6 +200,7 @@ export function PersonMonitor({
                   presence={subject.presence}
                   connecting={connecting}
                   error={roomError}
+                  sharing={sharing}
                 />
               ) : (
                 <NoSubjectFrame loading={subjectQ.isLoading} />
@@ -296,6 +297,7 @@ export function PersonMonitor({
             embedUrl={embedUrl}
             connecting={connecting}
             error={roomError}
+            sharing={sharing}
             displayName={subject?.displayName ?? "This person"}
             presence={subject?.presence ?? "offline"}
           />

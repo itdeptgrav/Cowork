@@ -109,7 +109,14 @@ test("the words are written once and shared", () => {
      match against the screen — CLAUDE.md's rule, and the reason these are
      constants rather than three string literals. */
   assert.equal(SHARE_LOST_TITLE, "Your screen is not being shared.");
-  assert.match(SHARE_LOST_DETAIL, /still Online/);
+  /* Both causes say the status is safe — that is the reflex the warning has to
+     answer — and each names what actually happened. Telling somebody a reload
+     ended their share when their connection dropped sends them looking for a
+     mistake they did not make. */
+  assert.match(SHARE_LOST_DETAIL.reload, /still Online/);
+  assert.match(SHARE_LOST_DETAIL.reload, /Reloading a page/);
+  assert.match(SHARE_LOST_DETAIL.dropped, /still Online/);
+  assert.match(SHARE_LOST_DETAIL.dropped, /connection to the screen-sharing service dropped/);
 
   const knowledge = readFileSync("lib/help/knowledge.ts", "utf8");
   assert.ok(
@@ -148,5 +155,59 @@ test("the tone waits for a gesture rather than being lost to autoplay policy", (
     (mount.match(/cancelShareLostSound\(\)/g) ?? []).length,
     2,
     "both ways out of the dialog must call the pending tone off",
+  );
+});
+
+test("a dropped connection does NOT take anybody offline; a real stop does", () => {
+  /**
+   * **Reported as: it switches me to offline and stops my screen share, by
+   * itself, while I am working.**
+   *
+   * Their SDK has one `ended` event for two unrelated events — their words:
+   * *"fires when the user stops from the browser's own bar or the connection
+   * drops."* Cowork called `endSession()` for both, so a network blip, a proxy
+   * closing an idle socket or a service restart marked somebody offline and
+   * killed the capture they were in the middle of.
+   *
+   * The two are told apart by the CAPTURE, not the session: a MediaStreamTrack
+   * fires `ended` when its source goes away — the Stop sharing bar, a display
+   * unplugged — and never when a transport drops. Their SDK does not hand the
+   * track back, so the call that creates it is intercepted for the length of
+   * one `share()` and the track listened to directly.
+   */
+  const publisher = readFileSync("lib/integrations/grav/publisher.ts", "utf8");
+  assert.match(publisher, /export type ShareEnd = "stopped" \| "dropped";/);
+  assert.match(publisher, /getDisplayMedia = async/, "the capture is not observed");
+  assert.match(publisher, /captureEnded \? "stopped" : "dropped"/);
+  /* Our own teardown ends the session too, and must not be reported as either. */
+  assert.match(publisher, /if \(stoppingHere\) return;/);
+
+  const button = readFileSync(
+    "components/features/status/StatusButton.tsx",
+    "utf8",
+  );
+  const at = button.indexOf("onEnded: (reason) => {");
+  assert.ok(at > 0, "the two endings are handled as one again");
+  const handler = button.slice(at, button.indexOf("},", at));
+  assert.match(handler, /if \(reason === "stopped"\) \{\s*endSession\(\);/);
+  assert.match(
+    handler,
+    /shareInterrupted\(\);/,
+    "a dropped session ends the person's presence — nothing may do that but them",
+  );
+
+  /* And `shareInterrupted` is the one teardown that keeps the claim: DutySync
+     publishes nothing while `reconnecting`, so the durable document is neither
+     renewed nor revoked. */
+  const store = readFileSync("lib/status/employeeStatus.ts", "utf8");
+  const fn = store.slice(
+    store.indexOf("export function shareInterrupted"),
+    store.indexOf("\n}", store.indexOf("export function shareInterrupted")),
+  );
+  assert.match(fn, /reconnecting: true/);
+  assert.ok(!/manual: null/.test(fn), "a drop clears a break or an emergency");
+  assert.match(
+    readFileSync("components/features/status/DutySync.tsx", "utf8"),
+    /if \(reconnecting\) return;/,
   );
 });

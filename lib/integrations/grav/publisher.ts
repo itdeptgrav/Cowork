@@ -45,6 +45,23 @@ export interface ShareSession {
   on: (event: "ended", handler: () => void) => void;
 }
 
+/**
+ * Why a share ended — and this distinction is the whole of a reported fault.
+ *
+ * Their `ended` fires for two completely different events: *"when the user
+ * stops from the browser's own bar or the connection drops."* Cowork treated
+ * both as the person stopping, so a network blip or a server restart marked
+ * somebody offline and killed their capture while they were sitting at their
+ * desk working. That is the auto-offline the owner has ruled out twice.
+ *
+ *  · `stopped` — the CAPTURE ended: the browser's Stop sharing bar, the display
+ *    going away, the OS revoking it. A deliberate act, and going offline for it
+ *    is the documented rule: stopping is stopping.
+ *  · `dropped` — the capture is still live but the session is not. Nothing was
+ *    decided by anybody, so nothing about their status may change.
+ */
+export type ShareEnd = "stopped" | "dropped";
+
 interface GravStreamGlobal {
   share: (options: {
     token: string;
@@ -116,39 +133,96 @@ let session: ShareSession | null = null;
 export async function startPublishing(input: {
   token: string;
   serverUrl: string;
-  onEnded: () => void;
+  onEnded: (reason: ShareEnd) => void;
 }): Promise<ShareCapture> {
   const sdk = window.GravStream;
   if (!sdk) throw Object.assign(new Error("Not ready"), { code: "NOT_LOADED" });
 
-  const live = await sdk.share({
-    token: input.token,
-    serverUrl: input.serverUrl,
-    /* The room enforces this too — it is created `requireEntireScreen: true` —
-       so a window or a tab is refused by the SFU whatever a client asks for.
-       Passing it here as well means the SDK can refuse before publishing, which
-       is a faster and clearer failure for the same rule. */
-    requireEntireScreen: true,
-  });
+  captureEnded = false;
+  const release = watchTheCapture();
+  let live: ShareSession;
+  try {
+    live = await sdk.share({
+      token: input.token,
+      serverUrl: input.serverUrl,
+      /* The room enforces this too — it is created `requireEntireScreen: true`
+         — so a window or a tab is refused by the SFU whatever a client asks
+         for. Passing it here as well means the SDK can refuse before
+         publishing, which is a faster and clearer failure for the same rule. */
+      requireEntireScreen: true,
+    });
+  } finally {
+    /* The hook lives only for the duration of the call that uses it. */
+    release();
+  }
 
   session = live;
-  /* Covers the browser's own "Stop sharing" bar and a dropped connection —
-     their documentation is explicit that both arrive here. */
+  /* Their one event for two events — see `ShareEnd`. */
   live.on("ended", () => {
     session = null;
-    input.onEnded();
+    /* Our own teardown reaches here too, because stopping the session is what
+       `stopPublishing` does. Nothing to report: the caller already knows. */
+    if (stoppingHere) return;
+    input.onEnded(captureEnded ? "stopped" : "dropped");
   });
   return live.capture;
 }
+
+/**
+ * Watch the CAPTURE, not the session — the one thing that tells the two endings
+ * apart.
+ *
+ * A `MediaStreamTrack` fires `ended` when its SOURCE goes away: the browser's
+ * Stop sharing bar, a display being unplugged, the OS withdrawing permission.
+ * It does NOT fire when a WebRTC transport drops, and — by specification — it
+ * does not fire when something calls `stop()` on it either. So the event is a
+ * reliable "the person is no longer sharing" and its absence is a reliable "the
+ * connection is what went".
+ *
+ * Their SDK owns the capture and does not hand the track back, so the only way
+ * to reach it is to intercept the call that creates it. The hook is installed
+ * immediately before `share()` and removed the moment it returns.
+ */
+function watchTheCapture(): () => void {
+  const media = navigator.mediaDevices as
+    | (MediaDevices & { getDisplayMedia?: MediaDevices["getDisplayMedia"] })
+    | undefined;
+  const original = media?.getDisplayMedia?.bind(media);
+  if (!media || !original) return () => {};
+
+  media.getDisplayMedia = async (constraints?: DisplayMediaStreamOptions) => {
+    const stream = await original(constraints);
+    for (const track of stream.getTracks())
+      track.addEventListener("ended", () => {
+        captureEnded = true;
+      });
+    return stream;
+  };
+  return () => {
+    media.getDisplayMedia = original;
+  };
+}
+
+/** Set by the capture's own `ended`, which only a real stop produces. */
+let captureEnded = false;
+/** True while `stopPublishing` is the one ending the session. */
+let stoppingHere = false;
 
 /** Stop sharing, if this page is. Safe to call when it is not. */
 export function stopPublishing(): void {
   const live = session;
   session = null;
+  stoppingHere = true;
   try {
     live?.stop();
   } catch {
     /* Already ended. */
+  } finally {
+    /* Cleared on a later turn: their `ended` may be dispatched asynchronously
+       after `stop()` returns, and it must still be recognised as ours. */
+    setTimeout(() => {
+      stoppingHere = false;
+    }, 0);
   }
 }
 

@@ -7,6 +7,7 @@ import { Icon } from "@/components/ui/Icons";
 import {
   SHARE_LOST_DETAIL,
   SHARE_LOST_TITLE,
+  type ShareLostCause,
 } from "@/lib/rules/presence/shareLost";
 
 /**
@@ -29,9 +30,12 @@ import {
  * would be nagging rather than informing.
  */
 export function ShareLostDialog({
+  cause,
   onShare,
   onDismiss,
 }: {
+  /** Which of the two involuntary endings this is — see `ShareLostCause`. */
+  cause: ShareLostCause;
   /** Opens the capture picker. Must run inside the click — see `openPicker`. */
   onShare: () => void;
   onDismiss: () => void;
@@ -85,7 +89,7 @@ export function ShareLostDialog({
               id="share-lost-detail"
               className="mt-1.5 text-[13px] leading-relaxed text-ink-muted"
             >
-              {SHARE_LOST_DETAIL}
+              {SHARE_LOST_DETAIL[cause]}
             </p>
             {/* Said plainly, because the reflex on seeing this is "am I about to
                 be marked absent?" — and the answer is no. */}

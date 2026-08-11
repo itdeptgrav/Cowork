@@ -151,7 +151,7 @@ export function MonitoringArea() {
 
   return (
     <MonitorRoom subjectId={employeeId}>
-      {({ embedUrl, connecting, error: roomError }) => (
+      {({ embedUrl, connecting, error: roomError, sharing }) => (
         <>
           <WorkspaceHead title="Monitoring" count={date} />
 
@@ -263,6 +263,7 @@ export function MonitoringArea() {
             embedUrl={embedUrl}
             connecting={connecting}
             error={roomError}
+            sharing={sharing}
             displayName={subject?.displayName ?? "This person"}
             presence={subject?.presence ?? "offline"}
           />

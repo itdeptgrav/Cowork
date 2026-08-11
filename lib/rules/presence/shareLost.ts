@@ -63,5 +63,18 @@ export function shareLostHere(input: ShareLostInput): boolean {
  */
 export const SHARE_LOST_TITLE = "Your screen is not being shared.";
 
-export const SHARE_LOST_DETAIL =
-  "You are still Online, and nobody has been told otherwise — but your manager cannot see anything. Reloading a page always ends a screen share, and only you can start a new one.";
+/**
+ * Why it stopped, in the two ways it can happen without anybody choosing it.
+ *
+ * Both leave the person Online and neither is their doing, but the sentence has
+ * to be true: telling somebody a reload ended their share when their office
+ * wifi dropped sends them looking for a mistake they did not make.
+ */
+export type ShareLostCause = "reload" | "dropped";
+
+export const SHARE_LOST_DETAIL: Record<ShareLostCause, string> = {
+  reload:
+    "You are still Online, and nobody has been told otherwise — but your manager cannot see anything. Reloading a page always ends a screen share, and only you can start a new one.",
+  dropped:
+    "The connection to the screen-sharing service dropped, so your screen stopped going out. You are still Online — nothing marked you away — but your manager cannot see anything until you share again.",
+};

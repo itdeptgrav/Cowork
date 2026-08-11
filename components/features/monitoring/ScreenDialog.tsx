@@ -29,6 +29,7 @@ export function ScreenDialog({
   error,
   displayName,
   presence,
+  sharing,
 }: {
   open: boolean;
   onClose: () => void;
@@ -38,6 +39,8 @@ export function ScreenDialog({
   error: string | null;
   displayName: string;
   presence: MonitoredPresence;
+  /** Whether a screen is going out, per the service — see `MonitorRoom`. */
+  sharing: boolean | null;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -103,6 +106,7 @@ export function ScreenDialog({
           error={error}
           displayName={displayName}
           presence={presence}
+          sharing={sharing}
         />
       </div>
     </div>,

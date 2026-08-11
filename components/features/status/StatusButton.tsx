@@ -20,6 +20,7 @@ import {
   reportShare,
   sessionFailed,
   sessionLive,
+  shareInterrupted,
   startBreak,
   takeBreakStart,
   type EmployeeStatus,
@@ -57,7 +58,10 @@ import { breakBudgetWarning } from "@/lib/rules/tasks/breakMode";
 import { formatDuration } from "@/lib/utils/format";
 import type { BreakSession } from "@/lib/domain";
 import { useViewerId } from "@/lib/hooks/usePermissions";
-import { shareLostHere } from "@/lib/rules/presence/shareLost";
+import {
+  shareLostHere,
+  type ShareLostCause,
+} from "@/lib/rules/presence/shareLost";
 import { cancelShareLostSound, soundShareLost } from "@/lib/status/shareAlarm";
 import { claimedOnlineHere } from "@/lib/status/connectionId";
 
@@ -378,6 +382,9 @@ export function StatusButton() {
    * the menu keeps saying "Screen shared: No" for anybody who dismisses it.
    */
   const [shareLostDismissed, setShareLostDismissed] = useState(false);
+  /* A reload is the ordinary cause; a dropped session says so for itself. */
+  const [shareLostCause, setShareLostCause] =
+    useState<ShareLostCause>("reload");
   /**
    * Whether THIS browser is the one that claimed the session.
    *
@@ -722,9 +729,33 @@ export function StatusButton() {
     void startPublishing({
       token: useToken,
       serverUrl: useUrl,
-      /* The browser's own Stop sharing bar, and a dropped connection, both
-         arrive here. Sharing is what Online means, so either ends the session. */
-      onEnded: () => endSession(),
+      /**
+       * **The two endings are not the same, and treating them as one was the
+       * reported "it takes me offline by itself".**
+       *
+       * `stopped` is the capture ending — the browser's Stop sharing bar, a
+       * display unplugged. That is somebody deciding, and going offline for it
+       * is the rule: stopping is stopping.
+       *
+       * `dropped` is the session going while the capture is still live: a
+       * network blip, a server restart, a transport lost. Nobody decided
+       * anything, so nothing about their status may change. It keeps the
+       * durable claim — `DutySync` publishes nothing while `reconnecting`, so
+       * the account stays online — stops the orphaned capture, and lets the
+       * "Your screen is not being shared." alert say so, sound, and offer to
+       * start again. See `ShareEnd`.
+       */
+      onEnded: (reason) => {
+        if (reason === "stopped") {
+          endSession();
+          return;
+        }
+        shareInterrupted();
+        /* A new episode deserves a new warning, even if an earlier one this
+           page load was dismissed. */
+        setShareLostDismissed(false);
+        sounded.current = false;
+      },
     })
       .then((capture) => {
         /**
@@ -1342,6 +1373,7 @@ export function StatusButton() {
           from it closes the gap. */}
       {shareLost && (
         <ShareLostDialog
+          cause={shareLostCause}
           onShare={() => {
             /* Straight from the click, so the browser honours the capture
                prompt. If the seat is not in hand yet the picker cannot open —
