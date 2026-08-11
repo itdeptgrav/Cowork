@@ -21,6 +21,8 @@ import {
   columnLabel,
   DEFAULT_COLS,
   DEFAULT_ROWS,
+  deleteColumns,
+  deleteRows,
   displayValue,
   evalConditional,
   explainError,
@@ -28,10 +30,14 @@ import {
   formulaAcceptsReference,
   formulaFunctionPrefix,
   inRect,
+  insertColumns,
+  insertRows,
   isFormula,
   isNumericDisplay,
   MAX_SHEETS,
   matchFunctionNames,
+  MIN_COL_WIDTH,
+  MIN_ROW_HEIGHT,
   normalizeRange,
   offsetReferences,
   parseClipboardTable,
@@ -39,6 +45,8 @@ import {
   rangeLabel,
   rangeToRect,
   readWorkbook,
+  resizeColumn,
+  resizeRow,
   summarize,
   writeWorkbook,
   type CellMap,
@@ -91,12 +99,14 @@ import type { SelectionState, SheetCommand } from "./sheetCommands";
  * A 200 × 26 sheet is 5,200 cells; rendering and re-rendering all of them on
  * every keystroke is what made it crawl. The grid is windowed: it renders the
  * rows in view plus a small overscan, with a spacer above and below holding the
- * scrollbar honest. Row height is fixed (`CELL_H`), so the window is arithmetic
- * — no per-row measurement, which is the thing that makes windowing itself slow.
+ * scrollbar honest. Most rows/columns are `DEFAULT_CELL_H`/`DEFAULT_CELL_W`, but
+ * a user can drag a header to resize one — `rowOffsets`/`colOffsets` (prefix
+ * sums over `rowHeightAt`/`colWidthAt`) turn that into a lookup table instead of
+ * per-row measurement, which is the thing that makes windowing itself slow.
  */
 
-const CELL_W = 104;
-const CELL_H = 26;
+const DEFAULT_CELL_W = 104;
+const DEFAULT_CELL_H = 26;
 const HEAD_W = 44;
 const OVERSCAN = 8;
 
@@ -146,6 +156,8 @@ function sheetDataFor(
       charts: tab.charts,
       conditionals: tab.conditionals,
       hidden: tab.hidden,
+      rowHeights: tab.rowHeights,
+      columnWidths: tab.columnWidths,
     };
   }
   const prefix = `${tab.id}:`;
@@ -180,6 +192,8 @@ function sheetDataFor(
     ...(charts.length ? { charts } : {}),
     ...(conditionals.length ? { conditionals } : {}),
     ...(tab.hidden?.length ? { hidden: tab.hidden } : {}),
+    ...(tab.rowHeights && Object.keys(tab.rowHeights).length ? { rowHeights: tab.rowHeights } : {}),
+    ...(tab.columnWidths && Object.keys(tab.columnWidths).length ? { columnWidths: tab.columnWidths } : {}),
   };
 }
 
@@ -315,6 +329,22 @@ export function SheetGrid({
   const headerDrag = useRef<{ kind: "col" | "row"; from: number } | null>(null);
   const pointing = useRef(false);
   const scrollRaf = useRef(0);
+
+  /* A drag on a row/column header's resize handle. `liveSize` tracks the
+     in-progress size on every pointer move so `commitResize` (on pointer up)
+     can read it synchronously — state set from the same move would not yet
+     have flushed by the time the up-handler runs. Only the guide LINE moves
+     during the drag (see `resizeGuide` below); the actual row/column doesn't
+     resize, and nothing is written to the sheet, until the pointer releases —
+     one commit per drag, not one per pixel of mouse movement. */
+  const resizeDrag = useRef<{
+    kind: "row" | "col";
+    index: number;
+    startClient: number;
+    startSize: number;
+    liveSize: number;
+  } | null>(null);
+  const [resizeGuide, setResizeGuide] = useState<{ kind: "row" | "col"; edge: number } | null>(null);
 
   /* The shared maps. Read through the provider's doc so every client mutates the
      same structure rather than a copy of it. Keys/tags are namespaced by sheet
@@ -591,6 +621,45 @@ export function SheetGrid({
   const rawCharts = sheet?.charts ?? [];
   const rawConds = sheet?.conditionals ?? [];
 
+  const rowHeightAt = (r: number): number => sheet?.rowHeights?.[r] ?? DEFAULT_CELL_H;
+  const colWidthAt = (c: number): number => sheet?.columnWidths?.[c] ?? DEFAULT_CELL_W;
+
+  /* Prefix sums: rowOffsets[i] is the pixel Y of row i's top edge — rowOffsets[0]
+     is 0, rowOffsets[sheet.rows] is the sheet's total content height. Rebuilt only
+     when the shape changes (row count or a resize), not on every scroll frame, so a
+     5,000-row sheet doesn't re-sum on each pixel of scrolling. Everywhere the old
+     fixed-height code did `index * CELL_H`, this file now does `rowOffsets[index]`. */
+  const rowOffsets = useMemo(() => {
+    const rows = sheet?.rows ?? 0;
+    const offsets = new Array<number>(rows + 1);
+    offsets[0] = 0;
+    for (let r = 0; r < rows; r++) offsets[r + 1] = offsets[r] + rowHeightAt(r);
+    return offsets;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- rowHeightAt closes over `sheet`, already a dep.
+  }, [sheet?.rows, sheet?.rowHeights]);
+  const colOffsets = useMemo(() => {
+    const cols = sheet?.cols ?? 0;
+    const offsets = new Array<number>(cols + 1);
+    offsets[0] = 0;
+    for (let c = 0; c < cols; c++) offsets[c + 1] = offsets[c] + colWidthAt(c);
+    return offsets;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- colWidthAt closes over `sheet`, already a dep.
+  }, [sheet?.cols, sheet?.columnWidths]);
+  const totalContentH = rowOffsets[rowOffsets.length - 1] ?? 0;
+  const totalContentW = colOffsets[colOffsets.length - 1] ?? 0;
+
+  /** The last index whose offset is ⇐ `pos` — i.e. which row/col a pixel position falls in. */
+  const indexAtOffset = (offsets: number[], pos: number): number => {
+    let lo = 0;
+    let hi = offsets.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (offsets[mid] <= pos) lo = mid;
+      else hi = mid - 1;
+    }
+    return lo;
+  };
+
   /* Feed EVERY sheet into the engine SYNCHRONOUSLY — a memo during render, NOT
      an effect. **This is the "the total doesn't show until I touch something
      else" fix.** An effect runs AFTER the render that reads the engine, so a
@@ -730,10 +799,12 @@ export function SheetGrid({
     const el = gridRef.current;
     const pos = parseRef(active);
     if (!el || !pos) return;
-    const top = pos.row * CELL_H;
+    const top = rowOffsets[pos.row] ?? 0;
+    const h = rowHeightAt(pos.row);
     if (top < el.scrollTop) el.scrollTop = top;
-    else if (top + CELL_H > el.scrollTop + el.clientHeight - CELL_H)
-      el.scrollTop = top + CELL_H - el.clientHeight + CELL_H;
+    else if (top + h > el.scrollTop + el.clientHeight - h)
+      el.scrollTop = top + h - el.clientHeight + h;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only "active" moving should re-scroll; a resize alone shouldn't yank focus back into view.
   }, [active]);
 
   /* ── Edit ──────────────────────────────────────────────────────────────── */
@@ -827,7 +898,13 @@ export function SheetGrid({
           yConds.insert(0, [...others, ...mine]);
         }
       });
-      patchActiveTab({ rows: next.rows, cols: next.cols, hidden: next.hidden });
+      patchActiveTab({
+        rows: next.rows,
+        cols: next.cols,
+        hidden: next.hidden,
+        rowHeights: next.rowHeights,
+        columnWidths: next.columnWidths,
+      });
     } else {
       patchActiveTab(next);
     }
@@ -1181,7 +1258,7 @@ export function SheetGrid({
 
   /**
    * Print — the grid is normally virtualized to the rows on screen (see the
-   * windowing note near `CELL_H`), so printing it as-is would print whatever
+   * windowing note near `rowOffsets`), so printing it as-is would print whatever
    * happened to be scrolled into view. This forces every row into the render
    * window first, waits two frames for that to actually paint (one for the
    * state to commit, one for layout), prints, then restores the real
@@ -1192,7 +1269,7 @@ export function SheetGrid({
     if (!sheet) return;
     const prevViewportH = viewportH;
     const prevScrollTop = scrollTop;
-    setViewportH(sheet.rows * CELL_H + CELL_H);
+    setViewportH(totalContentH + DEFAULT_CELL_H);
     setScrollTop(0);
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
@@ -1329,7 +1406,7 @@ export function SheetGrid({
       range,
       title,
       x: HEAD_W + 12 + stagger,
-      y: scrollTop + CELL_H + 12 + stagger,
+      y: scrollTop + DEFAULT_CELL_H + 12 + stagger,
       w: CHART_DEFAULT_W,
       h: CHART_DEFAULT_H,
       z: topChartZ() + 1,
@@ -1767,6 +1844,114 @@ export function SheetGrid({
     }
   };
 
+  /** Pixel position (content-relative, not viewport-relative — see the comment
+   * on `resizeGuide`) of a row/column's FAR edge at a given size. Content-relative
+   * because the guide line lives inside the same scrolled div as the table, so it
+   * tracks the pointer correctly without reading scrollTop/scrollLeft at all. */
+  const resizeEdge = (kind: "row" | "col", index: number, size: number): number =>
+    kind === "row" ? rowOffsets[index] + size : HEAD_W + colOffsets[index] + size;
+
+  /* Row/column resize — a plain pointer-capture drag on a handle at each header's
+   * far edge, dragging a guide LINE rather than live-reflowing the grid (5,000
+   * rows would make live reflow on every mousemove expensive, and a line is the
+   * conventional spreadsheet affordance anyway). Nothing is written until the
+   * pointer releases. */
+  const startResize = (kind: "row" | "col", index: number, e: React.PointerEvent) => {
+    if (readOnly || !sheet) return;
+    e.preventDefault();
+    e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const startSize = kind === "row" ? rowHeightAt(index) : colWidthAt(index);
+    resizeDrag.current = {
+      kind,
+      index,
+      startClient: kind === "row" ? e.clientY : e.clientX,
+      startSize,
+      liveSize: startSize,
+    };
+    setResizeGuide({ kind, edge: resizeEdge(kind, index, startSize) });
+  };
+  const onResizeMove = (e: React.PointerEvent) => {
+    const d = resizeDrag.current;
+    if (!d) return;
+    const client = d.kind === "row" ? e.clientY : e.clientX;
+    const delta = client - d.startClient;
+    const minSize = d.kind === "row" ? MIN_ROW_HEIGHT : MIN_COL_WIDTH;
+    const size = Math.max(minSize, d.startSize + delta);
+    d.liveSize = size;
+    setResizeGuide({ kind: d.kind, edge: resizeEdge(d.kind, d.index, size) });
+  };
+  const commitResize = () => {
+    const d = resizeDrag.current;
+    resizeDrag.current = null;
+    setResizeGuide(null);
+    if (!d || !sheet || readOnly) return;
+    const next =
+      d.kind === "row"
+        ? resizeRow(sheet, d.index, d.liveSize)
+        : resizeColumn(sheet, d.index, d.liveSize);
+    dispatch({ type: "structuralEdit", next });
+  };
+
+  /* Row/column insert & delete — lib/rules/sheets/grid.ts has had
+   * insertRows/deleteRows/insertColumns/deleteColumns since before this
+   * comment, and applyStructuralEdit (above) was built specifically as
+   * their landing spot, but nothing ever called them: no menu item, no
+   * button, no shortcut. That gap — not a broken affordance, a complete
+   * one with the door never opened — was the single largest "basic
+   * feature" complaint. Operates on whatever rows/columns the CURRENT
+   * SELECTION spans (Excel/Sheets convention: select 3 rows, "Insert 3
+   * rows above" inserts 3), falling back to the active cell's own
+   * row/column when nothing is selected — never requires first selecting
+   * an entire row/column via its header.
+   */
+  const rowSpan = (): { at: number; count: number } => {
+    const r = selRect ?? focusPos;
+    if (!r) return { at: 0, count: 1 };
+    const top = "top" in r ? r.top : r.row;
+    const bottom = "bottom" in r ? r.bottom : r.row;
+    return { at: top, count: bottom - top + 1 };
+  };
+  const colSpan = (): { at: number; count: number } => {
+    const r = selRect ?? focusPos;
+    if (!r) return { at: 0, count: 1 };
+    const left = "left" in r ? r.left : r.col;
+    const right = "right" in r ? r.right : r.col;
+    return { at: left, count: right - left + 1 };
+  };
+  /* Every dispatch below reads `sheet`, never `activeTab`, as the data to
+   * transform: `activeTab` is `workbook` state, which (see `sheetDataFor`
+   * above) only carries cells/styles/charts/conditionals AT THE MOMENT THE
+   * DOCUMENT LOADED when collaborating — live edits after that land in
+   * `yCells`/`yStyles`/`yCharts`/`yConds`, not back into `workbook`. `sheet`
+   * is the one place those are merged. Building `next` from `activeTab`
+   * would hand `applyStructuralEdit` a stale cell/style/chart snapshot,
+   * which it then writes OVER the live CRDT maps — silently reverting
+   * every collaborator's edits made since page load.
+   */
+  const insertRowsAt = (belowSelection: boolean) => {
+    if (!sheet) return;
+    const { at, count } = rowSpan();
+    dispatch({ type: "structuralEdit", next: insertRows(sheet, belowSelection ? at + count : at, count) });
+  };
+  const deleteRowsHere = () => {
+    if (!sheet) return;
+    const { at, count } = rowSpan();
+    dispatch({ type: "structuralEdit", next: deleteRows(sheet, at, count) });
+  };
+  const insertColumnsAt = (rightOfSelection: boolean) => {
+    if (!sheet) return;
+    const { at, count } = colSpan();
+    dispatch({ type: "structuralEdit", next: insertColumns(sheet, rightOfSelection ? at + count : at, count) });
+  };
+  const deleteColumnsHere = () => {
+    if (!sheet) return;
+    const { at, count } = colSpan();
+    dispatch({ type: "structuralEdit", next: deleteColumns(sheet, at, count) });
+  };
+  const { count: rowCount } = rowSpan();
+  const { count: colCount } = colSpan();
+
   /* The right-click menu's contents, derived from the current selection so items
      that cannot apply read as disabled rather than silently doing nothing. */
   const menuGroups = (): MenuAction[][] => [
@@ -1782,6 +1967,16 @@ export function SheetGrid({
     [
       { label: "Fill down", shortcut: "⌘D", disabled: readOnly || !selection.hasRange, onSelect: () => dispatch({ type: "fillDown" }) },
       { label: "Fill right", shortcut: "⌘R", disabled: readOnly || !selection.hasRange, onSelect: () => dispatch({ type: "fillRight" }) },
+    ],
+    [
+      { label: rowCount > 1 ? `Insert ${rowCount} rows above` : "Insert row above", disabled: readOnly || !sheet, onSelect: () => insertRowsAt(false) },
+      { label: rowCount > 1 ? `Insert ${rowCount} rows below` : "Insert row below", disabled: readOnly || !sheet, onSelect: () => insertRowsAt(true) },
+      { label: rowCount > 1 ? `Delete ${rowCount} rows` : "Delete row", disabled: readOnly || !sheet || (sheet?.rows ?? 1) <= 1, onSelect: deleteRowsHere },
+    ],
+    [
+      { label: colCount > 1 ? `Insert ${colCount} columns left` : "Insert column left", disabled: readOnly || !sheet, onSelect: () => insertColumnsAt(false) },
+      { label: colCount > 1 ? `Insert ${colCount} columns right` : "Insert column right", disabled: readOnly || !sheet, onSelect: () => insertColumnsAt(true) },
+      { label: colCount > 1 ? `Delete ${colCount} columns` : "Delete column", disabled: readOnly || !sheet || (sheet?.cols ?? 1) <= 1, onSelect: deleteColumnsHere },
     ],
     [
       { label: "Insert column chart", disabled: readOnly, onSelect: () => dispatch({ type: "insertChart", chartType: "column" }) },
@@ -2043,12 +2238,13 @@ export function SheetGrid({
   const selectedChartSpec =
     rawCharts.find((c) => c.id === selectedChart) ?? null;
 
-  /* The row window. Fixed row height makes this arithmetic rather than a
-     measurement, which is what keeps windowing itself cheap. */
-  const first = Math.max(0, Math.floor(scrollTop / CELL_H) - OVERSCAN);
+  /* The row window. A binary search into `rowOffsets` (the prefix sums) rather
+     than a measurement — cheap even at 5,000 rows, and correct whether every row
+     is DEFAULT_CELL_H or a mix of resized ones. */
+  const first = Math.max(0, indexAtOffset(rowOffsets, scrollTop) - OVERSCAN);
   const last = Math.min(
     sheet.rows,
-    Math.ceil((scrollTop + viewportH) / CELL_H) + OVERSCAN,
+    indexAtOffset(rowOffsets, scrollTop + viewportH) + 1 + OVERSCAN,
   );
 
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
@@ -2665,11 +2861,11 @@ export function SheetGrid({
       >
         <div
           className="relative"
-          style={{ width: HEAD_W + sheet.cols * CELL_W }}
+          style={{ width: HEAD_W + totalContentW }}
         >
         <table
           className="border-collapse"
-          style={{ tableLayout: "fixed", width: HEAD_W + sheet.cols * CELL_W }}
+          style={{ tableLayout: "fixed", width: HEAD_W + totalContentW }}
         >
           <thead>
             <tr>
@@ -2682,7 +2878,7 @@ export function SheetGrid({
                   selectEverything();
                 }}
                 className="sticky top-0 left-0 z-20 cursor-pointer border border-hairline bg-[var(--frost-bar)] select-none hover:bg-[var(--control)]"
-                style={{ width: HEAD_W, height: CELL_H }}
+                style={{ width: HEAD_W, height: DEFAULT_CELL_H }}
               />
               {Array.from({ length: sheet.cols }, (_, c) => (
                 <th
@@ -2708,9 +2904,22 @@ export function SheetGrid({
                       ? "bg-[var(--control)] text-ink"
                       : "bg-[var(--frost-bar)] text-ink-faint hover:bg-[var(--control)]"
                   }`}
-                  style={{ width: CELL_W, height: CELL_H }}
+                  style={{ width: colWidthAt(c), height: DEFAULT_CELL_H }}
                 >
                   {columnLabel(c)}
+                  {!readOnly && (
+                    <div
+                      role="separator"
+                      aria-orientation="vertical"
+                      title="Drag to resize column"
+                      className="absolute top-0 right-0 z-20 h-full w-1.5 -mr-0.5 cursor-col-resize touch-none select-none hover:bg-[var(--accent,#6b8afd)]/50"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onPointerDown={(e) => startResize("col", c, e)}
+                      onPointerMove={onResizeMove}
+                      onPointerUp={commitResize}
+                      onPointerCancel={commitResize}
+                    />
+                  )}
                 </th>
               ))}
             </tr>
@@ -2722,25 +2931,25 @@ export function SheetGrid({
               <tr aria-hidden="true">
                 <td
                   colSpan={sheet.cols + 1}
-                  style={{ height: first * CELL_H, padding: 0, border: 0 }}
+                  style={{ height: rowOffsets[first], padding: 0, border: 0 }}
                 />
               </tr>
             )}
             {Array.from({ length: last - first }, (_, i) => {
               const r = first + i;
-              /* A row `filter_range` hid. Kept at its full CELL_H rather than
-                 collapsed — collapsing it would desync the scrollbar from
-                 `sheet.rows * CELL_H`, which the windowing math above assumes
-                 is constant. The compromise is a visible gap where the row
-                 used to be, not a seamless close-up the way a spreadsheet
-                 with real column-store rendering can afford. */
+              /* A row `filter_range` hid. Kept at its own row height (not collapsed
+                 to 0) — collapsing it would desync the scrollbar from `rowOffsets`,
+                 which the windowing math above assumes matches every row's real
+                 height. The compromise is a visible gap where the row used to be,
+                 not a seamless close-up the way a spreadsheet with real
+                 column-store rendering can afford. */
               if (sheet.hidden?.includes(r)) {
                 return (
                   <tr key={r} aria-hidden="true">
                     <td
                       colSpan={sheet.cols + 1}
                       className="border border-hairline bg-[var(--surface-sunken)]"
-                      style={{ height: CELL_H, padding: 0 }}
+                      style={{ height: rowHeightAt(r), padding: 0 }}
                     />
                   </tr>
                 );
@@ -2767,9 +2976,22 @@ export function SheetGrid({
                         ? "bg-[var(--control)] text-ink"
                         : "bg-[var(--frost-bar)] text-ink-faint hover:bg-[var(--control)]"
                     }`}
-                    style={{ width: HEAD_W, height: CELL_H }}
+                    style={{ width: HEAD_W, height: rowHeightAt(r) }}
                   >
                     {r + 1}
+                    {!readOnly && (
+                      <div
+                        role="separator"
+                        aria-orientation="horizontal"
+                        title="Drag to resize row"
+                        className="absolute bottom-0 left-0 z-20 h-1.5 w-full -mb-0.5 cursor-row-resize touch-none select-none hover:bg-[var(--accent,#6b8afd)]/50"
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onPointerDown={(e) => startResize("row", r, e)}
+                        onPointerMove={onResizeMove}
+                        onPointerUp={commitResize}
+                        onPointerCancel={commitResize}
+                      />
+                    )}
                   </th>
                   {Array.from({ length: sheet.cols }, (_, c) => {
                     const ref = cellRef(r, c);
@@ -2913,8 +3135,8 @@ export function SheetGrid({
                               : "bg-[var(--doc-page)]"
                         }`}
                         style={{
-                          width: CELL_W,
-                          height: CELL_H,
+                          width: colWidthAt(c),
+                          height: rowHeightAt(r),
                           color: style.color,
                           verticalAlign: style.valign,
                           /* Conditional formatting wins over the cell's own fill,
@@ -3018,7 +3240,7 @@ export function SheetGrid({
                 <td
                   colSpan={sheet.cols + 1}
                   style={{
-                    height: (sheet.rows - last) * CELL_H,
+                    height: totalContentH - rowOffsets[last],
                     padding: 0,
                     border: 0,
                   }}
@@ -3050,6 +3272,23 @@ export function SheetGrid({
               ))}
             </div>
           )}
+
+          {/* The resize drag's guide line — see `startResize`/`onResizeMove`. Sits
+              in the same content box as the table (not the viewport), so it tracks
+              the pointer 1:1 via clientX/clientY deltas without reading scroll
+              offsets, and scrolls with the sheet like everything else here. */}
+          {resizeGuide &&
+            (resizeGuide.kind === "col" ? (
+              <div
+                className="pointer-events-none absolute top-0 bottom-0 z-30 w-0.5 bg-[var(--accent,#6b8afd)]"
+                style={{ left: resizeGuide.edge }}
+              />
+            ) : (
+              <div
+                className="pointer-events-none absolute left-0 right-0 z-30 h-0.5 bg-[var(--accent,#6b8afd)]"
+                style={{ top: resizeGuide.edge }}
+              />
+            ))}
         </div>
       </div>
 

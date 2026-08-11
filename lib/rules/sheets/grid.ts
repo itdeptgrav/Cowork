@@ -187,7 +187,17 @@ export interface SheetData {
   conditionals?: ConditionalRule[];
   /** Row indices (0-based) hidden by a filter. Absent or empty ⇒ nothing hidden. */
   hidden?: number[];
+  /** Row index (0-based) → pixel height, for rows the user dragged to resize. Absent index ⇒ DEFAULT_ROW_HEIGHT. */
+  rowHeights?: Record<number, number>;
+  /** Column index (0-based) → pixel width, for columns the user dragged to resize. Absent index ⇒ DEFAULT_COL_WIDTH. */
+  columnWidths?: Record<number, number>;
 }
+
+/** Resize bounds — generous enough for a wrapped paragraph or a wide heading, tight enough that a fat-finger drag can't produce an unusable sheet. */
+export const MIN_ROW_HEIGHT = 16;
+export const MAX_ROW_HEIGHT = 400;
+export const MIN_COL_WIDTH = 32;
+export const MAX_COL_WIDTH = 480;
 
 /**
  * A column's letter. 0 → A, 25 → Z, 26 → AA.
@@ -389,6 +399,24 @@ function parseSheet(input: unknown): SheetData {
     ? Array.from(new Set(raw.hidden.filter((n): n is number => typeof n === "number" && n >= 0)))
     : [];
 
+  const readSizeMap = (
+    input: unknown,
+    lo: number,
+    hi: number,
+  ): Record<number, number> => {
+    const out: Record<number, number> = {};
+    if (!input || typeof input !== "object") return out;
+    for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      const index = Number(key);
+      if (!Number.isInteger(index) || index < 0) continue;
+      if (typeof value !== "number" || !Number.isFinite(value)) continue;
+      out[index] = clamp(value, lo, hi);
+    }
+    return out;
+  };
+  const rowHeights = readSizeMap(raw.rowHeights, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+  const columnWidths = readSizeMap(raw.columnWidths, MIN_COL_WIDTH, MAX_COL_WIDTH);
+
   return {
     cells,
     styles,
@@ -397,6 +425,8 @@ function parseSheet(input: unknown): SheetData {
     ...(charts.length ? { charts } : {}),
     ...(conditionals.length ? { conditionals } : {}),
     ...(hidden.length ? { hidden } : {}),
+    ...(Object.keys(rowHeights).length ? { rowHeights } : {}),
+    ...(Object.keys(columnWidths).length ? { columnWidths } : {}),
   };
 }
 
@@ -440,6 +470,12 @@ function sheetToObject(data: SheetData): Record<string, unknown> {
     ...(data.charts?.length ? { charts: data.charts } : {}),
     ...(data.conditionals?.length ? { conditionals: data.conditionals } : {}),
     ...(data.hidden?.length ? { hidden: data.hidden } : {}),
+    ...(data.rowHeights && Object.keys(data.rowHeights).length
+      ? { rowHeights: data.rowHeights }
+      : {}),
+    ...(data.columnWidths && Object.keys(data.columnWidths).length
+      ? { columnWidths: data.columnWidths }
+      : {}),
   };
 }
 
@@ -1436,6 +1472,28 @@ function remapCellsAndStyles(
   return { cells, styles };
 }
 
+/**
+ * Shift a sparse index→size map (rowHeights or columnWidths) the same way `hidden`
+ * shifts: entries at or after `at` move by `delta`, entries inside a deleted band
+ * (`delta < 0`) are dropped. Returns undefined rather than `{}` when nothing is left,
+ * so callers can spread it away instead of writing an empty object to storage.
+ */
+function shiftSizeMap(
+  map: Record<number, number> | undefined,
+  at: number,
+  delta: number,
+): Record<number, number> | undefined {
+  if (!map) return undefined;
+  const out: Record<number, number> = {};
+  for (const [key, size] of Object.entries(map)) {
+    const index = Number(key);
+    if (delta < 0 && index >= at && index < at - delta) continue;
+    const next = index >= at ? index + delta : index;
+    if (next >= 0) out[next] = size;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 /** Insert `count` blank rows above `atRow` (0-based). Rows at or below `atRow` shift down. */
 export function insertRows(data: SheetData, atRow: number, count: number): SheetData {
   const n = Math.max(1, Math.round(count));
@@ -1447,6 +1505,7 @@ export function insertRows(data: SheetData, atRow: number, count: number): Sheet
     hidden: (data.hidden ?? [])
       .map((r) => (r >= atRow ? r + n : r))
       .filter((r) => r < data.rows + n),
+    rowHeights: shiftSizeMap(data.rowHeights, atRow, n),
   };
 }
 
@@ -1476,6 +1535,7 @@ export function deleteRows(data: SheetData, atRow: number, count: number): Sheet
     hidden: (data.hidden ?? [])
       .filter((r) => r < atRow || r >= atRow + n)
       .map((r) => (r >= atRow + n ? r - n : r)),
+    rowHeights: shiftSizeMap(data.rowHeights, atRow, -n),
   };
 }
 
@@ -1487,6 +1547,7 @@ export function insertColumns(data: SheetData, atCol: number, count: number): Sh
     ...remapCellsAndStyles(data, 0, 0, atCol, n),
     ...shiftChartsAndConditionals(data, 0, 0, atCol, n),
     cols: clamp(data.cols + n, 1, MAX_COLS),
+    columnWidths: shiftSizeMap(data.columnWidths, atCol, n),
   };
 }
 
@@ -1513,7 +1574,20 @@ export function deleteColumns(data: SheetData, atCol: number, count: number): Sh
     styles,
     ...shiftChartsAndConditionals(data, 0, 0, atCol + n, -n),
     cols: clamp(data.cols - n, 1, MAX_COLS),
+    columnWidths: shiftSizeMap(data.columnWidths, atCol, -n),
   };
+}
+
+/** Set row `row`'s height in pixels (clamped to MIN/MAX_ROW_HEIGHT). */
+export function resizeRow(data: SheetData, row: number, height: number): SheetData {
+  const clamped = clamp(Math.round(height), MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
+  return { ...data, rowHeights: { ...data.rowHeights, [row]: clamped } };
+}
+
+/** Set column `col`'s width in pixels (clamped to MIN/MAX_COL_WIDTH). */
+export function resizeColumn(data: SheetData, col: number, width: number): SheetData {
+  const clamped = clamp(Math.round(width), MIN_COL_WIDTH, MAX_COL_WIDTH);
+  return { ...data, columnWidths: { ...data.columnWidths, [col]: clamped } };
 }
 
 /**
