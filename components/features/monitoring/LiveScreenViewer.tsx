@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import { readEmbedEvent } from "@/lib/integrations/grav/embed";
 import type { MonitoredPresence } from "@/lib/domain";
@@ -50,6 +50,20 @@ interface ViewerProps {
    * a Join again button, which is worse than the silence it replaced.
    */
   sharing: boolean | null;
+  /**
+   * Stand down: something else is showing this person's screen right now.
+   *
+   * **Every live frame decodes its own copy of the stream.** Their guidance is
+   * blunt about what that costs: *"A dashboard showing eight employees' screens
+   * live and simultaneously will make the MANAGER's machine slow, for the same
+   * reason encoding makes the sharer's slow."* This page had two of them for
+   * ONE person — the panel in the column and the expanded dialog over it —
+   * decoding the same picture twice for as long as the dialog was open.
+   *
+   * The frame is not rendered while this is set, and the panel says where the
+   * screen went rather than going blank.
+   */
+  suspended?: boolean;
 }
 
 export function LiveScreenViewer(props: ViewerProps) {
@@ -63,10 +77,11 @@ function ViewerFrame({
   error,
   embedUrl,
   sharing,
+  suspended = false,
 }: ViewerProps) {
   /* Whether their room is on screen at all. NOT whether a screen is arriving —
      that is inside the frame, and only the frame's own messages say so. */
-  const room = embedUrl !== null && !error;
+  const room = embedUrl !== null && !error && !suspended;
   /**
    * **What the frame itself reports.** For a while nothing on this side
    * listened, and that is what produced the fault this exists to answer: a
@@ -78,7 +93,7 @@ function ViewerFrame({
    * that failed, and both are different from one that never loaded. Each says
    * so now.
    */
-  const frame = useEmbedReport(embedUrl);
+  const frame = useEmbedReport(suspended ? null : embedUrl);
   /**
    * The badge answers "is this person sharing", and two sources can say so: the
    * frame, which knows what it is rendering, and the published presence, which
@@ -329,11 +344,38 @@ function useEmbedReport(embedUrl: string | null): EmbedReport {
     return () => clearTimeout(id);
   }, [pending, key]);
 
+  /**
+   * **Rejoin once, on its own, before asking anybody to press anything.**
+   *
+   * Reported as "sometimes the receiver's screen is black, sometimes it works"
+   * — the same room, the same two people, a different outcome each time. That
+   * shape is a subscription that started without a keyframe to decode: the
+   * stream is there and the first paintable frame never arrives, and rejoining
+   * asks for one.
+   *
+   * Exactly once per frame, and only where a screen IS going out (the caller
+   * only mounts this component's report when it is). A loop of rejoins would
+   * be worse than a black rectangle: each one costs the sharer a keyframe,
+   * which is bitrate taken from the sharpness of the picture everybody else is
+   * watching. If the second attempt is silent too, the button appears and a
+   * person decides.
+   */
+  const healed = useRef<string | null>(null);
+  const late = waited === key && pending;
+  useEffect(() => {
+    if (!late || healed.current === key || attempt > 0) return;
+    healed.current = key;
+    console.info("[stream] no picture after joining — rejoining once");
+    setAttempt((n) => n + 1);
+  }, [late, key, attempt]);
+
   const retry = useCallback(() => setAttempt((n) => n + 1), []);
   return {
     ...current,
     attempt,
-    waited: waited === key && pending,
+    /* Not "late" — that fires the automatic rejoin above. This is what the
+       PERSON is told about, and only after the free attempt has been spent. */
+    waited: late && attempt > 0,
     retry,
   };
 }
@@ -538,15 +580,26 @@ function ViewerPlaceholder({
   presence,
   connecting,
   error,
+  suspended = false,
 }: {
   displayName: string;
   presence: MonitoredPresence;
   connecting: boolean;
   error: string | null;
+  /** The screen is being shown somewhere else — see `ViewerProps.suspended`. */
+  suspended?: boolean;
 }) {
   const first = displayName.split(" ")[0];
 
-  const { title, detail } = error
+  const { title, detail } = suspended
+    ? {
+        /* The frame moved, it did not fail. Said plainly so nobody reads an
+           empty panel as a broken one and starts pressing things. */
+        title: "Showing in the expanded view",
+        detail:
+          "One view at a time: each live frame decodes its own copy of the picture, and two would slow this machine down. Close the expanded view to bring it back here.",
+      }
+    : error
     ? {
         title: "The monitoring room could not be reached",
         detail: error,

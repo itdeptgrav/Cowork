@@ -201,6 +201,10 @@ export function PersonMonitor({
                   connecting={connecting}
                   error={roomError}
                   sharing={sharing}
+                  /* One decode at a time. The dialog above shows the same
+                     stream, and two live frames make the MANAGER's machine
+                     slow for the same reason encoding makes the sharer's. */
+                  suspended={screenOpen}
                 />
               ) : (
                 <NoSubjectFrame loading={subjectQ.isLoading} />

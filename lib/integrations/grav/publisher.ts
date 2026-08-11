@@ -25,8 +25,22 @@
  *    keeps the activation. Nothing may be awaited in front of it.
  */
 
-/** Where the SDK is served from. Their versioned path, not a bundled copy. */
-const SDK_URL = "https://live.grav.in/v1/grav-stream.js";
+/**
+ * Where the SDK is served from. Their path, not a bundled copy.
+ *
+ * **The query string is a cache-buster, and it is not decoration.** They rebuild
+ * this file in place — the path carries a major version, not a build — and the
+ * rebuild of 11 Aug 2026 is the one that moved encoding to H.264, capped
+ * capture at 1080p and stopped the encoder trading sharpness for bandwidth.
+ * Their own instruction was "redeploy and hard-refresh so browsers do not serve
+ * a cached copy", and nothing this application does can hard-refresh somebody
+ * else's browser. A changed URL can.
+ *
+ * **Bump this whenever they ship a rebuild.** The value is the date of the
+ * build being picked up; their server ignores it and serves the same file.
+ */
+const SDK_BUILD = "2026-08-11";
+const SDK_URL = `https://live.grav.in/v1/grav-stream.js?v=${SDK_BUILD}`;
 
 /** What one live share reports about itself. */
 export interface ShareCapture {
@@ -142,13 +156,33 @@ export async function startPublishing(input: {
   const release = watchTheCapture();
   let live: ShareSession;
   try {
+    /**
+     * **Three options, and deliberately not a fourth.**
+     *
+     * Their guidance is explicit: *"Call share() with only { token, serverUrl }
+     * unless you have measured a specific reason to change something… If you
+     * pass custom video constraints or a custom maxBitrate you will defeat the
+     * resolution cap and the anti-downscale setting, and the text problem will
+     * come back."* So no constraints and no `maxBitrate` are passed, and no
+     * `getDisplayMedia` call of ours competes with theirs — the interception
+     * below only listens to the track they create.
+     *
+     * What the SDK sets for us, which we must not re-implement: capture capped
+     * at 1920×1080, `contentHint: "detail"` with `scaleResolutionDownBy` pinned
+     * to 1 so pressure costs frames rather than sharpness, H.264 preferred over
+     * VP8 so encoding uses hardware rather than a saturated CPU core, and a
+     * server-side keepalive on the signaling socket so a day-long share is not
+     * cut off as idle.
+     *
+     * `requireEntireScreen` is the exception, and it is not a capture
+     * constraint: their reference says `ENTIRE_SCREEN_REQUIRED` is raised
+     * *"only when you pass requireEntireScreen: true"*. Without it the SDK
+     * accepts a window and the refusal arrives later, from the SFU, as a failed
+     * publish. Passing it makes the rule refuse before anything starts.
+     */
     live = await sdk.share({
       token: input.token,
       serverUrl: input.serverUrl,
-      /* The room enforces this too — it is created `requireEntireScreen: true`
-         — so a window or a tab is refused by the SFU whatever a client asks
-         for. Passing it here as well means the SDK can refuse before
-         publishing, which is a faster and clearer failure for the same rule. */
       requireEntireScreen: true,
     });
   } finally {
