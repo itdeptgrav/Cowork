@@ -7,6 +7,11 @@
  * picks who to provision — one at a time or in bulk — and the backend creates a
  * Firebase Auth user + Firestore record, auto-generates a temp password, and
  * sends a welcome email.
+ *
+ * It lists EVERYBODY, not only the unprovisioned, and the people who already
+ * have accounts are what an administrator comes here about second: somebody
+ * locked out needs a new password, and the row for them used to be a green chip
+ * with nothing to press. See `ResetPasswordDialog`.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -23,6 +28,7 @@ import {
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
+import { ResetPasswordDialog } from "./ResetPasswordDialog";
 
 // ── Auth token ────────────────────────────────────────────────────────────────
 
@@ -56,6 +62,11 @@ export function AddFromHrPanel() {
     new Map(),
   );
   const [bulkPending, setBulkPending] = useState(false);
+  /* Whose password is being reset, if anybody's — see `ResetPasswordDialog`. */
+  const [resetting, setResetting] = useState<{
+    employeeId: string;
+    displayName: string;
+  } | null>(null);
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -308,7 +319,34 @@ export function AddFromHrPanel() {
                     </span>
                   </div>
 
-                  <div className="shrink-0">
+                  <div className="flex shrink-0 items-center gap-2">
+                    {/**
+                     * **The one thing an admin needs on a LINKED row.**
+                     *
+                     * Everything else on this panel is about accounts that do
+                     * not exist yet, so somebody who already had one was a dead
+                     * end here: a green "Linked" chip and no way to help them.
+                     * Locked out, forgotten password, a temporary one that never
+                     * arrived — the answer was to open Firebase.
+                     *
+                     * Only where the engine told us WHICH account it is. Without
+                     * an id there is nothing safe to address, and guessing from
+                     * a biometric id is how the wrong person gets signed out.
+                     */}
+                    {done && emp.coworkEmployeeId && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setResetting({
+                            employeeId: emp.coworkEmployeeId!,
+                            displayName: emp.name,
+                          })
+                        }
+                        className="rounded-inset px-2 py-1 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
+                      >
+                        Reset password
+                      </button>
+                    )}
                     {done && status.kind !== "done" && (
                       <Chip tone="positive">Linked</Chip>
                     )}
@@ -355,6 +393,15 @@ export function AddFromHrPanel() {
             })}
           </ul>
         </Panel>
+      )}
+
+      {resetting && (
+        <ResetPasswordDialog
+          employeeId={resetting.employeeId}
+          displayName={resetting.displayName}
+          token={getToken}
+          onClose={() => setResetting(null)}
+        />
       )}
     </div>
   );

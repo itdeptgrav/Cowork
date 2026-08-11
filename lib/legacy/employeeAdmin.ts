@@ -10,6 +10,17 @@ export interface HrEmployee {
   biometricId: string;
   phone: string;
   hasCoworkAccount: boolean;
+  /**
+   * Their `cowork_employees` document id, or null where there is no account.
+   *
+   * **Not the same thing as `biometricId`, and assuming so would be a bug with
+   * somebody else's password in it.** The two usually agree — a biometric id
+   * becomes the CoWork id when one exists — but an account provisioned without
+   * one is matched by EMAIL and given a generated id. The engine now answers
+   * with whichever document it actually matched, so an action taken against an
+   * existing account is taken against the right account.
+   */
+  coworkEmployeeId: string | null;
 }
 
 export interface HrEmployeeList {
@@ -39,6 +50,61 @@ export async function listHrEmployees(input: {
     token: input.token,
     query,
   });
+}
+
+/**
+ * Set a new password on an existing CoWork account.
+ *
+ * **What this does at the other end, because it is more than it looks.** The
+ * engine writes the password to Firebase Auth, records it as a temporary one
+ * (`passwordChanged: false`), **revokes every refresh token the person holds**
+ * — so they are signed out of every device within moments — and notifies them
+ * in the app, by push and by email. There is no quiet version of this.
+ *
+ * The id is the `cowork_employees` document id: `HrEmployee.coworkEmployeeId`,
+ * never the HR id.
+ */
+export async function resetCoworkPassword(input: {
+  token: string;
+  employeeId: string;
+  newPassword: string;
+}): Promise<LegacyResult<{ message: string }>> {
+  return legacyFetch({
+    path: `/cowork/employee/${encodeURIComponent(input.employeeId)}/reset-password`,
+    method: "POST",
+    token: input.token,
+    body: { newPassword: input.newPassword },
+  });
+}
+
+/**
+ * A temporary password somebody can read down a phone line.
+ *
+ * **No lookalike characters** — no `l1I`, no `0O`. This is typed by hand from a
+ * message or read aloud, and a password that cannot be transcribed reliably
+ * generates a support request per use. Twelve characters from a 30-symbol
+ * alphabet is ~59 bits, which is far beyond what a password living for one
+ * sign-in needs.
+ *
+ * `crypto.getRandomValues`, never `Math.random`: a predictable temporary
+ * password is a way into somebody's account, and the modulo bias of a naive
+ * mapping is avoided by rejecting the tail of the byte range.
+ */
+export function generateTempPassword(): string {
+  const alphabet = "abcdefghjkmnpqrstuvwxyz23456789";
+  const limit = 256 - (256 % alphabet.length);
+  const out: string[] = [];
+  while (out.length < 12) {
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    for (const b of bytes) {
+      if (b >= limit) continue; /* Biased tail — draw again. */
+      out.push(alphabet[b % alphabet.length]);
+      if (out.length === 12) break;
+    }
+  }
+  /* Split for reading: `grav-7fk2-qp8m` rather than one run of twelve. */
+  return `${out.slice(0, 4).join("")}-${out.slice(4, 8).join("")}-${out.slice(8).join("")}`;
 }
 
 /** Create a CoWork account for an HR employee. */

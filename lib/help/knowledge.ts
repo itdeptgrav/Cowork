@@ -1717,7 +1717,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "What can an administrator configure?",
     ],
     answer:
-      "Administration sits at /admin and has three parts: Overview, Settings, and the Audit log. Only a system administrator can open any of it. Everybody else has no Admin entry in the top bar at all, and typing the address sends them back to their workspace — the refusal is made on the server before the page is built, so it is not a hidden menu item. Settings has six sections. Task rules covers the gates work passes through before it can be submitted. Priority and scoring holds the deduction values and component maximums that scores are computed from. Workflow routing decides who answers an extension request and what happens when nobody is named. Organisation shows departments, the reporting line and the roles it grants, and is read-only. Office policy is the working week — days, hours, breaks, the break allowance and the task action gap. Provisional rules are the placeholder values still waiting on a decision. Every section says on screen where its values are stored and who reads them once saved, because that is not the same for all six: office policy is read by Cowork and by the old application together, priority and scoring is read by the scoring engine and reaches published scores, and task rules, workflow routing and provisional rules are enforced by Cowork only — the old application does not read them and will not apply them. Every change is recorded with its previous value, its new value, who made it and when. Some things are deliberately not configurable, and the console says so rather than leaving a gap: task statuses are the engine's own vocabulary, priority position is worked out from the queue rather than chosen, the split between asking for hours and asking for a date is fixed because adding hours to a date is always wrong, and reporting lines and departments are HR records.",
+      "Administration sits at /admin and has three parts: Overview, Settings, and the Audit log. Only a system administrator can open any of it. Everybody else has no Admin entry in the top bar at all, and typing the address sends them back to their workspace — the refusal is made on the server before the page is built, so it is not a hidden menu item. Settings has seven sections. Task rules covers the gates work passes through before it can be submitted. Priority and scoring holds the deduction values and component maximums that scores are computed from. Workflow routing decides who answers an extension request and what happens when nobody is named. Organisation shows departments, the reporting line and the roles it grants, and is read-only. Office policy is the working week — days, hours, breaks, the break allowance and the task action gap. Provisional rules are the placeholder values still waiting on a decision. Add employees is the only section that changes people rather than rules: it creates Cowork accounts from the HR system, and resets the password of one that already exists — see “Adding employees and resetting passwords”. Every section says on screen where its values are stored and who reads them once saved, because that is not the same for all six: office policy is read by Cowork and by the old application together, priority and scoring is read by the scoring engine and reaches published scores, and task rules, workflow routing and provisional rules are enforced by Cowork only — the old application does not read them and will not apply them. Every change is recorded with its previous value, its new value, who made it and when. Some things are deliberately not configurable, and the console says so rather than leaving a gap: task statuses are the engine's own vocabulary, priority position is worked out from the queue rather than chosen, the split between asking for hours and asking for a date is fixed because adding hours to a date is always wrong, and reporting lines and departments are HR records.",
     related: [
       "settings-office-policy",
       "settings-task-rules",
@@ -1726,8 +1726,40 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "settings-provisional-rules",
       "settings-audit-log",
       "settings-roles",
+      "settings-add-employees",
     ],
     source: "canAccessAdminConsole in lib/rules/admin/access.ts; SETTINGS_SECTIONS",
+  },
+  {
+    id: "settings-add-employees",
+    category: "settings",
+    title: "Adding employees and resetting passwords",
+    keywords: [
+      "add employees",
+      "create account",
+      "new employee account",
+      "provision account",
+      "temporary password",
+      "reset password",
+      "admin reset password",
+      "employee locked out",
+      "forgot password",
+      "welcome email",
+      "hr system",
+      "biometric id",
+    ],
+    examples: [
+      "How do I create a Cowork account for a new employee?",
+      "Somebody forgot their password — can I reset it?",
+      "How do I reset an employee's password as an admin?",
+      "Where does the employee ID come from?",
+      "What happens when I reset someone's password?",
+    ],
+    answer:
+      "Administration, then Settings, then Add employees. The list comes from the HR system rather than from Cowork, so nobody is typed in twice: everyone in HR appears, each row marked either Add — no Cowork account yet — or Linked, meaning they already have one. Search by name, email or ID, or filter by department. **Creating an account:** tick the people who need one and press Create accounts, or press Add on a single row. Cowork creates their Firebase login, generates a temporary password, and sends a welcome email carrying it; their biometric ID from HR becomes their Cowork employee ID, and where HR has none, one is generated. The temporary password is shown on the row afterwards, because the email is not always the fastest way to get it to somebody. **Resetting a password:** every Linked row has a Reset password button. It offers a generated temporary password — twelve readable characters with no lookalikes like l1I or 0O, since somebody has to type or read it out — which you can replace with your own of at least six characters. Read what it says before pressing it: setting the password **signs that person out of every device immediately**, mid-task if they were working, and tells them it happened in the app, by push and by email. Unsaved work in an open tab is lost; saved work is not touched. Afterwards the new password is shown once with a Copy button, and they are asked to choose their own the next time they sign in. There is no way to see somebody's existing password — nobody has it, including administrators — so a reset is the only route back in for a locked-out account.",
+    related: ["settings-console", "settings-roles", "general-sign-in-did-not-finish"],
+    source:
+      "AddFromHrPanel.tsx and ResetPasswordDialog.tsx; listHrEmployees / provisionCoworkAccount / resetCoworkPassword / generateTempPassword in lib/legacy/employeeAdmin.ts; the engine's GET /cowork/admin/hr-employees (CEO-only, and it returns coworkEmployeeId so an existing account can be addressed) and POST /cowork/employee/:id/reset-password, which sets the Firebase password, stores it as a temp one, revokes every refresh token and notifies through notifyEmployees",
   },
   {
     id: "settings-office-policy",
