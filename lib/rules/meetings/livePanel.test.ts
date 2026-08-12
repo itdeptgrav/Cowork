@@ -38,11 +38,18 @@ test("joining refetches immediately, not on the next tick", () => {
 });
 
 test("the clock and the refetch run while THIS reader is in a meeting", () => {
+  /* `openId`, not the running session. The two differ once a room can be
+     abandoned: a session stays OPEN until somebody closes it, and it stops
+     RUNNING the moment its last attendance row goes stale. The clock and the
+     refetch are how the panel notices that transition, so gating them on the
+     room still being occupied would freeze the panel at the last instant it
+     was — permanently showing a meeting nobody is in. */
   assert.match(
     src,
-    /const watching = runningId !== null \|\| joined !== null/,
+    /const watching = openId !== null \|\| joined !== null/,
     "the live state is gated on a running session alone — a reader who joined " +
-      "before their list knew about it gets no clock and no refetch at all",
+      "before their list knew about it gets no clock and no refetch at all, " +
+      "and an abandoned room is never noticed going empty",
   );
   /* And both effects hang off it, rather than off `runningId` again. */
   const effects = src.match(/if \(!watching\) return;/g) ?? [];

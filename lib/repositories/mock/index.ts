@@ -259,7 +259,10 @@ import {
 } from "@/lib/rules/tasks/emergency";
 import { shiftableTasks, shiftedDueAt } from "@/lib/rules/tasks/deadlineShift";
 import {
+  type Attendance as MeetingAttendance,
   creditsInWindow,
+  roomEmptiedAtMs,
+  roomIsEmpty,
   settleCrossDeptSession,
   settleSession,
 } from "@/lib/rules/meetings/meetingCredit";
@@ -421,6 +424,33 @@ function delay<T>(value: T): Promise<T> {
 function ok<T>(data: T): ActionResult<T> {
   persistStore();
   return { ok: true, data };
+}
+
+/**
+ * Stored attendance rows in the shape the meeting rules read.
+ *
+ * The rules own "is anybody still in there"; the repository asks them rather
+ * than re-deriving it, because a second copy of the presence rule is how a room
+ * that looks live becomes one that cannot be joined.
+ */
+function toMeetingAttendance(
+  rows: readonly {
+    employeeId: string;
+    joinedAt: string;
+    leftAt: string | null;
+    lastSeenAt?: string | null;
+  }[],
+): MeetingAttendance[] {
+  const at = (v: string | null | undefined) => {
+    const ms = v ? Date.parse(v) : NaN;
+    return Number.isFinite(ms) ? ms : null;
+  };
+  return rows.map((a) => ({
+    employeeId: String(a.employeeId),
+    joinedAtMs: at(a.joinedAt) ?? 0,
+    leftAtMs: at(a.leftAt),
+    lastSeenAtMs: at(a.lastSeenAt),
+  }));
 }
 function fail(
   code: ActionErrorCode,
@@ -8187,7 +8217,13 @@ export class MockRepository implements CoworkRepository {
     }
     /* A rejoin is a NEW span, not an edit of the old one — `creditableSecs`
        merges overlaps, so recording both is safe and losing one is not. */
-    session.attendance.push({ employeeId: me, joinedAt: nowIso, leftAt: null });
+    session.attendance.push({
+      employeeId: me,
+      joinedAt: nowIso,
+      leftAt: null,
+      /* The first beat — see `touchTaskMeeting`. A row nobody beats lapses. */
+      lastSeenAt: nowIso,
+    });
 
     return ok({
       sessionId: session.id,
@@ -8195,6 +8231,21 @@ export class MockRepository implements CoworkRepository {
       token: `mock-token-${taskId}-${me}`,
       url: "wss://mock.livekit.local",
     });
+  }
+
+  /** The beat that keeps a row alive — see the contract, and `departureOf`. */
+  async touchTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
+    const s = getStore();
+    const session = s.taskMeetingSessions.find((x) => x.id === input.sessionId);
+    /* Silent on every miss. A dropped beat is not worth an error on a panel
+       somebody is talking over, and a closed session is never beaten open. */
+    if (!session || session.endedAt !== null) return ok(undefined);
+    const me = String(actingId());
+    const open = [...session.attendance]
+      .reverse()
+      .find((a) => a.employeeId === me && a.leftAt === null);
+    if (open) open.lastSeenAt = new Date().toISOString();
+    return ok(undefined);
   }
 
   async leaveTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
@@ -8209,10 +8260,13 @@ export class MockRepository implements CoworkRepository {
 
     /* Leaving LAST closes it — the ordinary way out of a meeting is closing the
        tab, which can record a departure and cannot await a settlement. Without
-       this the room stays open for ever and nobody is credited. */
+       this the room stays open for ever and nobody is credited.
+       "Last" means nobody still BEATING, not nobody with an open row: a
+       departure write that never landed leaves a row open permanently, and one
+       of those used to hold the meeting open indefinitely. */
     if (
       session.endedAt === null &&
-      !session.attendance.some((a) => a.leftAt === null)
+      roomIsEmpty(toMeetingAttendance(session.attendance), Date.now())
     ) {
       await this.endTaskMeeting(input);
     }
@@ -8231,17 +8285,23 @@ export class MockRepository implements CoworkRepository {
        to that instant, so a one-minute visitor ended a ten-minute meeting. */
     if (
       session.endedAt === null &&
-      session.attendance.some((a) => a.leftAt === null)
+      !roomIsEmpty(toMeetingAttendance(session.attendance), Date.now())
     ) {
       return ok({ creditedSecs: 0, creditedTaskIds: [] as string[] });
     }
 
     /* Closed ONCE. Everybody in the room calls this on the way out, and reading
        the clock each time stretched the span of anybody still marked present —
-       so the meeting was worth more with every person who left. */
+       so the meeting was worth more with every person who left.
+       And closed AT THE MOMENT IT EMPTIED: a session abandoned by a closed tab
+       is found up to `PRESENCE_TIMEOUT_MS` later, and closing at discovery
+       would credit that gap to whoever happened to look. */
     const endedAtMs = session.endedAt
       ? Date.parse(session.endedAt)
-      : Date.now();
+      : (roomEmptiedAtMs(
+          toMeetingAttendance(session.attendance),
+          Date.now(),
+        ) ?? Date.now());
     session.endedAt = new Date(endedAtMs).toISOString();
 
     /* Whose deadlines move: the RECEIVER of the work, not the creator.

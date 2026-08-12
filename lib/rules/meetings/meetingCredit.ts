@@ -24,6 +24,91 @@ export interface Attendance {
   employeeId: string;
   joinedAtMs: number;
   leftAtMs: number | null;
+  /**
+   * The last beat from the browser holding this row open. Absent on rows
+   * written before beats existed — see `departureOf`, which reads those as
+   * their `joinedAtMs` so an old orphan lapses instead of never ending.
+   */
+  lastSeenAtMs?: number | null;
+}
+
+/**
+ * How long a row survives without a beat before it stops being presence.
+ *
+ * **Ninety seconds, against a twenty-second beat.** Wide enough that a slow
+ * network, a backgrounded tab or a garbage-collection pause never evicts
+ * somebody who is really there — four beats have to go missing — and short
+ * enough that an abandoned room settles while the people who were in it are
+ * still around to see it.
+ */
+export const PRESENCE_TIMEOUT_MS = 90_000;
+
+/**
+ * When this row stopped being presence, or null if it still is.
+ *
+ * **A row is presence while it is being beaten, not while `leftAt` is null.**
+ * The only thing that writes a departure is the leaving client, and the
+ * ordinary way out is closing the tab — `beforeunload` fires, the write is
+ * dropped mid-flight, and the row stays open for ever. One such row was enough
+ * to hold a meeting open indefinitely: never empty, so never closed, so never
+ * credited, and the panel reported "Meeting running" over a room everybody had
+ * left. Reported exactly that way.
+ *
+ * A lapsed row is treated as having left AT ITS LAST BEAT, not at the moment
+ * anybody noticed. That is the honest reading — it is the last instant there
+ * is evidence for — and it means the credit does not depend on when somebody
+ * happened to open the tab. Without it, an abandoned counterparty row would
+ * have gone on earning credit for as long as the session stayed open, which is
+ * the anti-cheat this whole module exists for, inverted.
+ */
+export function departureOf(a: Attendance, nowMs: number): number | null {
+  if (a.leftAtMs !== null) return a.leftAtMs;
+  const seen = a.lastSeenAtMs ?? a.joinedAtMs;
+  return nowMs - seen > PRESENCE_TIMEOUT_MS ? seen : null;
+}
+
+/**
+ * Has everybody gone?
+ *
+ * The condition for closing a session, asked the same way by the panel that
+ * displays it and by the repository that settles it — two answers to "is
+ * anybody still in there" would mean a room that looks live and cannot be
+ * joined, or one that settles under people still talking.
+ */
+export function roomIsEmpty(
+  attendance: readonly Attendance[],
+  nowMs: number,
+): boolean {
+  return !attendance.some((a) => departureOf(a, nowMs) === null);
+}
+
+/**
+ * When the room became empty — the instant to close an abandoned session at.
+ *
+ * Null while somebody is still in it. Otherwise the LAST departure: the moment
+ * the final person left, or the final beat of somebody whose departure was
+ * never written.
+ *
+ * **Not `now`.** A session found abandoned is discovered up to
+ * `PRESENCE_TIMEOUT_MS` after it actually emptied, and closing it at the moment
+ * of discovery would credit that gap as meeting time — worse, it would credit
+ * whoever noticed rather than whoever was there. Closing at the last evidence
+ * of presence means the credit arithmetic needs no special case: `presenceOf`
+ * already clamps an open row to the close, and the close is now the truth.
+ */
+export function roomEmptiedAtMs(
+  attendance: readonly Attendance[],
+  nowMs: number,
+): number | null {
+  let latest = 0;
+  for (const a of attendance) {
+    const gone = departureOf(a, nowMs);
+    if (gone === null) return null;
+    if (gone > latest) latest = gone;
+  }
+  /* An empty attendance list is a session nobody ever entered. It emptied when
+     it opened, and `nowMs` is the only clock the caller has for that. */
+  return latest || nowMs;
 }
 
 export interface MeetingSession {
@@ -103,7 +188,15 @@ function presenceOf(session: MeetingSession, employeeId: string): Span[] {
       from: a.joinedAtMs,
       /* Still in the room when it closed: bounded at the close, never at `now`
          — a session is credited when it ENDS, and reading the clock here would
-         make the answer depend on when somebody asked. */
+         make the answer depend on when somebody asked.
+         **The lapse rule is deliberately NOT applied here.** It answers "is
+         anybody in the room now"; this answers "what was this meeting worth",
+         and they are different questions. Cutting an open row at its last beat
+         here would rewrite settled history — somebody present for a whole hour
+         on a build that sent no beats would be credited nothing. What bounds
+         an abandoned row instead is the CLOSE: `roomEmptiedAtMs` closes the
+         session at the last moment anybody was known to be there, so clamping
+         to `endedAtMs` already gives the honest answer. */
       to: Math.min(a.leftAtMs ?? session.endedAtMs, session.endedAtMs),
     }))
     /* Drops zero-length and reversed rows, and anything entirely after the
@@ -299,6 +392,13 @@ export function liveCrossDeptFigures(
  * A row with no `leftAtMs` is somebody still inside — that is how the join
  * writes it and how a close bounds it. Rows that start in the future are not
  * yet presence, which keeps a skewed clock from reporting somebody as arrived.
+ *
+ * **Deliberately not lapse-aware.** The lapse answers a different question —
+ * "has everybody gone" — and the panel asks that one first: nothing below is
+ * displayed once `roomIsEmpty` is true, so a stale row cannot be reported as
+ * presence for longer than `PRESENCE_TIMEOUT_MS`. Folding the lapse in here
+ * would put it in the credit arithmetic too, where it would rewrite settled
+ * history: a meeting recorded before beats existed would credit nobody.
  */
 export function isPresent(
   session: MeetingSession,

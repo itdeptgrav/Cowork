@@ -2074,10 +2074,35 @@ export interface CoworkRepository {
    *
    * Attendance is what decides the credit — only the span the task's CREATOR
    * was present counts — so a leave that is never recorded would leave somebody
-   * apparently in the room forever. The session's own close bounds that, which
-   * is why `creditableSecs` clamps to it.
+   * apparently in the room forever. Two things bound that: the session's own
+   * close, which `creditableSecs` clamps to, and the beat below, which expires
+   * a row nobody is holding open any more.
+   *
+   * Leaving LAST also closes the session, because the ordinary way out is a
+   * closed tab and no button sees that.
    */
   leaveTaskMeeting(input: {
+    taskId: TaskId;
+    sessionId: string;
+  }): Promise<ActionResult<void>>;
+
+  /**
+   * Keep this person's attendance row alive.
+   *
+   * **The panel beats every twenty seconds while somebody is in the room**, and
+   * a row that has not been beaten for ninety stops counting as presence — see
+   * `PRESENCE_TIMEOUT_MS` in `lib/rules/meetings/meetingCredit.ts`.
+   *
+   * Without it, `leftAt: null` meant "still here" for ever, because the only
+   * thing that writes a departure is the leaving client and `beforeunload`
+   * cannot await a round trip. One dropped write held a meeting open
+   * indefinitely: it never became empty, so it never closed, so nobody was
+   * credited and the panel reported a running meeting over an empty room.
+   *
+   * Never fails loudly. A missed beat is not worth an error on a panel somebody
+   * is talking over, and four have to be missed before anything changes.
+   */
+  touchTaskMeeting(input: {
     taskId: TaskId;
     sessionId: string;
   }): Promise<ActionResult<void>>;
