@@ -260,7 +260,9 @@ import {
 import { shiftableTasks, shiftedDueAt } from "@/lib/rules/tasks/deadlineShift";
 import {
   type Attendance as MeetingAttendance,
+  creditsIn,
   creditsInWindow,
+  ordinaryWindow,
   roomEmptiedAtMs,
   roomIsEmpty,
   settleCrossDeptSession,
@@ -8363,23 +8365,30 @@ export class MockRepository implements CoworkRepository {
     /* Two rules, and the TASK decides which — the same branch the engine makes,
        so a cross-department meeting cannot settle one way in the prototype and
        another in the product. */
+    /* One queue per person who EARNED something. Both rules need it now: an
+       ordinary meeting credits everybody in the room against their own queue,
+       exactly as a cross-department one does, and only the window they are
+       measured against differs. */
+    const queuesFor = (credits: readonly { employeeId: string }[]) =>
+      new Map(credits.map((c) => [c.employeeId, queueOf(c.employeeId)]));
+
     const settlement = task.isCrossDepartment
       ? settleCrossDeptSession({
           session: { ...meetingSession, receiverId: assigneeId },
           onTaskId: String(session.taskId),
-          tasksByEmployee: new Map(
-            creditsInWindow({ ...meetingSession, receiverId: assigneeId }).map(
-              (c) => [c.employeeId, queueOf(c.employeeId)],
-            ),
+          tasksByEmployee: queuesFor(
+            creditsInWindow({ ...meetingSession, receiverId: assigneeId }),
           ),
           alreadyCredited,
         })
       : settleSession({
           session: meetingSession,
           onTaskId: String(session.taskId),
-          assigneeId,
+          receiverId: assigneeId,
+          tasksByEmployee: queuesFor(
+            creditsIn(meetingSession, ordinaryWindow(meetingSession)),
+          ),
           alreadyCredited,
-          tasks: queueOf(assigneeId),
         });
 
     const creditedSecs = settlement.creditedSecs;

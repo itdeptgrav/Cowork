@@ -59,13 +59,16 @@ test("a task with a budget and NO stored due date still grows its window", () =>
       counterpartyId: "rakesh",
       startedAtMs: start,
       endedAtMs: start + 5 * 60_000,
+      /* Both of them in the room: everybody earns their own time in it, so the
+         person whose window this asserts has to have been there. */
       attendance: [
         { employeeId: "rakesh", joinedAtMs: start, leftAtMs: start + 5 * 60_000 },
+        { employeeId: "pramod", joinedAtMs: start, leftAtMs: start + 5 * 60_000 },
       ],
     },
     onTaskId: "T012",
-    assigneeId: "pramod",
-    tasks: [task],
+    receiverId: "pramod",
+    tasksByEmployee: new Map([["pramod", [task]]]),
   });
 
   const update = settlement.updates[0];

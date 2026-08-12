@@ -290,6 +290,22 @@ export function sharedWindow(
   );
 }
 
+/**
+ * The stretch an ORDINARY meeting is running: the counterparty's presence.
+ *
+ * The same shape as `sharedWindow`, one condition weaker. That is the only
+ * difference between the two rules — who has to be in the room for the clock to
+ * run — and expressing it as a window rather than as two settlements is what
+ * lets both credit everybody the same way.
+ *
+ * The anti-cheat is this function. A room the assignee sits in alone produces
+ * an empty window and is worth nothing to anybody, however many other people
+ * are in it.
+ */
+export function ordinaryWindow(session: MeetingSession): Span[] {
+  return presenceOf(session, session.counterpartyId);
+}
+
 /** How long both sides were in the room together. */
 export function sharedWindowSecs(
   session: MeetingSession & { receiverId: string },
@@ -319,7 +335,28 @@ export function creditInWindowFor(
 export function creditsInWindow(
   session: MeetingSession & { receiverId: string },
 ): { employeeId: string; secs: number }[] {
-  const window = sharedWindow(session);
+  return creditsIn(session, sharedWindow(session));
+}
+
+/**
+ * The same question against any window — the ordinary rule's, or the
+ * cross-department one's.
+ *
+ * **Everybody in the room earns their own time in it — OWNER DECISION.** This
+ * was the cross-department rule alone, and an ordinary meeting credited only
+ * the receiver: the person who ASSIGNED the work sat through the same half
+ * hour, lost it from their own day, and got nothing back. So did a manager who
+ * joined. The wall clock they lost is identical whichever department the task
+ * came from, and now so is what they are owed.
+ *
+ * What still differs is only the window — see `ordinaryWindow` and
+ * `sharedWindow`. Time outside it is worth nothing to anyone: somebody who
+ * arrives after the other side has left was in a room, not in the meeting.
+ */
+export function creditsIn(
+  session: MeetingSession,
+  window: readonly Span[],
+): { employeeId: string; secs: number }[] {
   if (window.length === 0) return [];
 
   /* Insertion order, so the result is stable for a given attendance list rather
@@ -688,23 +725,126 @@ export function settleSession(input: {
   session: MeetingSession & { startedAtMs: number };
   /** The task the meeting was opened from — named in the history sentence. */
   onTaskId: string;
-  /** Whose deadlines move: the receiver of the work. */
-  assigneeId: string;
-  tasks: readonly SettlementTask[];
+  /**
+   * The receiver of the work — the host task's assignee.
+   *
+   * No longer "whose deadlines move", because everybody's do. It survives for
+   * one job: their queue records the meeting even when the session was worth
+   * nothing, so a room the counterparty never entered still leaves a history.
+   */
+  receiverId: string;
+  /** Each person's own live tasks, keyed by their id. Absent means no queue. */
+  tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
   alreadyCredited?: readonly string[];
 }): Settlement {
   return {
+    /* The session's own worth stays the WINDOW — the time the counterparty was
+       in the room — not the sum of what everybody earned. Three people in a
+       thirty-minute meeting cost thirty minutes of wall clock, not ninety, and
+       this is the figure the panel prints and the session record keeps. */
     creditedSecs: creditableSecs(input.session),
-    updates: updatesFor({
-      creditedSecs: creditableSecs(input.session),
-      employeeId: input.assigneeId,
-      tasks: input.tasks,
+    updates: settleEveryone({
+      session: input.session,
+      window: ordinaryWindow(input.session),
+      onTaskId: input.onTaskId,
+      recordForEmployeeId: input.receiverId,
+      tasksByEmployee: input.tasksByEmployee,
+      alreadyCredited: input.alreadyCredited,
+    }),
+  };
+}
+
+/**
+ * Everybody who earned something, each against their own queue.
+ *
+ * Shared by both rules — the only thing either passes differently is the
+ * window. Two copies of this is how the ordinary rule came to credit one person
+ * while the cross-department one credited everybody, for the same half hour of
+ * the same people's day.
+ *
+ * ## One task moves once, however many of its holders were in the room
+ *
+ * A task can have several assignees. If two of them attended, the task appears
+ * in both queues, and applying both updates would shift one deadline twice for
+ * one meeting — the same double-shift `settleSession` was written to prevent,
+ * arriving by a different door. It was already reachable in the
+ * cross-department rule and became far likelier the moment ordinary meetings
+ * credited more than one person.
+ *
+ * So each task is CLAIMED by exactly one earner: the one who lost the most time
+ * to the meeting. That is the honest figure for a shared task — it moves by the
+ * largest amount any of the people carrying it actually lost — and it is stable,
+ * because ties fall to whoever appears first in the attendance list rather than
+ * to whatever order a map happened to iterate.
+ */
+function settleEveryone(input: {
+  session: MeetingSession & { startedAtMs: number };
+  window: readonly Span[];
+  onTaskId: string;
+  /**
+   * The receiver of the work, who appears even when they earned NOTHING.
+   *
+   * **Refusing the credit must not refuse the history.** A session the
+   * counterparty never attended is worth zero, and it still happened: without a
+   * zero-valued update the task records no meeting at all, its stored
+   * `firstStartedAt` stays null, and every surface that asks "has this task
+   * ever met" — the "hold the meeting first" hint most of all — goes on saying
+   * no after a meeting was held.
+   */
+  recordForEmployeeId: string;
+  tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
+  alreadyCredited?: readonly string[];
+}): SettlementUpdate[] {
+  const earned = creditsIn(input.session, input.window);
+  const receiver = input.recordForEmployeeId;
+  const credits =
+    !receiver || earned.some((c) => c.employeeId === receiver)
+      ? earned
+      : [...earned, { employeeId: receiver, secs: 0 }];
+
+  /* Claimed among the tasks each person could ACTUALLY be credited for.
+     A queue read may hand back more than its owner's work — the mock's returns
+     every live task and `creditTargets` is what narrows it — so claiming over
+     the raw list awarded somebody else's task to whoever earned most, and then
+     `creditTargets` dropped it for them because they are not an assignee. The
+     task was claimed by a person who could not credit it and skipped by the
+     person who could: everybody's credit silently vanished. */
+  const claim = new Map<string, { employeeId: string; secs: number }>();
+  for (const c of credits) {
+    const mine = input.tasksByEmployee.get(c.employeeId) ?? [];
+    const targets = new Set(
+      creditTargets({
+        tasks: mine,
+        assigneeId: c.employeeId,
+        alreadyCredited: input.alreadyCredited,
+      }),
+    );
+    for (const task of mine) {
+      if (!targets.has(task.taskId)) continue;
+      const held = claim.get(task.taskId);
+      if (!held || c.secs > held.secs) claim.set(task.taskId, c);
+    }
+  }
+
+  return credits.flatMap((c) =>
+    updatesFor({
+      creditedSecs: c.secs,
+      employeeId: c.employeeId,
+      /* Tasks nobody claimed stay in the list: `creditTargets` will drop the
+         ones this person cannot be credited for, and `updatesFor` still needs
+         the full live queue to choose the head. Only a task claimed by SOMEBODY
+         ELSE is withheld, and that is what stops one deadline moving twice for
+         one meeting. */
+      tasks: (input.tasksByEmployee.get(c.employeeId) ?? []).filter(
+        (t) =>
+          !claim.has(t.taskId) || claim.get(t.taskId)!.employeeId === c.employeeId,
+      ),
       alreadyCredited: input.alreadyCredited,
       onTaskId: input.onTaskId,
       startedAtMs: input.session.startedAtMs,
       endedAtMs: input.session.endedAtMs,
     }),
-  };
+  );
 }
 
 /**
@@ -807,24 +947,19 @@ export function settleCrossDeptSession(input: {
   tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
   alreadyCredited?: readonly string[];
 }): Settlement {
-  const credits = creditsInWindow(input.session);
-
   return {
     /* The session's own worth is the WINDOW, not the sum of everybody's shares
        — four people in a forty-minute meeting cost forty minutes of wall clock,
        not a hundred and sixty. This is the figure the panel shows and the one
        written on the session record. */
     creditedSecs: sharedWindowSecs(input.session),
-    updates: credits.flatMap((c) =>
-      updatesFor({
-        creditedSecs: c.secs,
-        employeeId: c.employeeId,
-        tasks: input.tasksByEmployee.get(c.employeeId) ?? [],
-        alreadyCredited: input.alreadyCredited,
-        onTaskId: input.onTaskId,
-        startedAtMs: input.session.startedAtMs,
-        endedAtMs: input.session.endedAtMs,
-      }),
-    ),
+    updates: settleEveryone({
+      session: input.session,
+      window: sharedWindow(input.session),
+      onTaskId: input.onTaskId,
+      recordForEmployeeId: input.session.receiverId,
+      tasksByEmployee: input.tasksByEmployee,
+      alreadyCredited: input.alreadyCredited,
+    }),
   };
 }

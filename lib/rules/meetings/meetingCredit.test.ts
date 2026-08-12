@@ -347,13 +347,18 @@ const settle = (from: string, to: string, tasks: SettlementTask[], onTaskId = "P
   settleSession({
     session: {
       counterpartyId: CREATOR,
-      attendance: [at(CREATOR, from, to)],
+      /* Both sides in the room. Everybody earns their OWN time in it now, so a
+         fixture meaning "they met about the work" has to put the assignee
+         there too — with only the creator present these would be asserting
+         what somebody who never attended earned, which is nothing. The cases
+         that deliberately test an absent party build their own session. */
+      attendance: [at(CREATOR, from, to), at(ASSIGNEE, from, to)],
       endedAtMs: T(to),
       startedAtMs: T(from),
     },
     onTaskId,
-    assigneeId: ASSIGNEE,
-    tasks,
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, tasks]]),
   });
 
 test("CASE 19 — a settlement credits every live task and moves each deadline", () => {
@@ -387,8 +392,8 @@ test("CASE 21 — a session the creator missed moves no deadline at all", () => 
       startedAtMs: T("10:00"),
     },
     onTaskId: "P1",
-    assigneeId: ASSIGNEE,
-    tasks: [settleTask("P1", "in_progress")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [settleTask("P1", "in_progress")]]]),
   });
   assert.equal(r.creditedSecs, 0);
   /* It still RECORDS that a meeting happened — the bracket moves, the clock
@@ -415,8 +420,8 @@ test("CASE 23 — settling twice credits once", () => {
       startedAtMs: T("10:00"),
     },
     onTaskId: "P1",
-    assigneeId: ASSIGNEE,
-    tasks: [settleTask("P1", "in_progress")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [settleTask("P1", "in_progress")]]]),
     alreadyCredited: ["P1"],
   });
   assert.equal(first.updates.length, 1);

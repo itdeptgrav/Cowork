@@ -56,7 +56,16 @@ const target = (
   ...over,
 });
 
-/** A meeting the creator attended for its whole length. */
+/**
+ * A meeting BOTH sides attended for its whole length.
+ *
+ * The assignee is in the room now, and has to be: everybody earns their own
+ * time in the room, so somebody who never came earns nothing. These scenarios
+ * are all "the two people the task is between talked about it", and the
+ * fixture used to say that with one attendance row — leaving the assignee, the
+ * person every assertion below is about, technically absent from their own
+ * meeting.
+ */
 const meet = (
   from: string,
   to: string,
@@ -67,25 +76,30 @@ const meet = (
     assigneeId?: string;
     alreadyCredited?: string[];
   } = {},
-) =>
-  settleSession({
+) => {
+  const counterpartyId = opts.counterpartyId ?? CREATOR;
+  const assigneeId = opts.assigneeId ?? ASSIGNEE;
+  const span = { joinedAtMs: T(from), leftAtMs: T(to) };
+  return settleSession({
     session: {
-      counterpartyId: opts.counterpartyId ?? CREATOR,
+      counterpartyId,
       startedAtMs: T(from),
       endedAtMs: T(to),
       attendance: [
-        {
-          employeeId: opts.counterpartyId ?? CREATOR,
-          joinedAtMs: T(from),
-          leftAtMs: T(to),
-        },
+        { employeeId: counterpartyId, ...span },
+        /* A self task is the case where these are the same person — one row,
+           not two, or the merge would be proving itself. */
+        ...(assigneeId === counterpartyId
+          ? []
+          : [{ employeeId: assigneeId, ...span }]),
       ],
     },
     onTaskId: opts.onTaskId ?? tasks[0].taskId,
-    assigneeId: opts.assigneeId ?? ASSIGNEE,
+    receiverId: assigneeId,
     alreadyCredited: opts.alreadyCredited,
-    tasks,
+    tasksByEmployee: new Map([[assigneeId, tasks]]),
   });
+};
 
 /* ── Every kind of task ───────────────────────────────────────────────────── */
 
@@ -117,8 +131,8 @@ test("SELF TASK — the assignee alone earns nothing", () => {
       ],
     },
     onTaskId: "SELF",
-    assigneeId: ASSIGNEE,
-    tasks: [target("SELF")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [target("SELF")]]]),
   });
   assert.equal(r.creditedSecs, 0, "a self task credited an empty room");
   assert.equal(r.updates[0].newDueAtMs, null);
@@ -138,8 +152,8 @@ test("SELF TASK — the meeting is still RECORDED when nothing is earned", () =>
       ],
     },
     onTaskId: "SELF",
-    assigneeId: ASSIGNEE,
-    tasks: [target("SELF")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [target("SELF")]]]),
   });
   assert.equal(hhmm(r.updates[0].totals.firstStartedAtMs!), "10:00");
   assert.equal(hhmm(r.updates[0].totals.lastEndedAtMs!), "10:20");
@@ -476,8 +490,8 @@ test("a worthless session grows no window either", () => {
       ],
     },
     onTaskId: "T",
-    assigneeId: ASSIGNEE,
-    tasks: [target("T")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [target("T")]]]),
   });
   assert.equal(r.updates[0].newWindowSecs, null);
   assert.equal(r.updates[0].newDueAtMs, null);

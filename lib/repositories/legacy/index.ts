@@ -314,7 +314,9 @@ import {
 import { readTimerFigures } from "../../rules/tasks/timerSession.ts";
 import {
   type Attendance as MeetingAttendance,
+  creditsIn,
   creditsInWindow,
+  ordinaryWindow,
   roomEmptiedAtMs,
   roomIsEmpty,
   settleCrossDeptSession,
@@ -8044,28 +8046,45 @@ export class LegacyRepository {
        * so the same meeting cannot settle two different ways depending on who
        * joined it.
        */
+      /* One queue read per person who EARNED something — not per attendee, so
+         somebody who looked in after the window closed costs nothing. Both
+         rules need this now: an ordinary meeting credits everybody in the room
+         against their own queue, exactly as a cross-department one does, and
+         only the window they are measured against differs. */
+      const queuesFor = async (
+        credits: readonly { employeeId: string }[],
+      ) => {
+        const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
+        for (const c of credits) {
+          if (queues.has(c.employeeId)) continue;
+          queues.set(
+            c.employeeId,
+            /* The receiver's queue is already in hand — it is the one read
+               unconditionally above — so this does not fetch it twice. */
+            c.employeeId === assigneeId ? tasks : await queueOf(c.employeeId),
+          );
+        }
+        return queues;
+      };
+
       const settlement = hostTask.isCrossDepartment
         ? await (async () => {
             const window = { ...meetingSession, receiverId: assigneeId };
-            /* One queue read per person who earned something — not per
-               attendee, so somebody who looked in after the window closed
-               costs nothing. */
-            const earners = creditsInWindow(window).map((c) => c.employeeId);
-            const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
-            for (const id of earners) queues.set(id, await queueOf(id));
             return settleCrossDeptSession({
               session: window,
               onTaskId: String(input.taskId),
-              tasksByEmployee: queues,
+              tasksByEmployee: await queuesFor(creditsInWindow(window)),
               alreadyCredited,
             });
           })()
         : settleSession({
             session: meetingSession,
             onTaskId: String(input.taskId),
-            assigneeId,
+            receiverId: assigneeId,
+            tasksByEmployee: await queuesFor(
+              creditsIn(meetingSession, ordinaryWindow(meetingSession)),
+            ),
             alreadyCredited,
-            tasks,
           });
 
       /**

@@ -303,7 +303,12 @@ test("a person with no tasks produces no updates and no error", () => {
   assert.equal(mins(r.creditedSecs), 30, "the meeting was still worth 30m");
 });
 
-test("no window means no updates at all", () => {
+test("no window means nothing is CREDITED — but the meeting is recorded", () => {
+  /* The sender never came, so the shared window is empty and nobody earns a
+     second. The session still happened, and the receiver's tasks record it:
+     refusing the credit must not refuse the history, or every surface that
+     asks "has this task ever met" goes on saying no after a meeting was held.
+     It used to return nothing at all, which lost that. */
   const s = session([[RECEIVER, 0, 60], [SUNIL, 0, 60]]);
   const r = settleCrossDeptSession({
     session: s,
@@ -311,7 +316,14 @@ test("no window means no updates at all", () => {
     tasksByEmployee: new Map([[RECEIVER, queueFor(RECEIVER, [task("P1")])]]),
   });
   assert.equal(r.creditedSecs, 0);
-  assert.deepEqual(r.updates, []);
+
+  assert.equal(r.updates.length, 1, "only the receiver, and only to record it");
+  const [u] = r.updates;
+  assert.equal(u.taskId, "P1");
+  assert.equal(u.newDueAtMs, null, "a worthless session moves no date");
+  assert.equal(u.newWindowSecs, null, "and grows no window");
+  assert.equal(u.totals.totalSecs, 0);
+  assert.notEqual(u.totals.firstStartedAtMs, null, "the meeting is on the record");
 });
 
 test("each person's own queue shifts once — the head, not every task", () => {

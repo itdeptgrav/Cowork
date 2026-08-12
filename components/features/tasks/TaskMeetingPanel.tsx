@@ -364,9 +364,15 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             Every task has its own room — there is nothing to schedule. Time
             spent here is added to your deadline, and to every other task you
             have on the go.{" "}
+            {/* Everybody in the room is credited on any task, so the sentence
+                that used to name only the receiver's deadline now says so.
+                What still differs between the two rules is the window — who has
+                to be present for the clock to run at all. */}
             {crossDept
-              ? `This work came from another department, so the clock runs only while ${counterpartyName} and ${receiverName} are both in the room — and each person in it is credited their own time, on their own tasks.`
-              : `The clock runs only while ${counterpartyName} is in the room.`}
+              ? `This work came from another department, so the clock runs only while ${counterpartyName} and ${receiverName} are both in the room.`
+              : `The clock runs only while ${counterpartyName} is in the room.`}{" "}
+            Everyone in the room is credited their own time in it, on their own
+            tasks.
           </p>
         </div>
 
