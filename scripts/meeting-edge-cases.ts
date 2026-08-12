@@ -219,7 +219,14 @@ check("three tasks all in progress", who([t("P1", "in_progress"), t("P2", "in_pr
 check("P1 completed, P2 and P3 live", who([t("P1", "completed"), t("P2", "in_progress"), t("P3", "in_progress")]), "P2,P3", "Rule 3 — P1 frozen");
 check("accepted but not started (kickoff)", who([t("K", "confirmed")]), "K", "the headline case");
 check("cancelled / rejected / in review / done", who([t("a", "cancelled"), t("b", "assignment_rejected"), t("c", "in_review"), t("d", "completed")]), "(none)");
-check("draft / awaiting approval / assigned", who([t("a", "draft"), t("b", "pending_approval"), t("c", "assigned"), t("d", "deadline_negotiation")]), "(none)");
+/* `assigned` is LIVE and unstarted — handed over, nobody has pressed play —
+   and it is the state the legacy engine actually reports for that (`open`).
+   Excluding it was why a kickoff moved no deadline in the running product
+   while the rules-level `confirmed` case below passed. Held work stays out:
+   a task at a gate has no agreed hours, so there is no committed deadline for
+   a meeting to move. */
+check("assigned — handed over, not started", who([t("c", "assigned")]), "c", "the kickoff the engine actually reports");
+check("draft / awaiting approval / negotiating", who([t("a", "draft"), t("b", "pending_approval"), t("d", "deadline_negotiation")]), "(none)");
 check("a colleague's task in the same call", who([t("mine", "in_progress"), t("theirs", "in_progress", "someone-else")]), "mine", "credit follows the receiver");
 check("already credited this session", who([t("P1", "in_progress"), t("P2", "in_progress")], ["P1"]), "P2", "retry is harmless");
 check("no tasks at all", who([]), "(none)");

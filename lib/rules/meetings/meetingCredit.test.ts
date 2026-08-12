@@ -182,16 +182,22 @@ test("CASE 12 — a session already credited to a task is not credited twice", (
   assert.deepEqual(targets, ["P2"]);
 });
 
-test("CASE 13 — live work is credited: accepted, or under way", () => {
+test("CASE 13 — live work is credited: handed over, accepted, or under way", () => {
   /* `confirmed` counts because a kickoff is held BEFORE the work starts — that
      is the feature's headline case, and excluding it made it worth nothing
-     there. `in_review` does not: the work is done and with a reviewer. */
+     there. `in_review` does not: the work is done and with a reviewer.
+     `assigned` counts for the same reason as `confirmed`, and it is the one
+     that mattered in practice: the legacy engine reports a live, unstarted,
+     handed-over task as `assigned` and never as `confirmed`, so with it
+     excluded the widening above was inert against the real product — a kickoff
+     credited the session, printed the minutes, and moved no deadline. */
   assert.equal(receivesCredit("in_progress"), true);
   assert.equal(receivesCredit("confirmed"), true);
+  assert.equal(receivesCredit("assigned"), true);
   for (const s of [
     "draft",
+    /* Held, not live: no agreed hours, so no committed deadline to move. */
     "pending_approval",
-    "assigned",
     "deadline_negotiation",
     "in_review",
     "completed",

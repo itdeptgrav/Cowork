@@ -44,6 +44,26 @@ export interface Attendance {
 export const PRESENCE_TIMEOUT_MS = 90_000;
 
 /**
+ * How long a row that has NEVER beaten is given before it lapses.
+ *
+ * **A silent row is not the same as a stopped one.** A row carrying beats and
+ * then stopping is somebody whose browser went away, and ninety seconds is
+ * plenty. A row that never beat at all was written by a client that does not
+ * send them — every row already in the store, and any tab still running the
+ * build that predates this — and its owner may be sitting in the room right
+ * now. Evicting those on the same ninety seconds would settle live meetings
+ * under the people having them, which is a worse fault than the one being
+ * fixed: the end-to-end proof caught exactly that, closing a ten-minute
+ * conversation one minute in.
+ *
+ * Fifteen minutes is the compromise, and it is a compromise: an old tab in a
+ * meeting longer than that can still be dropped. That window closes the moment
+ * everyone has reloaded, because every row written from here on carries a beat
+ * from its very first instant.
+ */
+export const SILENT_ROW_GRACE_MS = 15 * 60_000;
+
+/**
  * When this row stopped being presence, or null if it still is.
  *
  * **A row is presence while it is being beaten, not while `leftAt` is null.**
@@ -63,8 +83,13 @@ export const PRESENCE_TIMEOUT_MS = 90_000;
  */
 export function departureOf(a: Attendance, nowMs: number): number | null {
   if (a.leftAtMs !== null) return a.leftAtMs;
-  const seen = a.lastSeenAtMs ?? a.joinedAtMs;
-  return nowMs - seen > PRESENCE_TIMEOUT_MS ? seen : null;
+  /* Two tiers, and the difference matters — see `SILENT_ROW_GRACE_MS`. A row
+     that beat and stopped is gone; a row that never beat may be a client that
+     cannot beat, and is given far longer before anybody acts on its silence. */
+  const beaten = a.lastSeenAtMs !== null && a.lastSeenAtMs !== undefined;
+  const seen = beaten ? a.lastSeenAtMs! : a.joinedAtMs;
+  const grace = beaten ? PRESENCE_TIMEOUT_MS : SILENT_ROW_GRACE_MS;
+  return nowMs - seen > grace ? seen : null;
 }
 
 /**
@@ -437,6 +462,24 @@ export const CREDITED_STATUSES: readonly TaskStatus[] = [
      was handed over, was worth nothing until somebody pressed play. That is the
      one case the feature was asked for. */
   "confirmed",
+  /**
+   * **And `assigned`, which is what that widening actually meant.**
+   *
+   * The line above was written in the domain's vocabulary, and the legacy
+   * adapter never produces `confirmed`: it maps legacy `confirmed` to
+   * `in_progress`, and a task that is live, handed over and unstarted — legacy
+   * `open` — to `assigned` (`toTaskStatus` in `taskMap.ts`). So against the
+   * real engine the widening changed nothing at all, and the headline case it
+   * was written for stayed broken: a kickoff on a task nobody had pressed play
+   * on credited the session, showed the minutes on it, and moved no deadline
+   * and no budget. Reported exactly that way — sessions worth 00:01:07 and
+   * 00:04:32 above a task showing `Total 00:00:00`.
+   *
+   * `assigned` is live-and-unstarted, not held: a task waiting at a gate is
+   * `pending_approval` and stays out, because until the hours are agreed there
+   * is no committed deadline for a meeting to move.
+   */
+  "assigned",
 ];
 
 export function receivesCredit(status: TaskStatus): boolean {

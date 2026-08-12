@@ -118,3 +118,57 @@ test("the meeting suggestion sits UNDER the obligation, never instead of it", ()
     "the hint does not stop once a meeting has actually been held",
   );
 });
+
+/* ── The three figures, and the session list beneath them ─────────────────── */
+
+test("the totals are read from the sessions, not from a copy that can go missing", () => {
+  /* Reported: `Total 00:00:00` and `First start —` directly above two finished
+     sessions worth 00:01:07 and 00:04:32. The task carries a denormalised copy
+     of these three figures, written by the settlement; the sessions are the
+     record. One fact with two sources eventually disagrees, and when it did,
+     the reader was looking at the answer and being told there wasn't one.
+
+     Deriving them from the list the panel already draws makes that particular
+     contradiction impossible — the total is the sum of the column it sits
+     above, by construction. */
+  const from = src.indexOf("const summary =");
+  assert.ok(from > 0, "the derived summary is gone");
+  const body = src.slice(from, from + 900);
+
+  assert.match(
+    body,
+    /settled\.reduce\(\(n, s\) => n \+ s\.creditedSecs, 0\)/,
+    "the total is not summed from the sessions, so it can disagree with the " +
+      "rows printed underneath it",
+  );
+
+  /* And the figures render from that, never straight from the task. */
+  for (const field of ["firstStartedAt", "lastEndedAt", "totalSecs"]) {
+    assert.ok(
+      !new RegExp(`meetings\.${field}\s*\?`).test(
+        src.slice(src.indexOf("<dl "), src.indexOf("</dl>")),
+      ) && !src.includes(`formatTimer(meetings.${field})`),
+      `the ${field} figure still reads the task's stored copy directly`,
+    );
+  }
+
+  /* The stored copy stays as the fallback: a task card with no session list to
+     hand still has to show something, and "no meetings yet" is an answer. */
+  assert.match(
+    body,
+    /:\s*meetings;/,
+    "nothing falls back to the stored totals while the sessions are loading",
+  );
+});
+
+test("a session that has not settled is left out of the total", () => {
+  /* `creditedSecs` is zero until a session closes, so including a running one
+     would show a total that drops when it settles. The column is headed "Time
+     counted for your deadline"; an unfinished meeting has not counted yet. */
+  const from = src.indexOf("const settled =");
+  assert.ok(from > 0, "the settled filter is gone");
+  assert.match(
+    src.slice(from, from + 120),
+    /list\.filter\(\(s\) => s\.endedAt !== null\)/,
+  );
+});

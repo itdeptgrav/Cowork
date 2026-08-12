@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import {
   PRESENCE_TIMEOUT_MS,
+  SILENT_ROW_GRACE_MS,
   departureOf,
   roomEmptiedAtMs,
   roomIsEmpty,
@@ -85,7 +86,7 @@ test("a row from before beats existed lapses from its join", () => {
      meeting reported in the screenshot would stay open for ever — which is
      precisely what it did. */
   const a = row("rakesh", 0);
-  assert.equal(departureOf(a, T0 + min(1)), null, "inside the timeout, present");
+  assert.equal(departureOf(a, T0 + min(1)), null, "inside the grace, present");
   assert.equal(
     departureOf(a, T0 + min(30)),
     T0,
@@ -96,9 +97,39 @@ test("a row from before beats existed lapses from its join", () => {
 /* ── The room, and when it emptied ────────────────────────────────────────── */
 
 test("a room nobody is beating is empty, however many open rows it has", () => {
-  /* The reported shape: nine rows, several never closed, nobody there. */
+  /* The reported shape: nine rows, several never closed, nobody there. None of
+     them ever beat — they predate beats entirely — so they clear on the longer
+     grace rather than the ninety seconds a stopped beat gets. */
   const nine = Array.from({ length: 9 }, (_, i) => row(`person-${i}`, i));
-  assert.equal(roomIsEmpty(nine, T0 + min(20)), true);
+  assert.equal(
+    roomIsEmpty(nine, T0 + min(10)),
+    false,
+    "silent rows are given the benefit of the doubt at first — an old tab may " +
+      "be sitting in the room unable to say so",
+  );
+  assert.equal(roomIsEmpty(nine, T0 + min(40)), true);
+});
+
+test("a stopped beat clears in ninety seconds; a silent row takes far longer", () => {
+  /* The two tiers, side by side. Ninety seconds would be a fine answer for
+     both if every client beat — and the end-to-end proof showed what happens
+     when one does not: a ten-minute conversation settled one minute in,
+     underneath the people having it. */
+  const beaten = row("rakesh", 0, { lastSeenMin: 0 });
+  const silent = row("soumya", 0);
+  const soonAfter = T0 + PRESENCE_TIMEOUT_MS + 1000;
+
+  assert.notEqual(departureOf(beaten, soonAfter), null, "stopped beating, gone");
+  assert.equal(
+    departureOf(silent, soonAfter),
+    null,
+    "never beat, so its silence says nothing yet",
+  );
+  assert.notEqual(
+    departureOf(silent, T0 + SILENT_ROW_GRACE_MS + 1000),
+    null,
+    "but it cannot hold the room open for ever either",
+  );
 });
 
 test("one person still beating keeps the room occupied", () => {

@@ -295,6 +295,45 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
     void end(abandonedId).then(() => refetchSessions());
   }, [abandonedId, end, refetchSessions]);
 
+  /**
+   * The three figures, **read from the sessions rather than from the task.**
+   *
+   * The task carries a denormalised copy — `meetingFirstStartedAt`,
+   * `meetingLastEndedAt`, `meetingTotalSecs` — written by the settlement. It is
+   * a cache of what the session log already says, and one fact with two sources
+   * eventually disagrees: reported as a panel showing `Total 00:00:00` and
+   * `First start —` directly above two finished sessions worth 00:01:07 and
+   * 00:04:32. Whatever went wrong with that write, the reader was looking at
+   * the answer and being told there wasn't one.
+   *
+   * The sessions are the record. They are already loaded to draw the list
+   * below, so this costs nothing, and it cannot fall out of step with the rows
+   * it sits above. The stored copy still exists for everything that has no
+   * session list to hand — a task card, a queue projection — which is why it is
+   * kept as the fallback while the list is loading.
+   *
+   * `creditedSecs` and not wall clock, deliberately: the column beneath is
+   * headed "Time counted for your deadline", and a total that summed something
+   * else would not be the sum of the column.
+   */
+  const settled = list.filter((s) => s.endedAt !== null);
+  const summary =
+    settled.length > 0
+      ? {
+          firstStartedAt: settled.reduce(
+            (earliest, s) =>
+              !earliest || s.startedAt < earliest ? s.startedAt : earliest,
+            "",
+          ),
+          lastEndedAt: settled.reduce<string | null>(
+            (latest, s) =>
+              !latest || (s.endedAt ?? "") > latest ? s.endedAt : latest,
+            null,
+          ),
+          totalSecs: settled.reduce((n, s) => n + s.creditedSecs, 0),
+        }
+      : meetings;
+
   const live = !liveSession
     ? null
     : crossDept
@@ -479,14 +518,14 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
         <Figure
           label="First start"
           value={
-            meetings.firstStartedAt ? formatDateTime(meetings.firstStartedAt) : "—"
+            summary.firstStartedAt ? formatDateTime(summary.firstStartedAt) : "—"
           }
         />
         <Figure
           label="Last end"
-          value={meetings.lastEndedAt ? formatDateTime(meetings.lastEndedAt) : "—"}
+          value={summary.lastEndedAt ? formatDateTime(summary.lastEndedAt) : "—"}
         />
-        <Figure label="Total" value={formatTimer(meetings.totalSecs)} />
+        <Figure label="Total" value={formatTimer(summary.totalSecs)} />
       </dl>
 
       <div className="mt-4 border-t border-hairline pt-3">
