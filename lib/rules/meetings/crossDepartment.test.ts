@@ -2,9 +2,11 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   NO_MEETINGS,
+  conversationWindow,
   creditInWindowFor,
   creditsInWindow,
   liveCrossDeptFigures,
+  secsOf,
   settleCrossDeptSession,
   sharedWindowSecs,
   type SettlementTask,
@@ -15,10 +17,25 @@ import {
  *
  * Two things differ from an ordinary task, and both are here:
  *
- *  1. The clock runs only while the SENDER and the RECEIVER are in the room
- *     together. Either one missing and nobody earns anything.
+ *  1. The clock runs while **any two people are in the room at the same time**,
+ *     rather than only while the person who assigned the work is present.
  *  2. Everyone in that window earns their OWN time in it, against their OWN
  *     tasks — not the meeting's full length, and not each other's queues.
+ *
+ * ## The window used to name two people, and that was the bug
+ *
+ * It was the intersection of the SENDER of record and the RECEIVER of record.
+ * Both absent, and the meeting was worth nothing to anybody — including the
+ * people who were in it, talking. On cross-department work the sender of record
+ * is frequently the department head who forwarded the task rather than anyone
+ * in the call, so the window was empty on ordinary genuine meetings and nobody
+ * was credited a second. Reported exactly that way, and changed by decision:
+ * only the people who actually attended are credited, and two of them make it
+ * a meeting.
+ *
+ * **Two people, not two particular people.** Somebody alone in a room still
+ * earns nothing however long they leave it open, which is the whole point of
+ * measuring attendance — you cannot hold a meeting with yourself.
  *
  * The worked example this was agreed from, and the case that decides the shape:
  *
@@ -28,11 +45,15 @@ import {
  *       Sunil  (approver) 10:30-10:40
  *       Umung  (approver) 10:55-11:00
  *
- *     window = 10:10-10:50 = 40m
- *       Pramod +40   Rakesh +40   Sunil +10   Umung 0
+ *     conversation = 10:10-10:50 and 10:55-11:00 = 45m
+ *       Pramod +45   Rakesh +40   Sunil +10   Umung +5
  *
- * Umung is the one worth staring at: he was genuinely in the room for five
- * minutes, and they were five minutes after the meeting stopped being a meeting.
+ * Umung is the one worth staring at, and he is what changed. He arrives at
+ * 10:55, long after the sender has gone — under the old rule his five minutes
+ * were "in a room, not in a meeting" and worth nothing. Pramod was still there,
+ * so under the two-people rule those five minutes are a conversation and both
+ * of them earn it. The stretch from 10:50 to 10:55, with Pramod alone, is worth
+ * nothing to anybody.
  */
 
 const T0 = Date.UTC(2026, 7, 6, 4, 30); /* 10:00 IST */
@@ -64,7 +85,7 @@ function session(
 
 /* ── The agreed example, end to end ───────────────────────────────────────── */
 
-test("THE WORKED EXAMPLE — 40m window, four people, four different answers", () => {
+test("THE WORKED EXAMPLE — 45m of conversation, four people, four answers", () => {
   const s = session([
     [RECEIVER, 0, 60],
     [SENDER, 10, 50],
@@ -72,13 +93,22 @@ test("THE WORKED EXAMPLE — 40m window, four people, four different answers", (
     [UMUNG, 55, 60],
   ]);
 
-  assert.equal(mins(sharedWindowSecs(s)), 40, "window is 10:10-10:50");
+  assert.equal(
+    mins(secsOf(conversationWindow(s))),
+    45,
+    "10:10-10:50 with the sender, then 10:55-11:00 with Umung",
+  );
   assert.deepEqual(
     creditsInWindow(s).map((c) => `${c.employeeId} ${mins(c.secs)}m`),
-    ["pramod 40m", "rakesh 40m", "sunil 10m"],
-    "Umung earns nothing and is not listed — he arrived after the window closed",
+    ["pramod 45m", "rakesh 40m", "sunil 10m", "umung 5m"],
+    "each earns their own time inside the conversation, and nobody earns the " +
+      "five minutes Pramod spent alone",
   );
-  assert.equal(creditInWindowFor(s, UMUNG), 0);
+  assert.equal(creditInWindowFor(s, UMUNG), 5 * 60);
+
+  /* The two sides were together for forty of those forty-five. Still true, and
+     no longer what decides the credit. */
+  assert.equal(mins(sharedWindowSecs(s)), 40);
 });
 
 /* ── The window ───────────────────────────────────────────────────────────── */
@@ -101,16 +131,50 @@ test("the window closes when the EARLIER of the two leaves", () => {
   assert.equal(mins(sharedWindowSecs(session([[SENDER, 0, 60], [RECEIVER, 0, 30]]))), 30);
 });
 
-test("one side missing entirely — nobody earns anything", () => {
-  /* The anti-cheat. A room full of people without the other side is not a
-     meeting about this work. */
+test("one side missing — the people who DID attend are still credited", () => {
+  /* The reported case, and the decision. A room full of people without the
+     named sender is still a meeting: on cross-department work the sender of
+     record is often the department head who forwarded the task and never joins
+     the call. Crediting nobody for a conversation that plainly happened is what
+     this rule was changed to stop. */
   const noSender = session([[RECEIVER, 0, 60], [SUNIL, 0, 60], [UMUNG, 0, 60]]);
-  assert.equal(sharedWindowSecs(noSender), 0);
-  assert.deepEqual(creditsInWindow(noSender), []);
+  assert.equal(mins(secsOf(conversationWindow(noSender))), 60);
+  assert.deepEqual(
+    creditsInWindow(noSender).map((c) => `${c.employeeId} ${mins(c.secs)}m`),
+    ["pramod 60m", "sunil 60m", "umung 60m"],
+  );
 
   const noReceiver = session([[SENDER, 0, 60], [SUNIL, 0, 60]]);
-  assert.equal(sharedWindowSecs(noReceiver), 0);
-  assert.deepEqual(creditsInWindow(noReceiver), []);
+  assert.deepEqual(
+    creditsInWindow(noReceiver).map((c) => `${c.employeeId} ${mins(c.secs)}m`),
+    ["rakesh 60m", "sunil 60m"],
+  );
+
+  /* Both sides absent is no different: it is the people in the room that make
+     it a meeting, not which people they are. */
+  const neither = session([[SUNIL, 0, 30], [UMUNG, 10, 60]]);
+  assert.deepEqual(
+    creditsInWindow(neither).map((c) => `${c.employeeId} ${mins(c.secs)}m`),
+    ["sunil 20m", "umung 20m"],
+    "10:10-10:30, the stretch they were both there",
+  );
+});
+
+test("ONE person, however long — nobody earns alone", () => {
+  /* The anti-cheat, and all that is left of it. Without this somebody could
+     open a room, leave it running, and mint an unlimited deadline extension for
+     an empty call — which is the reason attendance is recorded at all. */
+  const alone = session([[RECEIVER, 0, 60]]);
+  assert.equal(secsOf(conversationWindow(alone)), 0);
+  assert.deepEqual(creditsInWindow(alone), []);
+
+  /* Nor by rejoining: a reconnect is two rows and one person. */
+  const rejoined = session([[RECEIVER, 0, 30], [RECEIVER, 20, 60]]);
+  assert.equal(
+    secsOf(conversationWindow(rejoined)),
+    0,
+    "somebody met themselves",
+  );
 });
 
 test("they were both there, but never at the same time", () => {
@@ -171,19 +235,25 @@ test("the two sides always earn exactly the window", () => {
   assert.equal(creditInWindowFor(s, RECEIVER), w);
 });
 
-test("a third party earns only the part of their visit inside the window", () => {
+test("a third party earns only the part of their visit spent with somebody", () => {
+  /* Sunil is there for the whole hour, and the first twenty minutes of it he is
+     on his own. Waiting in an empty room is not a meeting. */
   const s = session([
-    [RECEIVER, 0, 60],
-    [SENDER, 10, 50],
-    /* Sunil is there 10:00-11:00 — an hour — but the window is only 40m. */
     [SUNIL, 0, 60],
+    [RECEIVER, 20, 60],
+    [SENDER, 30, 50],
   ]);
-  assert.equal(mins(creditInWindowFor(s, SUNIL)), 40, "capped by the window");
+  assert.equal(mins(secsOf(conversationWindow(s))), 40, "10:20-11:00");
+  assert.equal(mins(creditInWindowFor(s, SUNIL)), 40, "not the 60 he sat for");
 });
 
-test("a third party who arrives before the window earns from when it opens", () => {
-  const s = session([[RECEIVER, 0, 60], [SENDER, 30, 60], [SUNIL, 0, 45]]);
-  assert.equal(mins(creditInWindowFor(s, SUNIL)), 15, "10:30-10:45");
+test("a third party in the room with the receiver alone still earns it", () => {
+  /* The change, at its smallest. The sender never comes; two other people talk
+     for forty-five minutes. Under the old rule that was worth nothing to
+     either of them. */
+  const s = session([[RECEIVER, 0, 60], [SUNIL, 0, 45]]);
+  assert.equal(mins(creditInWindowFor(s, SUNIL)), 45);
+  assert.equal(mins(creditInWindowFor(s, RECEIVER)), 45, "and only the 45");
 });
 
 test("a third party's own gaps are their own — merged, then clipped", () => {
@@ -304,12 +374,14 @@ test("a person with no tasks produces no updates and no error", () => {
 });
 
 test("no window means nothing is CREDITED — but the meeting is recorded", () => {
-  /* The sender never came, so the shared window is empty and nobody earns a
-     second. The session still happened, and the receiver's tasks record it:
-     refusing the credit must not refuse the history, or every surface that
-     asks "has this task ever met" goes on saying no after a meeting was held.
-     It used to return nothing at all, which lost that. */
-  const s = session([[RECEIVER, 0, 60], [SUNIL, 0, 60]]);
+  /* Nobody to talk to, so nobody earns a second. The session still happened,
+     and the receiver's tasks record it: refusing the credit must not refuse the
+     history, or every surface that asks "has this task ever met" goes on saying
+     no after a meeting was held. It used to return nothing at all, which lost
+     that.
+     One person alone is the only empty window left — a room with two people in
+     it is a conversation whoever they are. */
+  const s = session([[RECEIVER, 0, 60]]);
   const r = settleCrossDeptSession({
     session: s,
     onTaskId: "T",
@@ -458,13 +530,25 @@ test("LIVE: each person watching sees their OWN number, not the meeting's", () =
   assert.equal(sunil.counting, false, "he has left the room");
 });
 
-test("LIVE: nothing counts for anybody while one side is missing", () => {
+test("LIVE: two people in the room count, whoever they are", () => {
+  /* The sender is absent and it counts anyway. The panel used to read "nothing
+     is being added" through a conversation that was in fact being added to
+     both of them — it required the two NAMED sides, and on cross-department
+     work the named sender is often somebody who never joins. */
   const s = session([[RECEIVER, 0, null], [SUNIL, 0, null]], 30);
   for (const who of [RECEIVER, SUNIL]) {
     const f = liveCrossDeptFigures(s, who, at(30));
-    assert.equal(f.creditedSecs, 0, `${who} earned while the sender was absent`);
-    assert.equal(f.counting, false);
+    assert.equal(mins(f.creditedSecs), 30, `${who} earned nothing`);
+    assert.equal(f.counting, true);
   }
+});
+
+test("LIVE: one person alone is not counting, however long they wait", () => {
+  const s = session([[RECEIVER, 0, null]], 30);
+  const f = liveCrossDeptFigures(s, RECEIVER, at(30));
+  assert.equal(f.creditedSecs, 0);
+  assert.equal(f.counting, false);
+  assert.equal(mins(f.elapsedSecs), 30, "the room is open, and says so");
 });
 
 test("LIVE: somebody outside the room sees the meeting but earns nothing", () => {

@@ -91,7 +91,15 @@ test("the header states the rule that actually applies to this task", () => {
   assert.ok(from > 0, "the introduction was rewritten");
   const para = src.slice(from, from + 800);
   assert.match(para, /crossDept/, "the introduction ignores which rule applies");
-  assert.match(para, /both in the room/, "the cross-department wording is missing");
+  /* "two people in the room together", not "both sides". The cross-department
+     window stopped naming anybody: the clock runs whenever any two people are
+     in the room, because the sender of record is often the head who forwarded
+     the task and never joins the call. */
+  assert.match(
+    para,
+    /two people are in the room together/,
+    "the cross-department wording is missing",
+  );
 });
 
 /* ── The suggestion under "Your move" ─────────────────────────────────────── */

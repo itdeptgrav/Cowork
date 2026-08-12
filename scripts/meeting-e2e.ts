@@ -382,7 +382,12 @@ async function main() {
 
   /* ── The anti-cheat still holds ───────────────────────────────────────────── */
 
-  heading("ANTI-CHEAT  (the same room, without the sender)");
+  /* On a CROSS-DEPARTMENT task the clock runs while any two people are in the
+     room together — the sender of record is often the head who forwarded the
+     work and never joins the call, and crediting nobody for a conversation
+     that plainly happened is what that changed. So the protection is no longer
+     "the named sender must be there"; it is that nobody earns ALONE. */
+  heading("ANTI-CHEAT  (a room with one person in it, and a room with two)");
 
   const budgetBefore = budgetOf("R-1");
   setActingId(RECEIVER);
@@ -394,7 +399,6 @@ async function main() {
   soloSession.startedAt = at(16);
   soloSession.attendance = [
     { employeeId: RECEIVER, joinedAt: at(16), leftAt: at(19) },
-    { employeeId: APPROVER, joinedAt: at(16), leftAt: at(19) },
   ];
   const soloEnd = await repo.endTaskMeeting({
     taskId: HOST as never,
@@ -402,8 +406,32 @@ async function main() {
   });
   if (!soloEnd.ok) throw new Error(soloEnd.message);
 
-  check("three minutes without the sender", mins(soloEnd.data.creditedSecs), "0m");
-  check("receiver's budget after it", mins(budgetOf("R-1") - budgetBefore), "0m", "nothing earned");
+  check("three minutes on his own", mins(soloEnd.data.creditedSecs), "0m");
+  check("receiver's budget after it", mins(budgetOf("R-1") - budgetBefore), "0m", "nobody earns alone");
+
+  /* And the case the rule was changed for: two people, neither of them the
+     sender of record. */
+  const pairBefore = { R: budgetOf("R-1"), A: budgetOf("A-1") };
+  setActingId(RECEIVER);
+  const pair = await repo.joinTaskMeeting(HOST as never);
+  if (!pair.ok) throw new Error(pair.message);
+  const pairSession = getStore().taskMeetingSessions.find(
+    (x) => x.id === pair.data.sessionId,
+  )!;
+  pairSession.startedAt = at(20);
+  pairSession.attendance = [
+    { employeeId: RECEIVER, joinedAt: at(20), leftAt: at(25) },
+    { employeeId: APPROVER, joinedAt: at(20), leftAt: at(25) },
+  ];
+  const pairEnd = await repo.endTaskMeeting({
+    taskId: HOST as never,
+    sessionId: pair.data.sessionId,
+  });
+  if (!pairEnd.ok) throw new Error(pairEnd.message);
+
+  check("five minutes, sender absent — worth", mins(pairEnd.data.creditedSecs), "5m", "two people is a meeting");
+  check("  the receiver credited", mins(budgetOf("R-1") - pairBefore.R), "5m");
+  check("  the approver credited", mins(budgetOf("A-1") - pairBefore.A), "5m", "his own tasks");
 
   /* ── Summary ──────────────────────────────────────────────────────────────── */
 

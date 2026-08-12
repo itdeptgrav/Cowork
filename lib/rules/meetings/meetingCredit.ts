@@ -254,7 +254,8 @@ function intersect(a: readonly Span[], b: readonly Span[]): Span[] {
   return out;
 }
 
-function secsOf(spans: readonly Span[]): number {
+/** Whole seconds covered by a set of merged spans. */
+export function secsOf(spans: readonly Span[]): number {
   return Math.floor(spans.reduce((n, s) => n + (s.to - s.from), 0) / 1000);
 }
 
@@ -280,7 +281,76 @@ function secsOf(spans: readonly Span[]): number {
  * the sender has left was in a room, but not in the meeting.
  */
 
-/** The stretch a cross-department meeting is actually running. */
+/**
+ * The stretch a cross-department meeting is actually running: **any two people
+ * in the room at the same time** — OWNER DECISION.
+ *
+ * ## What this replaced, and why
+ *
+ * It used to be the intersection of two NAMED people's presence: the sender of
+ * record and the receiver of record. Both absent, and the meeting was worth
+ * nothing to anybody — including the people who really were in it, talking.
+ *
+ * On cross-department work the sender of record is frequently not the person in
+ * the call. The engine names whoever forwarded the task, which is often a
+ * department head; the conversation is held by the people doing the work. So
+ * the window was empty on ordinary, genuine meetings and nobody was credited a
+ * second. Reported exactly that way.
+ *
+ * **Two people, not two particular people.** That is what makes it a
+ * conversation rather than a room, and it keeps the whole point of the
+ * measurement: somebody sitting alone earns nothing, however long they leave
+ * the room open. One person cannot hold a meeting with themselves, so the
+ * anti-cheat survives without naming anybody.
+ *
+ * Half-open spans, so somebody arriving at the instant another leaves never
+ * counts as having met them.
+ */
+export function conversationWindow(session: MeetingSession): Span[] {
+  const people = [
+    ...new Set(session.attendance.map((a) => a.employeeId).filter(Boolean)),
+  ];
+
+  /* Merged per person first — a reconnect is two rows and one presence, and
+     counting it as two would let somebody meet themselves. */
+  const events: { at: number; delta: number }[] = [];
+  for (const id of people) {
+    for (const span of presenceOf(session, id)) {
+      events.push({ at: span.from, delta: 1 });
+      events.push({ at: span.to, delta: -1 });
+    }
+  }
+  /* Departures before arrivals at the same instant: A leaving at 10:10 and B
+     arriving at 10:10 were never in the room together. */
+  events.sort((a, b) => a.at - b.at || a.delta - b.delta);
+
+  const out: Span[] = [];
+  let inRoom = 0;
+  let from = 0;
+  for (const e of events) {
+    const before = inRoom;
+    inRoom += e.delta;
+    if (before < 2 && inRoom >= 2) from = e.at;
+    else if (before >= 2 && inRoom < 2 && e.at > from) {
+      const last = out[out.length - 1];
+      /* Touching spans are one span: the count can dip to one and recover at
+         the same instant when somebody swaps out, and two abutting halves would
+         sum the same but read as two conversations. */
+      if (last && last.to === from) last.to = e.at;
+      else out.push({ from, to: e.at });
+    }
+  }
+  return out;
+}
+
+/**
+ * The old cross-department window: two NAMED people, both present.
+ *
+ * No longer what the rule uses — see `conversationWindow`. Kept because it is
+ * the honest answer to "were the two sides of this work in the room together",
+ * which the panel may yet want to say, and because deleting it would leave the
+ * tests that pin the intersection arithmetic with nothing to test.
+ */
 export function sharedWindow(
   session: MeetingSession & { receiverId: string },
 ): Span[] {
@@ -313,12 +383,14 @@ export function sharedWindowSecs(
   return secsOf(sharedWindow(session));
 }
 
-/** What one person earned: their own presence inside the shared window. */
+/** What one person earned: their own presence inside the conversation. */
 export function creditInWindowFor(
-  session: MeetingSession & { receiverId: string },
+  session: MeetingSession,
   employeeId: string,
 ): number {
-  return secsOf(intersect(presenceOf(session, employeeId), sharedWindow(session)));
+  return secsOf(
+    intersect(presenceOf(session, employeeId), conversationWindow(session)),
+  );
 }
 
 /**
@@ -333,9 +405,9 @@ export function creditInWindowFor(
  * case.
  */
 export function creditsInWindow(
-  session: MeetingSession & { receiverId: string },
+  session: MeetingSession,
 ): { employeeId: string; secs: number }[] {
-  return creditsIn(session, sharedWindow(session));
+  return creditsIn(session, conversationWindow(session));
 }
 
 /**
@@ -441,11 +513,25 @@ export function liveCrossDeptFigures(
   return {
     elapsedSecs: Math.floor(Math.max(0, nowMs - session.startedAtMs) / 1000),
     creditedSecs: creditInWindowFor(upToNow, viewerId),
+    /* Counting when the READER is in a room that holds a conversation — two
+       people at once, whoever they are. It used to require the two NAMED sides
+       to be present, which read "nothing is being added" through meetings that
+       were being added to everybody, and was worth nothing on the many
+       cross-department calls the sender of record never joins. */
     counting:
-      isPresent(upToNow, session.counterpartyId, nowMs) &&
-      isPresent(upToNow, session.receiverId, nowMs) &&
-      isPresent(upToNow, viewerId, nowMs),
+      isPresent(upToNow, viewerId, nowMs) &&
+      peopleInRoom(upToNow, nowMs) >= 2,
   };
+}
+
+/** How many distinct people are in the room at `nowMs`. */
+export function peopleInRoom(session: MeetingSession, nowMs: number): number {
+  const here = new Set<string>();
+  for (const a of session.attendance) {
+    if (!a.employeeId || here.has(a.employeeId)) continue;
+    if (isPresent(session, a.employeeId, nowMs)) here.add(a.employeeId);
+  }
+  return here.size;
 }
 
 /**
@@ -952,10 +1038,10 @@ export function settleCrossDeptSession(input: {
        — four people in a forty-minute meeting cost forty minutes of wall clock,
        not a hundred and sixty. This is the figure the panel shows and the one
        written on the session record. */
-    creditedSecs: sharedWindowSecs(input.session),
+    creditedSecs: secsOf(conversationWindow(input.session)),
     updates: settleEveryone({
       session: input.session,
-      window: sharedWindow(input.session),
+      window: conversationWindow(input.session),
       onTaskId: input.onTaskId,
       recordForEmployeeId: input.session.receiverId,
       tasksByEmployee: input.tasksByEmployee,

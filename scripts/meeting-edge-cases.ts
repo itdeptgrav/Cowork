@@ -18,9 +18,11 @@
 import {
   NO_MEETINGS,
   addSession,
+  conversationWindow,
   creditTargets,
   creditableSecs,
   creditsInWindow,
+  secsOf,
   settleCrossDeptSession,
   settleSession,
   sharedWindowSecs,
@@ -370,15 +372,24 @@ const agreed = cross([
   [SUNIL, "10:30", "10:40"],
   [UMUNG, "10:55", "11:00"],
 ]);
-check("the shared window", mins(sharedWindowSecs(agreed)), "40m", "10:10 → 10:50");
-check("Pramod (receiver) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === ASSIGNEE)?.secs ?? 0), "40m");
-check("Rakesh (sender) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === CREATOR)?.secs ?? 0), "40m", "on HIS own tasks");
-check("Sunil (10:30-10:40) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === SUNIL)?.secs ?? 0), "10m", "only his own overlap");
-check("Umung (10:55-11:00) earns", mins(creditsInWindow(agreed).find((c) => c.employeeId === UMUNG)?.secs ?? 0), "0m", "window had closed");
+const earned = (s: ReturnType<typeof cross>, who: string) =>
+  mins(creditsInWindow(s).find((c) => c.employeeId === who)?.secs ?? 0);
 
-check("receiver alone, room full of others", mins(sharedWindowSecs(cross([[ASSIGNEE, "10:00", "11:00"], [SUNIL, "10:00", "11:00"], [UMUNG, "10:00", "11:00"]]))), "0m", "one side missing");
-check("sender alone", mins(sharedWindowSecs(cross([[CREATOR, "10:00", "11:00"], [SUNIL, "10:00", "11:00"]]))), "0m");
-check("both there, never together", mins(sharedWindowSecs(cross([[CREATOR, "10:00", "10:20"], [ASSIGNEE, "10:30", "11:00"]]))), "0m");
+/* The clock runs while ANY TWO people are in the room together — the sender of
+   record on cross-department work is often the head who forwarded the task and
+   never joins the call, and requiring two NAMED people meant a conversation
+   that plainly happened credited nobody a second. */
+check("the conversation", mins(secsOf(conversationWindow(agreed))), "45m", "10:10→10:50, then 10:55→11:00");
+check("Pramod (receiver) earns", earned(agreed, ASSIGNEE), "45m", "everything but his 5m alone");
+check("Rakesh (sender) earns", earned(agreed, CREATOR), "40m", "on HIS own tasks");
+check("Sunil (10:30-10:40) earns", earned(agreed, SUNIL), "10m", "only his own overlap");
+check("Umung (10:55-11:00) earns", earned(agreed, UMUNG), "5m", "Pramod was still there");
+
+check("receiver + two others, no sender", earned(cross([[ASSIGNEE, "10:00", "11:00"], [SUNIL, "10:00", "11:00"], [UMUNG, "10:00", "11:00"]]), ASSIGNEE), "60m", "still a meeting");
+check("sender + one other, no receiver", earned(cross([[CREATOR, "10:00", "11:00"], [SUNIL, "10:00", "11:00"]]), CREATOR), "60m");
+check("ONE person, however long", mins(secsOf(conversationWindow(cross([[ASSIGNEE, "10:00", "11:00"]])))), "0m", "nobody earns alone");
+check("one person, rejoining himself", mins(secsOf(conversationWindow(cross([[ASSIGNEE, "10:00", "10:40"], [ASSIGNEE, "10:30", "11:00"]])))), "0m", "cannot meet yourself");
+check("both there, never together", mins(secsOf(conversationWindow(cross([[CREATOR, "10:00", "10:20"], [ASSIGNEE, "10:30", "11:00"]])))), "0m");
 check("sender drops 10:20-10:40 and returns", mins(sharedWindowSecs(cross([[ASSIGNEE, "10:00", "11:00"], [CREATOR, "10:00", "10:20"], [CREATOR, "10:40", "11:00"]]))), "40m", "the gap is not counted");
 check("sender's overlapping rejoin", mins(sharedWindowSecs(cross([[ASSIGNEE, "10:00", "11:00"], [CREATOR, "10:00", "10:30"], [CREATOR, "10:20", "10:50"]]))), "50m", "merged, not 60m");
 

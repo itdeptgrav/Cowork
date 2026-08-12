@@ -8376,9 +8376,11 @@ export class MockRepository implements CoworkRepository {
       ? settleCrossDeptSession({
           session: { ...meetingSession, receiverId: assigneeId },
           onTaskId: String(session.taskId),
-          tasksByEmployee: queuesFor(
-            creditsInWindow({ ...meetingSession, receiverId: assigneeId }),
-          ),
+          /* The conversation window asks only how many people were in the room
+             together, so it needs no `receiverId` — which is the point of the
+             change: a cross-department meeting the named sender never joined is
+             still a meeting, and the people in it are still credited. */
+          tasksByEmployee: queuesFor(creditsInWindow(meetingSession)),
           alreadyCredited,
         })
       : settleSession({

@@ -347,8 +347,8 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
     ? ""
     : crossDept
       ? live.counting
-        ? `${counterpartyName} and ${receiverName} are both in the room, so this is being added to your deadlines.`
-        : `Nothing is being added to yours — it counts only while ${counterpartyName} and ${receiverName} are both in the room, and you are too.`
+        ? "There is more than one of you in the room, so this is being added to your deadlines."
+        : "Nothing is being added to yours — it counts only while you are in the room with somebody else."
       : live.counting
         ? `${counterpartyName} is in the room, so this is being added to your deadlines.`
         : `Nothing is being added — ${counterpartyName} is not in the room. Time only counts while they are.`;
@@ -369,7 +369,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                 What still differs between the two rules is the window — who has
                 to be present for the clock to run at all. */}
             {crossDept
-              ? `This work came from another department, so the clock runs only while ${counterpartyName} and ${receiverName} are both in the room.`
+              ? "This work came from another department, so the clock runs whenever two people are in the room together — it does not matter which two."
               : `The clock runs only while ${counterpartyName} is in the room.`}{" "}
             Everyone in the room is credited their own time in it, on their own
             tasks.
