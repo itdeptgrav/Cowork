@@ -5,6 +5,7 @@ import {
   fetchRoomPresence,
   fetchWatchSeat,
 } from "@/lib/integrations/grav/credentials";
+import { useScreenShareRequired } from "@/lib/hooks/useScreenSharePolicy";
 
 /**
  * The manager's seat in ONE person's room.
@@ -54,6 +55,15 @@ export function MonitorRoom({
      * looking.
      */
     sharing: boolean | null;
+    /**
+     * This workspace does not watch screens at all — the office-policy switch.
+     *
+     * Distinct from "they are not sharing right now", and the panel has to say
+     * so differently: one is a person to wait for, the other is a feature that
+     * has been switched off, and a manager who reads the second as the first
+     * goes looking for somebody to chase.
+     */
+    screenSharingOff: boolean;
   }) => ReactNode;
 }) {
   /**
@@ -72,12 +82,18 @@ export function MonitorRoom({
     subject: string;
     message: string;
   } | null>(null);
+  /* Whether this workspace watches screens at all — the office-policy switch. */
+  const screenRequired = useScreenShareRequired();
 
   useEffect(() => {
     /* A page still resolving its subject asks for nothing. Requesting a seat for
        an empty id would spend a refusal on a question nobody asked, and render
-       its message where the person expects a loading state. */
-    if (!subjectId) return;
+       its message where the person expects a loading state.
+
+       Nor does a workspace that has switched screen sharing off: there is no
+       room to watch, and minting a seat for one would be a request per manager
+       per page for a picture nobody is producing. */
+    if (!subjectId || !screenRequired) return;
     let cancelled = false;
     fetchWatchSeat(subjectId)
       .then((s) => {
@@ -96,7 +112,7 @@ export function MonitorRoom({
     return () => {
       cancelled = true;
     };
-  }, [subjectId]);
+  }, [subjectId, screenRequired]);
 
   /**
    * Ask the service whether a screen is actually going out, and keep asking.
@@ -114,7 +130,7 @@ export function MonitorRoom({
     null,
   );
   useEffect(() => {
-    if (!subjectId) return;
+    if (!subjectId || !screenRequired) return;
     let cancelled = false;
     async function ask(subject: string) {
       try {
@@ -131,7 +147,7 @@ export function MonitorRoom({
       cancelled = true;
       clearInterval(id);
     };
-  }, [subjectId]);
+  }, [subjectId, screenRequired]);
 
   const current = seat && seat.subject === subjectId ? seat : null;
   const error =
@@ -141,9 +157,21 @@ export function MonitorRoom({
     <>
       {children({
         embedUrl: current?.embedUrl ?? null,
-        connecting: subjectId !== null && current === null && error === null,
+        /**
+         * **Not "connecting" where there is nothing to connect to.** With
+         * sharing switched off the panel would otherwise sit on "Opening their
+         * room…" for ever, waiting for a seat this component deliberately never
+         * asks for. It resolves to the off state instead, which the viewer
+         * explains.
+         */
+        connecting:
+          screenRequired &&
+          subjectId !== null &&
+          current === null &&
+          error === null,
         error,
         sharing: live && live.subject === subjectId ? live.sharing : null,
+        screenSharingOff: !screenRequired,
       })}
     </>
   );

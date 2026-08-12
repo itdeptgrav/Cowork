@@ -126,6 +126,14 @@ export function readCompletionStatus(
 export type LegacyBleachType = "credit" | "debit";
 
 export interface LegacyBleach {
+  /**
+   * The entry's OWN id — Mongo's `_id` on the sub-document.
+   *
+   * Not the rule's id. A dispute is raised against one deduction, and the same
+   * rule can be applied to the same person more than once, so `sopId` cannot
+   * identify which one is being argued about.
+   */
+  _id?: string;
   sopId?: string | null;
   policyId?: string | null;
   type?: string;

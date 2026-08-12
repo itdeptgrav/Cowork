@@ -157,8 +157,22 @@ test("a cookie whose name merely contains ours is not mistaken for it", () => {
   assert.equal(readFirebaseCookie("cowork_fb_old=xyz"), null);
 });
 
-test("the mirror expires with the token it mirrors", () => {
-  /* An hour, matching Firebase's own lifetime, so a closed browser leaves
-     nothing usable behind for long. */
-  assert.equal(FIREBASE_COOKIE_MAX_AGE, 3600);
+test("the mirror outlives the token it mirrors", () => {
+  /**
+   * **This asserted the opposite, and the opposite was the bug.** An hour,
+   * matching Firebase's own token lifetime, on the reasoning that a closed
+   * browser should leave nothing usable behind for long.
+   *
+   * What it actually left behind was nothing at all: come back after lunch and
+   * the cookie has expired, so the Edge — which runs before any JavaScript —
+   * sees an anonymous request and redirects to the sign-in page, while the
+   * refresh token sits in IndexedDB, valid, one call from restoring everything.
+   * People were typing passwords to recover sessions that had never ended.
+   *
+   * The cookie is not the credential's lifetime; it is the browser's claim to
+   * have a session worth restoring. What stops an old one being useful is the
+   * signature check and the bounded expiry grace, not a short cookie — see
+   * `sessionPersists.test.ts`.
+   */
+  assert.ok(FIREBASE_COOKIE_MAX_AGE > 3600);
 });

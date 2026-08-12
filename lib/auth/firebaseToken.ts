@@ -194,6 +194,20 @@ export async function verifyIdToken(input: {
   projectId: string;
   nowMs?: number;
   fetchImpl?: typeof fetch;
+  /**
+   * How far past `exp` this token may be and still verify.
+   *
+   * Defaults to the ordinary clock-skew tolerance. A caller passes something
+   * larger only to answer a different question — not *"may this token read
+   * data"*, which is always no once it has expired, but *"was this browser
+   * genuinely signed in"*, which stays true long after the hour is up and is
+   * what decides whether to render the application or a sign-in form. See
+   * `EXPIRY_GRACE_SECONDS` and `proxy.ts`.
+   *
+   * The signature is checked either way. Nothing here accepts a token Google
+   * did not sign for this project.
+   */
+  leewaySeconds?: number;
 }): Promise<VerifyResult> {
   const nowMs = input.nowMs ?? Date.now();
   const decoded = decode(input.token);
@@ -203,6 +217,7 @@ export async function verifyIdToken(input: {
     payload: decoded.payload,
     projectId: input.projectId,
     nowSeconds: Math.floor(nowMs / 1000),
+    leewaySeconds: input.leewaySeconds,
   });
   if (!claims.ok) return claims;
 

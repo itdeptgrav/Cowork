@@ -321,20 +321,37 @@ export function projectScores(store: Store, employeeId: string): Projection {
 
   /* ── C3 · Conduct & Policy ──────────────────────────────────────────────── */
 
+  /* Overturned deductions are KEPT, and marked.
+   *
+   * They used to be filtered out here, which made a reversal look like the
+   * deduction had never happened: the row vanished from the person's record
+   * and from their manager's, so neither could see that an argument had been
+   * had and won. The entry stays, `reversalOf` says it was overturned, the row
+   * renders it struck through, and it contributes nothing to the score —
+   * `earned` is the full maximum below, and `conductNet` skips it. */
   const myConduct = store.conductEvents.filter(
-    (c) => c.employeeId === employeeId && c.disputeStatus !== "overturned",
+    (c) => c.employeeId === employeeId,
   );
   for (const ev of myConduct) {
     const periodKey = periodKeyFor(ev.occurredOn);
     const unitId = id("su-c3");
+    const reversed = ev.disputeStatus === "overturned";
     const d = deductionFor("conduct_breach", { severity: ev.severity });
+    const charged = reversed ? 0 : d.amount;
     const max = Math.max(UNIT_MAXIMUM, d.amount);
-    const earned = clampPoints(max - d.amount, max);
+    const earned = clampPoints(max - charged, max);
     const r = rule("c3.conduct");
 
     ledger.push(
       makeLedgerEntry(
-        id("le"),
+        /* **The deduction's own id, not a fresh one.**
+         *
+         * `requestConductRecheck(entryId)` addresses one deduction, and the
+         * row the person disputes is this one — so the identity a reader is
+         * looking at has to be the identity the write takes. A generated `le-`
+         * id meant every recheck resolved to "That deduction was not found."
+         * The legacy adapter now does the same with the bleach's `_id`. */
+        ev.id,
         {
           organisationId: actingOrganisationId(),
           employeeId,
@@ -346,7 +363,7 @@ export function projectScores(store: Store, employeeId: string): Projection {
           eventType: "conduct_breach",
           maximumPoints: max,
           pointsBefore: max,
-          deduction: d.amount,
+          deduction: charged,
           credit: 0,
           reason: ev.description,
           actorId: ev.appliedById,
@@ -357,6 +374,12 @@ export function projectScores(store: Store, employeeId: string): Projection {
           ruleVersion: r.version.version,
           configSnapshot: r.version.parameters,
           isProvisional: true,
+          /* Points at itself. The domain models a reversal as a separate
+             entry cancelling an earlier one; legacy resolves a dispute by
+             mutating the entry in place, and there is no second record to
+             point at. Self-reference says "this one was overturned" without
+             inventing a reversal entry that the engine never wrote. */
+          reversalOf: reversed ? ev.id : null,
         },
         ev.appliedAt,
       ),

@@ -23,6 +23,7 @@ const policy: OfficePolicy = {
   },
   breaks: [{ name: "Lunch", start: "13:00", end: "13:30" }],
   maxTaskActionGapMinutes: 120,
+  requireScreenShare: true,
   maxBreakMinutesPerDay: 60,
   updatedBy: null,
 };

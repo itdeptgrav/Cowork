@@ -8,6 +8,59 @@
      a room's mode and a token's role are fixed when they are created.
      Cowork uses mode: "screen" with requireEntireScreen: true — lib/integrations/grav/. -->
 
+## The share that stops after a while — THEIR bug, and our stopgap
+
+Read in their own source (`web/sdk/index.js`), not inferred:
+
+    ws.onclose = () => {
+      if (session.active) {
+        session.active = false;
+        session._stream?.getTracks().forEach((t) => t.stop());
+        session._emit("ended", { reason: "disconnected" });
+      }
+    };
+
+**There is no reconnect anywhere in that file.** Any WebSocket close — a wifi
+blip, a laptop waking, a proxy hiccup, one of their deploys — stops the capture
+and ends the share for good. The server side is fine: `server.js` pings every
+25s and their nginx idle ceiling is a day. It is the client that gives up.
+
+Until they ship a reconnect, `publisher.ts` keeps a CLONE of the capture. A
+cloned track shares the original SOURCE and survives the original being
+stopped, so after a drop there is still a live picture of the same screen —
+and their `share()` accepts it, because the `getDisplayMedia` it calls is
+intercepted and hands the spare over instead of prompting. A capture prompt
+needs a click; reusing one already granted does not.
+
+When the person really pressed Stop the source ends, the clone ends with it,
+and they are asked. **Delete all of it when their SDK reconnects.**
+
+## SDK 1.1.0, and what it added
+
+Verified against the shipped file, not the release note: `GravStream.version`
+is `"1.1.0"`, the session exposes `getStats()`, and `share()` accepts
+`contentHint`.
+
+- **Pin the query string to the SDK VERSION** — `?v=1.1.0`, bumped on their
+  word. Not a date: their server reports "sdk 1.1.0" back to them, and until
+  ours matched, every session we produced looked like an unidentified client
+  and they could not tell our integration from an iframe one. `publisher.ts`
+  warns loudly at load when the build that arrives is not the pinned one.
+- **`session.getStats()`** → `{ codec, encoder, hardware, resolution, fps,
+  kbps, limitedBy, framesSent, framesDropped, paused, watchers }`. `codec:
+  "VP8"` means software encoding and a pinned CPU core; `limitedBy` is `cpu`,
+  `bandwidth` or `none`. Read it on `/employee`, or `await gs.getStats()` in the
+  console — `gs` is their name for the handle and is deliberately kept.
+- **Encoding stops when nobody is watching** (`paused: true`, `watchers: 0`).
+  Previously every sharer encoded and uploaded all day into an empty room.
+- **Codec, level and frame rate are negotiated at JOIN**, so a session running
+  from before a rebuild keeps the old settings — 10fps and VP8 — until the
+  person stops and starts sharing once.
+- **`contentHint: "motion"`** is their experiment for one machine, on the theory
+  that Chrome picks a software H.264 encoder because we tell it the content is
+  text. Off by default and it stays that way: `detail` is what keeps small text
+  legible. `setContentHintForTest("motion")`, or `gs.useMotionHint()`.
+
 ## Their release of 11 Aug 2026, and the four rules it leaves us
 
 The sections below predate it. Where they disagree, this wins.
@@ -22,9 +75,9 @@ The sections below predate it. Where they disagree, this wins.
 2. **H.264 is negotiated at JOIN.** A session already running keeps VP8 — which
    browsers encode in software, saturating a CPU core on a whole desktop — until
    it reconnects. Every sharer has to stop and start once after a rebuild.
-3. **The SDK is rebuilt in place at a stable URL.** `publisher.ts` appends a
-   dated query string so browsers do not serve a cached copy; bump `SDK_BUILD`
-   when they ship.
+3. **The SDK is rebuilt in place at a stable URL.** `publisher.ts` appends the
+   SDK VERSION as a query string so browsers do not serve a cached copy; bump
+   `SDK_VERSION` when they ship.
 4. **One live viewer frame at a time.** Each decodes its own stream, so a wall of
    eight screens slows the MANAGER's machine exactly as encoding slows the
    sharer's. `LiveScreenViewer` takes `suspended` for this.

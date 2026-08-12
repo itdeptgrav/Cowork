@@ -211,6 +211,44 @@ export function derive(
   return remoteOnline ? "online" : "offline";
 }
 
+/**
+ * Online without a screen — and ONLY where the workspace has switched sharing
+ * off.
+ *
+ * **This is the `goOnline` that was deleted, brought back under a lock.** It
+ * was removed for a good reason: while it existed, presence was self-declared,
+ * and a manager who opened somebody's screen found nothing there. That reason
+ * holds exactly as long as the workspace is promising a watchable screen.
+ *
+ * An administrator who switches `requireScreenShare` off has withdrawn that
+ * promise on purpose — Online now means "I am at work", nothing is captured and
+ * nobody is watched. Declaring it is then the only way to say it, and refusing
+ * to would leave a workspace with no way to be online at all.
+ *
+ * The lock is the argument: this cannot be called without passing the policy,
+ * so a caller that wants to assert online has to have read it. `derive` still
+ * has no idea this exists — a declared status is carried as its own fact, and a
+ * live share still outranks it.
+ */
+export function declareOnline(policy: { requireScreenShare: boolean }): boolean {
+  if (policy.requireScreenShare) return false;
+  leavingOnPurpose = false;
+  commit({
+    ...state,
+    hydrated: true,
+    manual: null,
+    breakStartedAt: null,
+    emergencyStartedAt: null,
+    notice: null,
+    reconnecting: false,
+    /* The account's own word, which is what an unmonitored Online is. It is the
+       same field a second device reads to show Online while a laptop shares —
+       there is simply no laptop sharing in this configuration. */
+    remoteOnline: true,
+  });
+  return true;
+}
+
 const INITIAL: EmployeeStatusState = {
   status: "offline",
   manual: null,
@@ -342,6 +380,9 @@ export function getServerSnapshot(): EmployeeStatusState {
  * did. Both are cleared by the person, or by ending the session.
  */
 export function reportShare(share: ShareFacts): void {
+  /* Any intent other than "be offline" ends the wait for the document to agree
+     with a deliberate one — see `leavingOnPurpose`. */
+  leavingOnPurpose = false;
   commit({
     ...state,
     share,
@@ -445,6 +486,9 @@ export async function startScreenShare(
  * shared with.
  */
 export function holdSeat(seat: { token: string; url: string }): void {
+  /* Starting a share is an intent, and it ends the wait for the document to
+     agree with a deliberate offline — see `leavingOnPurpose`. */
+  leavingOnPurpose = false;
   commit({
     ...state,
     session: "connecting",
@@ -494,6 +538,13 @@ export function sessionFailed(reason: string): void {
  */
 export function goOffline(): void {
   releasePendingTrack();
+  /* See `leavingOnPurpose`: until the document catches up, its `online` is this
+     person's OWN stale claim and must not be read back as a reason to be
+     online. */
+  leavingOnPurpose = true;
+  /* And the publish that follows must not be declined for not holding the
+     claim — see `chosenByPerson`. */
+  chosenByPerson = true;
   commit({
     ...state,
     ...IDLE_SESSION,
@@ -505,7 +556,61 @@ export function goOffline(): void {
     notice: null,
     /* A deliberate offline is the end of presence, reconnect or not. */
     reconnecting: false,
+    /**
+     * **And the account's own claim goes with it.**
+     *
+     * Leaving this set was the reported "I press Go offline and it stays
+     * Online". `remoteOnline` is what lets a phone show Online while a laptop
+     * shares — but the person pressing Go offline is not asking to stop this
+     * DEVICE, they are asking to stop being online. Left true, `derive`
+     * returned online from the very next render, `DutySync` compared online
+     * against the online it had already published, found no change, and never
+     * wrote the offline at all. Nothing was broken and nothing happened.
+     */
+    remoteOnline: false,
   });
+}
+
+/**
+ * A deliberate offline that the durable document has not caught up with yet.
+ *
+ * **Clearing `remoteOnline` above is not enough on its own.** `cowork_duty_status`
+ * still says online for the moment it takes the publish to land, and the live
+ * subscription delivers that document — so the snapshot in flight would set
+ * `remoteOnline` straight back and put the pill green again, which is the same
+ * bug one render later.
+ *
+ * `onlineElsewhere` cannot be used to tell the two apart on its own: after a
+ * reload the account's claim is stamped with the OLD tab's connection id, which
+ * reads as somebody else and is exactly how a refresh must behave. What
+ * separates them is INTENT, and only this module sees it.
+ *
+ * Cleared the moment the document agrees, or the moment this person does
+ * anything that is not "be offline".
+ */
+let leavingOnPurpose = false;
+
+/**
+ * Was the presence about to be published CHOSEN, rather than derived?
+ *
+ * **The other half of the same fault.** Clearing `remoteOnline` fixed the pill;
+ * this fixes the document. `setDutyMode` refuses a non-online mode from a tab
+ * that does not hold the online claim — correct for a derived publish, because
+ * a second tab with no room would otherwise end a share the first one is still
+ * sending — and it applied to a person pressing Go offline just the same. The
+ * write was declined, the caller was told "online is in force", it recorded
+ * that as published, and no retry ever came: the button did nothing, for ever.
+ *
+ * Read by `DutySync` at the moment it publishes and cleared there. Not part of
+ * the snapshot: it is a fact about one impending write, not about the status.
+ */
+let chosenByPerson = false;
+
+/** True once, for the publish that follows a deliberate transition. */
+export function takeDeliberate(): boolean {
+  const was = chosenByPerson;
+  chosenByPerson = false;
+  return was;
 }
 
 /**
@@ -556,6 +661,11 @@ export function shareInterrupted(): void {
 /* ── Manual states ────────────────────────────────────────────────────────── */
 
 export function startBreak(): void {
+  /* Not "be offline", so the wait for the document ends — `leavingOnPurpose`. */
+  leavingOnPurpose = false;
+  /* Chosen, so a tab that does not hold the online claim may still start one —
+     see `chosenByPerson`. */
+  chosenByPerson = true;
   /* Stop the recording, keep the person on their break. Clearing the
      credentials unmounts the room, whose publisher stops the track. */
   releasePendingTrack();
@@ -573,6 +683,10 @@ export function startBreak(): void {
 }
 
 export function declareEmergency(): void {
+  leavingOnPurpose = false;
+  /* Chosen — see `chosenByPerson`. An emergency raised from a second tab must
+     not be declined for the sake of a claim held by the first. */
+  chosenByPerson = true;
   /* Stops the recording like the other unavailable states — an emergency is not
      a moment to keep broadcasting someone's screen. The manual state is kept. */
   releasePendingTrack();
@@ -754,6 +868,15 @@ export function applyRemotePresence(input: {
   }
 
   if (input.mode === "online") {
+    /**
+     * **Unless this person has just pressed Go offline.**
+     *
+     * The document is a moment behind the decision, and re-reading their own
+     * stale claim as a reason to be online is what made Go offline do nothing
+     * at all — see `leavingOnPurpose`. Nothing is committed: the state as it
+     * stands is the honest one, and the next snapshot is the one that agrees.
+     */
+    if (leavingOnPurpose) return;
     commit({
       ...state,
       hydrated: true,
@@ -795,6 +918,9 @@ export function applyRemotePresence(input: {
      device's own share is untouched and still decides on its own — if it is
      sharing, `derive` keeps it online and the next publish corrects the
      document rather than this clearing the share. */
+  /* The document has caught up with a deliberate offline, so there is nothing
+     left to hold back — see `leavingOnPurpose`. */
+  leavingOnPurpose = false;
   commit({
     ...state,
     hydrated: true,
@@ -808,6 +934,10 @@ export function applyRemotePresence(input: {
 /** Test seam. Resets everything, including the session. */
 export function resetStatus(): void {
   pendingTrack = null;
+  /* Module state as well as store state, or one test's deliberate offline
+     would silence the next test's remote presence. */
+  leavingOnPurpose = false;
+  chosenByPerson = false;
   state = INITIAL;
   for (const fn of listeners) fn();
 }

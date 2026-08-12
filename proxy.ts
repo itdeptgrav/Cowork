@@ -1,5 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { FIREBASE_COOKIE, readFirebaseCookie } from "@/lib/auth/firebaseCookie";
+import {
+  EXPIRY_GRACE_SECONDS,
+  FIREBASE_COOKIE,
+  readFirebaseCookie,
+} from "@/lib/auth/firebaseCookie";
 import { decode, checkClaims, verifyIdToken } from "@/lib/auth/firebaseToken";
 
 /**
@@ -109,47 +113,93 @@ function isPublic(pathname: string): boolean {
  * treated as unauthenticated. A transient failure signing everybody out is
  * worse than an inconvenience — but it is much better than the alternative,
  * where an outage at Google turns the gate off.
+ *
+ * ## What this cannot decide, and used to decide anyway
+ *
+ * Whether a session still stands. The ID token expires hourly; the REFRESH
+ * token that renews it lives in IndexedDB, which the Edge cannot read. Treating
+ * an expired token as signed-out therefore turned every gap longer than an hour
+ * into a sign-in prompt for somebody who had never signed out — see
+ * `SessionState` below.
  */
-async function hasLiveFirebaseToken(
+/**
+ * What this browser's cookie proves.
+ *
+ *  · `live`  — signed, for this project, and not yet expired. Signed in.
+ *  · `stale` — signed and authentic, but the hour is up. **This is a person
+ *    with a session, not a stranger**, and the difference is the whole of the
+ *    "it signs me out overnight" report: Firebase's refresh token lives in
+ *    IndexedDB where only the client can reach it, so the only way to find out
+ *    whether the session still stands is to let the application load and ask.
+ *    Bouncing here instead sends somebody who is signed in to a form that would
+ *    sign them in as themselves.
+ *  · `none` — no cookie, a bad signature, the wrong project, or so old that it
+ *    is past `EXPIRY_GRACE_SECONDS`.
+ *
+ * A `stale` verdict grants no data. Every request that reads anything mints a
+ * fresh token through the SDK and is verified again by the engine; the shell
+ * resolves the session on load and clears this cookie itself if it cannot.
+ */
+type SessionState = "live" | "stale" | "none";
+
+async function readSessionState(
   token: string | undefined | null,
-): Promise<boolean> {
-  if (!token) return false;
+): Promise<SessionState> {
+  if (!token) return "none";
 
   const projectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
   /* No project configured means no way to check the audience, and an
      unverifiable token is not a valid one. */
-  if (!projectId) return false;
+  if (!projectId) return "none";
 
-  /* Claims first — it is free, and it rejects the expired and the
-     wrong-audience without touching the network. */
+  /* Claims first — it is free, and it rejects the wrong-audience and the
+     malformed without touching the network. */
   const decoded = decode(token);
-  if (!decoded) return false;
-  if (
-    !checkClaims({
-      payload: decoded.payload,
-      projectId,
-      nowSeconds: Math.floor(Date.now() / 1000),
-    }).ok
-  ) {
-    return false;
-  }
+  if (!decoded) return "none";
+  const fresh = checkClaims({
+    payload: decoded.payload,
+    projectId,
+    nowSeconds: Math.floor(Date.now() / 1000),
+  });
+  /* Anything wrong other than the clock is fatal here: a token for another
+     project or with no subject is not this person's session in any state. */
+  if (!fresh.ok && fresh.reason !== "expired") return "none";
 
-  /* Then the signature, which is the part that makes the claims mean
-     anything. */
+  /* Then the signature, which is the part that makes the claims mean anything.
+     Checked for both verdicts — `stale` accepts an old token, never an
+     unsigned one. */
   try {
-    const result = await verifyIdToken({ token, projectId });
-    return result.ok;
+    const result = await verifyIdToken({
+      token,
+      projectId,
+      leewaySeconds: fresh.ok ? undefined : EXPIRY_GRACE_SECONDS,
+    });
+    if (!result.ok) return "none";
+    return fresh.ok ? "live" : "stale";
   } catch {
-    return false;
+    return "none";
   }
 }
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
-  const signedIn = await hasLiveFirebaseToken(
+  const state = await readSessionState(
     request.cookies.get(FIREBASE_COOKIE)?.value ??
       readFirebaseCookie(request.headers.get("cookie")),
   );
+  /**
+   * **`stale` is not signed in, and it is not signed out either.**
+   *
+   * It may pass — the application loads, refreshes the token and rewrites the
+   * cookie, and nobody sees anything. It may NOT be treated as a live session
+   * for the sign-in bounce below: somebody sitting on the sign-in form whose
+   * stored session turns out to be dead would be volleyed to `/home`, refused
+   * there, and sent back — the redirect loop this file already carries a scar
+   * from. Signed in enough to proceed; not signed in enough to be turned away
+   * from the form.
+   */
+  const signedIn = state === "live";
+  const mayProceed = state !== "none";
 
   if (isPublic(pathname)) {
     /* Already signed in and asking for the sign-in page: send them to the
@@ -166,7 +216,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (!signedIn) {
+  if (!mayProceed) {
     const url = new URL("/signin", request.url);
     /* Carry where they were going, so signing in resumes it instead of dumping
        everyone on the same landing page. Only the path and query — never an

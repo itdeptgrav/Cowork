@@ -6,20 +6,24 @@ import { Avatar } from "@/components/ui/Avatar";
 import { IconTabs, WorkspaceHead, Breadcrumb } from "@/components/ui/Workspace";
 import { ComponentBand } from "@/components/ui/ComponentBand";
 import {
+  Button,
   Chip,
   EmptyState,
   ErrorState,
   Meter,
   Panel,
+  PanelHead,
   PermissionDenied,
   ProvisionalBadge,
   Segmented,
   SkeletonRows,
 } from "@/components/ui/Primitives";
+import { ApplyConductRule } from "@/components/features/score/ConductArea";
 import { PersonMonitor } from "./PersonMonitor";
 import { TeamCards } from "./TeamCards";
 import { PersonCalendar } from "./PersonCalendar";
 import { useQuery } from "@/lib/hooks/useRepository";
+import { usePermissions } from "@/lib/hooks/usePermissions";
 import { useDutyModes } from "@/lib/hooks/useDutyMode";
 import { totalMeasured } from "@/lib/rules/scoring/scoreDisplay";
 import { STATUS_META } from "@/lib/status/employeeStatus";
@@ -430,8 +434,15 @@ export function PersonPage({
                   </div>
                 </div>
               </div>
-              <div className="deck:col-span-5">
+              <div className="deck:col-span-5 space-y-4">
                 <PersonLedger employeeId={employeeId} />
+                {/* C3 · applying a conduct rule to this person.
+                    Here as well as on `/score/c3`, because a manager decides a
+                    breach while looking at the record it belongs to — and the
+                    person is already chosen by the page, so this form does not
+                    ask again. The engine refuses anyone but their own primary
+                    manager regardless of what is on screen. */}
+                <ApplyConduct employeeId={employeeId} name={p.firstName} />
               </div>
             </div>
           )}
@@ -507,6 +518,50 @@ function PersonTasks({
         </Link>
       ))}
     </div>
+  );
+}
+
+/**
+ * "Apply a conduct rule" on somebody's own record.
+ *
+ * Hidden entirely from anybody who cannot charge this person — a control that
+ * exists only to be refused teaches people the interface is lying to them. The
+ * permission check is the same `can()` the repository calls, so the button and
+ * the write agree; the engine asks the reporting line again and has the final
+ * word.
+ */
+function ApplyConduct({
+  employeeId,
+  name,
+}: {
+  employeeId: string;
+  name: string;
+}) {
+  const perms = usePermissions();
+  const [open, setOpen] = useState(false);
+
+  if (!perms.can("conduct.apply", employeeId)) return null;
+
+  return (
+    <Panel>
+      <PanelHead
+        title="Conduct"
+        sub={`Records a breach against ${name}. They are told, and can dispute it.`}
+        aside={
+          !open ? (
+            <Button size="sm" onClick={() => setOpen(true)}>
+              Apply a rule
+            </Button>
+          ) : undefined
+        }
+      />
+      {open && (
+        <ApplyConductRule
+          employeeId={employeeId}
+          onDone={() => setOpen(false)}
+        />
+      )}
+    </Panel>
   );
 }
 

@@ -53,6 +53,15 @@ export interface LegacySopDoc {
   _id?: string;
   id?: string;
   name?: string;
+  /**
+   * What a breach costs, as a PERCENTAGE — see `LegacySop.percent`.
+   *
+   * `points` is the field every rule written before this carries, and the two
+   * mean the same thing: C1, C2 and C4 are percentages and C3 is subtracted
+   * from their average, so a cost has only ever been readable as percentage
+   * points. `percent` is the name that says so.
+   */
+  percent?: number | null;
   points?: number;
   severity?: LegacySeverity | null;
   description?: string;
@@ -60,6 +69,11 @@ export interface LegacySopDoc {
   folderId?: string | null;
   folderName?: string;
   status?: LegacySopStatus;
+  /** WHO must decide it — the author's own primary manager, stamped at
+      creation so the decision belongs to one named person. */
+  approverId?: string | null;
+  approverName?: string | null;
+  rejectedReason?: string;
   approvedBy?: string | null;
   approvedByName?: string | null;
   approvedAt?: unknown;
@@ -71,7 +85,15 @@ export interface LegacySopDoc {
 export interface LegacySop {
   id: string;
   name: string;
-  /** Always positive. Direction is decided when the rule is applied. */
+  /**
+   * How much of the score a breach takes off, in PERCENTAGE POINTS.
+   *
+   * Always positive; the direction is decided when the rule is applied. Five
+   * here means a score of 80 becomes 75 — subtracted from the average of the
+   * other components, which are themselves percentages.
+   */
+  percent: number;
+  /** The same number under its old name, for anything not yet migrated. */
   points: number;
   severity: LegacySeverity | null;
   description: string | null;
@@ -82,17 +104,27 @@ export interface LegacySop {
   /** Only an approved rule may be applied — the engine refuses otherwise. */
   isApplicable: boolean;
   createdByName: string | null;
+  createdById: string | null;
+  /** WHO must decide it — the author's own primary manager. */
+  approverId: string | null;
+  approverName: string | null;
   approvedByName: string | null;
+  rejectedReason: string | null;
 }
 
 export function readSop(doc: LegacySopDoc): LegacySop | null {
   const id = doc._id ?? doc.id;
   if (!id || !doc.name) return null;
 
+  /* `percent` where the rule has one, `points` for everything written before
+     the field existed. They are the same quantity — see the type. */
+  const cost = Math.abs(Number(doc.percent ?? doc.points) || 0);
+
   return {
     id: String(id),
     name: doc.name.trim(),
-    points: Math.abs(Number(doc.points) || 0),
+    percent: cost,
+    points: cost,
     severity: doc.severity ?? null,
     description: doc.description?.trim() || null,
     department: doc.department?.trim() || null,
@@ -102,7 +134,11 @@ export function readSop(doc: LegacySopDoc): LegacySop | null {
     status: doc.status ?? "pending",
     isApplicable: doc.status === "approved",
     createdByName: doc.createdByName?.trim() || null,
+    createdById: doc.createdBy?.trim() || null,
+    approverId: doc.approverId?.trim() || null,
+    approverName: doc.approverName?.trim() || null,
     approvedByName: doc.approvedByName?.trim() || null,
+    rejectedReason: doc.rejectedReason?.trim() || null,
   };
 }
 
@@ -133,6 +169,8 @@ export const TL_DEPARTMENT_REFUSAL =
  * shown must never disagree with the score computed.
  */
 export interface LegacyLedgerEntry {
+  /** The entry's own id, which is what a dispute is raised against. */
+  entryId: string | null;
   sopId: string | null;
   policyId: string | null;
   name: string;
@@ -180,6 +218,7 @@ function asText(v: unknown): string | null {
 export function readLedgerEntry(bleach: LegacyBleach): LegacyLedgerEntry {
   const points = signedPoints(bleach);
   return {
+    entryId: bleach._id ? String(bleach._id) : null,
     sopId: bleach.sopId ? String(bleach.sopId) : null,
     policyId: bleach.policyId ? String(bleach.policyId) : null,
     name: bleach.sopName?.trim() || "Unnamed",
@@ -448,3 +487,161 @@ export function bandForDesignation(
 }
 
 export { netPoints };
+
+/* ── Writing a conduct rule, and the line that decides it ─────────────────── */
+
+/**
+ * Write a conduct rule. It applies to nobody until it is approved.
+ *
+ * **A manager writes it and their own manager approves it** — the reporting
+ * line, not a job title. The engine stamps the approver at creation and tells
+ * them, so the decision belongs to one named person rather than to whoever
+ * happens to hold a senior role.
+ *
+ * `percent` is what a breach costs, in percentage points off the score. Nothing
+ * about it is a "point count": C1, C2 and C4 are percentages, C3 is subtracted
+ * from their average, and five here means eighty becomes seventy-five.
+ */
+export async function createSop(input: {
+  token: string;
+  name: string;
+  percent: number;
+  description: string;
+  department: string;
+  folderId?: string | null;
+  severity?: LegacySeverity | null;
+}): Promise<LegacyResult<{ sop: LegacySopDoc }>> {
+  const { token, ...body } = input;
+  return legacyFetch({ path: "/cowork/sop", method: "POST", token, body });
+}
+
+/**
+ * Approve or reject a rule somebody who reports to you wrote.
+ *
+ * The engine refuses anyone but the named approver and administrators, and
+ * refuses an author deciding their own — so this is a request, not an
+ * assertion, and its refusal is worth showing verbatim.
+ */
+export async function decideSop(input: {
+  token: string;
+  sopId: string;
+  decision: "approve" | "reject";
+  reason?: string;
+}): Promise<LegacyResult<{ sop: LegacySopDoc }>> {
+  return legacyFetch({
+    path: `/cowork/sop/${encodeURIComponent(input.sopId)}/${input.decision}`,
+    method: "PATCH",
+    token: input.token,
+    body: { reason: input.reason ?? "" },
+  });
+}
+
+/**
+ * The rules waiting on THIS person to decide.
+ *
+ * Addressed by the engine rather than filtered here: a queue everybody senior
+ * can see is a queue nobody owns.
+ */
+export async function fetchPendingApprovals(input: {
+  token: string;
+}): Promise<LegacyResult<LegacySop[]>> {
+  const result = await legacyFetch<{ sops?: LegacySopDoc[] }>({
+    path: "/cowork/sop/pending-approvals",
+    token: input.token,
+  });
+  if (!result.ok) return result;
+  return { ok: true, data: readSops(result.data?.sops ?? []) };
+}
+
+/**
+ * Decide a disputed deduction.
+ *
+ * `confirm` REVERSES it — the employee was right — and `reject` lets it stand.
+ * The words are the engine's and they are the wrong way round for a reader, so
+ * nothing in the interface should repeat them without saying what they do.
+ */
+export async function reviewRecheck(input: {
+  token: string;
+  employeeId: string;
+  entryId: string;
+  action: "confirm" | "reject";
+  reviewNote?: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/sop/bleach/${encodeURIComponent(input.employeeId)}/${encodeURIComponent(input.entryId)}/recheck`,
+    method: "PATCH",
+    token: input.token,
+    body: { action: input.action, reviewNote: input.reviewNote ?? "" },
+  });
+}
+
+/** One person with disputes open, and the entries they are about. */
+export interface LegacyPendingRecheck {
+  employeeId: string;
+  employeeName: string;
+  entries: {
+    entryId: string;
+    name: string;
+    /** What the disputed entry cost, in percentage points. Always positive. */
+    points: number;
+    date: string | null;
+    requestNote: string | null;
+  }[];
+}
+
+/**
+ * Disputes waiting on this person, with the entry each one is about.
+ *
+ * Grouped by employee on the wire — one object per person, their open disputes
+ * inside. The grouping is kept rather than flattened here, because a reviewer
+ * settling three arguments with the same person wants them together.
+ *
+ * The engine addresses this queue by the reporting line: your own direct
+ * reports, or everybody if you administer the place. It used to be addressed
+ * by role, which showed leads disputes they would be refused on submitting.
+ */
+export async function fetchPendingRechecks(input: {
+  token: string;
+}): Promise<LegacyResult<LegacyPendingRecheck[]>> {
+  const result = await legacyFetch<
+    {
+      employeeId?: string;
+      name?: string;
+      bleaches?: {
+        bleachId?: string;
+        sopName?: string;
+        points?: number;
+        date?: string;
+        requestNote?: string;
+      }[];
+    }[]
+  >({
+    path: "/cowork/sop/recheck/pending-list",
+    envelopeKey: "list",
+    token: input.token,
+  });
+  if (!result.ok) return result;
+
+  return {
+    ok: true,
+    data: result.data
+      .filter((p) => p.employeeId)
+      .map((p) => ({
+        employeeId: String(p.employeeId),
+        employeeName: p.name?.trim() || "Unknown",
+        entries: (p.bleaches ?? [])
+          .filter((b) => b.bleachId)
+          .map((b) => ({
+            entryId: String(b.bleachId),
+            name: b.sopName?.trim() || "Unnamed",
+            /* Absolute. Legacy stores the cost unsigned on the entry and
+               decides the direction from `bleachType`; a dispute is only ever
+               about a deduction, so the sign carries no information here. */
+            points: Math.abs(Number(b.points) || 0),
+            date: asText(b.date),
+            requestNote: asText(b.requestNote),
+          })),
+      }))
+      .filter((p) => p.entries.length > 0),
+  };
+}

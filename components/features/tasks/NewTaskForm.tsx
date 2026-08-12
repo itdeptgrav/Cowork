@@ -44,6 +44,25 @@ import type { TaskType } from "@/lib/domain";
  * form is the wrong shape.
  */
 
+/**
+ * Whether the spelling & grammar pass BLOCKS task creation.
+ *
+ * **Off, by owner decision.** The check itself stays — the panel is still
+ * there, it still runs, and it still offers its corrections — but nobody has to
+ * run it before creating a task. What was removed is the gate, not the tool.
+ *
+ * It is a constant rather than deleted code because the gate is one flag away
+ * from returning: flip this to `true` and the submit button, the hint above it
+ * and the panel's own wording all go back to requiring the pass. Deleting it
+ * would mean reconstructing three coupled pieces from memory when the decision
+ * is revisited.
+ *
+ * `MailCompose.tsx` has the same gate on sending and is deliberately left
+ * alone — a task is internal and correctable after the fact; a sent message is
+ * neither.
+ */
+const GRAMMAR_GATE_BLOCKS_CREATION = false;
+
 const TYPES: {
   id: TaskType;
   label: string;
@@ -189,15 +208,20 @@ export function NewTaskForm({
   }
 
   /**
-   * The mandatory spelling/grammar gate on Title + Description.
+   * The spelling/grammar pass on Title + Description.
+   *
+   * Offered, not required — see `GRAMMAR_GATE_BLOCKS_CREATION`. The state below
+   * still tracks whether it has run, because the panel reports that and the
+   * flag can put the gate back.
    *
    * `grammarCheckedFor` holds the signature of the title+description pair the
    * check last ran against. "Checked" means the pass ran and its findings
    * were looked at — not that its suggestions were accepted, because a person
    * is always allowed to keep their own wording once they've seen what the
    * assistant would change. Editing either field afterward changes the
-   * signature and re-engages the gate. Same pattern as `MailCompose.tsx`'s
-   * send gate, sharing `textSignature` from `lib/workspace/ai/textAssist.ts`.
+   * signature, so the panel stops claiming the current wording was checked.
+   * Same pattern as `MailCompose.tsx`'s send gate, sharing `textSignature`
+   * from `lib/workspace/ai/textAssist.ts` — that one still blocks.
    */
   const [grammarCheckedFor, setGrammarCheckedFor] = useState<string | null>(null);
   const [checkingGrammar, setCheckingGrammar] = useState(false);
@@ -765,17 +789,19 @@ export function NewTaskForm({
               </div>
             </div>
 
-            {/* The mandatory spelling/grammar gate — see `grammarChecked`
-                above and its use in the submit button's `disabled`. "Checked"
-                means the pass ran and was reviewed, not that its suggestions
-                were accepted: a person can always keep their own wording. */}
+            {/* The spelling/grammar pass — see `grammarChecked` above and
+                `GRAMMAR_GATE_BLOCKS_CREATION`. "Checked" means the pass ran
+                and was reviewed, not that its suggestions were accepted: a
+                person can always keep their own wording. */}
             {(title.trim() || description.trim()) && (
               <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-medium text-ink">
                     {grammarChecked
                       ? "✓ Spelling & grammar checked"
-                      : "Spelling & grammar check required before creating"}
+                      : GRAMMAR_GATE_BLOCKS_CREATION
+                        ? "Spelling & grammar check required before creating"
+                        : "Check spelling & grammar"}
                   </p>
                   <Button
                     size="sm"
@@ -1212,7 +1238,10 @@ export function NewTaskForm({
             <InlineError message={state.error} code={state.errorCode} />
           )}
 
-          {title.trim() && !grammarChecked && (
+          {/* The "run the check first" note is part of the gate, so it goes
+              with it. Leaving it while the button works anyway would tell
+              people they must do something they do not have to do. */}
+          {GRAMMAR_GATE_BLOCKS_CREATION && title.trim() && !grammarChecked && (
             <p className="mb-2 text-[11px] text-ink-faint">
               Run the spelling &amp; grammar check on Title/Description before creating this task.
             </p>
@@ -1228,7 +1257,7 @@ export function NewTaskForm({
                 !title.trim() ||
                 hasForbidden ||
                 needsAssignee ||
-                !grammarChecked ||
+                (GRAMMAR_GATE_BLOCKS_CREATION && !grammarChecked) ||
                 /* The claim the repository refuses without. Checked here so the
                    button is honest before the round trip, and there too so the
                    form can never permit what the engine rejects. */

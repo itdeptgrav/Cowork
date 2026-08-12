@@ -613,8 +613,10 @@ export interface CoworkRepository {
   /* Company policies — the conduct catalogue C3 deducts against. */
   createConductPolicy(input: {
     name: string;
+    /** Percentage points a breach takes off — see `ConductPolicy.percent`. */
+    percent: number;
     description: string;
-    severity: ConductSeverity;
+    severity: ConductSeverity | null;
     scope: "global" | "department";
     departmentIds: string[];
   }): Promise<ActionResult<ConductPolicy>>;
@@ -622,6 +624,65 @@ export interface CoworkRepository {
     id: string,
     patch: Partial<Omit<ConductPolicy, "id">>,
   ): Promise<ActionResult<ConductPolicy>>;
+
+  /* ── C3 · the four acts ─────────────────────────────────────────────────
+   *
+   * **The reporting line decides all of them.** A rule is approved by its
+   * author's own manager; a breach is applied by the employee's own manager; a
+   * dispute is settled by the same person. An administrator stands in where the
+   * line has run out. The rules themselves are in
+   * `lib/rules/scoring/conduct.ts`, and the engine enforces them again — this
+   * is a request, and its refusal is worth showing verbatim.
+   */
+
+  /** Rules waiting on THIS person to approve or reject. */
+  listConductApprovals(): Promise<ConductPolicy[]>;
+  decideConductPolicy(
+    id: string,
+    decision: "approve" | "reject",
+    reason?: string,
+  ): Promise<ActionResult<void>>;
+
+  /** Charge an approved rule to somebody. */
+  applyConductPolicy(input: {
+    employeeId: EmployeeId;
+    policyId: string;
+    reason: string;
+  }): Promise<ActionResult<void>>;
+
+  /** Dispute a deduction on your OWN record. */
+  requestConductRecheck(input: {
+    entryId: string;
+    note: string;
+  }): Promise<ActionResult<void>>;
+
+  /** Disputes waiting on this person to settle. */
+  listConductDisputes(): Promise<
+    {
+      employeeId: EmployeeId;
+      employeeName: string;
+      entryId: string;
+      policyName: string;
+      percent: number;
+      date: string | null;
+      requestNote: string | null;
+    }[]
+  >;
+
+  /**
+   * Settle a dispute.
+   *
+   * `overturn: true` REVERSES the deduction — the employee was right. Named
+   * this way because the engine's own word for it is `"confirm"`, which reads
+   * as confirming the deduction and means the opposite; that word stops at the
+   * wire boundary.
+   */
+  decideConductRecheck(input: {
+    employeeId: EmployeeId;
+    entryId: string;
+    overturn: boolean;
+    note: string;
+  }): Promise<ActionResult<void>>;
 
   listDepartments(): Promise<Department[]>;
   createDepartment(input: {
@@ -1042,6 +1103,23 @@ export interface CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    /**
+     * A PERSON asked for this, rather than a tab deriving it.
+     *
+     * **The claim rule is about derived publishes, and applying it to a
+     * deliberate one is the reported "I press Go offline and I am still
+     * online".** A second tab has no room, so its honest reading is "nothing is
+     * being shared" — publishing that would end a share the first tab is still
+     * sending, which is what `ownsClaim` refuses. But somebody pressing Go
+     * offline is not a reading; it is a decision about their own presence, and
+     * presence belongs to the person rather than to whichever tab happens to
+     * hold the claim. Declining it left the document online, told the caller
+     * "online" is in force, and every device came back green.
+     *
+     * Set only from an explicit choice — never from a heartbeat, a derivation
+     * or a reconnect.
+     */
+    deliberate?: boolean;
   }): Promise<ActionResult<DutyMode>>;
   /**
    * Stamp which connection holds a live `online` claim. Never moves the mode,

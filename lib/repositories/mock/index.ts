@@ -210,6 +210,11 @@ import {
   validateRuleOverrides,
   type RuleOverrides,
 } from "@/lib/rules/settings/ruleOverrides";
+import {
+  applyRefusal,
+  approvalRefusal,
+  mayDecideFor,
+} from "../../rules/scoring/conduct.ts";
 import { applyRuleOverrides } from "@/lib/config/settings";
 import { projectScores } from "./scoring";
 import { computeProgress } from "./progress";
@@ -3761,12 +3766,22 @@ export class MockRepository implements CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    /** A person asked for this rather than a tab deriving it — see the
+        interface. */
+    deliberate?: boolean;
   }): Promise<ActionResult<DutyMode>> {
     const id = String(actingId());
     const now = Date.now();
     const previous = this.#duty.get(id) ?? null;
 
-    if (input.mode !== "online" && !ownsClaim(previous, input.connectionId, now)) {
+    /* Deliberate transitions are not subject to the claim — a person pressing
+       Go offline is deciding about themselves, not reading a room. See the
+       interface, and the same guard in the legacy repository. */
+    if (
+      !input.deliberate &&
+      input.mode !== "online" &&
+      !ownsClaim(previous, input.connectionId, now)
+    ) {
       return ok(readDutyMode(previous, now));
     }
 
@@ -8910,31 +8925,256 @@ export class MockRepository implements CoworkRepository {
 
   async createConductPolicy(input: {
     name: string;
+    percent: number;
     description: string;
-    severity: ConductSeverity;
+    severity: ConductSeverity | null;
     scope: "global" | "department";
     departmentIds: string[];
   }) {
     const g = guard();
     if (g) return g;
-    const denied = this.#deny("score.configure");
-    if (denied) return denied;
+    /**
+     * **Written by a manager, not by a permission.** Anybody with somebody
+     * reporting to them may write a conduct rule — it applies to nobody until
+     * their own manager approves it, which is where the authority actually
+     * sits. Gating the writing instead would mean the rules a team works to
+     * could only be proposed by people who do not manage anybody.
+     */
+    const s = getStore();
+    const me = actingId();
+    const hasReports = s.reporting.some(
+      (r) => r.managerId === me && !r.effectiveTo,
+    );
+    if (!hasReports && this.#deny("score.configure")) {
+      return fail(
+        "permission_denied",
+        "Only a manager can write a conduct rule — it is approved by your own manager before it applies to anybody.",
+      );
+    }
     if (!input.name.trim())
       return fail("validation_failed", "A policy needs a name.", "name");
-    const s = getStore();
+    if (!(input.percent > 0) || input.percent > 100) {
+      return fail(
+        "validation_failed",
+        "The cut must be a percentage above zero and no more than 100.",
+        "percent",
+      );
+    }
+
+    /* The approver is named now, from the line — so the decision belongs to one
+       person who can be told about it rather than to a role. */
+    const author = s.employees.find((e) => e.id === me) ?? null;
+    const approver =
+      s.employees.find((e) => e.id === this.#primaryManagerOf(me)) ?? null;
+
     const policy: ConductPolicy = {
       organisationId: actingOrganisationId(),
       id: nextId("pol"),
       name: input.name.trim(),
+      percent: input.percent,
       description: input.description,
       severity: input.severity,
       scope: input.scope,
       departmentIds: input.scope === "department" ? input.departmentIds : [],
       isActive: true,
+      /* Always pending, including one written by an administrator. A rule that
+         takes points off people is not something to nod through because of who
+         wrote it — that is what an approval step is for. */
+      status: "pending",
+      createdById: me,
+      createdByName: author?.displayName ?? null,
+      approverId: approver?.id ?? null,
+      approverName: approver?.displayName ?? null,
+      decidedByName: null,
+      rejectedReason: null,
     };
     tick();
     s.conductPolicies.push(policy);
     return delay(ok(policy));
+  }
+
+  /* ── C3 · the four acts ─────────────────────────────────────────────────── */
+
+  /**
+   * Whose reporting line answers for this person.
+   *
+   * The live line — an entry with no `effectiveTo` — rather than a field on the
+   * employee, because a reorganisation writes a new line and closes the old one
+   * rather than editing a pointer, and reading a closed one would answer with
+   * the manager somebody used to have.
+   */
+  #primaryManagerOf(employeeId: string): string | null {
+    return (
+      getStore().reporting.find(
+        (r) => r.employeeId === employeeId && !r.effectiveTo && r.type === "primary",
+      )?.managerId ?? null
+    );
+  }
+
+  async listConductApprovals() {
+    const g = guard();
+    if (g) return [];
+    const s = getStore();
+    const me = actingId();
+    const admin = !this.#deny("score.configure");
+    return delay(
+      s.conductPolicies.filter(
+        (p) =>
+          p.status === "pending" &&
+          /* Addressed to one person. An administrator additionally sees the
+             ones the line cannot answer — written by somebody with nobody
+             above them — because otherwise those wait for ever. */
+          (p.approverId === me || (admin && !p.approverId)),
+      ),
+    );
+  }
+
+  async decideConductPolicy(
+    id: string,
+    decision: "approve" | "reject",
+    reason?: string,
+  ) {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const policy = s.conductPolicies.find((p) => p.id === id);
+    if (!policy) return fail("not_found", "Rule not found.");
+
+    const me = actingId();
+    const refusal = approvalRefusal({
+      actor: { employeeId: me, isAdmin: !this.#deny("score.configure") },
+      authorId: policy.createdById ?? "",
+      approverId: policy.approverId,
+      status: policy.status,
+    });
+    if (refusal) return fail("permission_denied", refusal);
+
+    tick();
+    policy.status = decision === "approve" ? "approved" : "rejected";
+    policy.decidedByName =
+      s.employees.find((e) => e.id === me)?.displayName ?? null;
+    policy.rejectedReason = decision === "reject" ? (reason ?? "").trim() : null;
+    return delay(ok(undefined));
+  }
+
+  async applyConductPolicy(input: {
+    employeeId: EmployeeId;
+    policyId: string;
+    reason: string;
+  }) {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const policy = s.conductPolicies.find((p) => p.id === input.policyId);
+    if (!policy) return fail("not_found", "Rule not found.");
+    const subject = s.employees.find((e) => e.id === input.employeeId);
+    if (!subject) return fail("not_found", "Employee not found.");
+
+    const me = actingId();
+    const refusal = applyRefusal({
+      actor: { employeeId: me, isAdmin: !this.#deny("score.configure") },
+      subjectId: subject.id,
+      subjectManagerId: this.#primaryManagerOf(subject.id),
+      ruleStatus: policy.status,
+    });
+    if (refusal) return fail("permission_denied", refusal);
+
+    tick();
+    s.conductEvents.push({
+      id: nextId("ce"),
+      employeeId: subject.id,
+      policyId: policy.id,
+      policyName: policy.name,
+      severity: policy.severity ?? "minor",
+      description: input.reason.trim(),
+      occurredOn: nowIso().slice(0, 10),
+      appliedById: me,
+      appliedByName: s.employees.find((e) => e.id === me)?.displayName ?? "",
+      appliedAt: nowIso(),
+      disputeStatus: "none",
+      disputeNote: null,
+      reversalLedgerEntryId: null,
+    });
+    return delay(ok(undefined));
+  }
+
+  async requestConductRecheck(input: { entryId: string; note: string }) {
+    const g = guard();
+    if (g) return g;
+    const event = getStore().conductEvents.find((c) => c.id === input.entryId);
+    if (!event) return fail("not_found", "That deduction was not found.");
+    /* Your own record only. Disputing somebody else's is not a thing to have
+       a message for — it is a thing to be unable to do. */
+    if (event.employeeId !== actingId())
+      return fail("permission_denied", "You can only dispute your own deductions.");
+    if (event.disputeStatus === "overturned")
+      return fail("validation_failed", "This deduction was already reversed.");
+    tick();
+    event.disputeStatus = "requested";
+    event.disputeNote = input.note.trim();
+    return delay(ok(undefined));
+  }
+
+  async listConductDisputes() {
+    const g = guard();
+    if (g) return [];
+    const s = getStore();
+    const me = actingId();
+    const admin = !this.#deny("score.configure");
+    return delay(
+      s.conductEvents
+        .filter((c) => c.disputeStatus === "requested")
+        .filter((c) => {
+          return admin || this.#primaryManagerOf(c.employeeId) === me;
+        })
+        .map((c) => ({
+          employeeId: c.employeeId,
+          employeeName:
+            s.employees.find((e) => e.id === c.employeeId)?.displayName ?? c.employeeId,
+          entryId: c.id,
+          policyName: c.policyName,
+          percent:
+            s.conductPolicies.find((p) => p.id === c.policyId)?.percent ?? 0,
+          date: c.occurredOn,
+          requestNote: c.disputeNote,
+        })),
+    );
+  }
+
+  async decideConductRecheck(input: {
+    employeeId: EmployeeId;
+    entryId: string;
+    overturn: boolean;
+    note: string;
+  }) {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const event = s.conductEvents.find((c) => c.id === input.entryId);
+    if (!event) return fail("not_found", "That deduction was not found.");
+    const subject = s.employees.find((e) => e.id === event.employeeId);
+
+    const me = actingId();
+    if (
+      !mayDecideFor({
+        actor: { employeeId: me, isAdmin: !this.#deny("score.configure") },
+        subjectId: event.employeeId,
+        subjectManagerId: this.#primaryManagerOf(event.employeeId),
+      })
+    ) {
+      return fail(
+        "permission_denied",
+        "Only their own primary manager, or an administrator, can decide this recheck.",
+      );
+    }
+
+    tick();
+    /* Overturned means the EMPLOYEE was right and the deduction is reversed.
+       Upheld means it stands. Neither word is legacy's, deliberately: its own
+       term is "confirm", which reads as confirming the deduction. */
+    event.disputeStatus = input.overturn ? "overturned" : "upheld";
+    event.disputeNote = input.note.trim() || event.disputeNote;
+    return delay(ok(undefined));
   }
 
   async updateConductPolicy(

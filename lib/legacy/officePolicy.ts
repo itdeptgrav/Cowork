@@ -66,6 +66,25 @@ export interface OfficePolicy {
   breaks: RecurringBreak[];
   /** Per person, per day. Legacy defaults to 60 when unset. */
   maxBreakMinutesPerDay: number;
+  /**
+   * Whether going Online requires sharing an entire screen — OWNER SWITCH.
+   *
+   * **True is the product's own position and the default**: Online means a
+   * manager can see what you are working on, and a status nobody can verify is
+   * a status people learn to leave switched on. Every article, refusal and
+   * control in the presence area says so.
+   *
+   * False makes presence an ordinary declaration — press Online, you are
+   * online, nothing is captured and nothing is watched. That is not a weaker
+   * version of the same feature; it is a different promise, and the reason it
+   * exists is that not every team monitoring is appropriate for. A workspace
+   * that turns it off has decided that, and the pill, the menu and the manager's
+   * panel all have to stop implying otherwise.
+   *
+   * Absent means true — a workspace that has never opened the settings page
+   * gets the monitored behaviour it has always had.
+   */
+  requireScreenShare: boolean;
   updatedBy: string | null;
 }
 
@@ -136,6 +155,10 @@ export function readOfficePolicy(
       .filter((b): b is RecurringBreak => b !== null),
     maxBreakMinutesPerDay:
       positiveNumber(doc?.maxBreakMinutesPerDay) ?? DEFAULT_MAX_BREAK_MINUTES,
+    /* Absent means TRUE. A workspace with no document has not decided to switch
+       monitoring off — it has never opened the page — and defaulting the other
+       way would quietly drop the requirement for everybody on the first read. */
+    requireScreenShare: doc?.requireScreenShare !== false,
     updatedBy: typeof doc?.updatedBy === "string" ? doc.updatedBy : null,
   };
 }
@@ -199,6 +222,7 @@ export function writeOfficePolicy(
     maxTaskActionGapMinutes: policy.maxTaskActionGapMinutes,
     breaks: policy.breaks,
     maxBreakMinutesPerDay: policy.maxBreakMinutesPerDay,
+    requireScreenShare: policy.requireScreenShare,
     updatedBy,
     /* A real Date rather than `serverTimestamp()`: this is written from the
        browser like legacy's own page, and the field is only ever displayed. */

@@ -132,6 +132,24 @@ export function systemRoles(organisationId: string): Role[] {
            own day, which the scope naturally forbids since nobody reports to
            themselves. */
         { id: "m18", capability: "attendance.record", scope: "direct_reports" },
+        /* C3 · conduct.
+         *
+         * **A breach is applied by the employee's own manager**, and the same
+         * person settles a dispute about it. Neither grant existed: `conduct.apply`
+         * was held only by People Operations and administrators, so the person
+         * who actually witnesses the conduct could not record it, and every
+         * deduction had to be routed through somebody with no view of the work.
+         *
+         * `direct_reports` rather than `hierarchy` deliberately. A skip-level
+         * manager reviewing a dispute is a second opinion from further away;
+         * charging somebody two levels down is not, and the engine refuses it
+         * anyway — `_mayDecideFor` asks for the primary manager exactly. */
+        { id: "m19", capability: "conduct.apply", scope: "direct_reports" },
+        {
+          id: "m20",
+          capability: "conduct.review_dispute",
+          scope: "direct_reports",
+        },
       ],
     },
     {

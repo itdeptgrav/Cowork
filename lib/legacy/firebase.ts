@@ -4,7 +4,9 @@ import { type FirebaseApp, getApps, initializeApp } from "firebase/app";
 import {
   type Auth,
   type User,
+  browserLocalPersistence,
   getAuth,
+  setPersistence,
   onAuthStateChanged,
   onIdTokenChanged,
   signInWithCustomToken,
@@ -56,7 +58,26 @@ export function legacyFirebase(
   if (!cached) {
     const existing = getApps().find((a) => a.name === LEGACY_APP_NAME);
     const app = existing ?? initializeApp(config.firebase, LEGACY_APP_NAME);
-    cached = { app, auth: getAuth(app), db: getFirestore(app) };
+    const auth = getAuth(app);
+    /**
+     * **Stated rather than inherited: a session survives closing the browser.**
+     *
+     * `browserLocalPersistence` is the SDK's default, so this changes nothing
+     * today — which is exactly why it is worth writing down. The alternative,
+     * `browserSessionPersistence`, keeps the refresh token in `sessionStorage`
+     * and throws it away when the tab closes, and switching to it is a one-word
+     * edit that would look like tidying up and would sign the whole company out
+     * every evening. Presence, drafts and timers all assume the person comes
+     * back to the session they left.
+     *
+     * Not awaited: it resolves against the persistence layer and any sign-in
+     * issued before it lands is re-persisted by the SDK itself. A rejection
+     * means the browser has no durable storage — private mode, or storage
+     * disabled — where the fallback is an in-memory session, and there is
+     * nothing better to do than let it be one.
+     */
+    void setPersistence(auth, browserLocalPersistence).catch(() => {});
+    cached = { app, auth, db: getFirestore(app) };
   }
   return { ...cached, config };
 }

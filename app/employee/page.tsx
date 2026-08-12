@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { Panel, PanelHead, Button } from "@/components/ui/Primitives";
 import { useEmployeeStatus } from "@/components/features/status/useEmployeeStatus";
@@ -9,6 +10,11 @@ import {
   startScreenShare,
 } from "@/lib/status/employeeStatus";
 import { fetchShareSeat } from "@/lib/integrations/grav/credentials";
+import {
+  publisherVersion,
+  shareStats,
+  type ShareStats,
+} from "@/lib/integrations/grav/publisher";
 import {
   presenceIdentityFor,
   presenceRoomName,
@@ -126,8 +132,128 @@ export default function EmployeePage() {
             every page. This screen only reads it.
           </p>
         </Panel>
+
+        <EncoderPanel sharing={share.sharing} />
       </div>
     </>
+  );
+}
+
+/**
+ * What the encoder is actually doing — the answer to "it feels slow".
+ *
+ * **Grav Stream asks for these numbers by name, and asking somebody to open a
+ * console for them is how a support thread stalls for a day.** Two of the
+ * fields decide almost everything: `codec` — H264 means the work is on
+ * dedicated hardware, VP8 means a CPU core is encoding an entire desktop in
+ * software and nothing else will fix that — and `limitedBy`, which says
+ * whether the machine or the network is the constraint rather than leaving it
+ * to argument.
+ *
+ * `Watchers` and `Paused` are the 1.1.0 change worth seeing: a share with
+ * nobody watching now stops encoding entirely, where before every sharer
+ * encoded and uploaded all day into an empty room.
+ *
+ * The console handle is still there for them — `await gs.getStats()` — and this
+ * reads the same call.
+ */
+function EncoderPanel({ sharing }: { sharing: boolean }) {
+  const [stats, setStats] = useState<ShareStats | null>(null);
+  const [checked, setChecked] = useState(false);
+
+  useEffect(() => {
+    if (!sharing) return;
+    let cancelled = false;
+    const read = async () => {
+      const next = await shareStats();
+      if (!cancelled) {
+        setStats(next);
+        setChecked(true);
+      }
+    };
+    void read();
+    /* Two seconds: fast enough to watch `paused` flip when the last viewer
+       leaves, slow enough that reading the numbers is not itself work. */
+    const id = setInterval(() => void read(), 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [sharing]);
+
+  return (
+    <Panel label="Encoder">
+      <PanelHead
+        title="Encoder"
+        sub="What is actually being sent, from the SDK's own stats"
+        aside={
+          <span className="text-xs text-ink-faint">
+            SDK {publisherVersion() ?? "—"}
+          </span>
+        }
+      />
+      {!sharing ? (
+        <p className="py-2 text-xs text-ink-faint">
+          Nothing is being shared, so there is nothing to measure. Start a share
+          and these fill in.
+        </p>
+      ) : !stats ? (
+        <p className="py-2 text-xs text-ink-faint">
+          {checked
+            ? "This build of the sharing library does not report stats — hard-refresh to pick up 1.1.0."
+            : "Reading…"}
+        </p>
+      ) : (
+        <>
+          <dl className="divide-y divide-[var(--hairline)] text-sm">
+            <Fact
+              label="Codec"
+              value={`${stats.codec ?? "—"}${
+                stats.hardware === true
+                  ? " · hardware"
+                  : stats.hardware === false
+                    ? " · software"
+                    : ""
+              }`}
+            />
+            <Fact label="Encoder" value={stats.encoder ?? "—"} />
+            <Fact label="Resolution" value={stats.resolution ?? "—"} />
+            <Fact
+              label="Frame rate"
+              value={stats.fps === null ? "—" : `${stats.fps} fps`}
+            />
+            <Fact
+              label="Bitrate"
+              value={stats.kbps === null ? "—" : `${stats.kbps} kbps`}
+            />
+            <Fact label="Limited by" value={stats.limitedBy ?? "—"} />
+            <Fact
+              label="Watchers"
+              value={
+                stats.watchers === null
+                  ? "—"
+                  : `${stats.watchers}${stats.paused ? " · encoding paused" : ""}`
+              }
+            />
+            <Fact
+              label="Frames"
+              value={
+                stats.framesSent === null
+                  ? "—"
+                  : `${stats.framesSent} sent · ${stats.framesDropped ?? 0} dropped`
+              }
+            />
+          </dl>
+          {stats.codec === "VP8" && (
+            <p className="mt-3 text-xs leading-relaxed text-[var(--state-overdue-ink)]">
+              VP8 is encoded in software and will keep a CPU core busy for as
+              long as this share runs. The codec is chosen when a share starts,
+              so stop sharing and start again to move onto H.264.
+            </p>
+          )}
+        </>
+      )}
+    </Panel>
   );
 }
 

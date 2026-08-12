@@ -30,6 +30,7 @@ export function ScreenDialog({
   displayName,
   presence,
   sharing,
+  screenSharingOff,
 }: {
   open: boolean;
   onClose: () => void;
@@ -41,6 +42,8 @@ export function ScreenDialog({
   presence: MonitoredPresence;
   /** Whether a screen is going out, per the service — see `MonitorRoom`. */
   sharing: boolean | null;
+  /** The workspace watches no screens — see `MonitorRoom`. */
+  screenSharingOff: boolean;
 }) {
   useEffect(() => {
     if (!open) return;
@@ -107,6 +110,7 @@ export function ScreenDialog({
           displayName={displayName}
           presence={presence}
           sharing={sharing}
+          screenSharingOff={screenSharingOff}
         />
       </div>
     </div>,
