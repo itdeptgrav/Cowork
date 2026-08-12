@@ -29,6 +29,31 @@ export type CellMap = Record<string, string>;
 /** How a NUMBER is displayed. Presentation only — the stored value is untouched. */
 export type NumberFormat = "currency" | "percent" | "comma" | "plain";
 
+/** Which of a cell's four edges carry a drawn line. */
+export interface BorderSides {
+  top?: boolean;
+  right?: boolean;
+  bottom?: boolean;
+  left?: boolean;
+}
+
+/**
+ * Read a cell's `border` field, tolerating the OLD shape a document written
+ * before the Borders menu grew individual sides could still have on disk:
+ * a bare string, `"all"` or `"bottom"`, where the field is now an object.
+ * Older documents keep rendering correctly without a migration script; every
+ * new write already uses the object shape, so this is read-side only.
+ */
+export function normalizeBorder(raw: unknown): BorderSides | undefined {
+  if (raw === "all") return { top: true, right: true, bottom: true, left: true };
+  if (raw === "bottom") return { bottom: true };
+  if (raw && typeof raw === "object") {
+    const b = raw as BorderSides;
+    return b.top || b.right || b.bottom || b.left ? b : undefined;
+  }
+  return undefined;
+}
+
 /** Formatting a cell carries. Presentation only — never the value. */
 export interface CellStyle {
   bold?: boolean;
@@ -44,8 +69,8 @@ export interface CellStyle {
   color?: string;
   /** A CSS colour for the cell fill. */
   bg?: string;
-  /** A drawn border: every side, or just the bottom (a header rule). */
-  border?: "all" | "bottom";
+  /** A drawn border, per side — which sides is the whole feature; see `BorderSides`. */
+  border?: BorderSides;
   /** Font family, from the toolbar's list. */
   font?: string;
   /** Font size in points/px. */
@@ -191,6 +216,25 @@ export interface SheetData {
   rowHeights?: Record<number, number>;
   /** Column index (0-based) → pixel width, for columns the user dragged to resize. Absent index ⇒ DEFAULT_COL_WIDTH. */
   columnWidths?: Record<number, number>;
+  /** Merged rectangles, as range strings ("B2:C3"), always normalized (top-left:bottom-right)
+   * and never overlapping one another. Purely a DISPLAY concern — every covered cell keeps
+   * its own stored value; a merge just means only the top-left one renders and it spans the
+   * others. That is deliberately different from Excel, which discards the covered cells'
+   * content on merge — there is no reason a merge should be destructive here. */
+  mergedRanges?: string[];
+  /** A pasted-in image, keyed by the cell it was dropped on. Anything MORE than one cell —
+   * an image that spans a merge, floats free, or overlaps neighbours the way a chart does —
+   * is future scope; this is deliberately the "Google Sheets image-in-cell" version, not the
+   * "Excel floating picture" version. */
+  images?: Record<string, CellImage>;
+}
+
+/** A cell's pasted-in image. `fileId` is load-bearing (see `DriveImage`/`driveImageSources`);
+ * `url` is the fallback source and what survives if the id's format ever changes. */
+export interface CellImage {
+  fileId: string | null;
+  url: string;
+  name: string;
 }
 
 /** Resize bounds — generous enough for a wrapped paragraph or a wide heading, tight enough that a fat-finger drag can't produce an unusable sheet. */
@@ -417,16 +461,61 @@ function parseSheet(input: unknown): SheetData {
   const rowHeights = readSizeMap(raw.rowHeights, MIN_ROW_HEIGHT, MAX_ROW_HEIGHT);
   const columnWidths = readSizeMap(raw.columnWidths, MIN_COL_WIDTH, MAX_COL_WIDTH);
 
+  const rows = clamp(raw.rows ?? DEFAULT_ROWS, 1, MAX_ROWS);
+  const cols = clamp(raw.cols ?? DEFAULT_COLS, 1, MAX_COLS);
+
+  /* Kept sorted and non-overlapping on the way IN, not just on the way out of
+   * `mergeCells` — a hand-edited or corrupted document could otherwise hand
+   * the renderer two merges claiming the same cell, and colSpan/rowSpan on a
+   * cell HTML has already double-claimed is undefined behaviour, not a
+   * graceful one. Later entries losing to earlier ones on overlap is
+   * arbitrary but deterministic, which is all correctness requires here. */
+  const mergedRanges: string[] = [];
+  const mergedClaimed = new Set<string>();
+  for (const entry of Array.isArray(raw.mergedRanges) ? raw.mergedRanges : []) {
+    if (typeof entry !== "string") continue;
+    const rect = rangeToRect(entry);
+    if (!rect || rect.top === rect.bottom && rect.left === rect.right) continue;
+    if (rect.bottom >= rows || rect.right >= cols) continue;
+    let overlaps = false;
+    for (let r = rect.top; r <= rect.bottom && !overlaps; r++)
+      for (let c = rect.left; c <= rect.right; c++)
+        if (mergedClaimed.has(`${r},${c}`)) {
+          overlaps = true;
+          break;
+        }
+    if (overlaps) continue;
+    for (let r = rect.top; r <= rect.bottom; r++)
+      for (let c = rect.left; c <= rect.right; c++) mergedClaimed.add(`${r},${c}`);
+    mergedRanges.push(rangeLabel(rect));
+  }
+
+  const images: Record<string, CellImage> = {};
+  if (raw.images && typeof raw.images === "object") {
+    for (const [ref, value] of Object.entries(raw.images as Record<string, unknown>)) {
+      if (!parseRef(ref) || !value || typeof value !== "object") continue;
+      const v = value as Partial<CellImage>;
+      if (typeof v.url !== "string" || !v.url) continue;
+      images[ref.toUpperCase()] = {
+        fileId: typeof v.fileId === "string" ? v.fileId : null,
+        url: v.url,
+        name: typeof v.name === "string" ? v.name : "image",
+      };
+    }
+  }
+
   return {
     cells,
     styles,
-    rows: clamp(raw.rows ?? DEFAULT_ROWS, 1, MAX_ROWS),
-    cols: clamp(raw.cols ?? DEFAULT_COLS, 1, MAX_COLS),
+    rows,
+    cols,
     ...(charts.length ? { charts } : {}),
     ...(conditionals.length ? { conditionals } : {}),
     ...(hidden.length ? { hidden } : {}),
     ...(Object.keys(rowHeights).length ? { rowHeights } : {}),
     ...(Object.keys(columnWidths).length ? { columnWidths } : {}),
+    ...(mergedRanges.length ? { mergedRanges } : {}),
+    ...(Object.keys(images).length ? { images } : {}),
   };
 }
 
@@ -475,6 +564,10 @@ function sheetToObject(data: SheetData): Record<string, unknown> {
       : {}),
     ...(data.columnWidths && Object.keys(data.columnWidths).length
       ? { columnWidths: data.columnWidths }
+      : {}),
+    ...(data.mergedRanges?.length ? { mergedRanges: data.mergedRanges } : {}),
+    ...(data.images && Object.keys(data.images).length
+      ? { images: data.images }
       : {}),
   };
 }
@@ -1433,7 +1526,7 @@ function shiftChartsAndConditionals(
   dRow: number,
   atCol: number,
   dCol: number,
-): Pick<SheetData, "charts" | "conditionals"> {
+): Pick<SheetData, "charts" | "conditionals" | "mergedRanges"> {
   const charts = (data.charts ?? [])
     .map((c) => {
       const range = shiftRangeString(c.range, atRow, dRow, atCol, dCol);
@@ -1446,9 +1539,21 @@ function shiftChartsAndConditionals(
       return range ? { ...r, range } : null;
     })
     .filter((r): r is ConditionalRule => r !== null);
+  /* A merge that straddled the deleted band collapses to whatever survives —
+   * shiftRangeString already clips it to the remaining rows/columns, same as
+   * a chart's range would. One that collapses to a single cell (or nothing)
+   * is dropped: a "merge" of one cell isn't one. */
+  const mergedRanges = (data.mergedRanges ?? [])
+    .map((range) => shiftRangeString(range, atRow, dRow, atCol, dCol))
+    .filter((range): range is string => {
+      if (!range) return false;
+      const rect = rangeToRect(range);
+      return !!rect && !(rect.top === rect.bottom && rect.left === rect.right);
+    });
   return {
     ...(charts.length ? { charts } : {}),
     ...(conditionals.length ? { conditionals } : {}),
+    ...(mergedRanges.length ? { mergedRanges } : {}),
   };
 }
 
@@ -1458,7 +1563,7 @@ function remapCellsAndStyles(
   dRow: number,
   atCol: number,
   dCol: number,
-): Pick<SheetData, "cells" | "styles"> {
+): Pick<SheetData, "cells" | "styles" | "images"> {
   const cells: CellMap = {};
   for (const [ref, value] of Object.entries(data.cells)) {
     const next = shiftRef(ref, atRow, dRow, atCol, dCol);
@@ -1469,7 +1574,12 @@ function remapCellsAndStyles(
     const next = shiftRef(ref, atRow, dRow, atCol, dCol);
     if (next) styles[next] = style;
   }
-  return { cells, styles };
+  const images: Record<string, CellImage> = {};
+  for (const [ref, image] of Object.entries(data.images ?? {})) {
+    const next = shiftRef(ref, atRow, dRow, atCol, dCol);
+    if (next) images[next] = image;
+  }
+  return { cells, styles, ...(Object.keys(images).length ? { images } : {}) };
 }
 
 /**
@@ -1526,10 +1636,18 @@ export function deleteRows(data: SheetData, atRow: number, count: number): Sheet
     const next = shiftRef(ref, atRow + n, -n, 0, 0);
     if (next) styles[next] = style;
   }
+  const images: Record<string, CellImage> = {};
+  for (const [ref, image] of Object.entries(data.images ?? {})) {
+    const pos = parseRef(ref)!;
+    if (pos.row >= atRow && pos.row < atRow + n) continue;
+    const next = shiftRef(ref, atRow + n, -n, 0, 0);
+    if (next) images[next] = image;
+  }
   return {
     ...data,
     cells,
     styles,
+    ...(Object.keys(images).length ? { images } : { images: undefined }),
     ...shiftChartsAndConditionals(data, atRow + n, -n, 0, 0),
     rows: clamp(data.rows - n, 1, MAX_ROWS),
     hidden: (data.hidden ?? [])
@@ -1568,10 +1686,18 @@ export function deleteColumns(data: SheetData, atCol: number, count: number): Sh
     const next = shiftRef(ref, 0, 0, atCol + n, -n);
     if (next) styles[next] = style;
   }
+  const images: Record<string, CellImage> = {};
+  for (const [ref, image] of Object.entries(data.images ?? {})) {
+    const pos = parseRef(ref)!;
+    if (pos.col >= atCol && pos.col < atCol + n) continue;
+    const next = shiftRef(ref, 0, 0, atCol + n, -n);
+    if (next) images[next] = image;
+  }
   return {
     ...data,
     cells,
     styles,
+    ...(Object.keys(images).length ? { images } : { images: undefined }),
     ...shiftChartsAndConditionals(data, 0, 0, atCol + n, -n),
     cols: clamp(data.cols - n, 1, MAX_COLS),
     columnWidths: shiftSizeMap(data.columnWidths, atCol, -n),
@@ -1588,6 +1714,53 @@ export function resizeRow(data: SheetData, row: number, height: number): SheetDa
 export function resizeColumn(data: SheetData, col: number, width: number): SheetData {
   const clamped = clamp(Math.round(width), MIN_COL_WIDTH, MAX_COL_WIDTH);
   return { ...data, columnWidths: { ...data.columnWidths, [col]: clamped } };
+}
+
+/**
+ * Merge `rect` into one cell. Any EXISTING merge that overlaps `rect` is
+ * dropped first — Excel prompts "this will unmerge" in that situation; this
+ * just does it, since the alternative (refusing, or silently keeping the old
+ * merge and creating a second overlapping one) is worse than the person
+ * having to notice their new merge ate an old one. A 1×1 `rect` is a no-op:
+ * merging a single cell with itself isn't a merge.
+ */
+export function mergeCells(data: SheetData, rect: Rect): SheetData {
+  if (rect.top === rect.bottom && rect.left === rect.right) return data;
+  const kept = (data.mergedRanges ?? []).filter((range) => {
+    const other = rangeToRect(range);
+    if (!other) return false;
+    const disjoint =
+      other.right < rect.left ||
+      other.left > rect.right ||
+      other.bottom < rect.top ||
+      other.top > rect.bottom;
+    return disjoint;
+  });
+  return { ...data, mergedRanges: [...kept, rangeLabel(rect)] };
+}
+
+/** Remove every merged range that overlaps `rect` — "Unmerge Cells" over the current selection. */
+export function unmergeCells(data: SheetData, rect: Rect): SheetData {
+  const kept = (data.mergedRanges ?? []).filter((range) => {
+    const other = rangeToRect(range);
+    if (!other) return false;
+    const disjoint =
+      other.right < rect.left ||
+      other.left > rect.right ||
+      other.bottom < rect.top ||
+      other.top > rect.bottom;
+    return disjoint;
+  });
+  return { ...data, mergedRanges: kept.length ? kept : undefined };
+}
+
+/** The merged range containing (row, col), if any. */
+export function mergeAt(data: SheetData, row: number, col: number): Rect | null {
+  for (const range of data.mergedRanges ?? []) {
+    const rect = rangeToRect(range);
+    if (rect && inRect(row, col, rect)) return rect;
+  }
+  return null;
 }
 
 /**

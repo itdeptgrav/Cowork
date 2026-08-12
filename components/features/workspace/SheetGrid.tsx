@@ -36,8 +36,11 @@ import {
   isNumericDisplay,
   MAX_SHEETS,
   matchFunctionNames,
+  mergeAt,
+  mergeCells,
   MIN_COL_WIDTH,
   MIN_ROW_HEIGHT,
+  normalizeBorder,
   normalizeRange,
   offsetReferences,
   parseClipboardTable,
@@ -48,7 +51,10 @@ import {
   resizeColumn,
   resizeRow,
   summarize,
+  unmergeCells,
   writeWorkbook,
+  type BorderSides,
+  type CellImage,
   type CellMap,
   type CellPos,
   type CellStyle,
@@ -57,6 +63,7 @@ import {
   type ConditionalKind,
   type ConditionalRule,
   type NumberFormat,
+  type Rect,
   type RuleStats,
   type SheetData,
   type SheetTab,
@@ -66,6 +73,7 @@ import {
 import { useCollabSession } from "./useCollabSession";
 import { documentRoom } from "@/lib/rules/workspace/collabRoom";
 import { ShareMenu } from "./ShareMenu";
+import { DriveImage } from "@/components/ui/DriveImage";
 import {
   SheetChartObject,
   CHART_DEFAULT_W,
@@ -146,6 +154,7 @@ function sheetDataFor(
   yStyles: Y.Map<CellStyle> | null,
   yCharts: Y.Array<StoredChart> | null,
   yConds: Y.Array<StoredRule> | null,
+  yImages: Y.Map<CellImage> | null,
 ): SheetData {
   if (!yCells) {
     return {
@@ -158,6 +167,8 @@ function sheetDataFor(
       hidden: tab.hidden,
       rowHeights: tab.rowHeights,
       columnWidths: tab.columnWidths,
+      mergedRanges: tab.mergedRanges,
+      images: tab.images,
     };
   }
   const prefix = `${tab.id}:`;
@@ -184,6 +195,12 @@ function sheetDataFor(
         .filter((r) => r.sheetId === tab.id || (isFirst && !r.sheetId))
         .map(withoutSheetId)
     : (tab.conditionals ?? []);
+  const images: Record<string, CellImage> = {};
+  if (yImages)
+    for (const [key, image] of yImages.entries()) {
+      if (key.startsWith(prefix)) images[key.slice(prefix.length)] = image;
+      else if (isFirst && parseRef(key)) images[key] = image;
+    }
   return {
     cells,
     styles,
@@ -194,6 +211,8 @@ function sheetDataFor(
     ...(tab.hidden?.length ? { hidden: tab.hidden } : {}),
     ...(tab.rowHeights && Object.keys(tab.rowHeights).length ? { rowHeights: tab.rowHeights } : {}),
     ...(tab.columnWidths && Object.keys(tab.columnWidths).length ? { columnWidths: tab.columnWidths } : {}),
+    ...(tab.mergedRanges?.length ? { mergedRanges: tab.mergedRanges } : {}),
+    ...(Object.keys(images).length ? { images } : {}),
   };
 }
 
@@ -345,6 +364,11 @@ export function SheetGrid({
     liveSize: number;
   } | null>(null);
   const [resizeGuide, setResizeGuide] = useState<{ kind: "row" | "col"; edge: number } | null>(null);
+  /* Format Painter: armed with a copied style, waiting for the next cell click.
+   * Plain state, not a ref — each cell's onMouseDown is a fresh closure built
+   * every render (nothing memoized in that loop), so it always reads the
+   * current value with no stale-closure risk to guard against. */
+  const [paintFormat, setPaintFormat] = useState<CellStyle | null>(null);
 
   /* The shared maps. Read through the provider's doc so every client mutates the
      same structure rather than a copy of it. Keys/tags are namespaced by sheet
@@ -355,6 +379,7 @@ export function SheetGrid({
   const yCharts = collab.session?.doc.getArray<StoredChart>("charts") ?? null;
   const yConds =
     collab.session?.doc.getArray<StoredRule>("conditionals") ?? null;
+  const yImages = collab.session?.doc.getMap<CellImage>("images") ?? null;
 
   /**
    * The engine, BUILT AND DESTROYED IN ONE EFFECT.
@@ -555,13 +580,15 @@ export function SheetGrid({
     yStyles.observe(bump);
     yCharts?.observe(bump);
     yConds?.observe(bump);
+    yImages?.observe(bump);
     return () => {
       yCells.unobserve(bump);
       yStyles.unobserve(bump);
       yCharts?.unobserve(bump);
       yConds?.unobserve(bump);
+      yImages?.unobserve(bump);
     };
-  }, [yCells, yStyles, yCharts, yConds]);
+  }, [yCells, yStyles, yCharts, yConds, yImages]);
 
   /* Undo/redo over the shared maps AND arrays. It tracks LOCAL edits only (the
      default null origin), so Ctrl+Z never rewinds a collaborator's change out
@@ -578,7 +605,7 @@ export function SheetGrid({
        a clean union the UndoManager accepts. */
     const scope =
       yCharts && yConds
-        ? [yCells, yStyles, yCharts, yConds]
+        ? [yCells, yStyles, yCharts, yConds, ...(yImages ? [yImages] : [])]
         : [yCells, yStyles];
     const mgr = new Y.UndoManager(scope, { captureTimeout: 350 });
     setUndoMgr(mgr);
@@ -586,7 +613,7 @@ export function SheetGrid({
       mgr.destroy();
       setUndoMgr(null);
     };
-  }, [yCells, yStyles, yCharts, yConds]);
+  }, [yCells, yStyles, yCharts, yConds, yImages]);
 
   /* Every tab's SheetData, live: the CRDT's view when collaborating (folded
      through `sheetDataFor`'s namespacing), else each tab's own stored fields.
@@ -597,11 +624,11 @@ export function SheetGrid({
     if (!workbook) return {};
     const out: Record<string, SheetData> = {};
     workbook.sheets.forEach((tab, i) => {
-      out[tab.id] = sheetDataFor(tab, i === 0, yCells, yStyles, yCharts, yConds);
+      out[tab.id] = sheetDataFor(tab, i === 0, yCells, yStyles, yCharts, yConds, yImages);
     });
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` stands in for yCells/yStyles/yCharts/yConds mutating in place.
-  }, [workbook, yCells, yStyles, yCharts, yConds, version]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `version` stands in for yCells/yStyles/yCharts/yConds/yImages mutating in place.
+  }, [workbook, yCells, yStyles, yCharts, yConds, yImages, version]);
 
   const activeId =
     workbook &&
@@ -859,16 +886,45 @@ export function SheetGrid({
     scheduleSave();
   };
 
+  /** Drop a pasted image onto a cell — mirrors `setCell`, but a whole `CellImage`
+   * object rather than a raw string, and there is no "typed something over it"
+   * case to reconcile: a paste always replaces whatever image was there. */
+  const setImage = (ref: string, image: CellImage) => {
+    const id = activeTab?.id;
+    if (readOnly || !id) return;
+    setError(null);
+    if (yImages) yImages.set(`${id}:${ref}`, image);
+    else patchActiveTab({ images: { ...(activeTab?.images ?? {}), [ref]: image } });
+    scheduleSave();
+  };
+
+  /** Remove whatever image(s) sit under `refs` — folded into "Clear contents" so Delete/Backspace clears a pasted image too. */
+  const clearImages = (refs: string[]) => {
+    const id = activeTab?.id;
+    if (readOnly || refs.length === 0 || !id) return;
+    if (yImages) {
+      for (const ref of refs) yImages.delete(`${id}:${ref}`);
+    } else {
+      const images = { ...(activeTab?.images ?? {}) };
+      let changed = false;
+      for (const ref of refs) if (ref in images) { delete images[ref]; changed = true; }
+      if (changed) patchActiveTab({ images });
+    }
+    scheduleSave();
+  };
+
   /**
    * Replace the whole ACTIVE tab with an already-computed `SheetData` — the
    * landing spot for `lib/rules/sheets/grid.ts`'s `insertRows`/`deleteRows`/
-   * `insertColumns`/`deleteColumns`/`sortRange`, which each take the current
-   * `SheetData` and return the new one rather than a patch. Cells, styles,
-   * charts and conditionals are CRDT-backed when collaborating, so the swap
-   * is delete-everything-then-set-everything inside one transaction, scoped to
+   * `insertColumns`/`deleteColumns`/`sortRange`/`mergeCells`/`unmergeCells`/
+   * `resizeRow`/`resizeColumn`, which each take the current `SheetData` and
+   * return the new one rather than a patch. Cells, styles, charts, conditionals
+   * and images are CRDT-backed when collaborating, so the swap is
+   * delete-everything-then-set-everything inside one transaction, scoped to
    * this tab's keys/tags — the OTHER tabs' entries in the same flat maps are
-   * left untouched. `rows`, `cols` and `hidden` are not CRDT-backed (see the
-   * top of this file), so they go through `workbook` state either way.
+   * left untouched. `rows`, `cols`, `hidden`, `rowHeights`, `columnWidths` and
+   * `mergedRanges` are not CRDT-backed (see the top of this file), so they go
+   * through `workbook` state either way.
    */
   const applyStructuralEdit = (next: SheetData) => {
     const id = activeTab?.id;
@@ -897,6 +953,12 @@ export function SheetGrid({
           yConds.delete(0, yConds.length);
           yConds.insert(0, [...others, ...mine]);
         }
+        if (yImages) {
+          for (const key of Array.from(yImages.keys()))
+            if (key.startsWith(prefix)) yImages.delete(key);
+          for (const [ref, image] of Object.entries(next.images ?? {}))
+            yImages.set(`${prefix}${ref}`, image);
+        }
       });
       patchActiveTab({
         rows: next.rows,
@@ -904,6 +966,7 @@ export function SheetGrid({
         hidden: next.hidden,
         rowHeights: next.rowHeights,
         columnWidths: next.columnWidths,
+        mergedRanges: next.mergedRanges,
       });
     } else {
       patchActiveTab(next);
@@ -949,6 +1012,95 @@ export function SheetGrid({
       patchActiveTab({ styles });
     }
     scheduleSave();
+  };
+
+  /* Format Painter: a full REPLACE of a cell's style, not the patch-and-merge
+   * `toggleStyle` above does everywhere else. That distinction is the whole
+   * point of the tool — "make this cell look like that one" has to also clear
+   * whatever formatting the target had that the source didn't, or bold would
+   * stick around forever on a cell painted from a plain one. */
+  const paintStyleOnto = (list: string[], style: CellStyle) => {
+    const id = activeTab?.id;
+    if (readOnly || !id || list.length === 0) return;
+    const hasAny = Object.values(style).some((v) => v !== undefined && v !== false);
+    if (yStyles) {
+      collab.session?.doc.transact(() => {
+        for (const ref of list) {
+          const key = `${id}:${ref}`;
+          if (hasAny) yStyles.set(key, { ...style });
+          else yStyles.delete(key);
+        }
+      });
+    } else {
+      const styles = { ...(activeTab?.styles ?? {}) };
+      for (const ref of list) {
+        if (hasAny) styles[ref] = { ...style };
+        else delete styles[ref];
+      }
+      patchActiveTab({ styles });
+    }
+    scheduleSave();
+  };
+
+  /* Like `toggleStyle`, but each ref carries its OWN patch instead of one
+   * shared patch for the whole selection — needed for border presets, where
+   * a cell on the selection's edge gets a different side drawn than one in
+   * the middle. Same merge-and-strip-undefined semantics as `toggleStyle`. */
+  const patchStylesPerCell = (patches: [string, Partial<CellStyle>][]) => {
+    const id = activeTab?.id;
+    if (readOnly || !id || patches.length === 0) return;
+    const merge = (cur: CellStyle, patch: Partial<CellStyle>): CellStyle => {
+      const next: CellStyle = { ...cur };
+      for (const [k, v] of Object.entries(patch)) {
+        if (v === undefined || v === null || v === false) delete (next as Record<string, unknown>)[k];
+        else (next as Record<string, unknown>)[k] = v;
+      }
+      return next;
+    };
+    if (yStyles) {
+      collab.session?.doc.transact(() => {
+        for (const [ref, patch] of patches) {
+          const key = `${id}:${ref}`;
+          yStyles.set(key, merge((yStyles.get(key) as CellStyle | undefined) ?? {}, patch));
+        }
+      });
+    } else {
+      const styles = { ...(activeTab?.styles ?? {}) };
+      for (const [ref, patch] of patches) styles[ref] = merge(styles[ref] ?? {}, patch);
+      patchActiveTab({ styles });
+    }
+    scheduleSave();
+  };
+
+  /** The real Borders menu: presets over the CURRENT selection, matching what a
+   * spreadsheet's border gallery actually draws rather than the single "all
+   * sides or just the bottom" toggle this used to be. "Outside"/single-side
+   * presets only mark the cells actually on that edge of the selection — the
+   * middle of a 3×3 selection getting a "top border" from every one of its
+   * nine cells is not what "top border" means. */
+  const applyBorderPreset = (
+    preset: "none" | "all" | "outside" | "top" | "bottom" | "left" | "right",
+  ) => {
+    if (!selRect) return;
+    const patches: [string, Partial<CellStyle>][] = [];
+    for (let r = selRect.top; r <= selRect.bottom; r++) {
+      for (let c = selRect.left; c <= selRect.right; c++) {
+        const sides: BorderSides = {};
+        if (preset === "all") {
+          sides.top = sides.right = sides.bottom = sides.left = true;
+        } else if (preset === "outside") {
+          if (r === selRect.top) sides.top = true;
+          if (r === selRect.bottom) sides.bottom = true;
+          if (c === selRect.left) sides.left = true;
+          if (c === selRect.right) sides.right = true;
+        } else if (preset === "top" && r === selRect.top) sides.top = true;
+        else if (preset === "bottom" && r === selRect.bottom) sides.bottom = true;
+        else if (preset === "left" && c === selRect.left) sides.left = true;
+        else if (preset === "right" && c === selRect.right) sides.right = true;
+        patches.push([cellRef(r, c), { border: Object.keys(sides).length ? sides : undefined }]);
+      }
+    }
+    patchStylesPerCell(patches);
   };
 
   const resetPointing = () => {
@@ -1083,10 +1235,35 @@ export function SheetGrid({
     gridRef.current?.focus();
   };
 
+  /* Arrow-key navigation, merge-aware. Two problems a plain +1/-1 step would
+   * hit: leaving a merged cell by arrow would land on one of ITS OWN covered
+   * positions (no `<td>` of its own — the anchor's colSpan/rowSpan already
+   * owns that slot, so nothing would ever appear active), and arriving
+   * somewhere inside a DIFFERENT merge has the same problem in reverse. Excel's
+   * behaviour is the fix for both: step out from the merge's own far edge
+   * (so leaving a 3-column merge is one press, not three), then if that lands
+   * inside another merge, snap to ITS anchor rather than the cell literally
+   * dRow/dCol away. */
   const move = (dRow: number, dCol: number, extend = false) => {
     const at = parseRef(active);
     if (!at) return;
-    selectTo(at.row + dRow, at.col + dCol, extend);
+    let row = at.row;
+    let col = at.col;
+    const here = sheet ? mergeAt(sheet, at.row, at.col) : null;
+    if (here) {
+      if (dRow > 0) row = here.bottom;
+      else if (dRow < 0) row = here.top;
+      if (dCol > 0) col = here.right;
+      else if (dCol < 0) col = here.left;
+    }
+    row += dRow;
+    col += dCol;
+    const there = sheet ? mergeAt(sheet, row, col) : null;
+    if (there) {
+      row = there.top;
+      col = there.left;
+    }
+    selectTo(row, col, extend);
   };
 
   /* The selected rectangle, resolved once for the whole render. */
@@ -1113,9 +1290,11 @@ export function SheetGrid({
     const refs = rectRefs();
     if (refs.length <= 1) {
       setCell(active, "");
+      clearImages([active]);
       return;
     }
     writeCells(refs.map((ref) => [ref, ""] as [string, string]));
+    clearImages(refs);
   };
 
   /* Strip formatting from the selection, leaving the values — Excel's "Clear
@@ -1323,6 +1502,8 @@ export function SheetGrid({
             yCharts.insert(yCharts.length, t.charts.map((c) => ({ ...c, sheetId: t.id })));
           if (yConds && t.conditionals?.length)
             yConds.insert(yConds.length, t.conditionals.map((r) => ({ ...r, sheetId: t.id })));
+          if (yImages)
+            for (const [ref, image] of Object.entries(t.images ?? {})) yImages.set(`${t.id}:${ref}`, image);
         }
       });
     }
@@ -1893,6 +2074,24 @@ export function SheetGrid({
     dispatch({ type: "structuralEdit", next });
   };
 
+  /* Merge / unmerge — a display-only rect over the current selection (see the
+   * comment on `SheetData.mergedRanges`). "Merge cells" is disabled without a
+   * genuine multi-cell selection (merging one cell means nothing); "Unmerge"
+   * lights up from just CLICKING anywhere inside an existing merge — not only
+   * when the drag-selection happens to match its exact bounds — the same way
+   * Excel's Merge & Center reads as pressed the instant your cursor lands
+   * inside one, before you have selected anything at all. */
+  const isMergedHere = !!sheet && !!focusPos && !!mergeAt(sheet, focusPos.row, focusPos.col);
+  const canMerge = !readOnly && !!sheet && !!selRect && selection.hasRange;
+  const mergeSelection = () => {
+    if (!sheet || !selRect) return;
+    dispatch({ type: "structuralEdit", next: mergeCells(sheet, selRect) });
+  };
+  const unmergeSelection = () => {
+    if (!sheet || !selRect) return;
+    dispatch({ type: "structuralEdit", next: unmergeCells(sheet, selRect) });
+  };
+
   /* Row/column insert & delete — lib/rules/sheets/grid.ts has had
    * insertRows/deleteRows/insertColumns/deleteColumns since before this
    * comment, and applyStructuralEdit (above) was built specifically as
@@ -2247,6 +2446,35 @@ export function SheetGrid({
     indexAtOffset(rowOffsets, scrollTop + viewportH) + 1 + OVERSCAN,
   );
 
+  /* A row-spanning merge whose anchor sits ABOVE the window still needs that
+   * anchor row rendered as a real `<tr>` — a `rowSpan` cell can only reach
+   * down into rows the table actually has, not into the collapsed spacer.
+   * Merges are few and small in practice (a header band, not thousands of
+   * rows), so widening the window to fit them costs nothing worth noticing. */
+  let renderFirst = first;
+  let renderLast = last;
+  const mergeRects: Rect[] = [];
+  for (const range of sheet.mergedRanges ?? []) {
+    const rect = rangeToRect(range);
+    if (!rect) continue;
+    mergeRects.push(rect);
+    if (rect.bottom >= first && rect.top < last) {
+      renderFirst = Math.min(renderFirst, rect.top);
+      renderLast = Math.max(renderLast, rect.bottom + 1);
+    }
+  }
+  /* Anchor → span size, and every covered (non-anchor) cell in the window, so
+   * the render loop below is one Set/Map lookup per cell rather than an
+   * inRect() scan over every merge for every cell. */
+  const mergeAnchors = new Map<string, Rect>();
+  const mergeCovered = new Set<string>();
+  for (const rect of mergeRects) {
+    mergeAnchors.set(`${rect.top},${rect.left}`, rect);
+    for (let r = rect.top; r <= rect.bottom; r++)
+      for (let c = rect.left; c <= rect.right; c++)
+        if (r !== rect.top || c !== rect.left) mergeCovered.add(`${r},${c}`);
+  }
+
   const onScroll = (e: React.UIEvent<HTMLDivElement>) => {
     const top = e.currentTarget.scrollTop;
     if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current);
@@ -2509,6 +2737,14 @@ export function SheetGrid({
           <FmtBtn label="Redo (⌘⇧Z)" disabled={!undoMgr} onClick={() => undoMgr?.redo()}>
             <span className="text-[13px] leading-none">↻</span>
           </FmtBtn>
+          <FmtBtn
+            label={paintFormat ? "Click a cell to paint its format (Esc to cancel)" : "Format Painter — copy this cell's formatting"}
+            active={!!paintFormat}
+            disabled={readOnly}
+            onClick={() => setPaintFormat(paintFormat ? null : (rawStyles[active] ?? {}))}
+          >
+            <span className="text-[12px] leading-none">🖌</span>
+          </FmtBtn>
           <Sep />
 
           {/* Font group */}
@@ -2544,21 +2780,27 @@ export function SheetGrid({
           <ColorBtn label="Fill colour" swatch={rawStyles[active]?.bg} onPick={(v) => toggleStyle({ bg: v })}>
             <span className="text-[11px] leading-none">▦</span>
           </ColorBtn>
-          <ToolSelect
+          <Popover
             label="Borders"
-            value={rawStyles[active]?.border ?? "none"}
-            width="w-[4.75rem]"
-            options={[
-              ["none", "Borders"],
-              ["all", "All borders"],
-              ["bottom", "Bottom border"],
-            ]}
-            onChange={(v) =>
-              toggleStyle({
-                border: v === "none" ? undefined : (v as "all" | "bottom"),
-              })
-            }
-          />
+            title="Borders"
+            width={176}
+            disabled={readOnly}
+            render={() => (
+              <>
+                <MenuItem label="All borders" onSelect={() => applyBorderPreset("all")} />
+                <MenuItem label="Outside borders" onSelect={() => applyBorderPreset("outside")} />
+                <MenuSeparator />
+                <MenuItem label="Top border" onSelect={() => applyBorderPreset("top")} />
+                <MenuItem label="Bottom border" onSelect={() => applyBorderPreset("bottom")} />
+                <MenuItem label="Left border" onSelect={() => applyBorderPreset("left")} />
+                <MenuItem label="Right border" onSelect={() => applyBorderPreset("right")} />
+                <MenuSeparator />
+                <MenuItem label="No border" onSelect={() => applyBorderPreset("none")} />
+              </>
+            )}
+          >
+            <span className="text-[12px] leading-none">⊞</span>
+          </Popover>
           <Sep />
 
           {/* Alignment group */}
@@ -2588,6 +2830,14 @@ export function SheetGrid({
           </FmtBtn>
           <FmtBtn label="Increase indent" onClick={() => toggleStyle({ indent: Math.min(8, (rawStyles[active]?.indent ?? 0) + 1) })}>
             <span className="text-[11px] leading-none">⇥</span>
+          </FmtBtn>
+          <FmtBtn
+            label={isMergedHere ? "Unmerge cells" : "Merge cells"}
+            active={isMergedHere}
+            disabled={!isMergedHere && !canMerge}
+            onClick={isMergedHere ? unmergeSelection : mergeSelection}
+          >
+            <span className="text-[10px] leading-none">⊟</span>
           </FmtBtn>
           <Sep />
 
@@ -2702,6 +2952,10 @@ export function SheetGrid({
              one keypress doesn't also deselect the chart underneath it. */
           if (e.key === "Escape") {
             if (menu) return;
+            if (paintFormat) {
+              setPaintFormat(null);
+              return;
+            }
             if (selectedChart) setSelectedChart(null);
             setAnchor(null);
             return;
@@ -2842,6 +3096,45 @@ export function SheetGrid({
         }}
         onPaste={(e) => {
           if (editing || readOnly) return;
+          /* An image copied from elsewhere (a screenshot, a photo, another app)
+           * arrives as a FILE, not as text — clipboardData.files carries it even
+           * when there is no text/plain fallback at all. Checked first: a
+           * screenshot's clipboard entry sometimes also carries throwaway text
+           * (a filename, "image.png"), which would otherwise win and paste
+           * garbage into the cell instead of the picture. "Auto-fills the cell"
+           * is Google Sheets' image-in-cell behaviour (see the render side, by
+           * `cellImage` below) — the picture becomes what that ONE cell shows,
+           * not a floating object the way a chart is. */
+          const imageFile = Array.from(e.clipboardData.files ?? []).find((f) =>
+            f.type.startsWith("image/"),
+          );
+          if (imageFile) {
+            e.preventDefault();
+            const repo = getRepository();
+            if (!repo.uploadDriveFile) {
+              setError("Pasting an image isn't available in this environment.");
+              return;
+            }
+            const ref = active;
+            const MAX_IMAGE_BYTES = 15 * 1024 * 1024;
+            if (imageFile.size > MAX_IMAGE_BYTES) {
+              setError(
+                `That image is ${Math.round(imageFile.size / 1024 / 1024)} MB — the limit for a pasted image is ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
+              );
+              return;
+            }
+            setError(null);
+            void repo.uploadDriveFile(imageFile)
+              .then((r) => {
+                if (!mounted.current) return;
+                if (!r.ok) {
+                  setError(r.message);
+                  return;
+                }
+                setImage(ref, { fileId: r.data.fileId, url: r.data.url, name: r.data.name });
+              });
+            return;
+          }
           const text = e.clipboardData.getData("text/plain");
           if (!text) return;
           e.preventDefault();
@@ -2927,16 +3220,16 @@ export function SheetGrid({
           <tbody>
             {/* The unrendered rows above, as one spacer, so the scrollbar spans
                 the whole sheet even though only a window exists in the DOM. */}
-            {first > 0 && (
+            {renderFirst > 0 && (
               <tr aria-hidden="true">
                 <td
                   colSpan={sheet.cols + 1}
-                  style={{ height: rowOffsets[first], padding: 0, border: 0 }}
+                  style={{ height: rowOffsets[renderFirst], padding: 0, border: 0 }}
                 />
               </tr>
             )}
-            {Array.from({ length: last - first }, (_, i) => {
-              const r = first + i;
+            {Array.from({ length: renderLast - renderFirst }, (_, i) => {
+              const r = renderFirst + i;
               /* A row `filter_range` hid. Kept at its own row height (not collapsed
                  to 0) — collapsing it would desync the scrollbar from `rowOffsets`,
                  which the windowing math above assumes matches every row's real
@@ -2994,7 +3287,13 @@ export function SheetGrid({
                     )}
                   </th>
                   {Array.from({ length: sheet.cols }, (_, c) => {
+                    /* Covered by an earlier merge's colSpan/rowSpan — the anchor cell
+                       already occupies this grid slot, so this position renders nothing
+                       at all (not even a spacer `<td>`), same as HTML wants it. */
+                    if (mergeCovered.has(`${r},${c}`)) return null;
+                    const mergeRect = mergeAnchors.get(`${r},${c}`);
                     const ref = cellRef(r, c);
+                    const cellImage = sheet.images?.[ref];
                     const isActive = ref === active;
                     const inSel = selRect ? inRect(r, c, selRect) : isActive;
                     const inPoint = pointRect ? inRect(r, c, pointRect) : false;
@@ -3072,12 +3371,28 @@ export function SheetGrid({
                        code means, so the cell reads "#REF!" and hovering explains
                        it. Only formula cells, so ordinary "#tag" text is left be. */
                     const errorHint = isFormula(raw) ? explainError(shown) : null;
+                    const borderSides = normalizeBorder(style.border);
 
                     return (
                       <td
                         key={c}
                         tabIndex={-1}
+                        colSpan={mergeRect ? mergeRect.right - mergeRect.left + 1 : undefined}
+                        rowSpan={mergeRect ? mergeRect.bottom - mergeRect.top + 1 : undefined}
                         onMouseDown={(e) => {
+                          /* Format Painter, armed: this click (not a drag — the
+                             common case, and simpler to reason about correctly
+                             than tracking a second kind of drag alongside the
+                             normal selection one) is where the copied style
+                             lands, on whatever the current selection is if this
+                             click falls inside it, otherwise on just this cell. */
+                          if (paintFormat && e.button !== 2) {
+                            e.preventDefault();
+                            const targets = selRect && inRect(r, c, selRect) ? rectRefs() : [ref];
+                            paintStyleOnto(targets, paintFormat);
+                            setPaintFormat(null);
+                            return;
+                          }
                           /* Clicking inside the cell you are editing is caret
                              placement — leave it to the input. */
                           if (editing === ref) return;
@@ -3135,8 +3450,12 @@ export function SheetGrid({
                               : "bg-[var(--doc-page)]"
                         }`}
                         style={{
-                          width: colWidthAt(c),
-                          height: rowHeightAt(r),
+                          width: mergeRect
+                            ? colOffsets[mergeRect.right + 1] - colOffsets[mergeRect.left]
+                            : colWidthAt(c),
+                          height: mergeRect
+                            ? rowOffsets[mergeRect.bottom + 1] - rowOffsets[mergeRect.top]
+                            : rowHeightAt(r),
                           color: style.color,
                           verticalAlign: style.valign,
                           /* Conditional formatting wins over the cell's own fill,
@@ -3150,13 +3469,19 @@ export function SheetGrid({
                                 backgroundImage: `linear-gradient(to right, ${cfBar.color}66 ${Math.round(cfBar.pct * 100)}%, transparent ${Math.round(cfBar.pct * 100)}%)`,
                               }
                             : null),
+                          /* Conditional formatting's border flag wins outright (all
+                             four sides) over whatever the Borders menu drew — same
+                             priority the fill colour above already follows. */
                           ...(cfBorder
                             ? { border: "1px solid var(--ink)" }
-                            : style.border === "all"
-                              ? { border: "1px solid var(--ink)" }
-                              : style.border === "bottom"
-                                ? { borderBottom: "1px solid var(--ink)" }
-                                : null),
+                            : borderSides
+                              ? {
+                                  ...(borderSides.top ? { borderTop: "1px solid var(--ink)" } : null),
+                                  ...(borderSides.right ? { borderRight: "1px solid var(--ink)" } : null),
+                                  ...(borderSides.bottom ? { borderBottom: "1px solid var(--ink)" } : null),
+                                  ...(borderSides.left ? { borderLeft: "1px solid var(--ink)" } : null),
+                                }
+                              : null),
                           ...(inPoint
                             ? {
                                 boxShadow:
@@ -3184,6 +3509,18 @@ export function SheetGrid({
                               />
                             )}
                           </>
+                        ) : cellImage ? (
+                          /* "Image in cell" — the pasted image FILLS the cell in place
+                             of any text, the way Google Sheets' image-in-cell works
+                             (as opposed to Excel's floating picture, which this sheet's
+                             chart objects already cover a version of). object-contain so
+                             a wide photo doesn't get cropped into something unreadable. */
+                          <DriveImage
+                            fileId={cellImage.fileId}
+                            url={cellImage.url}
+                            alt={cellImage.name}
+                            className="h-full w-full object-contain"
+                          />
                         ) : (
                           <span
                             title={errorHint ?? undefined}
@@ -3235,12 +3572,12 @@ export function SheetGrid({
                 </tr>
               );
             })}
-            {last < sheet.rows && (
+            {renderLast < sheet.rows && (
               <tr aria-hidden="true">
                 <td
                   colSpan={sheet.cols + 1}
                   style={{
-                    height: totalContentH - rowOffsets[last],
+                    height: totalContentH - rowOffsets[renderLast],
                     padding: 0,
                     border: 0,
                   }}
