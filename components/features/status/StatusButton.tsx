@@ -13,6 +13,7 @@ import {
   STATUS_META,
   clearManual,
   declareEmergency,
+  declareOnline,
   endSession,
   goOffline,
   holdSeat,
@@ -58,6 +59,7 @@ import { breakBudgetWarning } from "@/lib/rules/tasks/breakMode";
 import { formatDuration } from "@/lib/utils/format";
 import type { BreakSession } from "@/lib/domain";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { useScreenShareRequired } from "@/lib/hooks/useScreenSharePolicy";
 import {
   shareLostHere,
   type ShareLostCause,
@@ -162,6 +164,14 @@ export function StatusButton() {
      else's. Going online before the viewer has resolved would publish under
      the wrong name, so the control refuses until it is known. */
   const viewerId = useViewerId();
+  /**
+   * Whether Online means a shared screen here — the office-policy switch.
+   *
+   * The whole sharing apparatus hangs off it: the warm-up, the picker, the
+   * hints, and the alert that says a share has stopped. With it off none of that
+   * runs at all, rather than running and being hidden.
+   */
+  const screenRequired = useScreenShareRequired();
   /* Non-null between leaving Emergency Mode and the request being raised or
      dismissed. */
   const [endedEmergency, setEndedEmergency] = useState<{
@@ -298,7 +308,9 @@ export function StatusButton() {
      "Reconnecting" prompt whose one purpose is a one-click resume of sharing.
      Gated upstream (DutySync's claimedOnlineHere check) so only the device that
      was actually sharing ever reaches this state. */
-  const reconnectingShare = reconnecting && status === "offline";
+  /* And there is nothing to resume where nothing is shared — the prompt, the
+     pill's "Reconnecting" label and the auto-opened panel all hang off this. */
+  const reconnectingShare = screenRequired && reconnecting && status === "offline";
   /**
    * Before the account's own presence has been heard from, this device knows
    * nothing — and "Offline" is a claim, not a blank.
@@ -401,6 +413,11 @@ export function StatusButton() {
     claimedFalse,
   );
   const shareLost =
+    /* Nothing to have lost where nothing was ever required. A workspace with
+       sharing switched off would otherwise be told its screen is not being
+       shared, with a tone, every time somebody was online — which is true and
+       completely beside the point. */
+    screenRequired &&
     !shareLostDismissed &&
     shareLostHere({
       hydrated,
@@ -503,6 +520,23 @@ export function StatusButton() {
        * lands before the room is up — and it says so rather than pretending to
        * be a step.
        */
+      /**
+       * **Unless this workspace has switched screen sharing off.**
+       *
+       * Then Online means what it says on every other product: at work,
+       * available, nothing captured and nobody watching. There is no picker to
+       * open, no seat to hold and nothing to confirm — the press IS the
+       * transition, and `declareOnline` refuses unless the policy really says
+       * so, so this cannot become a way to skip the requirement.
+       */
+      if (!screenRequired) {
+        const wasOnBreak = takeBreakStart();
+        if (wasOnBreak !== null) setJustEndedBreak(true);
+        declareOnline({ requireScreenShare: false });
+        setOpen(false);
+        setConfirming(null);
+        return;
+      }
       if (openPicker()) return;
       setOpen(true);
       setConfirming("share");
@@ -752,7 +786,9 @@ export function StatusButton() {
         }
         shareInterrupted();
         /* A new episode deserves a new warning, even if an earlier one this
-           page load was dismissed. */
+           page load was dismissed — and it is a different sentence: a dropped
+           connection is not a reload. */
+        setShareLostCause("dropped");
         setShareLostDismissed(false);
         sounded.current = false;
       },
@@ -857,12 +893,15 @@ export function StatusButton() {
    * and cannot silence `DutySync` the way holding a `connecting` session does.
    */
   useEffect(() => {
-    if (!viewerId) return;
+    /* Nothing to warm where nothing will ever be shared: a workspace with the
+       requirement switched off should not mint seats or fetch a publisher
+       library it will never call. */
+    if (!viewerId || !screenRequired) return;
     prefetchShareSeat(viewerId);
     void loadPublisherSdk().catch((error: unknown) => {
       console.error("[stream] the publisher library did not load:", error);
     });
-  }, [viewerId]);
+  }, [viewerId, screenRequired]);
 
   /**
    * And again when the menu opens, in case the pill mounted before the viewer
@@ -877,7 +916,7 @@ export function StatusButton() {
    * needs to be withheld from.
    */
   useEffect(() => {
-    if (!open || !viewerId) return;
+    if (!open || !viewerId || !screenRequired) return;
     prefetchShareSeat(viewerId);
     void loadPublisherSdk().catch((error: unknown) => {
       console.error("[stream] the publisher library did not load:", error);
@@ -890,7 +929,7 @@ export function StatusButton() {
     return () => {
       cancelled = true;
     };
-  }, [open, viewerId]);
+  }, [open, viewerId, screenRequired]);
 
   /**
    * Closing the menu WITHOUT sharing gives the room back. A session held open
@@ -1185,9 +1224,15 @@ export function StatusButton() {
                         {/* Said rather than shown by disabling it: the control
                             works either way, and this is only why the picker
                             might take a beat. */}
-                        {c.id === "online" && warming
-                          ? "Getting your room ready — you can press this now"
-                          : c.hint}
+                        {c.id === "online" && !screenRequired
+                          ? /* The hint states the requirement, and here there
+                               is not one. Promising a screen share that will
+                               never be asked for is how a menu teaches somebody
+                               to distrust it. */
+                            "Available and at work"
+                          : c.id === "online" && warming
+                            ? "Getting your room ready — you can press this now"
+                            : c.hint}
                       </span>
                     </span>
                     {current && (
@@ -1295,33 +1340,50 @@ export function StatusButton() {
           {/* The state of the world, stated. Three facts, in the order someone
               needs them: what is being shared, whether that qualifies, and the
               most recent thing that went wrong. Offline is never left to be
-              inferred — the reason for it is written underneath it. */}
+              inferred — the reason for it is written underneath it.
+
+              Where the workspace does not require a screen, two of the three are
+              not facts about anything: reporting "Screen shared: No" to somebody
+              who was never asked to share one reads as a fault they should fix.
+              It says what is actually true instead. */}
           <div className="mt-1 border-t border-hairline px-2.5 pt-2 pb-1">
-            <p className="flex items-baseline justify-between gap-3 text-[11px]">
-              <span className="text-ink-faint">Sharing</span>
-              <span className="text-ink-muted">
-                {share.surface ? SURFACE_LABEL[share.surface] : "Nothing"}
-              </span>
-            </p>
-            <p className="mt-1 flex items-baseline justify-between gap-3 text-[11px]">
-              <span className="text-ink-faint">Screen shared</span>
-              <span
-                className={
-                  share.sharing && share.connected
-                    ? "text-[var(--state-positive-ink)]"
-                    : "text-ink-muted"
-                }
-              >
-                {share.sharing && share.connected ? "Yes" : "No"}
-              </span>
-            </p>
+            {screenRequired ? (
+              <>
+                <p className="flex items-baseline justify-between gap-3 text-[11px]">
+                  <span className="text-ink-faint">Sharing</span>
+                  <span className="text-ink-muted">
+                    {share.surface ? SURFACE_LABEL[share.surface] : "Nothing"}
+                  </span>
+                </p>
+                <p className="mt-1 flex items-baseline justify-between gap-3 text-[11px]">
+                  <span className="text-ink-faint">Screen shared</span>
+                  <span
+                    className={
+                      share.sharing && share.connected
+                        ? "text-[var(--state-positive-ink)]"
+                        : "text-ink-muted"
+                    }
+                  >
+                    {share.sharing && share.connected ? "Yes" : "No"}
+                  </span>
+                </p>
+              </>
+            ) : (
+              <p className="flex items-baseline justify-between gap-3 text-[11px]">
+                <span className="text-ink-faint">Screen sharing</span>
+                <span className="text-ink-muted">Off for this workspace</span>
+              </p>
+            )}
             <p
               role={notice ? "alert" : undefined}
               className={`mt-1.5 text-[11px] leading-relaxed ${
                 notice ? "text-[var(--state-overdue-ink)]" : "text-ink-faint"
               }`}
             >
-              {notice ?? share.detail}
+              {notice ??
+                (screenRequired
+                  ? share.detail
+                  : "Your status is what you set it to. No screen is captured and nobody is watching.")}
             </p>
           </div>
         </div>

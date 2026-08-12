@@ -142,7 +142,7 @@ export function PersonMonitor({
 
   return (
     <MonitorRoom subjectId={employeeId}>
-      {({ embedUrl, connecting, error: roomError, sharing }) => (
+      {({ embedUrl, connecting, error: roomError, sharing, screenSharingOff }) => (
         <>
           <PersonHero
             subject={subject}
@@ -201,6 +201,7 @@ export function PersonMonitor({
                   connecting={connecting}
                   error={roomError}
                   sharing={sharing}
+                  screenSharingOff={screenSharingOff}
                   /* One decode at a time. The dialog above shows the same
                      stream, and two live frames make the MANAGER's machine
                      slow for the same reason encoding makes the sharer's. */
@@ -302,6 +303,7 @@ export function PersonMonitor({
             connecting={connecting}
             error={roomError}
             sharing={sharing}
+            screenSharingOff={screenSharingOff}
             displayName={subject?.displayName ?? "This person"}
             presence={subject?.presence ?? "offline"}
           />

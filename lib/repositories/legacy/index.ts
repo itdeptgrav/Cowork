@@ -4352,6 +4352,9 @@ export class LegacyRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    /** A person asked for this rather than a tab deriving it — see the
+        interface, and the guard below. */
+    deliberate?: boolean;
   }): Promise<ActionResult<DutyMode>> {
     const employeeId = String(this.#ctx.employeeId);
     const now = Date.now();
@@ -4364,7 +4367,26 @@ export class LegacyRepository {
       connectionId: input.connectionId,
     });
 
-    if (input.mode !== "online" && !ownsClaim(previous, input.connectionId, now)) {
+    /**
+     * **A tab that does not hold the claim may not publish a DERIVED offline.**
+     *
+     * A second tab has no room, so its honest reading is "nothing is being
+     * shared" — publishing that would end a share the first tab is still
+     * sending. That is what this refuses, and it is right.
+     *
+     * **It is wrong for a DELIBERATE one, and that was the bug.** Pressing Go
+     * offline is a decision about a person, not a reading by a tab: presence
+     * belongs to them, not to whichever connection happens to hold the claim.
+     * Declining it left the document online and answered "online is in force",
+     * so the caller marked that as published, no retry ever came, and every
+     * device went back to green. The person pressed the button and nothing
+     * happened — repeatedly.
+     */
+    if (
+      !input.deliberate &&
+      input.mode !== "online" &&
+      !ownsClaim(previous, input.connectionId, now)
+    ) {
       /* Not an error on screen — the other tab is right and this one is simply
          not the one holding the session. Reporting the mode that IS in force
          keeps the caller's view correct rather than telling it nothing. */

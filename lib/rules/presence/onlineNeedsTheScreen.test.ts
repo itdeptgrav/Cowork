@@ -148,8 +148,8 @@ test("going online from a break or an emergency is possible, and clears it", () 
 
   /* Nothing about warming may be withheld from somebody on a break. */
   const warm = button.slice(
-    button.indexOf("if (!open || !viewerId) return;"),
-    button.indexOf("}, [open, viewerId]);"),
+    button.indexOf("if (!open || !viewerId || !screenRequired) return;"),
+    button.indexOf("}, [open, viewerId, screenRequired]);"),
   );
   assert.match(warm, /prefetchShareSeat\(viewerId\)/);
   assert.ok(
@@ -214,7 +214,7 @@ test("the room and the library are warmed up before the press, and given back af
      online — the service decides that on a live screen. A menu opened and closed
      leaves nothing running. */
   const button = code(BUTTON);
-  const at = button.indexOf("if (!open || !viewerId) return;");
+  const at = button.indexOf("if (!open || !viewerId || !screenRequired) return;");
   assert.ok(at > 0, "the warm-up effect is gone");
   const effect = button.slice(at, button.indexOf("}, [open, viewerId", at));
   assert.match(effect, /loadPublisherSdk\(\)/, "the library is not preloaded");
@@ -648,7 +648,10 @@ test("only one live viewer frame decodes at a time", () => {
   assert.match(person, /suspended=\{screenOpen\}/);
 
   const viewer = code("components/features/monitoring/LiveScreenViewer.tsx");
-  assert.match(viewer, /const room = embedUrl !== null && !error && !suspended;/);
+  assert.match(
+    viewer,
+    /const room = embedUrl !== null && !error && !suspended && !screenSharingOff;/,
+  );
   assert.match(
     viewer,
     /useEmbedReport\(suspended \? null : embedUrl\)/,

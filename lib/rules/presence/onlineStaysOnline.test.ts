@@ -289,3 +289,123 @@ test("the store has no way to take somebody's online away", () => {
     "the track no longer decides",
   );
 });
+
+/* ── The other direction: OFFLINE has to stay offline too ─────────────────── */
+
+test("pressing Go offline is not undone by the document that has not caught up", () => {
+  /**
+   * **Reported as: I press Go offline, and the pill still says Online.**
+   *
+   * Everything worked except the arithmetic. `goOffline()` cleared the manual
+   * state and the share and left `remoteOnline` — the account's own claim —
+   * exactly as it was, so `derive` read online from the very next render. Then
+   * the live subscription delivered `cowork_duty_status` as it still stood,
+   * `online`, which set `remoteOnline` back to true; `DutySync` compared online
+   * against the online it had already published, found no change, and never
+   * wrote the offline at all. Nothing was broken, and nothing happened.
+   *
+   * Two things fix it, and both are needed: the claim goes with the decision,
+   * and a snapshot of the document as it was BEFORE the decision cannot put it
+   * back.
+   */
+  resetStatus();
+  reportShare(SHARING);
+  account({ mode: "online" });
+  assert.equal(getSnapshot().status, "online");
+
+  goOffline();
+  assert.equal(getSnapshot().status, "offline", "the press did nothing");
+  assert.equal(getSnapshot().remoteOnline, false);
+
+  /* The snapshot already in flight when the button was pressed. */
+  account({ mode: "online", onlineElsewhere: true });
+  assert.equal(
+    getSnapshot().status,
+    "offline",
+    "a stale document put them back online — this is the reported bug",
+  );
+
+  /* And once the document agrees, everything is ordinary again. */
+  account({ mode: "offline" });
+  assert.equal(getSnapshot().status, "offline");
+});
+
+test("going offline does not deafen this device to the account for ever", () => {
+  /* The guard above holds only until the person does something else. Somebody
+     who goes offline and then comes back on another device must still see it. */
+  resetStatus();
+  goOffline();
+  account({ mode: "online", onlineElsewhere: true });
+  assert.equal(getSnapshot().status, "offline");
+
+  /* The document agrees; the wait is over. */
+  account({ mode: "offline" });
+  /* Now the same account genuinely goes online somewhere else. */
+  account({ mode: "online", onlineElsewhere: true });
+  assert.equal(
+    getSnapshot().status,
+    "online",
+    "this device stopped listening to its own account",
+  );
+});
+
+test("a break started after going offline is still a break", () => {
+  /* The other way the guard could strand somebody: any intent that is not "be
+     offline" clears it. */
+  resetStatus();
+  goOffline();
+  startBreak();
+  assert.equal(getSnapshot().status, "break");
+  account({ mode: "break", breakStartedAtMs: NOW });
+  assert.equal(getSnapshot().status, "break");
+});
+
+test("a deliberate offline is not declined for not holding the claim", () => {
+  /**
+   * **The second half of "I press Go offline and I am still Online", and the
+   * reason the first fix did not finish it.**
+   *
+   * `setDutyMode` refuses a non-online mode from a connection that does not hold
+   * the online claim. That is right for a DERIVED publish: a second tab has no
+   * room, so its honest reading is "nothing is being shared", and publishing
+   * that would end a share the first tab is still sending.
+   *
+   * It is wrong for a chosen one. Two tabs open, the claim held by the other,
+   * press Go offline: the write was declined, the answer said online was in
+   * force, `DutySync` recorded THAT as published — so the guard `published ===
+   * mode` stopped any retry — and the document stayed online. The pill went grey
+   * for a moment and every reload brought it back. Nothing was broken and
+   * nothing happened, which is exactly how it was reported.
+   *
+   * Presence belongs to a person, not to whichever tab holds a claim.
+   */
+  for (const path of [
+    "lib/repositories/legacy/index.ts",
+    "lib/repositories/mock/index.ts",
+  ]) {
+    const src = readFileSync(path, "utf8");
+    assert.match(
+      src,
+      /!input\.deliberate &&\s*input\.mode !== "online" &&\s*!ownsClaim\(previous, input\.connectionId, now\)/,
+      `${path} still declines a deliberate transition`,
+    );
+  }
+
+  /* And the flag is carried from the choice to the write: set by the store's
+     own deliberate transitions, read once by the publisher. */
+  const store = readFileSync("lib/status/employeeStatus.ts", "utf8");
+  for (const fn of ["goOffline", "startBreak", "declareEmergency"]) {
+    const at = store.indexOf(`export function ${fn}(`);
+    assert.ok(at > 0, `${fn} is gone`);
+    const body = store.slice(at, store.indexOf("\n}", at));
+    assert.match(
+      body,
+      /chosenByPerson = true;/,
+      `${fn} publishes as a derivation, so another tab's claim can decline it`,
+    );
+  }
+  assert.match(store, /export function takeDeliberate\(\): boolean \{/);
+
+  const sync = readFileSync("components/features/status/DutySync.tsx", "utf8");
+  assert.match(sync, /deliberate: takeDeliberate\(\),/);
+});

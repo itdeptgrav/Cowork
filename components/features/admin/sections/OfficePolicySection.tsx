@@ -136,6 +136,7 @@ export function OfficePolicySection() {
       <div className="space-y-4">
         <WorkingHoursCard draft={draft} canEdit={canEdit} onChange={setDay} />
         <BreaksCard draft={draft} canEdit={canEdit} onChange={patch} />
+        <ScreenShareCard draft={draft} canEdit={canEdit} onChange={patch} />
         <SchedulingCard draft={draft} canEdit={canEdit} onChange={patch} />
         <TimerSopCard canEdit={canEdit} />
       </div>
@@ -357,6 +358,77 @@ function BreaksCard({
 }
 
 /* ── Scheduling ───────────────────────────────────────────────────────────── */
+
+/* ── Screen sharing ───────────────────────────────────────────────────────── */
+
+/**
+ * Whether Online means a shared screen, or just means Online.
+ *
+ * **This changes what a status MEANS, which is why it is a switch and not a
+ * preference.** With it on, Online is a consequence: a live, whole-screen share
+ * that the person's primary manager can open, and nothing anybody types can
+ * assert it. With it off, presence is an ordinary declaration — press Online,
+ * you are online, nothing is captured and nobody is watched.
+ *
+ * The second is not a degraded version of the first. It is a different promise
+ * to the people using it, so the card states both, and everything downstream —
+ * the pill, the menu, the manager's panel and the help — follows this one value
+ * rather than each carrying its own assumption.
+ */
+function ScreenShareCard({
+  draft,
+  canEdit,
+  onChange,
+}: {
+  draft: OfficePolicy;
+  canEdit: boolean;
+  onChange: (next: Partial<OfficePolicy>) => void;
+}) {
+  const on = draft.requireScreenShare;
+  return (
+    <Panel padded={false}>
+      <div className="flex items-start gap-3 border-b border-hairline px-4 py-3">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-sm font-medium text-ink">
+            Screen sharing for Online
+          </h2>
+          <p className="mt-0.5 text-xs text-ink-muted">
+            Whether going Online requires sharing an entire screen.
+          </p>
+        </div>
+        <label className="flex shrink-0 items-center gap-2 text-xs text-ink-muted">
+          <input
+            type="checkbox"
+            checked={on}
+            disabled={!canEdit}
+            onChange={(e) => onChange({ requireScreenShare: e.target.checked })}
+          />
+          {on ? "On" : "Off"}
+        </label>
+      </div>
+
+      <p className="px-4 py-3 text-xs leading-relaxed text-ink-muted">
+        {on ? (
+          <>
+            Choosing <span className="text-ink">Go online</span> asks for the
+            screen first, and only a live whole-screen share turns the pill
+            green — a window or a browser tab is refused by the service. Each
+            person’s primary manager, and nobody else, can open that screen while
+            it is running.
+          </>
+        ) : (
+          <>
+            <span className="text-ink">Nobody is asked to share a screen.</span>{" "}
+            Online and Offline are set directly, breaks and emergencies are
+            unchanged, and the monitoring panels show that screen sharing is
+            switched off for this workspace rather than reporting people as not
+            sharing. Anyone sharing right now keeps sharing until they stop.
+          </>
+        )}
+      </p>
+    </Panel>
+  );
+}
 
 function SchedulingCard({
   draft,

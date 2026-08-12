@@ -64,6 +64,15 @@ interface ViewerProps {
    * screen went rather than going blank.
    */
   suspended?: boolean;
+  /**
+   * This workspace does not watch screens at all — the office-policy switch.
+   *
+   * Not the same as "they are not sharing right now", and the panel must not
+   * say the second when the first is true: one is a person to wait for, the
+   * other is a feature an administrator switched off, and a manager who reads
+   * one as the other goes looking for somebody to chase.
+   */
+  screenSharingOff?: boolean;
 }
 
 export function LiveScreenViewer(props: ViewerProps) {
@@ -78,10 +87,11 @@ function ViewerFrame({
   embedUrl,
   sharing,
   suspended = false,
+  screenSharingOff = false,
 }: ViewerProps) {
   /* Whether their room is on screen at all. NOT whether a screen is arriving —
      that is inside the frame, and only the frame's own messages say so. */
-  const room = embedUrl !== null && !error && !suspended;
+  const room = embedUrl !== null && !error && !suspended && !screenSharingOff;
   /**
    * **What the frame itself reports.** For a while nothing on this side
    * listened, and that is what produced the fault this exists to answer: a
@@ -138,15 +148,17 @@ function ViewerFrame({
           {/* No "press Join" any more — there is no Join. That copy was left
               over from the meeting rooms, and it sent managers looking for a
               button that does not exist on a screen room. */}
-          {room
-            ? live
-              ? "Their screen, live"
-              : frame.joined
-                ? "In their room — nothing is being shared into it"
-                : "Opening their room…"
-            : connecting
-              ? "Opening their room…"
-              : "No screen is being shared"}
+          {screenSharingOff
+            ? "Screen sharing is switched off for this workspace"
+            : room
+              ? live
+                ? "Their screen, live"
+                : frame.joined
+                  ? "In their room — nothing is being shared into it"
+                  : "Opening their room…"
+              : connecting
+                ? "Opening their room…"
+                : "No screen is being shared"}
         </p>
         {live && <Elapsed />}
       </header>
@@ -206,6 +218,8 @@ function ViewerFrame({
           presence={presence}
           connecting={connecting}
           error={error}
+          suspended={suspended}
+          screenSharingOff={screenSharingOff}
         />
       )}
     </section>
@@ -581,6 +595,7 @@ function ViewerPlaceholder({
   connecting,
   error,
   suspended = false,
+  screenSharingOff = false,
 }: {
   displayName: string;
   presence: MonitoredPresence;
@@ -588,10 +603,21 @@ function ViewerPlaceholder({
   error: string | null;
   /** The screen is being shown somewhere else — see `ViewerProps.suspended`. */
   suspended?: boolean;
+  /** The workspace watches no screens — see `ViewerProps.screenSharingOff`. */
+  screenSharingOff?: boolean;
 }) {
   const first = displayName.split(" ")[0];
 
-  const { title, detail } = suspended
+  const { title, detail } = screenSharingOff
+    ? {
+        /* Not a fault, not a person to wait for, and not something this manager
+           can act on: an administrator has switched screen sharing off for the
+           whole workspace, and everything else on this page still works. */
+        title: "Screen sharing is switched off",
+        detail:
+          "Nobody in this workspace is asked to share a screen, so there is nothing to watch here. Their status, activity and score are unaffected. An administrator can turn it back on under Settings, Office policy.",
+      }
+    : suspended
     ? {
         /* The frame moved, it did not fail. Said plainly so nobody reads an
            empty panel as a broken one and starts pressing things. */

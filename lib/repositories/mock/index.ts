@@ -3761,12 +3761,22 @@ export class MockRepository implements CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    /** A person asked for this rather than a tab deriving it — see the
+        interface. */
+    deliberate?: boolean;
   }): Promise<ActionResult<DutyMode>> {
     const id = String(actingId());
     const now = Date.now();
     const previous = this.#duty.get(id) ?? null;
 
-    if (input.mode !== "online" && !ownsClaim(previous, input.connectionId, now)) {
+    /* Deliberate transitions are not subject to the claim — a person pressing
+       Go offline is deciding about themselves, not reading a room. See the
+       interface, and the same guard in the legacy repository. */
+    if (
+      !input.deliberate &&
+      input.mode !== "online" &&
+      !ownsClaim(previous, input.connectionId, now)
+    ) {
       return ok(readDutyMode(previous, now));
     }
 

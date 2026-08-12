@@ -10,7 +10,10 @@ import {
   clearClaimedOnlineHere,
 } from "@/lib/status/connectionId";
 import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
-import { applyRemotePresence } from "@/lib/status/employeeStatus";
+import {
+  applyRemotePresence,
+  takeDeliberate,
+} from "@/lib/status/employeeStatus";
 import type { EmployeeStatus } from "@/lib/status/employeeStatus";
 import type { DutyMode } from "@/lib/rules/presence/duty";
 
@@ -149,6 +152,21 @@ export function DutySync() {
         const result = await getRepository().setDutyMode({
           mode,
           connectionId: connectionId(),
+          /**
+           * **Whether a PERSON asked for this, or a tab derived it.**
+           *
+           * The engine refuses a non-online mode from a connection that does
+           * not hold the online claim — right for a derivation, because a
+           * second tab with no room would otherwise end a share the first is
+           * still sending. Applied to somebody pressing Go offline it was the
+           * reported "it stays Online": the write was declined, the answer said
+           * online was in force, that was recorded as published, and no retry
+           * ever came.
+           *
+           * Read once and cleared, so it covers exactly the write it belongs
+           * to and never a heartbeat or a later derivation.
+           */
+          deliberate: takeDeliberate(),
         });
         if (cancelled) return;
         console.info("[presence] PRESENCE UPDATE in force:", {

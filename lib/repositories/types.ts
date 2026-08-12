@@ -1042,6 +1042,23 @@ export interface CoworkRepository {
     mode: DutyMode;
     connectionId: string | null;
     reason?: string | null;
+    /**
+     * A PERSON asked for this, rather than a tab deriving it.
+     *
+     * **The claim rule is about derived publishes, and applying it to a
+     * deliberate one is the reported "I press Go offline and I am still
+     * online".** A second tab has no room, so its honest reading is "nothing is
+     * being shared" — publishing that would end a share the first tab is still
+     * sending, which is what `ownsClaim` refuses. But somebody pressing Go
+     * offline is not a reading; it is a decision about their own presence, and
+     * presence belongs to the person rather than to whichever tab happens to
+     * hold the claim. Declining it left the document online, told the caller
+     * "online" is in force, and every device came back green.
+     *
+     * Set only from an explicit choice — never from a heartbeat, a derivation
+     * or a reconnect.
+     */
+    deliberate?: boolean;
   }): Promise<ActionResult<DutyMode>>;
   /**
    * Stamp which connection holds a live `online` claim. Never moves the mode,
