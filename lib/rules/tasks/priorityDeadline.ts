@@ -49,7 +49,18 @@ export interface QueueTask {
   assigneeIds?: unknown;
   assigneePriorities?: unknown;
   priority?: unknown;
+  /**
+   * All four budget fields, because `windowSecsFor` resolves all four.
+   *
+   * Only the two `*TimerWindowSecs`/`deadline*` names were declared, while the
+   * rule underneath reads `agreedWindowSecs` FIRST — so the type understated
+   * what the chain consumes, and a caller building a queue could satisfy it
+   * completely and still be scheduled from a different number than the one it
+   * passed. See `resolveTimeBudget` for the order and why.
+   */
+  agreedWindowSecs?: unknown;
   deadlineWindowSecs?: unknown;
+  senderWindowSecs?: unknown;
   senderTimerWindowSecs?: unknown;
   startedAt?: unknown;
   /**
