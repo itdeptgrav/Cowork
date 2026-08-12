@@ -38,8 +38,10 @@ import {
   releaseShareSeat,
 } from "@/lib/integrations/grav/credentials";
 import {
+  canResumeSilently,
   loadPublisherSdk,
   publisherReady,
+  resumePublishing,
   shareRefusal,
   startPublishing,
   wasCancelled,
@@ -685,6 +687,74 @@ export function StatusButton() {
     );
   }
 
+  /**
+   * The session went while the person was still sharing — put it back.
+   *
+   * **Their SDK has no reconnect and stops the capture when its socket closes**
+   * (`ws.onclose` in their `sdk/index.js`), so a wifi blip or one of their
+   * deploys ends a share nobody meant to end. That is the reported "screen
+   * sharing turns off after a while".
+   *
+   * The screen the person chose is still in hand — a clone of the capture,
+   * which survives their stop — so this simply publishes it again: no prompt,
+   * no click, and if it works, nothing to notice beyond a few seconds of the
+   * manager's panel being blank. Nothing about their status changes on the way
+   * through, because nobody decided anything.
+   *
+   * Only when the picture cannot be recovered does it become the person's
+   * problem, and then it is said out loud rather than left to be discovered.
+   */
+  function onShareDropped() {
+    shareInterrupted();
+    const seat = viewerId ? heldSeatNow(viewerId) : null;
+    const useToken = seat?.token ?? token;
+    const useUrl = seat?.url ?? url;
+    if (canResumeSilently() && useToken && useUrl) {
+      void resumePublishing({
+        token: useToken,
+        serverUrl: useUrl,
+        onEnded: (again) => {
+          if (again === "stopped") endSession();
+          else onShareDropped();
+        },
+      })
+        .then((capture) => {
+          if (!capture) {
+            warnShareLost();
+            return;
+          }
+          console.info("[stream] the session dropped and was resumed silently");
+          sessionLive();
+          reportShare({
+            sharing: true,
+            connected: true,
+            surface:
+              capture.displaySurface === "monitor"
+                ? "entire_screen"
+                : capture.displaySurface === "window"
+                  ? "window"
+                  : capture.displaySurface === "browser"
+                    ? "browser_tab"
+                    : null,
+            detail: "Sharing your entire screen.",
+          });
+          void confirmSharing(viewerId);
+        })
+        .catch(() => warnShareLost());
+      return;
+    }
+    warnShareLost();
+  }
+
+  /* A new episode deserves a new warning, even if an earlier one this page load
+     was dismissed — and it is a different sentence: a dropped connection is not
+     a reload. */
+  function warnShareLost() {
+    setShareLostCause("dropped");
+    setShareLostDismissed(false);
+    sounded.current = false;
+  }
+
   function openPicker(): boolean {
     /**
      * **Nothing is awaited before `startPublishing`.** A capture prompt needs
@@ -784,13 +854,7 @@ export function StatusButton() {
           endSession();
           return;
         }
-        shareInterrupted();
-        /* A new episode deserves a new warning, even if an earlier one this
-           page load was dismissed — and it is a different sentence: a dropped
-           connection is not a reload. */
-        setShareLostCause("dropped");
-        setShareLostDismissed(false);
-        sounded.current = false;
+        onShareDropped();
       },
     })
       .then((capture) => {

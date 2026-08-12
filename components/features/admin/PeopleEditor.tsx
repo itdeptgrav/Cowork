@@ -285,7 +285,7 @@ export function PolicyEditor({ canEdit }: { canEdit: boolean }) {
             {!p.isActive && <Chip tone="neutral">Inactive</Chip>}
             <Select
               aria-label={`Severity for ${p.name}`}
-              value={p.severity}
+              value={p.severity ?? ""}
               disabled={!canEdit}
               onChange={(e) =>
                 void update(p.id, {
@@ -325,6 +325,10 @@ function NewPolicy({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [severity, setSeverity] = useState<ConductSeverity>("minor");
+  /* What a breach costs, in percentage points off the score — see
+     `ConductPolicy.percent`. Held as text so a half-typed "2." is not
+     rewritten under the person mid-keystroke. */
+  const [percent, setPercent] = useState("5");
   const [scope, setScope] = useState<"global" | "department">("global");
   const [departmentId, setDepartmentId] = useState("");
   const [create, state] = useAction(
@@ -332,6 +336,7 @@ function NewPolicy({
       r,
       input: {
         name: string;
+        percent: number;
         description: string;
         severity: ConductSeverity;
         scope: "global" | "department";
@@ -350,6 +355,17 @@ function NewPolicy({
       <div className="grid gap-3 deck:grid-cols-2">
         <Field label="Policy name" required>
           <Input value={name} onChange={(e) => setName(e.target.value)} />
+        </Field>
+        <Field
+          label="Cut when breached"
+          required
+          hint="Percentage points off the score. 5 turns 80 into 75."
+        >
+          <Input
+            value={percent}
+            inputMode="decimal"
+            onChange={(e) => setPercent(e.target.value.replace(/[^0-9.]/g, ""))}
+          />
         </Field>
         <Field label="Severity">
           <Select
@@ -400,10 +416,16 @@ function NewPolicy({
         <Button
           tone="primary"
           size="sm"
-          disabled={!name.trim() || state.isPending}
+          disabled={
+            !name.trim() ||
+            !(Number(percent) > 0) ||
+            Number(percent) > 100 ||
+            state.isPending
+          }
           onClick={async () => {
             const res = await create({
               name,
+              percent: Number(percent),
               description,
               severity,
               scope,

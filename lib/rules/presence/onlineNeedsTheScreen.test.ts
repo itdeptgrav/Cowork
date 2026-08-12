@@ -624,18 +624,6 @@ test("share() is called with no capture constraints and no bitrate", () => {
     );
 });
 
-test("the SDK is fetched past the browser cache", () => {
-  /* They rebuild the file in place at a stable URL — the path carries a major
-     version, not a build — and the rebuild is what moves encoding to H.264.
-     Nothing here can hard-refresh somebody else's browser; a changed URL can. */
-  const src = code(PUBLISHER);
-  assert.match(src, /const SDK_BUILD = "\d{4}-\d{2}-\d{2}";/);
-  assert.match(
-    src,
-    /const SDK_URL = `https:\/\/live\.grav\.in\/v1\/grav-stream\.js\?v=\$\{SDK_BUILD\}`;/,
-  );
-});
-
 test("only one live viewer frame decodes at a time", () => {
   /**
    * Each viewer iframe decodes its own copy of the stream, so two of them for
@@ -671,4 +659,69 @@ test("a picture that never arrives is rejoined once, automatically", () => {
   const viewer = code("components/features/monitoring/LiveScreenViewer.tsx");
   assert.match(viewer, /if \(!late \|\| healed\.current === key \|\| attempt > 0\) return;/);
   assert.match(viewer, /waited: late && attempt > 0,/);
+});
+
+test("the SDK is pinned to the version their server expects to see", () => {
+  /**
+   * **They could not tell our sessions apart from an iframe integration**,
+   * because every one reported an unidentified client: browsers were holding a
+   * build from before version reporting existed. Their instruction is to pin the
+   * query string to the SDK VERSION — `?v=1.1.0` — so `GravStream.version` and
+   * their server-side "sdk 1.1.0" agree.
+   *
+   * The load-time check is the other half. A stale copy is otherwise completely
+   * invisible: their fixes appear not to work and nothing anywhere says why.
+   */
+  const src = code(PUBLISHER);
+  assert.match(src, /const SDK_VERSION = "\d+\.\d+\.\d+";/);
+  assert.match(
+    src,
+    /const SDK_URL = `https:\/\/live\.grav\.in\/v1\/grav-stream\.js\?v=\$\{SDK_VERSION\}`;/,
+  );
+  assert.match(src, /function reportVersion\(sdk: GravStreamGlobal\): void \{/);
+  assert.match(src, /found === EXPECTED_SDK_VERSION/);
+  assert.match(src, /hard-refresh/);
+});
+
+test("the encoder can be measured without opening a console", () => {
+  /**
+   * "It is slow" is not a report anybody can act on, and the two fields that
+   * decide almost everything are `codec` — H264 is hardware, VP8 is a CPU core
+   * encoding a whole desktop — and `limitedBy`, which names the constraint
+   * rather than leaving it to argument. Their 1.1.0 `getStats()` answers both.
+   *
+   * `gs` is their own name for the console handle, kept verbatim so their
+   * instructions can be followed literally.
+   */
+  const src = code(PUBLISHER);
+  assert.match(src, /export async function shareStats\(\): Promise<ShareStats \| null>/);
+  assert.match(src, /gs: handle/);
+  assert.match(src, /gravStream: handle/);
+
+  /* And on screen, because a support thread that needs a console stalls. */
+  const page = code("app/employee/page.tsx");
+  assert.match(page, /shareStats\(\)/);
+  assert.match(page, /Limited by/);
+  assert.match(page, /Watchers/);
+  assert.match(page, /VP8 is encoded in software/);
+});
+
+test("the motion experiment is available and off", () => {
+  /**
+   * They asked ONE machine to try `contentHint: "motion"` and report whether it
+   * feels smoother — they can see the encoder change from their side. It must
+   * not become the default: `detail` is what keeps small text legible, and
+   * every unreadable-text report was that trade going the other way.
+   */
+  const src = code(PUBLISHER);
+  assert.match(src, /let contentHintForTest: "detail" \| "motion" \| null = null;/);
+  assert.match(
+    src,
+    /\.\.\.\(contentHintForTest \? \{ contentHint: contentHintForTest \} : \{\}\)/,
+    "an undefined contentHint is still a passed key — it has to be conditional",
+  );
+  assert.ok(
+    !/contentHint: "motion"/.test(src) || /useMotionHint/.test(src),
+    "motion has become the default",
+  );
 });

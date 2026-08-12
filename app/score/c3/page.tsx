@@ -1,2 +1,2 @@
-import { ChannelPage } from "@/components/features/score/ScoreArea";
-export default function Page() { return <ChannelPage channel="c3" />; }
+import { ConductPage } from "@/components/features/score/ConductArea";
+export default function Page() { return <ConductPage />; }

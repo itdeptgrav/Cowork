@@ -1,4 +1,4 @@
-import type { AttendanceDay, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import { mrfApprovalStats, mrfStats, type NewMrfInput } from "@/lib/rules/mrf/lifecycle";
@@ -115,7 +115,19 @@ import {
   type ReportingTree,
 } from "../../legacy/hierarchy.ts";
 import { fetchDashboard } from "../../legacy/scoring.ts";
-import { fetchLedger } from "../../legacy/sop.ts";
+import {
+  applySop,
+  createSop,
+  decideSop,
+  fetchLedger,
+  fetchPendingApprovals,
+  fetchPendingRechecks,
+  type LegacySop,
+  listSops,
+  readSop,
+  requestRecheck,
+  reviewRecheck,
+} from "../../legacy/sop.ts";
 import { legacyFetch } from "../../legacy/http.ts";
 import { LEGACY_ORGANISATION_ID, hueFor, initialsOf, toEmployee, toScoreHistory, toScoreOverview, toViewer } from "./map.ts";
 import { computeProgress } from "../mock/progress.ts";
@@ -10367,7 +10379,11 @@ export class LegacyRepository {
         .filter((e) => !wanted || e.component === wanted)
         .map((e, i) => ({
           organisationId: LEGACY_ORGANISATION_ID,
-          id: `${year.year}-${e.sopId ?? e.policyId ?? i}`,
+          /* The entry's own id where legacy sends one. The old composite —
+             year plus RULE id — repeated itself whenever the same rule was
+             applied to somebody twice, and `requestConductRecheck` addresses
+             one deduction, so it needs the one that is actually unique. */
+          id: e.entryId ?? `${year.year}-${e.sopId ?? e.policyId ?? i}`,
           employeeId: String(employeeId),
           component: (e.component ?? "C3").toLowerCase() as never,
           sourceType: (e.policyId ? "conduct_event" : "task") as never,
@@ -10396,6 +10412,199 @@ export class LegacyRepository {
         })),
     );
     return entries;
+  }
+
+  /* ── C3 · the conduct rules and the four acts ────────────────────────────
+   *
+   * Every one of these is a REQUEST. The engine decides who may do it, from
+   * the reporting line — a rule is approved by its author's own manager, a
+   * breach applied by the employee's own manager, a dispute settled by that
+   * same person — and refuses everyone else. `lib/rules/scoring/conduct.ts`
+   * asks the same questions on this side so the interface can grey out a
+   * control before it is pressed, but the refusal that matters comes from the
+   * engine and is shown as it was written.
+   */
+
+  /**
+   * One legacy rule as a `ConductPolicy`.
+   *
+   * `department` is a name in legacy and an id in the domain; there is no
+   * department id on a SOP to map, so `departmentIds` stays empty and `scope`
+   * is derived from whether the rule names a department at all.
+   */
+  #toConductPolicy(sop: LegacySop): ConductPolicy {
+    return {
+      organisationId: LEGACY_ORGANISATION_ID,
+      id: sop.id,
+      name: sop.name,
+      description: sop.description ?? "",
+      percent: sop.percent,
+      severity: sop.severity,
+      scope: sop.department ? "department" : "global",
+      departmentIds: [],
+      /* Legacy has no active flag on a rule; a rejected one is the closest
+         thing it has to withdrawn, and `isApplicable` is the engine's own
+         answer to "may this be applied". */
+      isActive: sop.status !== "rejected",
+      status: sop.status,
+      createdById: sop.createdById,
+      createdByName: sop.createdByName,
+      approverId: sop.approverId,
+      approverName: sop.approverName,
+      decidedByName: sop.approvedByName,
+      rejectedReason: sop.rejectedReason,
+    };
+  }
+
+  /** A legacy refusal as an `ActionResult`, keeping the engine's wording. */
+  #refusal(error: { kind: string; message: string }): ActionResult<never> {
+    return {
+      ok: false,
+      code:
+        error.kind === "permission"
+          ? "permission_denied"
+          : error.kind === "not_found"
+            ? "not_found"
+            : "validation_failed",
+      message: error.message,
+    };
+  }
+
+  async listConductPolicies(): Promise<ConductPolicy[]> {
+    const result = await listSops(await this.#token());
+    if (!result.ok) throw new Error(result.error.message);
+    return result.data.map((s) => this.#toConductPolicy(s));
+  }
+
+  async createConductPolicy(input: {
+    name: string;
+    percent: number;
+    description: string;
+    severity: ConductSeverity | null;
+    scope: "global" | "department";
+    departmentIds: string[];
+  }): Promise<ActionResult<ConductPolicy>> {
+    /* Legacy stores the department by NAME. The domain passes ids, so the one
+       chosen is resolved back through the directory; an unresolvable id sends
+       an empty department, which legacy reads as company-wide. */
+    const department =
+      input.scope === "department"
+        ? ((await this.listDepartments()).find(
+            (d) => d.id === input.departmentIds[0],
+          )?.name ?? "")
+        : "";
+
+    const result = await createSop({
+      token: await this.#token(),
+      name: input.name,
+      percent: input.percent,
+      description: input.description,
+      department,
+      severity: input.severity,
+    });
+    if (!result.ok) return this.#refusal(result.error);
+
+    const written = readSop(result.data.sop);
+    if (!written) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "The rule was saved but came back unreadable.",
+      };
+    }
+    return { ok: true, data: this.#toConductPolicy(written) };
+  }
+
+  async listConductApprovals(): Promise<ConductPolicy[]> {
+    const result = await fetchPendingApprovals({ token: await this.#token() });
+    if (!result.ok) throw new Error(result.error.message);
+    return result.data.map((s) => this.#toConductPolicy(s));
+  }
+
+  async decideConductPolicy(
+    id: string,
+    decision: "approve" | "reject",
+    reason?: string,
+  ): Promise<ActionResult<void>> {
+    const result = await decideSop({
+      token: await this.#token(),
+      sopId: id,
+      decision,
+      reason,
+    });
+    return result.ok
+      ? { ok: true, data: undefined }
+      : this.#refusal(result.error);
+  }
+
+  async applyConductPolicy(input: {
+    employeeId: EmployeeId;
+    policyId: string;
+    reason: string;
+  }): Promise<ActionResult<void>> {
+    const result = await applySop({
+      token: await this.#token(),
+      targetEmployeeId: String(input.employeeId),
+      sopId: input.policyId,
+      description: input.reason,
+    });
+    return result.ok
+      ? { ok: true, data: undefined }
+      : this.#refusal(result.error);
+  }
+
+  async requestConductRecheck(input: {
+    entryId: string;
+    note: string;
+  }): Promise<ActionResult<void>> {
+    /* Always the viewer's own record. The engine refuses an employee raising a
+       dispute on somebody else's, and nothing in the interface offers it. */
+    const result = await requestRecheck({
+      token: await this.#token(),
+      employeeId: String(this.#ctx.employeeId),
+      entryId: input.entryId,
+      note: input.note,
+    });
+    return result.ok
+      ? { ok: true, data: undefined }
+      : this.#refusal(result.error);
+  }
+
+  async listConductDisputes() {
+    const result = await fetchPendingRechecks({ token: await this.#token() });
+    if (!result.ok) throw new Error(result.error.message);
+    return result.data.flatMap((person) =>
+      person.entries.map((e) => ({
+        employeeId: person.employeeId,
+        employeeName: person.employeeName,
+        entryId: e.entryId,
+        policyName: e.name,
+        percent: e.points,
+        date: e.date,
+        requestNote: e.requestNote,
+      })),
+    );
+  }
+
+  async decideConductRecheck(input: {
+    employeeId: EmployeeId;
+    entryId: string;
+    overturn: boolean;
+    note: string;
+  }): Promise<ActionResult<void>> {
+    const result = await reviewRecheck({
+      token: await this.#token(),
+      employeeId: String(input.employeeId),
+      entryId: input.entryId,
+      /* `"confirm"` REVERSES the deduction in legacy's vocabulary — it
+         confirms the employee's complaint, not the penalty. The word stops
+         here; `overturn` is what the rest of the project says. */
+      action: input.overturn ? "confirm" : "reject",
+      reviewNote: input.note,
+    });
+    return result.ok
+      ? { ok: true, data: undefined }
+      : this.#refusal(result.error);
   }
 
   /**

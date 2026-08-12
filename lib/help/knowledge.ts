@@ -1104,7 +1104,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "What does “the service has not registered it yet” mean?",
     ],
     answer:
-      "**This describes a workspace where screen sharing is switched on, which is the default.** An administrator can turn it off under Administration, Settings, Office policy — and where they have, none of what follows applies: Go online simply makes you Online, nothing is captured, nobody is watched, and the status menu says “Screen sharing: Off for this workspace”. Breaks, emergencies and the daily report are unchanged either way. With it on: choose Go online in the status menu and your browser asks for your screen straight away. There is no meeting to create, no room to join, no camera or microphone prompt, and nothing appears in the corner of the page — the menu states the requirement, and the next thing you see is your browser's own picker. Nothing else is drawn at any point, either while you choose or while you share. The menu stays open and says “Processing your request…” while it happens, and the pill reads “Connecting…”, because there are three short waits nobody can see from outside — your browser preparing the prompt, you choosing a display, and the connection going through — and a page that did not change reads as a button that did nothing. It closes itself the moment your screen is live. Choose your entire screen and you are Online the moment the screen is actually going out. Dismiss the picker and nothing happened; you stay exactly as you were, and the menu says so — “You did not pick a screen, so you are not online yet.” There is one more message worth recognising: “Your screen is being captured, but the service has not registered it yet.” That means your browser is sharing but the picture is not reaching the room, so your manager may see nothing. It does not take your status away — nothing does that but you — and the fix is to stop sharing and go online again. A window or a browser tab is refused — not by Cowork being strict, but by the sharing service itself, which will not carry anything but a whole display for a monitoring session. If you pick one you are told to share your entire screen instead, and you are not online until you do. Stopping is stopping: the browser's own “Stop sharing” bar takes you offline the same as choosing Go offline does, because being online IS your screen being shared. Being Online IS your screen being shared: it is a consequence of the share rather than a setting, so there is no way to declare it and nothing to type. Your primary manager — and only your primary manager — can open that screen while it is running. One thing is worth knowing rather than discovering: the picker belongs to the sharing service, so Cowork asks for your whole screen but cannot refuse a window or a tab if you pick one. What your manager sees is exactly what you shared. Stopping the share takes you back to Offline; nothing else does it for you, and no timer or inactivity check can. See “Why you went offline”. Three things about the quality of what your manager sees are worth knowing, and none of them is a setting you have to find. Your screen is sent at up to 1920×1080 whatever the size of your display: a 4K desktop squeezed into the same bandwidth is what makes small text unreadable at the other end, so it is scaled once, cleanly, instead. Under a slow connection it drops frames rather than sharpness — motion goes slightly choppy and text stays legible, which is the right trade for a desktop. And the encoding uses your machine's video hardware rather than its processor, so sharing should not make the machine itself slow; if it does, and you started sharing before 11 August 2026, stop sharing and go online again — the choice of encoder is made when a share begins and an old session keeps the old one. Long shares are fine now too: one that used to die silently after about an hour was being cut off as idle by a network device, which the service has fixed. A full working day of sharing is expected to hold. Your status is published for everyone, so your colleagues, your manager and your own record all read the same thing rather than each guessing — and that includes your own other devices: if you go online on one computer and then open Cowork on your phone, the phone shows the same Online status straight away rather than asking you to reconnect anything, because only the device that is actually sharing is ever asked to resume the share. That works in both directions and while you watch: change your status on one device and every other device you are signed in on follows within a moment, without refreshing. Until a device has heard what your status actually is, its pill shows a dash rather than guessing — which is why a second device no longer flashes “Offline” for a second before settling on the truth. Being online is also what unlocks your own task actions — see “Task actions while you are away”. Every change to your status is kept in a log for the day — see “Your status history”.",
+      "**This describes a workspace where screen sharing is switched on, which is the default.** An administrator can turn it off under Administration, Settings, Office policy — and where they have, none of what follows applies: Go online simply makes you Online, nothing is captured, nobody is watched, and the status menu says “Screen sharing: Off for this workspace”. Breaks, emergencies and the daily report are unchanged either way. With it on: choose Go online in the status menu and your browser asks for your screen straight away. There is no meeting to create, no room to join, no camera or microphone prompt, and nothing appears in the corner of the page — the menu states the requirement, and the next thing you see is your browser's own picker. Nothing else is drawn at any point, either while you choose or while you share. The menu stays open and says “Processing your request…” while it happens, and the pill reads “Connecting…”, because there are three short waits nobody can see from outside — your browser preparing the prompt, you choosing a display, and the connection going through — and a page that did not change reads as a button that did nothing. It closes itself the moment your screen is live. Choose your entire screen and you are Online the moment the screen is actually going out. Dismiss the picker and nothing happened; you stay exactly as you were, and the menu says so — “You did not pick a screen, so you are not online yet.” There is one more message worth recognising: “Your screen is being captured, but the service has not registered it yet.” That means your browser is sharing but the picture is not reaching the room, so your manager may see nothing. It does not take your status away — nothing does that but you — and the fix is to stop sharing and go online again. A window or a browser tab is refused — not by Cowork being strict, but by the sharing service itself, which will not carry anything but a whole display for a monitoring session. If you pick one you are told to share your entire screen instead, and you are not online until you do. Stopping is stopping: the browser's own “Stop sharing” bar takes you offline the same as choosing Go offline does, because being online IS your screen being shared. Being Online IS your screen being shared: it is a consequence of the share rather than a setting, so there is no way to declare it and nothing to type. Your primary manager — and only your primary manager — can open that screen while it is running. One thing is worth knowing rather than discovering: the picker belongs to the sharing service, so Cowork asks for your whole screen but cannot refuse a window or a tab if you pick one. What your manager sees is exactly what you shared. Stopping the share takes you back to Offline; nothing else does it for you, and no timer or inactivity check can. See “Why you went offline”. Three things about the quality of what your manager sees are worth knowing, and none of them is a setting you have to find. Your screen is sent at up to 1920×1080 whatever the size of your display: a 4K desktop squeezed into the same bandwidth is what makes small text unreadable at the other end, so it is scaled once, cleanly, instead. Under a slow connection it drops frames rather than sharpness — motion goes slightly choppy and text stays legible, which is the right trade for a desktop. And the encoding uses your machine's video hardware rather than its processor, so sharing should not make the machine itself slow; if it does, and you started sharing before 11 August 2026, stop sharing and go online again — the choice of encoder is made when a share begins and an old session keeps the old one. Long shares are fine now too: one that used to die silently after about an hour was being cut off as idle by a network device, which the service has fixed. A full working day of sharing is expected to hold. And while nobody is watching your screen, your machine stops encoding it altogether — it starts again within a second or two of a manager opening it — so a share left running costs almost nothing when nobody is looking. Your status is published for everyone, so your colleagues, your manager and your own record all read the same thing rather than each guessing — and that includes your own other devices: if you go online on one computer and then open Cowork on your phone, the phone shows the same Online status straight away rather than asking you to reconnect anything, because only the device that is actually sharing is ever asked to resume the share. That works in both directions and while you watch: change your status on one device and every other device you are signed in on follows within a moment, without refreshing. Until a device has heard what your status actually is, its pill shows a dash rather than guessing — which is why a second device no longer flashes “Offline” for a second before settling on the truth. Being online is also what unlocks your own task actions — see “Task actions while you are away”. Every change to your status is kept in a log for the day — see “Your status history”.",
     related: [
       "status-entire-screen",
       "status-break",
@@ -1277,6 +1277,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "stuck signing in",
       "signed in but asked to sign in",
       "session expired",
+      "asked to sign in again",
+      "logged out after a few hours",
+      "have to sign in every day",
+      "stay signed in",
     ],
     examples: [
       "I just signed in and it says sign in again.",
@@ -1285,10 +1289,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Do I need to sign in again?",
     ],
     answer:
-      "There is a third case worth naming first, because it looks like neither: you type the right password, the sign-in is accepted, and you land straight back on the sign-in form. That means the account is not registered as an employee of this workspace — a real answer rather than a failure — and the form now says so: “That account signed in, but it is not registered as an employee of this workspace. Ask an administrator to add it, or sign in with your work account.” It used to say nothing at all, which was indistinguishable from a button that did nothing, and on some accounts it looped between “Signing you in…” and “Redirecting to sign in…” without ever reaching the form. Only one account is signed in at a time: signing in as somebody else replaces the previous session and clears what it left in this browser, so you never see a mixture of two people's workspaces. Two other things can interrupt signing in, and Cowork names which. “Could not reach the workspace” means the connection to the server failed — your sign-in is almost certainly fine, and nothing is wrong with your account. It retries on its own as soon as the connection is back, and it also retries the moment you return to the tab, so usually you do nothing at all; Try again asks immediately if you would rather not wait. There is deliberately no Sign in again button on that message, because signing out would throw away a session that was never broken and make you type your password to fix a network problem. “Signing you in did not finish” is the other case: the sign-in saved in this browser did not restore. That one does offer Sign in again, which clears the saved session and starts fresh, and it is the thing that repairs it. Either way your work is safe — neither message means anything was lost. Previously both cases showed the same wording and both offered to sign you out, so a brief connection drop just after signing in read as a broken account.",
+      "There is a third case worth naming first, because it looks like neither: you type the right password, the sign-in is accepted, and you land straight back on the sign-in form. That means the account is not registered as an employee of this workspace — a real answer rather than a failure — and the form now says so: “That account signed in, but it is not registered as an employee of this workspace. Ask an administrator to add it, or sign in with your work account.” It used to say nothing at all, which was indistinguishable from a button that did nothing, and on some accounts it looped between “Signing you in…” and “Redirecting to sign in…” without ever reaching the form. Only one account is signed in at a time: signing in as somebody else replaces the previous session and clears what it left in this browser, so you never see a mixture of two people's workspaces. Two other things can interrupt signing in, and Cowork names which. “Could not reach the workspace” means the connection to the server failed — your sign-in is almost certainly fine, and nothing is wrong with your account. It retries on its own as soon as the connection is back, and it also retries the moment you return to the tab, so usually you do nothing at all; Try again asks immediately if you would rather not wait. There is deliberately no Sign in again button on that message, because signing out would throw away a session that was never broken and make you type your password to fix a network problem. “Signing you in did not finish” is the other case: the sign-in saved in this browser did not restore. That one does offer Sign in again, which clears the saved session and starts fresh, and it is the thing that repairs it. **You should not have to sign in twice.** A signed-in browser stays signed in: close it, come back tomorrow, and Cowork restores the session on its own. Only signing out ends it — that, or an administrator resetting your password, which signs you out everywhere on purpose. If you are being returned to this form without having signed out, that is a fault worth reporting rather than something to work around. Either way your work is safe — neither message means anything was lost. Previously both cases showed the same wording and both offered to sign you out, so a brief connection drop just after signing in read as a broken account.",
     related: ["general-what-is-cowork", "status-offline"],
     source:
-      "SessionProvider WorkspaceUnreachable and stallKind; ShellFrame stalled screen; the refusal path clears the Firebase cookie and leaves leaveSignInNotice() for SignInForm, which is what stopped the /signin <-> /home loop; noteSignedInUid + forgetAccountScopedState clear the previous account on a switch",
+      "SessionProvider WorkspaceUnreachable and stallKind; ShellFrame stalled screen; the mirrored cookie lasts 30 days (FIREBASE_COOKIE_MAX_AGE) and proxy.ts reads three states — live, stale, none — so an expired-but-signed token loads the app and refreshes rather than bouncing; Firebase persistence is browserLocalPersistence; the refusal path clears the Firebase cookie and leaves leaveSignInNotice() for SignInForm, which is what stopped the /signin <-> /home loop; noteSignedInUid + forgetAccountScopedState clear the previous account on a switch",
   },
 
   {
@@ -1465,8 +1469,13 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "What does my percentage mean?",
     ],
     answer:
-      "Your score is a percentage: how much could have been achieved against how much was. It is an absolute measure against your own achievable ceiling, not a ranking against anyone. Four components make it up — C1 Task Execution, C2 Goals, C3 Conduct and Policy, and C4 Attendance. C3 is deduction-only and can never add to a score. The score floors at 0 and caps at 100.",
-    related: ["scoring-c1", "scoring-provisional", "scoring-visibility"],
+      "Your score is a percentage: how much could have been achieved against how much was. It is an absolute measure against your own achievable ceiling, not a ranking against anyone. Four components make it up — C1 Task Execution, C2 Goals, C3 Conduct and Policy, and C4 Attendance. C1, C2 and C4 are measured from your work; C3 is applied to you by your own manager when you breach a company rule, is stated as a percentage cut, and can never add to a score. The score floors at 0 and caps at 100.",
+    related: [
+      "scoring-c1",
+      "scoring-c3",
+      "scoring-provisional",
+      "scoring-visibility",
+    ],
     source: "docs/architecture/PRODUCT.md score model; buildOverview in lib/scoring/engine.ts",
   },
   {
@@ -1490,6 +1499,86 @@ export const HELP_ARTICLES: HelpArticle[] = [
     related: ["scoring-provisional", "task-rework", "scoring-components"],
     source:
       "projectScores C1 projection; deductionFor; officialDueAt is what scoring reads",
+  },
+  {
+    id: "scoring-c3",
+    category: "scoring",
+    title: "C3 — conduct rules, and what a breach costs",
+    keywords: [
+      "c3",
+      "conduct",
+      "policy",
+      "sop",
+      "breach",
+      "deduction",
+      "percentage cut",
+      "company rule",
+      "apply a rule",
+    ],
+    examples: [
+      "What is C3?",
+      "Why did my score drop by 5%?",
+      "Who can take points off my score?",
+      "How much does a conduct rule cut?",
+    ],
+    answer:
+      "C3 is conduct. It is the one part of your score another person applies to you rather than something the system measures, and it only ever takes away. A rule states what it is and what a breach costs as a PERCENTAGE, not as points: a rule set at 5% turns a score of 80 into 75. Nothing is capped — enough breaches keep subtracting. Score, then C3, shows every deduction on your own record with the reason the person who applied it wrote, the date, and their name. A deduction appears there the moment it is applied and you are notified; you never have to go looking for it. If you think one is wrong, use Ask for a recheck on the row itself — see 'Disputing a deduction'.",
+    related: [
+      "scoring-components",
+      "scoring-c3-writing-rules",
+      "scoring-c3-dispute",
+    ],
+    source:
+      "lib/rules/scoring/conduct.ts conductNet; components/features/score/ConductArea.tsx; POST /cowork/sop/bleach",
+  },
+  {
+    id: "scoring-c3-writing-rules",
+    category: "scoring",
+    title: "Writing a conduct rule, and applying one",
+    keywords: [
+      "write a rule",
+      "conduct rule",
+      "approve rule",
+      "sop approval",
+      "apply a rule",
+      "waiting on you",
+      "who approves",
+    ],
+    examples: [
+      "How do I create a conduct rule?",
+      "Who approves a conduct rule?",
+      "How do I apply a policy breach to someone?",
+      "Why can't I approve my own rule?",
+    ],
+    answer:
+      "A rule is written by a manager and approved by THEIR own manager — nobody sets the price of the penalties they hand out. Write one at Score, then C3, then Write a rule: give it a name, and the percentage a breach cuts. It goes to one named person, your own primary manager, and it appears in their Waiting on you list; an administrator can decide it where the reporting line has run out. Until it is approved it cannot be applied to anybody. Applying one is a separate act and belongs to the employee's OWN primary manager: open their record under Team and use Apply a rule, or use Apply a rule on the C3 page and choose the person there. You say what happened, and they see that text. Anyone else is refused — the reporting line decides this, not a job title, so a manager in another department cannot charge somebody they do not manage.",
+    related: ["scoring-c3", "scoring-c3-dispute", "roles-responsibilities"],
+    source:
+      "routes/soproutes/soproute.js _mayDecideFor and POST /cowork/sop; lib/rules/scoring/conduct.ts approvalRefusal, applyRefusal",
+  },
+  {
+    id: "scoring-c3-dispute",
+    category: "scoring",
+    title: "Disputing a deduction",
+    keywords: [
+      "recheck",
+      "dispute",
+      "appeal",
+      "wrong deduction",
+      "reverse a deduction",
+      "unfair",
+    ],
+    examples: [
+      "How do I dispute a deduction?",
+      "Can I appeal a conduct penalty?",
+      "Who reviews my recheck?",
+      "How do I get a deduction removed?",
+    ],
+    answer:
+      "Open Score, then C3. Every deduction on your record carries an Ask for a recheck control; say why it is wrong and it goes to your own primary manager. They see it under Disputes with what you wrote, and they either remove the deduction or let it stand — either way they have to write down what they decided. A removed deduction stops counting towards your score and is shown struck through on your record rather than deleted, so the history of what happened stays readable. You can only dispute deductions on your own record.",
+    related: ["scoring-c3", "scoring-c3-writing-rules"],
+    source:
+      "POST and PATCH /cowork/sop/bleach/:employeeId/:bleachId/recheck; decideConductRecheck overturn in lib/repositories/types.ts",
   },
   {
     id: "scoring-timer-sop",

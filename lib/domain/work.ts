@@ -80,10 +80,33 @@ export interface ConductPolicy {
   id: string;
   name: string;
   description: string;
-  severity: ConductSeverity;
+  /**
+   * What a breach costs, in PERCENTAGE POINTS off the score.
+   *
+   * Not a point count. C1, C2 and C4 are percentages and C3 is subtracted from
+   * their average, so five here means eighty becomes seventy-five — see
+   * `lib/rules/scoring/conduct.ts`.
+   */
+  percent: number;
+  severity: ConductSeverity | null;
   scope: "global" | "department";
   departmentIds: string[];
   isActive: boolean;
+  /**
+   * **A rule applies to nobody until somebody other than its author says so.**
+   *
+   * Written by a manager, approved by THEIR manager. `approverId` is stamped
+   * when it is written, so the decision belongs to one named person rather than
+   * to whoever holds a senior role — and a reorganisation later cannot move a
+   * pending decision to somebody who was never asked for it.
+   */
+  status: "pending" | "approved" | "rejected";
+  createdById: EmployeeId | null;
+  createdByName: string | null;
+  approverId: EmployeeId | null;
+  approverName: string | null;
+  decidedByName: string | null;
+  rejectedReason: string | null;
 }
 
 export interface ConductEvent {

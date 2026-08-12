@@ -31,13 +31,53 @@
 export const FIREBASE_COOKIE = "cowork_fb";
 
 /**
- * Seconds a mirrored token is allowed to live.
+ * How long the COOKIE survives — which is not how long the TOKEN inside it is
+ * good for, and conflating the two is what signed people out overnight.
  *
- * An hour, matching Firebase's own token lifetime. The SDK refreshes ahead of
- * expiry and rewrites this, so a live session never lapses; a browser closed
- * mid-session leaves nothing usable behind for long.
+ * **It was an hour, matching the token, and that was the bug.** Close the
+ * browser, come back after lunch, and the cookie is gone — so middleware, which
+ * runs before any JavaScript, sees no credential and redirects to the sign-in
+ * page. Meanwhile Firebase's REFRESH token is sitting in IndexedDB, perfectly
+ * valid, and would have restored the session in milliseconds. The person is
+ * asked to type a password to recover a session that never actually ended.
+ *
+ * The cookie has two jobs and only one of them is about liveness:
+ *
+ *  1. Carry a live ID token, so the Edge can verify a signed-in request without
+ *     a round trip. Firebase refreshes hourly and `onIdTokenChanged` rewrites
+ *     this each time, so while a tab is open it stays fresh on its own.
+ *  2. Say **"this browser has a session worth restoring"** — which remains true
+ *     long after the token inside has expired, and is exactly what the Edge
+ *     needs to know to let the client try.
+ *
+ * Thirty days is the ceiling on the second. Beyond it the browser drops the
+ * cookie and the person signs in again, which is a reasonable outer bound for
+ * an unattended machine. Nothing here weakens the first job: `proxy.ts` still
+ * verifies the signature and the audience on every request, and an expired
+ * token buys nothing except the chance to refresh — see `EXPIRY_GRACE_SECONDS`.
  */
-export const FIREBASE_COOKIE_MAX_AGE = 3600;
+export const FIREBASE_COOKIE_MAX_AGE = 30 * 24 * 3600;
+
+/**
+ * How far past `exp` the Edge will still let a request through to the client.
+ *
+ * **Not a relaxation of the signature check — that never moves.** The token
+ * must still be signed by Google, for this project, for a real subject. What
+ * this decides is what to do with an authentic token that has merely aged out,
+ * and the answer is: let the application load so the SDK can mint a fresh one,
+ * rather than bouncing somebody who is signed in to a form that will sign them
+ * in as themselves.
+ *
+ * That is safe because the Edge is the first gate, not the only one. Every call
+ * that touches data mints a token through the SDK and is verified again by the
+ * engine; the shell resolves the session on load and, if it cannot, redirects
+ * and clears this cookie itself. What an expired token cannot do is read
+ * anything.
+ *
+ * Bounded rather than unlimited so an ancient cookie found on a shared machine
+ * is not a skeleton key: past this, it is treated as no cookie at all.
+ */
+export const EXPIRY_GRACE_SECONDS = 30 * 24 * 3600;
 
 /**
  * Write the token where the Edge can read it.

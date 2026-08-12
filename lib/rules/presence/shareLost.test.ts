@@ -190,9 +190,13 @@ test("a dropped connection does NOT take anybody offline; a real stop does", () 
   assert.ok(at > 0, "the two endings are handled as one again");
   const handler = button.slice(at, button.indexOf("},", at));
   assert.match(handler, /if \(reason === "stopped"\) \{\s*endSession\(\);/);
-  assert.match(
-    handler,
-    /shareInterrupted\(\);/,
+  /* The drop goes to `onShareDropped`, which puts the share back where it can
+     and warns where it cannot — its own test is below. What must never appear
+     here is a second `endSession`. */
+  assert.match(handler, /onShareDropped\(\);/);
+  assert.equal(
+    (handler.match(/endSession\(\)/g) ?? []).length,
+    1,
     "a dropped session ends the person's presence — nothing may do that but them",
   );
 
@@ -209,5 +213,68 @@ test("a dropped connection does NOT take anybody offline; a real stop does", () 
   assert.match(
     readFileSync("components/features/status/DutySync.tsx", "utf8"),
     /if \(reconnecting\) return;/,
+  );
+});
+
+test("a dropped session is put back without asking, when the screen is still in hand", () => {
+  /**
+   * **The fault is in THEIR SDK, and this is the mitigation.** From their own
+   * source, `web/sdk/index.js`:
+   *
+   *     ws.onclose = () => {
+   *       if (session.active) {
+   *         session.active = false;
+   *         session._stream?.getTracks().forEach((t) => t.stop());
+   *         session._emit("ended", { reason: "disconnected" });
+   *       }
+   *     };
+   *
+   * There is no reconnect anywhere in that file. Any WebSocket close — a wifi
+   * blip, a laptop waking, a proxy hiccup, one of their deploys — stops the
+   * capture and ends the share for good. That is "screen sharing turns off
+   * after a while", and no amount of care on this side prevents it happening.
+   *
+   * What this side CAN do is put it back. A `MediaStreamTrack` clone shares the
+   * original's SOURCE and survives the original being stopped, so the spare is
+   * a live picture of the same screen with nothing to prompt for — and their
+   * `share()` takes it because the call that would have prompted is
+   * intercepted. A capture prompt needs a click; reusing one already granted
+   * does not.
+   *
+   * **When the person really stopped, there is nothing to resume**: the source
+   * ends, the clone ends with it, and they are asked. That is the difference
+   * this must never lose.
+   */
+  const publisher = readFileSync("lib/integrations/grav/publisher.ts", "utf8");
+  assert.match(publisher, /spareStream = stream\.clone\(\);/);
+  assert.match(publisher, /export function canResumeSilently\(\): boolean \{/);
+  assert.match(publisher, /export async function resumePublishing\(/);
+  /* The interception hands the spare over instead of prompting. */
+  assert.match(publisher, /if \(resumeStream\) \{[\s\S]{0,200}return reused;/);
+
+  /* And a deliberate stop drops it. A live clone would keep the browser's
+     "sharing your screen" bar up over somebody who has gone offline, which is
+     the most alarming possible way to be wrong about this. */
+  const stop = publisher.slice(
+    publisher.indexOf("export function stopPublishing"),
+    publisher.indexOf("export function isPublishing"),
+  );
+  assert.match(stop, /dropSpare\(\);/);
+
+  const button = readFileSync(
+    "components/features/status/StatusButton.tsx",
+    "utf8",
+  );
+  const dropped = button.slice(
+    button.indexOf("function onShareDropped()"),
+    button.indexOf("function warnShareLost()"),
+  );
+  assert.match(dropped, /shareInterrupted\(\);/, "a drop moves the status");
+  assert.match(dropped, /canResumeSilently\(\)/);
+  assert.match(dropped, /resumePublishing\(/);
+  assert.match(
+    dropped,
+    /warnShareLost\(\)/,
+    "a resume that fails leaves the person with nothing said",
   );
 });
