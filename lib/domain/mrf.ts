@@ -61,6 +61,9 @@ export interface MrfItem {
 export interface MrfImage {
   url: string;
   name: string | null;
+  /** The Drive file id — load-bearing for rendering reliably (see DriveImage);
+   * absent for an image attached before the uploader moved off Cloudinary. */
+  fileId?: string | null;
 }
 
 /** One stock variant of a catalogue item — e.g. a colour — with its stock. */

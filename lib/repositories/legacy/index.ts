@@ -11149,10 +11149,17 @@ export class LegacyRepository {
           .map((im) => {
             const o = (im ?? {}) as Record<string, unknown>;
             return typeof o.url === "string"
-              ? { url: o.url, name: typeof o.name === "string" ? o.name : null }
+              ? {
+                  url: o.url,
+                  name: typeof o.name === "string" ? o.name : null,
+                  fileId: typeof o.fileId === "string" && o.fileId ? o.fileId : null,
+                }
               : null;
           })
-          .filter((x): x is { url: string; name: string | null } => x !== null),
+          .filter(
+            (x): x is { url: string; name: string | null; fileId: string | null } =>
+              x !== null
+          ),
       })),
       history: (history as Record<string, unknown>[]).map((h) => ({
         at: String(h.at ?? ""),

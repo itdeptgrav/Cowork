@@ -2,6 +2,17 @@
 
 import { useRef, useState } from "react";
 import type { MrfImage } from "@/lib/domain/mrf";
+import { DriveImage } from "@/components/ui/DriveImage";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
+import { driveProxySrc } from "@/lib/rules/media/driveUrls";
+
+const MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
+
+/** Byte proxy first (works regardless of CDN indexing), stored URL otherwise —
+ * same rule `mediaUrl` in MessageAttachments applies to a chat attachment. */
+function mrfImageDownloadUrl(im: MrfImage): string {
+  return (im.fileId && driveProxySrc(MEDIA_BASE, im.fileId)) || im.url;
+}
 
 /**
  * Reference photos on a request line — to Google Drive, like every other
@@ -46,9 +57,16 @@ async function uploadMrfImage(file: File): Promise<MrfImage> {
 
   /* The thumbnail URL renders in an `<img>`; the view link is the fallback for
      anything Drive does not thumbnail. `drive-finalize` has already made the
-     file readable, which is what an `<img>` needs — it cannot send a token. */
-  const { url, thumbnailUrl, viewUrl, fileName } = result.data;
-  return { url: thumbnailUrl || url || viewUrl || "", name: fileName || file.name };
+     file readable, which is what an `<img>` needs — it cannot send a token.
+     `fileId` is kept too — `DriveImage` uses it as the primary source (CDN,
+     then the backend's byte proxy) since the bare URL alone 404s on Google's
+     CDN until the file is indexed, with no fallback to recover from that. */
+  const { url, thumbnailUrl, viewUrl, fileName, fileId } = result.data;
+  return {
+    url: thumbnailUrl || url || viewUrl || "",
+    name: fileName || file.name,
+    fileId: fileId ?? null,
+  };
 }
 
 export function MrfPhotoUploader({
@@ -64,6 +82,7 @@ export function MrfPhotoUploader({
   const inputRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [zoomed, setZoomed] = useState<MrfImage | null>(null);
 
   const pick = async (files: FileList | null) => {
     const chosen = Array.from(files ?? []);
@@ -104,12 +123,19 @@ export function MrfPhotoUploader({
       <div className="flex flex-wrap items-center gap-1.5">
         {images.map((im, i) => (
           <span key={i} className="relative">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={im.url}
-              alt={im.name ?? "Reference photo"}
-              className="h-11 w-11 rounded-md object-cover"
-            />
+            <button
+              type="button"
+              aria-label={`View ${im.name ?? "reference photo"}`}
+              onClick={() => setZoomed(im)}
+              className="block"
+            >
+              <DriveImage
+                fileId={im.fileId}
+                url={im.url}
+                alt={im.name ?? "Reference photo"}
+                className="h-11 w-11 rounded-md object-cover"
+              />
+            </button>
             <button
               type="button"
               aria-label="Remove photo"
@@ -141,6 +167,17 @@ export function MrfPhotoUploader({
       </div>
       {error && (
         <p className="mt-1 text-[11px] text-[var(--state-rework-ink)]">{error}</p>
+      )}
+      {zoomed && (
+        <ImageLightbox
+          fileId={zoomed.fileId}
+          url={zoomed.url}
+          apiBase={MEDIA_BASE}
+          alt={zoomed.name ?? "Reference photo"}
+          downloadUrl={mrfImageDownloadUrl(zoomed)}
+          downloadName={zoomed.name ?? "photo.jpg"}
+          onClose={() => setZoomed(null)}
+        />
       )}
     </div>
   );

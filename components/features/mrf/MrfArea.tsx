@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { WorkspaceHead } from "@/components/ui/Workspace";
+import { DriveImage } from "@/components/ui/DriveImage";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
+import { driveProxySrc } from "@/lib/rules/media/driveUrls";
 import {
   Button,
   Chip,
@@ -41,6 +44,11 @@ import type {
  */
 export function MrfArea() {
   const [tab, setTab] = useState<"mine" | "approvals">("mine");
+  // Fetched here (not just inside Approvals) so the pending count shows on the
+  // tab pill even while "My requests" is the active tab — that's the point of
+  // a badge: knowing before you switch.
+  const { data: approvalsData } = useQuery((r) => r.listMrfApprovals("pending"), []);
+  const pendingApprovals = approvalsData?.stats.awaiting ?? 0;
 
   return (
     <>
@@ -60,13 +68,25 @@ export function MrfArea() {
                 type="button"
                 onClick={() => setTab(t.id)}
                 aria-pressed={tab === t.id}
-                className={`rounded-full px-3.5 py-1 text-sm font-medium transition-colors ${
+                className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-1 text-sm font-medium transition-colors ${
                   tab === t.id
                     ? "bg-ink text-[var(--body-bg)]"
                     : "text-ink-muted hover:text-ink"
                 }`}
               >
                 {t.label}
+                {t.id === "approvals" && pendingApprovals > 0 && (
+                  <span
+                    data-figure
+                    className={`inline-flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold ${
+                      tab === t.id
+                        ? "bg-[var(--body-bg)] text-ink"
+                        : "bg-[var(--state-rework-ink)] text-white"
+                    }`}
+                  >
+                    {pendingApprovals}
+                  </span>
+                )}
               </button>
             ))}
           </div>
@@ -117,6 +137,43 @@ const ITEM_STATUS_LABEL: Record<string, string> = {
   unfulfilled: "Unfulfilled",
 };
 
+/** History actions arrive as the backend's raw event codes (lowercased —
+ * e.g. "tl_approved"). Named ones read as a sentence; anything unrecognised
+ * falls back to a humanised version rather than disappearing. */
+const HISTORY_ACTION_LABEL: Record<string, string> = {
+  created: "Request raised",
+  tl_approved: "Approved",
+  tl_rejected: "Rejected",
+  auto_forwarded: "Auto-forwarded to the store",
+  item_matched: "Item matched to a catalogue product",
+  item_rematched: "Item re-matched to a catalogue product",
+  item_registered: "Item registered as a new inventory item",
+  item_rejected: "Item rejected",
+  availability_updated: "Availability updated",
+  store_unfulfilled: "Marked unfulfilled by the store",
+  partially_issued: "Partially issued",
+  fully_issued: "Fully issued",
+  returned: "Return recorded",
+  fully_returned: "Fully returned",
+  cancelled: "Withdrawn",
+};
+
+function historyActionLabel(action: string): string {
+  return (
+    HISTORY_ACTION_LABEL[action] ??
+    (action
+      ? action.charAt(0).toUpperCase() + action.slice(1).replace(/_/g, " ")
+      : "Update")
+  );
+}
+
+const MRF_MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
+
+/** Byte proxy first (works regardless of CDN indexing), stored URL otherwise. */
+function mrfImageDownloadUrl(im: MrfImage): string {
+  return (im.fileId && driveProxySrc(MRF_MEDIA_BASE, im.fileId)) || im.url;
+}
+
 /** Time-based, out with the store, and past its return date. */
 function isOverdue(r: MrfRequest): boolean {
   return (
@@ -128,6 +185,7 @@ function isOverdue(r: MrfRequest): boolean {
 }
 
 function ItemLines({ request }: { request: MrfRequest }) {
+  const [zoomed, setZoomed] = useState<MrfImage | null>(null);
   return (
     <ul className="mt-2 space-y-1.5">
       {request.items.map((it) => {
@@ -136,6 +194,8 @@ function ItemLines({ request }: { request: MrfRequest }) {
             ? it.availability
             : null;
         const tag = ITEM_STATUS_LABEL[it.status];
+        const issuedQty = it.issuedQty ?? 0;
+        const returnedQty = it.returnedQty ?? 0;
         return (
           <li key={it.id} className="text-[13px]">
             <div className="flex flex-wrap items-baseline gap-2">
@@ -158,7 +218,7 @@ function ItemLines({ request }: { request: MrfRequest }) {
                 </span>
               )}
             </div>
-            {(avail || it.issuedQty || it.returnedQty) && (
+            {(avail || !!issuedQty || !!returnedQty) && (
               <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-ink-faint">
                 {avail && (
                   <span>
@@ -166,15 +226,32 @@ function ItemLines({ request }: { request: MrfRequest }) {
                     {it.availableQty != null ? ` (${it.availableQty} ${it.unit})` : ""}
                   </span>
                 )}
-                {!!it.issuedQty && (
+                {!!issuedQty && (
                   <span>
-                    Issued <span data-figure>{it.issuedQty}</span> of{" "}
+                    Issued <span data-figure>{issuedQty}</span> of{" "}
                     <span data-figure>{it.requestedQty}</span>
                   </span>
                 )}
-                {!!it.returnedQty && (
+                {/* What the store still owes on this line — 0 once fully issued. */}
+                {issuedQty < it.requestedQty &&
+                  it.status !== "rejected" &&
+                  it.status !== "unfulfilled" && (
+                    <span>
+                      Remaining to issue{" "}
+                      <span data-figure>{it.requestedQty - issuedQty}</span>
+                    </span>
+                  )}
+                {!!returnedQty && (
                   <span>
-                    Returned <span data-figure>{it.returnedQty}</span>
+                    Returned <span data-figure>{returnedQty}</span> of{" "}
+                    <span data-figure>{issuedQty}</span> issued
+                  </span>
+                )}
+                {/* Borrowed items only — what the requester still holds. */}
+                {request.requestType === "time_based" && issuedQty > returnedQty && (
+                  <span>
+                    Outstanding to return{" "}
+                    <span data-figure>{issuedQty - returnedQty}</span>
                   </span>
                 )}
               </div>
@@ -182,19 +259,37 @@ function ItemLines({ request }: { request: MrfRequest }) {
             {!!it.images?.length && (
               <div className="mt-1 flex flex-wrap gap-1.5">
                 {it.images.map((im, k) => (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
+                  <button
                     key={k}
-                    src={im.url}
-                    alt={im.name ?? "Reference photo"}
-                    className="h-10 w-10 rounded-md object-cover"
-                  />
+                    type="button"
+                    aria-label={`View ${im.name ?? "reference photo"}`}
+                    onClick={() => setZoomed(im)}
+                    className="block"
+                  >
+                    <DriveImage
+                      fileId={im.fileId}
+                      url={im.url}
+                      alt={im.name ?? "Reference photo"}
+                      className="h-10 w-10 rounded-md object-cover"
+                    />
+                  </button>
                 ))}
               </div>
             )}
           </li>
         );
       })}
+      {zoomed && (
+        <ImageLightbox
+          fileId={zoomed.fileId}
+          url={zoomed.url}
+          apiBase={MRF_MEDIA_BASE}
+          alt={zoomed.name ?? "Reference photo"}
+          downloadUrl={mrfImageDownloadUrl(zoomed)}
+          downloadName={zoomed.name ?? "photo.jpg"}
+          onClose={() => setZoomed(null)}
+        />
+      )}
     </ul>
   );
 }
@@ -202,7 +297,9 @@ function ItemLines({ request }: { request: MrfRequest }) {
 /* ── Activity log ─────────────────────────────────────────────────────────── */
 
 function MrfHistory({ request }: { request: MrfRequest }) {
-  const [open, setOpen] = useState(false);
+  // Open by default — this is the audit trail (who did what, and when), not
+  // an optional extra, so it shows without an extra click.
+  const [open, setOpen] = useState(true);
   if (!request.history.length) return null;
   return (
     <div className="mt-2">
@@ -211,13 +308,14 @@ function MrfHistory({ request }: { request: MrfRequest }) {
         onClick={() => setOpen((v) => !v)}
         className="text-[11px] text-ink-muted underline underline-offset-2 hover:text-ink"
       >
-        {open ? "Hide history" : `History (${request.history.length})`}
+        {open ? `Hide history (${request.history.length})` : `History (${request.history.length})`}
       </button>
       {open && (
         <ul className="mt-1.5 space-y-1 border-l border-hairline pl-3">
           {[...request.history].reverse().map((h, i) => (
             <li key={i} className="text-[11px] text-ink-faint">
-              <span className="text-ink-muted">{h.actorName}</span> {h.action}
+              <span className="text-ink-muted">{h.actorName}</span>{" "}
+              {historyActionLabel(h.action)}
               {h.detail ? ` — ${h.detail}` : ""}
               {h.at ? ` · ${formatDate(h.at)}` : ""}
             </li>
@@ -515,6 +613,9 @@ function NewMrf({ onDone }: { onDone: () => void }) {
   const [search, setSearch] = useState("");
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Adding a typed item is the common path — most requests aren't in the
+  // catalogue. Catalogue search is secondary, so it starts collapsed.
+  const [showSearch, setShowSearch] = useState(false);
   const [create, state] = useAction((r, input: Parameters<typeof r.createMrf>[0]) =>
     r.createMrf(input),
   );
@@ -605,12 +706,41 @@ function NewMrf({ onDone }: { onDone: () => void }) {
         Items
       </p>
 
+      {/* Adding a typed item is the primary action — most requests are for
+          something not in the catalogue. Catalogue search is optional and
+          collapsed behind a text button until asked for. */}
+      <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        <Button
+          tone="primary"
+          size="sm"
+          onClick={() => setItems((xs) => [...xs, { ...emptyItem }])}
+        >
+          + Add a typed item
+        </Button>
+        <button
+          type="button"
+          onClick={() => {
+            setShowSearch((s) => !s);
+            if (showSearch) {
+              setSearch("");
+              setQ("");
+              setExpanded(null);
+            }
+          }}
+          className="text-xs text-ink-muted underline underline-offset-2 hover:text-ink"
+        >
+          {showSearch ? "Hide catalogue search" : "Search the catalogue instead"}
+        </button>
+      </div>
+
       {/* Catalogue search — the real store items and their variants, with stock. */}
+      {showSearch && (
       <div className="mt-1.5">
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
           placeholder="Search the store catalogue…"
+          autoFocus
         />
         {q && (results.data?.length ?? 0) > 0 && (
           <div className="mt-1 max-h-[260px] overflow-y-auto rounded-inset border border-hairline scroll-slim">
@@ -677,10 +807,11 @@ function NewMrf({ onDone }: { onDone: () => void }) {
         {q && !results.isLoading && (results.data?.length ?? 0) === 0 && (
           <p className="mt-1 text-[11px] text-ink-faint">
             Nothing in the catalogue for &ldquo;{q}&rdquo;. Add it as a typed
-            item below.
+            item above.
           </p>
         )}
       </div>
+      )}
 
       {items.length > 0 && (
         <div className="mt-3 space-y-2">
@@ -771,13 +902,6 @@ function NewMrf({ onDone }: { onDone: () => void }) {
           ))}
         </div>
       )}
-      <button
-        type="button"
-        onClick={() => setItems((xs) => [...xs, { ...emptyItem }])}
-        className="mt-2 text-xs text-ink-muted underline underline-offset-2 hover:text-ink"
-      >
-        Add a typed item
-      </button>
 
       <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
         <Button
