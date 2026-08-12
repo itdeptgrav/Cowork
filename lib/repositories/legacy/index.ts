@@ -1,4 +1,4 @@
-import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import { mrfApprovalStats, mrfStats, type NewMrfInput } from "@/lib/rules/mrf/lifecycle";
@@ -330,6 +330,31 @@ import {
  * them, not re-implement the answer — a second copy of the presence rule is
  * how a room that looks live becomes one that cannot be joined.
  */
+/**
+ * A task's status **for the purposes of meeting credit**.
+ *
+ * `toTaskStatus` collapses five legacy `pending_*` states into one
+ * `pending_approval`, and for this one question that loses a distinction that
+ * matters. Two very different tasks arrive under that name:
+ *
+ *   - one still NEGOTIATING its hours, which has no agreed budget and so no
+ *     committed deadline for a meeting to move; and
+ *   - one already handed over with its hours agreed, waiting on a department
+ *     head to wave the handover through. That is live work somebody is holding,
+ *     and it is the exact shape of the task a cross-department kickoff is held
+ *     about.
+ *
+ * The second was being refused credit along with the first, so a meeting about
+ * cross-department work moved nothing. The agreed budget is what tells them
+ * apart: an hours negotiation has none, by definition.
+ */
+function settlementStatusOf(task: LegacyTask): TaskStatus {
+  const status = toTaskStatus(task);
+  if (status !== "pending_approval") return status;
+  const handedOver = Boolean(task.pendingAssigneeId || task.assigneeIds.length);
+  return handedOver && resolveTimeBudget(task) > 0 ? "assigned" : status;
+}
+
 function toAttendanceRows(rows: readonly unknown[]): MeetingAttendance[] {
   return rows.map((r) => {
     const row = (r ?? {}) as Record<string, unknown>;
@@ -7956,22 +7981,52 @@ export class LegacyRepository {
         hostTask.pendingAssigneeId || hostTask.assigneeIds[0] || "",
       );
 
-      /** One person's live queue, shaped for the settlement. */
+      /**
+       * One person's live queue, shaped for the settlement.
+       *
+       * **Two queries, not one — and this is why cross-department meetings
+       * credited nobody.** A task that crossed a department boundary carries
+       * `assigneeIds: []` until its approval clears; the person it was handed
+       * to sits in `pendingAssigneeId` alone. That is the engine's own
+       * visibility rule, and it meant the one kind of task a cross-department
+       * kickoff is held about was invisible to its own settlement: the meeting
+       * computed its worth, found no task to put it on, and moved nothing.
+       * Reported with a nine-minute meeting sitting above a budget that had not
+       * changed.
+       *
+       * Firestore has no OR across fields, so it is two reads unioned here.
+       */
       const queueOf = async (employeeId: string) => {
         if (!employeeId) return [];
-        const mine = await getDocs(
-          query(
-            collection(db, "cowork_tasks"),
-            where("assigneeIds", "array-contains", employeeId),
+        const [asAssignee, asPending] = await Promise.all([
+          getDocs(
+            query(
+              collection(db, "cowork_tasks"),
+              where("assigneeIds", "array-contains", employeeId),
+            ),
           ),
-        );
-        return mine.docs
+          getDocs(
+            query(
+              collection(db, "cowork_tasks"),
+              where("pendingAssigneeId", "==", employeeId),
+            ),
+          ),
+        ]);
+        const seen = new Set<string>();
+        return [...asAssignee.docs, ...asPending.docs]
+          .filter((d) => !seen.has(d.id) && seen.add(d.id))
           .map((d) => readTask({ ...d.data(), id: d.id } as never))
           .filter((t): t is NonNullable<typeof t> => t !== null && !t.isDeleted)
           .map((t) => ({
             taskId: t.id,
-            status: toTaskStatus(t),
-            assigneeIds: t.assigneeIds.map(String),
+            status: settlementStatusOf(t),
+            /* The person it was handed to counts as holding it. `creditTargets`
+               asks whether the task is theirs, and on a gated task the answer
+               lives in `pendingAssigneeId` rather than in an empty array. */
+            assigneeIds: [
+              ...t.assigneeIds.map(String),
+              ...(t.pendingAssigneeId ? [String(t.pendingAssigneeId)] : []),
+            ],
             totals: {
               firstStartedAtMs: t.meetingFirstStartedAtMs,
               lastEndedAtMs: t.meetingLastEndedAtMs,
@@ -8051,39 +8106,33 @@ export class LegacyRepository {
          rules need this now: an ordinary meeting credits everybody in the room
          against their own queue, exactly as a cross-department one does, and
          only the window they are measured against differs. */
-      const queuesFor = async (
-        credits: readonly { employeeId: string }[],
-      ) => {
-        const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
-        for (const c of credits) {
-          if (queues.has(c.employeeId)) continue;
-          queues.set(
-            c.employeeId,
-            /* The receiver's queue is already in hand — it is the one read
-               unconditionally above — so this does not fetch it twice. */
-            c.employeeId === assigneeId ? tasks : await queueOf(c.employeeId),
-          );
-        }
-        return queues;
-      };
+      const earners = hostTask.isCrossDepartment
+        ? creditsInWindow(meetingSession)
+        : creditsIn(meetingSession, ordinaryWindow(meetingSession));
+
+      const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
+      for (const c of earners) {
+        if (queues.has(c.employeeId)) continue;
+        queues.set(
+          c.employeeId,
+          /* The receiver's queue is already in hand — it is the one read
+             unconditionally above — so this does not fetch it twice. */
+          c.employeeId === assigneeId ? tasks : await queueOf(c.employeeId),
+        );
+      }
 
       const settlement = hostTask.isCrossDepartment
-        ? await (async () => {
-            const window = { ...meetingSession, receiverId: assigneeId };
-            return settleCrossDeptSession({
-              session: window,
-              onTaskId: String(input.taskId),
-              tasksByEmployee: await queuesFor(creditsInWindow(window)),
-              alreadyCredited,
-            });
-          })()
+        ? settleCrossDeptSession({
+            session: { ...meetingSession, receiverId: assigneeId },
+            onTaskId: String(input.taskId),
+            tasksByEmployee: queues,
+            alreadyCredited,
+          })
         : settleSession({
             session: meetingSession,
             onTaskId: String(input.taskId),
             receiverId: assigneeId,
-            tasksByEmployee: await queuesFor(
-              creditsIn(meetingSession, ordinaryWindow(meetingSession)),
-            ),
+            tasksByEmployee: queues,
             alreadyCredited,
           });
 
@@ -8096,6 +8145,42 @@ export class LegacyRepository {
        * landed roughly twice, which is how a fifteen-minute meeting moved a
        * deadline by three quarters of an hour.
        */
+      /**
+       * **Say why nothing moved, when nothing moves.**
+       *
+       * A settlement that computes a credit and applies it to no task is
+       * indistinguishable, from the outside, from one that never ran: the
+       * session records its minutes, the panel prints them, and no deadline
+       * changes. That has now been reported twice and both times cost a round
+       * of guessing, because the reason is never on screen and never in a log.
+       *
+       * One line, only in the case that is wrong, naming what the settlement
+       * actually saw. Not an error — a meeting where nobody has live work is a
+       * legitimate nothing.
+       */
+      if (settlement.creditedSecs > 0 && settlement.updates.length === 0) {
+        console.warn(
+          "[meeting] credited nothing",
+          JSON.stringify({
+            taskId: String(input.taskId),
+            crossDepartment: hostTask.isCrossDepartment,
+            secs: settlement.creditedSecs,
+            receiver: assigneeId,
+            alreadyCredited,
+            earners: earners.map((c) => ({
+              who: c.employeeId,
+              secs: c.secs,
+              queue: (queues.get(c.employeeId) ?? []).map((t) => ({
+                id: t.taskId,
+                status: t.status,
+                holders: t.assigneeIds,
+                window: t.windowSecs,
+              })),
+            })),
+          }),
+        );
+      }
+
       const creditedTaskIds = [
         ...new Set([...alreadyCredited, ...settlement.updates.map((u) => u.taskId)]),
       ];

@@ -8321,10 +8321,25 @@ export class MockRepository implements CoworkRepository {
         .filter((t) => !t.deletedAt)
         .map((t) => ({
           taskId: t.id,
-          status: t.status,
-          assigneeIds: s.assignments
-            .filter((a) => a.taskId === t.id)
-            .map((a) => String(a.employeeId)),
+          /* A task handed over with its hours agreed is live work, whatever
+             gate it is waiting at — the same reading the legacy adapter takes
+             in `settlementStatusOf`, because a cross-department task sits at a
+             departmental gate for exactly as long as a kickoff is worth
+             holding, and refusing it credit moved nothing for anybody. */
+          status:
+            t.status === "pending_approval" &&
+            (t.deadline.currentWindowSecs ?? 0) > 0
+              ? "assigned"
+              : t.status,
+          /* The person a task was handed to holds it, whether or not the
+             assignment has been confirmed. `creditTargets` asks whose task it
+             is, and on a gated task the answer is the pending assignee. */
+          assigneeIds: [
+            ...s.assignments
+              .filter((a) => a.taskId === t.id)
+              .map((a) => String(a.employeeId)),
+            ...t.pendingAssigneeIds.map(String),
+          ],
           /* Defensive: one task without meeting totals used to throw and take
              the whole settlement — everybody's credit — down with it. */
           totals: {
