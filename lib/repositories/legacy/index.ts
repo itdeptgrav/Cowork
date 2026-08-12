@@ -313,10 +313,38 @@ import {
 } from "./scoreMap.ts";
 import { readTimerFigures } from "../../rules/tasks/timerSession.ts";
 import {
+  type Attendance as MeetingAttendance,
+  creditsIn,
   creditsInWindow,
+  ordinaryWindow,
+  roomEmptiedAtMs,
+  roomIsEmpty,
   settleCrossDeptSession,
   settleSession,
 } from "../../rules/meetings/meetingCredit.ts";
+
+/**
+ * Firestore attendance rows in the shape the meeting rules read.
+ *
+ * The rules answer "is anybody still in there" and the repository has to ask
+ * them, not re-implement the answer — a second copy of the presence rule is
+ * how a room that looks live becomes one that cannot be joined.
+ */
+function toAttendanceRows(rows: readonly unknown[]): MeetingAttendance[] {
+  return rows.map((r) => {
+    const row = (r ?? {}) as Record<string, unknown>;
+    const at = (v: unknown) => {
+      const ms = v ? Date.parse(String(v)) : NaN;
+      return Number.isFinite(ms) ? ms : null;
+    };
+    return {
+      employeeId: String(row.employeeId ?? ""),
+      joinedAtMs: at(row.joinedAt) ?? 0,
+      leftAtMs: at(row.leftAt),
+      lastSeenAtMs: at(row.lastSeenAt),
+    };
+  });
+}
 import {
   taskJoinRefusal,
   taskMeetingRoomName,
@@ -7705,6 +7733,11 @@ export class LegacyRepository {
         employeeId: me,
         joinedAt: nowIso,
         leftAt: null as string | null,
+        /* The first beat. Without one, a row whose browser dies before the
+           heartbeat starts would still have to lapse from `joinedAt` — which
+           it does, but stamping it here means every row is read the same way
+           rather than one path relying on a fallback. */
+        lastSeenAt: nowIso,
       };
 
       let sessionId: string;
@@ -7738,6 +7771,57 @@ export class LegacyRepository {
             ? `The meeting could not be joined: ${error.message}`
             : "The meeting could not be joined.",
       };
+    }
+  }
+
+  /**
+   * **The beat that keeps an attendance row alive.**
+   *
+   * Called every twenty seconds by the panel while somebody is in the room.
+   * Stops when their tab does — which is the point: no beat, and the row
+   * lapses ninety seconds later, so a meeting settles even when the departure
+   * write was lost. See `departureOf` in `lib/rules/meetings/meetingCredit.ts`.
+   *
+   * Failure is silent by design. A dropped beat is not worth an error on a
+   * panel somebody is talking over, and four have to be missed before anything
+   * changes.
+   */
+  async touchTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
+    const me = String(this.#ctx.employeeId);
+    try {
+      const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const ref = doc(
+        legacyDb(),
+        ...this.#taskMeetingSessions(String(input.taskId)),
+        input.sessionId,
+      );
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return { ok: true as const, data: undefined };
+      const data = snap.data() as { attendance?: unknown; endedAt?: unknown };
+      /* A closed session is not beaten back open. Whoever closed it settled the
+         credit, and moving a row afterwards would claim time against a meeting
+         that had finished. */
+      if (data.endedAt != null) return { ok: true as const, data: undefined };
+
+      const rows = Array.isArray(data.attendance) ? [...data.attendance] : [];
+      const nowIso = new Date().toISOString();
+      let touched = false;
+      /* The LAST open row for this person, matching how a departure is written
+         — a rejoin leaves earlier rows closed, and beating one of those would
+         reopen a span that has already ended. */
+      for (let i = rows.length - 1; i >= 0; i--) {
+        const row = rows[i] as { employeeId?: unknown; leftAt?: unknown };
+        if (String(row.employeeId) === me && !row.leftAt) {
+          rows[i] = { ...(row as object), lastSeenAt: nowIso };
+          touched = true;
+          break;
+        }
+      }
+      if (touched) await updateDoc(ref, { attendance: rows });
+      return { ok: true as const, data: undefined };
+    } catch {
+      return { ok: true as const, data: undefined };
     }
   }
 
@@ -7783,9 +7867,11 @@ export class LegacyRepository {
        * condition, so it settles here. Doing it through the same method rather
        * than beside it keeps one implementation of what a meeting is worth.
        */
-      const stillInside = rows.some(
-        (r) => (r as { leftAt?: unknown }).leftAt == null,
-      );
+      /* Not "has an open row" — "is still being beaten". A tab that died
+         without its departure landing leaves an open row for ever, and that
+         one row used to hold the meeting open indefinitely: never empty, never
+         closed, never credited. See `departureOf`. */
+      const stillInside = !roomIsEmpty(toAttendanceRows(rows), Date.now());
       if (!stillInside && data.endedAt == null) {
         await this.endTaskMeeting({
           taskId: input.taskId,
@@ -7835,9 +7921,9 @@ export class LegacyRepository {
        */
       if (session.endedAt == null) {
         const rows = Array.isArray(session.attendance) ? session.attendance : [];
-        const stillInside = rows.some(
-          (r) => (r as Record<string, unknown>).leftAt == null,
-        );
+        /* Same question, same answer as `leaveTaskMeeting` — a row still being
+           beaten. Asked through `roomIsEmpty` so the two can never drift. */
+        const stillInside = !roomIsEmpty(toAttendanceRows(rows), Date.now());
         if (stillInside) {
           return {
             ok: true as const,
@@ -7917,8 +8003,17 @@ export class LegacyRepository {
        * same meeting was worth more every time somebody else left. A ten-minute
        * visitor came out with fifteen.
        */
-      const endedAtMs = readInstant(session.endedAt) ?? Date.now();
       const rows = Array.isArray(session.attendance) ? session.attendance : [];
+      /* And it closes AT THE MOMENT THE ROOM EMPTIED, not when somebody
+         noticed. A session abandoned by a closed tab is discovered up to
+         `PRESENCE_TIMEOUT_MS` later; closing at discovery would credit that
+         gap as meeting time. `roomEmptiedAtMs` is the last instant anybody was
+         known to be there — and because `presenceOf` clamps an open row to the
+         close, the credit arithmetic then needs no special case at all. */
+      const endedAtMs =
+        readInstant(session.endedAt) ??
+        roomEmptiedAtMs(toAttendanceRows(rows), Date.now()) ??
+        Date.now();
 
       /* **The same composition the mock runs.** One decision, two persisters. */
       const meetingSession = {
@@ -7951,28 +8046,45 @@ export class LegacyRepository {
        * so the same meeting cannot settle two different ways depending on who
        * joined it.
        */
+      /* One queue read per person who EARNED something — not per attendee, so
+         somebody who looked in after the window closed costs nothing. Both
+         rules need this now: an ordinary meeting credits everybody in the room
+         against their own queue, exactly as a cross-department one does, and
+         only the window they are measured against differs. */
+      const queuesFor = async (
+        credits: readonly { employeeId: string }[],
+      ) => {
+        const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
+        for (const c of credits) {
+          if (queues.has(c.employeeId)) continue;
+          queues.set(
+            c.employeeId,
+            /* The receiver's queue is already in hand — it is the one read
+               unconditionally above — so this does not fetch it twice. */
+            c.employeeId === assigneeId ? tasks : await queueOf(c.employeeId),
+          );
+        }
+        return queues;
+      };
+
       const settlement = hostTask.isCrossDepartment
         ? await (async () => {
             const window = { ...meetingSession, receiverId: assigneeId };
-            /* One queue read per person who earned something — not per
-               attendee, so somebody who looked in after the window closed
-               costs nothing. */
-            const earners = creditsInWindow(window).map((c) => c.employeeId);
-            const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
-            for (const id of earners) queues.set(id, await queueOf(id));
             return settleCrossDeptSession({
               session: window,
               onTaskId: String(input.taskId),
-              tasksByEmployee: queues,
+              tasksByEmployee: await queuesFor(creditsInWindow(window)),
               alreadyCredited,
             });
           })()
         : settleSession({
             session: meetingSession,
             onTaskId: String(input.taskId),
-            assigneeId,
+            receiverId: assigneeId,
+            tasksByEmployee: await queuesFor(
+              creditsIn(meetingSession, ordinaryWindow(meetingSession)),
+            ),
             alreadyCredited,
-            tasks,
           });
 
       /**
@@ -8093,6 +8205,10 @@ export class LegacyRepository {
                   employeeId: String(row.employeeId),
                   joinedAt: String(row.joinedAt ?? ""),
                   leftAt: row.leftAt ? String(row.leftAt) : null,
+                  /* Absent on rows written before beats existed. Null rather
+                     than the join time, so `departureOf` applies its own
+                     fallback in one place. */
+                  lastSeenAt: row.lastSeenAt ? String(row.lastSeenAt) : null,
                 };
               },
             ),

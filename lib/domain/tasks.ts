@@ -184,6 +184,21 @@ export interface TaskMeetingAttendance {
   joinedAt: string;
   /** ISO, or null for somebody still in the room. */
   leftAt: string | null;
+  /**
+   * ISO. The last beat from the browser that opened this row.
+   *
+   * **`leftAt: null` alone cannot mean "still here".** The only thing that
+   * writes a departure is the leaving client, and the ordinary way out of a
+   * meeting is closing the tab — which fires `beforeunload`, which cannot wait
+   * for a round trip. So a lost write left somebody in the room for ever: the
+   * session never reached "everybody has gone", never closed, never credited,
+   * and the panel showed "Meeting running" over an empty room indefinitely.
+   *
+   * A row is presence while it is still being beaten. Absent on rows written
+   * before this existed, which read as their `joinedAt` — so an old orphan
+   * lapses rather than staying open for ever.
+   */
+  lastSeenAt?: string | null;
 }
 
 export interface Task {

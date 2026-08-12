@@ -59,13 +59,16 @@ test("a task with a budget and NO stored due date still grows its window", () =>
       counterpartyId: "rakesh",
       startedAtMs: start,
       endedAtMs: start + 5 * 60_000,
+      /* Both of them in the room: everybody earns their own time in it, so the
+         person whose window this asserts has to have been there. */
       attendance: [
         { employeeId: "rakesh", joinedAtMs: start, leftAtMs: start + 5 * 60_000 },
+        { employeeId: "pramod", joinedAtMs: start, leftAtMs: start + 5 * 60_000 },
       ],
     },
     onTaskId: "T012",
-    assigneeId: "pramod",
-    tasks: [task],
+    receiverId: "pramod",
+    tasksByEmployee: new Map([["pramod", [task]]]),
   });
 
   const update = settlement.updates[0];
@@ -298,9 +301,13 @@ test("a meeting closes ONCE — a later call must not re-close it at a new insta
      credited up to the NEW close — so the same meeting grew every time somebody
      left, and a ten-minute visitor came out with fifteen. */
   const legacy = endTaskMeetingBody(LEGACY);
+  /* The recorded end comes FIRST, whatever follows it. What follows is
+     `roomEmptiedAtMs` — an abandoned session closes at the moment the room
+     actually emptied rather than when somebody noticed — and that fallback is
+     only ever reached on a session with no recorded end at all. */
   assert.match(
     legacy,
-    /const endedAtMs = readInstant\(session\.endedAt\) \?\? Date\.now\(\)/,
+    /const endedAtMs =\s*\n?\s*readInstant\(session\.endedAt\) \?\?/,
     "the legacy close reads the clock instead of the session's recorded end",
   );
   assert.ok(
@@ -374,16 +381,23 @@ test("a meeting is closed by the LAST person out, not the first", () => {
      Their own departure is already recorded by `leaveTaskMeeting`, so nothing
      is lost by returning early; whoever is last out closes it, and by then
      every span is complete. */
+  /* The check is `roomIsEmpty`, from the rules module, and no longer a bare
+     `leftAt == null` scan. The difference matters: an open row whose browser
+     died without writing its departure is NOT somebody in the room, and reading
+     it as one held meetings open indefinitely. Both spellings are accepted so
+     this asserts the property — something asks whether the room is occupied,
+     before settling — rather than one way of writing it. */
+  const OCCUPANCY = /roomIsEmpty\(|leftAt == null|leftAt === null/;
   for (const file of [LEGACY, MOCK]) {
     const body = endTaskMeetingBody(file);
     assert.match(
       body,
-      /leftAt == null|leftAt === null/,
+      OCCUPANCY,
       `${file}: nothing checks whether anybody is still in the room, so the ` +
         `first person to leave ends the meeting for everybody.`,
     );
     /* And the check has to come BEFORE the settlement, or it settles anyway. */
-    const guard = body.search(/leftAt == null|leftAt === null/);
+    const guard = body.search(OCCUPANCY);
     const settle = body.search(/settleCrossDeptSession\(|settleSession\(/);
     assert.ok(
       guard > 0 && guard < settle,
@@ -412,7 +426,7 @@ test("the LAST departure settles it, so the credit never waits on a button", () 
     );
     assert.match(
       body,
-      /leftAt == null|leftAt === null/,
+      /roomIsEmpty\(|leftAt == null|leftAt === null/,
       `${file}: leaving settles unconditionally, which ends the meeting for ` +
         `everybody still in the room.`,
     );

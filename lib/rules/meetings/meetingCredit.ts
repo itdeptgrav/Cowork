@@ -24,6 +24,116 @@ export interface Attendance {
   employeeId: string;
   joinedAtMs: number;
   leftAtMs: number | null;
+  /**
+   * The last beat from the browser holding this row open. Absent on rows
+   * written before beats existed — see `departureOf`, which reads those as
+   * their `joinedAtMs` so an old orphan lapses instead of never ending.
+   */
+  lastSeenAtMs?: number | null;
+}
+
+/**
+ * How long a row survives without a beat before it stops being presence.
+ *
+ * **Ninety seconds, against a twenty-second beat.** Wide enough that a slow
+ * network, a backgrounded tab or a garbage-collection pause never evicts
+ * somebody who is really there — four beats have to go missing — and short
+ * enough that an abandoned room settles while the people who were in it are
+ * still around to see it.
+ */
+export const PRESENCE_TIMEOUT_MS = 90_000;
+
+/**
+ * How long a row that has NEVER beaten is given before it lapses.
+ *
+ * **A silent row is not the same as a stopped one.** A row carrying beats and
+ * then stopping is somebody whose browser went away, and ninety seconds is
+ * plenty. A row that never beat at all was written by a client that does not
+ * send them — every row already in the store, and any tab still running the
+ * build that predates this — and its owner may be sitting in the room right
+ * now. Evicting those on the same ninety seconds would settle live meetings
+ * under the people having them, which is a worse fault than the one being
+ * fixed: the end-to-end proof caught exactly that, closing a ten-minute
+ * conversation one minute in.
+ *
+ * Fifteen minutes is the compromise, and it is a compromise: an old tab in a
+ * meeting longer than that can still be dropped. That window closes the moment
+ * everyone has reloaded, because every row written from here on carries a beat
+ * from its very first instant.
+ */
+export const SILENT_ROW_GRACE_MS = 15 * 60_000;
+
+/**
+ * When this row stopped being presence, or null if it still is.
+ *
+ * **A row is presence while it is being beaten, not while `leftAt` is null.**
+ * The only thing that writes a departure is the leaving client, and the
+ * ordinary way out is closing the tab — `beforeunload` fires, the write is
+ * dropped mid-flight, and the row stays open for ever. One such row was enough
+ * to hold a meeting open indefinitely: never empty, so never closed, so never
+ * credited, and the panel reported "Meeting running" over a room everybody had
+ * left. Reported exactly that way.
+ *
+ * A lapsed row is treated as having left AT ITS LAST BEAT, not at the moment
+ * anybody noticed. That is the honest reading — it is the last instant there
+ * is evidence for — and it means the credit does not depend on when somebody
+ * happened to open the tab. Without it, an abandoned counterparty row would
+ * have gone on earning credit for as long as the session stayed open, which is
+ * the anti-cheat this whole module exists for, inverted.
+ */
+export function departureOf(a: Attendance, nowMs: number): number | null {
+  if (a.leftAtMs !== null) return a.leftAtMs;
+  /* Two tiers, and the difference matters — see `SILENT_ROW_GRACE_MS`. A row
+     that beat and stopped is gone; a row that never beat may be a client that
+     cannot beat, and is given far longer before anybody acts on its silence. */
+  const beaten = a.lastSeenAtMs !== null && a.lastSeenAtMs !== undefined;
+  const seen = beaten ? a.lastSeenAtMs! : a.joinedAtMs;
+  const grace = beaten ? PRESENCE_TIMEOUT_MS : SILENT_ROW_GRACE_MS;
+  return nowMs - seen > grace ? seen : null;
+}
+
+/**
+ * Has everybody gone?
+ *
+ * The condition for closing a session, asked the same way by the panel that
+ * displays it and by the repository that settles it — two answers to "is
+ * anybody still in there" would mean a room that looks live and cannot be
+ * joined, or one that settles under people still talking.
+ */
+export function roomIsEmpty(
+  attendance: readonly Attendance[],
+  nowMs: number,
+): boolean {
+  return !attendance.some((a) => departureOf(a, nowMs) === null);
+}
+
+/**
+ * When the room became empty — the instant to close an abandoned session at.
+ *
+ * Null while somebody is still in it. Otherwise the LAST departure: the moment
+ * the final person left, or the final beat of somebody whose departure was
+ * never written.
+ *
+ * **Not `now`.** A session found abandoned is discovered up to
+ * `PRESENCE_TIMEOUT_MS` after it actually emptied, and closing it at the moment
+ * of discovery would credit that gap as meeting time — worse, it would credit
+ * whoever noticed rather than whoever was there. Closing at the last evidence
+ * of presence means the credit arithmetic needs no special case: `presenceOf`
+ * already clamps an open row to the close, and the close is now the truth.
+ */
+export function roomEmptiedAtMs(
+  attendance: readonly Attendance[],
+  nowMs: number,
+): number | null {
+  let latest = 0;
+  for (const a of attendance) {
+    const gone = departureOf(a, nowMs);
+    if (gone === null) return null;
+    if (gone > latest) latest = gone;
+  }
+  /* An empty attendance list is a session nobody ever entered. It emptied when
+     it opened, and `nowMs` is the only clock the caller has for that. */
+  return latest || nowMs;
 }
 
 export interface MeetingSession {
@@ -103,7 +213,15 @@ function presenceOf(session: MeetingSession, employeeId: string): Span[] {
       from: a.joinedAtMs,
       /* Still in the room when it closed: bounded at the close, never at `now`
          — a session is credited when it ENDS, and reading the clock here would
-         make the answer depend on when somebody asked. */
+         make the answer depend on when somebody asked.
+         **The lapse rule is deliberately NOT applied here.** It answers "is
+         anybody in the room now"; this answers "what was this meeting worth",
+         and they are different questions. Cutting an open row at its last beat
+         here would rewrite settled history — somebody present for a whole hour
+         on a build that sent no beats would be credited nothing. What bounds
+         an abandoned row instead is the CLOSE: `roomEmptiedAtMs` closes the
+         session at the last moment anybody was known to be there, so clamping
+         to `endedAtMs` already gives the honest answer. */
       to: Math.min(a.leftAtMs ?? session.endedAtMs, session.endedAtMs),
     }))
     /* Drops zero-length and reversed rows, and anything entirely after the
@@ -172,6 +290,22 @@ export function sharedWindow(
   );
 }
 
+/**
+ * The stretch an ORDINARY meeting is running: the counterparty's presence.
+ *
+ * The same shape as `sharedWindow`, one condition weaker. That is the only
+ * difference between the two rules — who has to be in the room for the clock to
+ * run — and expressing it as a window rather than as two settlements is what
+ * lets both credit everybody the same way.
+ *
+ * The anti-cheat is this function. A room the assignee sits in alone produces
+ * an empty window and is worth nothing to anybody, however many other people
+ * are in it.
+ */
+export function ordinaryWindow(session: MeetingSession): Span[] {
+  return presenceOf(session, session.counterpartyId);
+}
+
 /** How long both sides were in the room together. */
 export function sharedWindowSecs(
   session: MeetingSession & { receiverId: string },
@@ -201,7 +335,28 @@ export function creditInWindowFor(
 export function creditsInWindow(
   session: MeetingSession & { receiverId: string },
 ): { employeeId: string; secs: number }[] {
-  const window = sharedWindow(session);
+  return creditsIn(session, sharedWindow(session));
+}
+
+/**
+ * The same question against any window — the ordinary rule's, or the
+ * cross-department one's.
+ *
+ * **Everybody in the room earns their own time in it — OWNER DECISION.** This
+ * was the cross-department rule alone, and an ordinary meeting credited only
+ * the receiver: the person who ASSIGNED the work sat through the same half
+ * hour, lost it from their own day, and got nothing back. So did a manager who
+ * joined. The wall clock they lost is identical whichever department the task
+ * came from, and now so is what they are owed.
+ *
+ * What still differs is only the window — see `ordinaryWindow` and
+ * `sharedWindow`. Time outside it is worth nothing to anyone: somebody who
+ * arrives after the other side has left was in a room, not in the meeting.
+ */
+export function creditsIn(
+  session: MeetingSession,
+  window: readonly Span[],
+): { employeeId: string; secs: number }[] {
   if (window.length === 0) return [];
 
   /* Insertion order, so the result is stable for a given attendance list rather
@@ -299,6 +454,13 @@ export function liveCrossDeptFigures(
  * A row with no `leftAtMs` is somebody still inside — that is how the join
  * writes it and how a close bounds it. Rows that start in the future are not
  * yet presence, which keeps a skewed clock from reporting somebody as arrived.
+ *
+ * **Deliberately not lapse-aware.** The lapse answers a different question —
+ * "has everybody gone" — and the panel asks that one first: nothing below is
+ * displayed once `roomIsEmpty` is true, so a stale row cannot be reported as
+ * presence for longer than `PRESENCE_TIMEOUT_MS`. Folding the lapse in here
+ * would put it in the credit arithmetic too, where it would rewrite settled
+ * history: a meeting recorded before beats existed would credit nobody.
  */
 export function isPresent(
   session: MeetingSession,
@@ -337,6 +499,24 @@ export const CREDITED_STATUSES: readonly TaskStatus[] = [
      was handed over, was worth nothing until somebody pressed play. That is the
      one case the feature was asked for. */
   "confirmed",
+  /**
+   * **And `assigned`, which is what that widening actually meant.**
+   *
+   * The line above was written in the domain's vocabulary, and the legacy
+   * adapter never produces `confirmed`: it maps legacy `confirmed` to
+   * `in_progress`, and a task that is live, handed over and unstarted — legacy
+   * `open` — to `assigned` (`toTaskStatus` in `taskMap.ts`). So against the
+   * real engine the widening changed nothing at all, and the headline case it
+   * was written for stayed broken: a kickoff on a task nobody had pressed play
+   * on credited the session, showed the minutes on it, and moved no deadline
+   * and no budget. Reported exactly that way — sessions worth 00:01:07 and
+   * 00:04:32 above a task showing `Total 00:00:00`.
+   *
+   * `assigned` is live-and-unstarted, not held: a task waiting at a gate is
+   * `pending_approval` and stays out, because until the hours are agreed there
+   * is no committed deadline for a meeting to move.
+   */
+  "assigned",
 ];
 
 export function receivesCredit(status: TaskStatus): boolean {
@@ -545,23 +725,126 @@ export function settleSession(input: {
   session: MeetingSession & { startedAtMs: number };
   /** The task the meeting was opened from — named in the history sentence. */
   onTaskId: string;
-  /** Whose deadlines move: the receiver of the work. */
-  assigneeId: string;
-  tasks: readonly SettlementTask[];
+  /**
+   * The receiver of the work — the host task's assignee.
+   *
+   * No longer "whose deadlines move", because everybody's do. It survives for
+   * one job: their queue records the meeting even when the session was worth
+   * nothing, so a room the counterparty never entered still leaves a history.
+   */
+  receiverId: string;
+  /** Each person's own live tasks, keyed by their id. Absent means no queue. */
+  tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
   alreadyCredited?: readonly string[];
 }): Settlement {
   return {
+    /* The session's own worth stays the WINDOW — the time the counterparty was
+       in the room — not the sum of what everybody earned. Three people in a
+       thirty-minute meeting cost thirty minutes of wall clock, not ninety, and
+       this is the figure the panel prints and the session record keeps. */
     creditedSecs: creditableSecs(input.session),
-    updates: updatesFor({
-      creditedSecs: creditableSecs(input.session),
-      employeeId: input.assigneeId,
-      tasks: input.tasks,
+    updates: settleEveryone({
+      session: input.session,
+      window: ordinaryWindow(input.session),
+      onTaskId: input.onTaskId,
+      recordForEmployeeId: input.receiverId,
+      tasksByEmployee: input.tasksByEmployee,
+      alreadyCredited: input.alreadyCredited,
+    }),
+  };
+}
+
+/**
+ * Everybody who earned something, each against their own queue.
+ *
+ * Shared by both rules — the only thing either passes differently is the
+ * window. Two copies of this is how the ordinary rule came to credit one person
+ * while the cross-department one credited everybody, for the same half hour of
+ * the same people's day.
+ *
+ * ## One task moves once, however many of its holders were in the room
+ *
+ * A task can have several assignees. If two of them attended, the task appears
+ * in both queues, and applying both updates would shift one deadline twice for
+ * one meeting — the same double-shift `settleSession` was written to prevent,
+ * arriving by a different door. It was already reachable in the
+ * cross-department rule and became far likelier the moment ordinary meetings
+ * credited more than one person.
+ *
+ * So each task is CLAIMED by exactly one earner: the one who lost the most time
+ * to the meeting. That is the honest figure for a shared task — it moves by the
+ * largest amount any of the people carrying it actually lost — and it is stable,
+ * because ties fall to whoever appears first in the attendance list rather than
+ * to whatever order a map happened to iterate.
+ */
+function settleEveryone(input: {
+  session: MeetingSession & { startedAtMs: number };
+  window: readonly Span[];
+  onTaskId: string;
+  /**
+   * The receiver of the work, who appears even when they earned NOTHING.
+   *
+   * **Refusing the credit must not refuse the history.** A session the
+   * counterparty never attended is worth zero, and it still happened: without a
+   * zero-valued update the task records no meeting at all, its stored
+   * `firstStartedAt` stays null, and every surface that asks "has this task
+   * ever met" — the "hold the meeting first" hint most of all — goes on saying
+   * no after a meeting was held.
+   */
+  recordForEmployeeId: string;
+  tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
+  alreadyCredited?: readonly string[];
+}): SettlementUpdate[] {
+  const earned = creditsIn(input.session, input.window);
+  const receiver = input.recordForEmployeeId;
+  const credits =
+    !receiver || earned.some((c) => c.employeeId === receiver)
+      ? earned
+      : [...earned, { employeeId: receiver, secs: 0 }];
+
+  /* Claimed among the tasks each person could ACTUALLY be credited for.
+     A queue read may hand back more than its owner's work — the mock's returns
+     every live task and `creditTargets` is what narrows it — so claiming over
+     the raw list awarded somebody else's task to whoever earned most, and then
+     `creditTargets` dropped it for them because they are not an assignee. The
+     task was claimed by a person who could not credit it and skipped by the
+     person who could: everybody's credit silently vanished. */
+  const claim = new Map<string, { employeeId: string; secs: number }>();
+  for (const c of credits) {
+    const mine = input.tasksByEmployee.get(c.employeeId) ?? [];
+    const targets = new Set(
+      creditTargets({
+        tasks: mine,
+        assigneeId: c.employeeId,
+        alreadyCredited: input.alreadyCredited,
+      }),
+    );
+    for (const task of mine) {
+      if (!targets.has(task.taskId)) continue;
+      const held = claim.get(task.taskId);
+      if (!held || c.secs > held.secs) claim.set(task.taskId, c);
+    }
+  }
+
+  return credits.flatMap((c) =>
+    updatesFor({
+      creditedSecs: c.secs,
+      employeeId: c.employeeId,
+      /* Tasks nobody claimed stay in the list: `creditTargets` will drop the
+         ones this person cannot be credited for, and `updatesFor` still needs
+         the full live queue to choose the head. Only a task claimed by SOMEBODY
+         ELSE is withheld, and that is what stops one deadline moving twice for
+         one meeting. */
+      tasks: (input.tasksByEmployee.get(c.employeeId) ?? []).filter(
+        (t) =>
+          !claim.has(t.taskId) || claim.get(t.taskId)!.employeeId === c.employeeId,
+      ),
       alreadyCredited: input.alreadyCredited,
       onTaskId: input.onTaskId,
       startedAtMs: input.session.startedAtMs,
       endedAtMs: input.session.endedAtMs,
     }),
-  };
+  );
 }
 
 /**
@@ -664,24 +947,19 @@ export function settleCrossDeptSession(input: {
   tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
   alreadyCredited?: readonly string[];
 }): Settlement {
-  const credits = creditsInWindow(input.session);
-
   return {
     /* The session's own worth is the WINDOW, not the sum of everybody's shares
        — four people in a forty-minute meeting cost forty minutes of wall clock,
        not a hundred and sixty. This is the figure the panel shows and the one
        written on the session record. */
     creditedSecs: sharedWindowSecs(input.session),
-    updates: credits.flatMap((c) =>
-      updatesFor({
-        creditedSecs: c.secs,
-        employeeId: c.employeeId,
-        tasks: input.tasksByEmployee.get(c.employeeId) ?? [],
-        alreadyCredited: input.alreadyCredited,
-        onTaskId: input.onTaskId,
-        startedAtMs: input.session.startedAtMs,
-        endedAtMs: input.session.endedAtMs,
-      }),
-    ),
+    updates: settleEveryone({
+      session: input.session,
+      window: sharedWindow(input.session),
+      onTaskId: input.onTaskId,
+      recordForEmployeeId: input.session.receiverId,
+      tasksByEmployee: input.tasksByEmployee,
+      alreadyCredited: input.alreadyCredited,
+    }),
   };
 }

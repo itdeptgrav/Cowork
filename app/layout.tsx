@@ -5,6 +5,7 @@ import { AppShell } from "@/components/layout/shell/AppShell";
 import { themeScript } from "@/components/layout/shell/ThemeContext";
 import { DEVICE_MODE_BOOT_SCRIPT } from "@/components/layout/shell/DeviceModeContext";
 
+
 /**
  * One neo-grotesque doing every job, differentiated by weight and tracking
  * rather than by family. A second family would be decoration here.

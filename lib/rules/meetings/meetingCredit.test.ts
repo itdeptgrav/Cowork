@@ -182,16 +182,22 @@ test("CASE 12 — a session already credited to a task is not credited twice", (
   assert.deepEqual(targets, ["P2"]);
 });
 
-test("CASE 13 — live work is credited: accepted, or under way", () => {
+test("CASE 13 — live work is credited: handed over, accepted, or under way", () => {
   /* `confirmed` counts because a kickoff is held BEFORE the work starts — that
      is the feature's headline case, and excluding it made it worth nothing
-     there. `in_review` does not: the work is done and with a reviewer. */
+     there. `in_review` does not: the work is done and with a reviewer.
+     `assigned` counts for the same reason as `confirmed`, and it is the one
+     that mattered in practice: the legacy engine reports a live, unstarted,
+     handed-over task as `assigned` and never as `confirmed`, so with it
+     excluded the widening above was inert against the real product — a kickoff
+     credited the session, printed the minutes, and moved no deadline. */
   assert.equal(receivesCredit("in_progress"), true);
   assert.equal(receivesCredit("confirmed"), true);
+  assert.equal(receivesCredit("assigned"), true);
   for (const s of [
     "draft",
+    /* Held, not live: no agreed hours, so no committed deadline to move. */
     "pending_approval",
-    "assigned",
     "deadline_negotiation",
     "in_review",
     "completed",
@@ -341,13 +347,18 @@ const settle = (from: string, to: string, tasks: SettlementTask[], onTaskId = "P
   settleSession({
     session: {
       counterpartyId: CREATOR,
-      attendance: [at(CREATOR, from, to)],
+      /* Both sides in the room. Everybody earns their OWN time in it now, so a
+         fixture meaning "they met about the work" has to put the assignee
+         there too — with only the creator present these would be asserting
+         what somebody who never attended earned, which is nothing. The cases
+         that deliberately test an absent party build their own session. */
+      attendance: [at(CREATOR, from, to), at(ASSIGNEE, from, to)],
       endedAtMs: T(to),
       startedAtMs: T(from),
     },
     onTaskId,
-    assigneeId: ASSIGNEE,
-    tasks,
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, tasks]]),
   });
 
 test("CASE 19 — a settlement credits every live task and moves each deadline", () => {
@@ -381,8 +392,8 @@ test("CASE 21 — a session the creator missed moves no deadline at all", () => 
       startedAtMs: T("10:00"),
     },
     onTaskId: "P1",
-    assigneeId: ASSIGNEE,
-    tasks: [settleTask("P1", "in_progress")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [settleTask("P1", "in_progress")]]]),
   });
   assert.equal(r.creditedSecs, 0);
   /* It still RECORDS that a meeting happened — the bracket moves, the clock
@@ -409,8 +420,8 @@ test("CASE 23 — settling twice credits once", () => {
       startedAtMs: T("10:00"),
     },
     onTaskId: "P1",
-    assigneeId: ASSIGNEE,
-    tasks: [settleTask("P1", "in_progress")],
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, [settleTask("P1", "in_progress")]]]),
     alreadyCredited: ["P1"],
   });
   assert.equal(first.updates.length, 1);

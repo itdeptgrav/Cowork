@@ -24,6 +24,7 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
 import {
   liveCrossDeptFigures,
   liveMeetingFigures,
+  roomIsEmpty,
 } from "@/lib/rules/meetings/meetingCredit";
 import { formatDateTime, formatTimer } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
@@ -83,6 +84,9 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   const [end] = useAction((r, sessionId: string) =>
     r.endTaskMeeting({ taskId, sessionId }),
   );
+  const [touch] = useAction((r, sessionId: string) =>
+    r.touchTaskMeeting({ taskId, sessionId }),
+  );
 
   /**
    * **Leaving is recorded even when nobody presses Leave.**
@@ -98,6 +102,29 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   useEffect(() => {
     openRef.current = joined?.sessionId ?? null;
   }, [joined]);
+
+  /**
+   * **The beat that says this browser is still in the room.**
+   *
+   * `beforeunload` above is best-effort and usually loses its write — the page
+   * is being torn down and the call cannot be awaited. So presence cannot rest
+   * on a departure being recorded: it rests on this. Stop beating, and the row
+   * lapses ninety seconds later (`PRESENCE_TIMEOUT_MS`), the room becomes
+   * empty, and the session settles.
+   *
+   * Twenty seconds, so four consecutive beats have to fail before anybody who
+   * is really there is dropped. One is sent immediately on joining rather than
+   * waiting out the first interval — a tab that dies within twenty seconds of
+   * joining would otherwise lapse from its join time, which is the same answer
+   * but arrived at by accident.
+   */
+  const joinedSessionId = joined?.sessionId ?? null;
+  useEffect(() => {
+    if (!joinedSessionId) return;
+    void touch(joinedSessionId);
+    const id = setInterval(() => void touch(joinedSessionId), 20_000);
+    return () => clearInterval(id);
+  }, [joinedSessionId, touch]);
 
   useEffect(() => {
     const bail = () => {
@@ -144,8 +171,19 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * Shown whether or not THIS reader is in it: a running room is a fact about
    * the task, and somebody opening the tab to find out whether a conversation
    * is under way should not have to join to see.
+   *
+   * **An open session and a running meeting are not the same thing.** A session
+   * stays open until somebody closes it, and the ordinary way out of a meeting
+   * — closing the tab — cannot reliably write anything. So an abandoned room
+   * used to read as "Meeting running" indefinitely, its clock ticking up while
+   * both people were long gone. Reported exactly that way, with nine
+   * attendance rows and nobody in the room.
+   *
+   * `open` is what the store says; `running` is what is true. The difference is
+   * whether anybody is still beating — `roomIsEmpty`, the same question the
+   * repository asks before it settles.
    */
-  const running = list.find((s) => s.endedAt === null) ?? null;
+  const open = list.find((s) => s.endedAt === null) ?? null;
   /* The COUNTERPARTY, not the owner. On a self task the owner is the assignee,
      and naming them here would tell somebody sitting alone in a room that their
      own presence was earning time — which it is not. `assigner` is the assigner
@@ -163,22 +201,23 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   const receiverId = receiver?.id ?? "";
   const receiverName = receiver?.displayName ?? "the person doing the work";
 
-  /* The id rather than the session: the object is rebuilt by every refetch, so
-     depending on it would tear down and restart both intervals on a timer that
-     one of them drives. */
-  const runningId = running?.id ?? null;
   const refetchSessions = sessions.refetch;
 
   /**
-   * **Live while a meeting is running OR while this reader is in one.**
+   * **Live while a session is OPEN, or while this reader is in one.**
    *
-   * Gated on `runningId` alone, a reader who pressed Join before their session
-   * list had been fetched had `running === null` — so no clock started, no
+   * Open rather than running, deliberately: the clock and the refetch are how
+   * the panel notices a room going empty, so gating them on the room still
+   * being occupied would freeze the display at the last moment it was.
+   *
+   * Gated on the session id alone, a reader who pressed Join before their
+   * session list had been fetched had no session — so no clock started, no
    * refetch was scheduled, and the panel sat at "not counting" for the whole
    * meeting while the other side counted normally. That is two people watching
    * the same room and seeing different answers, which is what was reported.
    */
-  const watching = runningId !== null || joined !== null;
+  const openId = open?.id ?? null;
+  const watching = openId !== null || joined !== null;
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -206,18 +245,94 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   }, [watching, refetchSessions]);
 
   const viewerId = useViewerId() ?? "";
+
+  const openAttendance = (open?.attendance ?? []).map((a) => ({
+    employeeId: a.employeeId,
+    joinedAtMs: Date.parse(a.joinedAt),
+    leftAtMs: a.leftAt ? Date.parse(a.leftAt) : null,
+    lastSeenAtMs: a.lastSeenAt ? Date.parse(a.lastSeenAt) : null,
+  }));
+
+  /**
+   * The session that is actually happening — open AND somebody still in it.
+   *
+   * Everything below reads this rather than `open`, so a room everybody has
+   * left stops claiming to be a meeting the moment its last row lapses, rather
+   * than whenever somebody's departure write happens to land.
+   */
+  const running = open && !roomIsEmpty(openAttendance, now) ? open : null;
+
   const liveSession = running
     ? {
         counterpartyId,
         startedAtMs: Date.parse(running.startedAt),
         endedAtMs: now,
-        attendance: running.attendance.map((a) => ({
-          employeeId: a.employeeId,
-          joinedAtMs: Date.parse(a.joinedAt),
-          leftAtMs: a.leftAt ? Date.parse(a.leftAt) : null,
-        })),
+        attendance: openAttendance,
       }
     : null;
+
+  /**
+   * **An abandoned room is closed by whoever notices, not left open.**
+   *
+   * Hiding it would be enough to stop the false "Meeting running", and would
+   * leave the session open in the store for ever — uncredited, and blocking
+   * the next join from starting a fresh one, because a join re-enters any
+   * session still marked open. So the panel settles it.
+   *
+   * Safe to run from any reader: `endTaskMeeting` re-checks the room itself and
+   * returns without closing if anybody is still inside, and it is idempotent —
+   * a session already credited to a task is never credited to it twice. Two
+   * people noticing at once therefore settle it once.
+   *
+   * The ref makes it once per session per mount, so a failed call is not
+   * retried every second by the clock above.
+   */
+  const settledRef = useRef<string | null>(null);
+  const abandonedId = open && !running ? open.id : null;
+  useEffect(() => {
+    if (!abandonedId || settledRef.current === abandonedId) return;
+    settledRef.current = abandonedId;
+    void end(abandonedId).then(() => refetchSessions());
+  }, [abandonedId, end, refetchSessions]);
+
+  /**
+   * The three figures, **read from the sessions rather than from the task.**
+   *
+   * The task carries a denormalised copy — `meetingFirstStartedAt`,
+   * `meetingLastEndedAt`, `meetingTotalSecs` — written by the settlement. It is
+   * a cache of what the session log already says, and one fact with two sources
+   * eventually disagrees: reported as a panel showing `Total 00:00:00` and
+   * `First start —` directly above two finished sessions worth 00:01:07 and
+   * 00:04:32. Whatever went wrong with that write, the reader was looking at
+   * the answer and being told there wasn't one.
+   *
+   * The sessions are the record. They are already loaded to draw the list
+   * below, so this costs nothing, and it cannot fall out of step with the rows
+   * it sits above. The stored copy still exists for everything that has no
+   * session list to hand — a task card, a queue projection — which is why it is
+   * kept as the fallback while the list is loading.
+   *
+   * `creditedSecs` and not wall clock, deliberately: the column beneath is
+   * headed "Time counted for your deadline", and a total that summed something
+   * else would not be the sum of the column.
+   */
+  const settled = list.filter((s) => s.endedAt !== null);
+  const summary =
+    settled.length > 0
+      ? {
+          firstStartedAt: settled.reduce(
+            (earliest, s) =>
+              !earliest || s.startedAt < earliest ? s.startedAt : earliest,
+            "",
+          ),
+          lastEndedAt: settled.reduce<string | null>(
+            (latest, s) =>
+              !latest || (s.endedAt ?? "") > latest ? s.endedAt : latest,
+            null,
+          ),
+          totalSecs: settled.reduce((n, s) => n + s.creditedSecs, 0),
+        }
+      : meetings;
 
   const live = !liveSession
     ? null
@@ -249,9 +364,15 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             Every task has its own room — there is nothing to schedule. Time
             spent here is added to your deadline, and to every other task you
             have on the go.{" "}
+            {/* Everybody in the room is credited on any task, so the sentence
+                that used to name only the receiver's deadline now says so.
+                What still differs between the two rules is the window — who has
+                to be present for the clock to run at all. */}
             {crossDept
-              ? `This work came from another department, so the clock runs only while ${counterpartyName} and ${receiverName} are both in the room — and each person in it is credited their own time, on their own tasks.`
-              : `The clock runs only while ${counterpartyName} is in the room.`}
+              ? `This work came from another department, so the clock runs only while ${counterpartyName} and ${receiverName} are both in the room.`
+              : `The clock runs only while ${counterpartyName} is in the room.`}{" "}
+            Everyone in the room is credited their own time in it, on their own
+            tasks.
           </p>
         </div>
 
@@ -403,14 +524,14 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
         <Figure
           label="First start"
           value={
-            meetings.firstStartedAt ? formatDateTime(meetings.firstStartedAt) : "—"
+            summary.firstStartedAt ? formatDateTime(summary.firstStartedAt) : "—"
           }
         />
         <Figure
           label="Last end"
-          value={meetings.lastEndedAt ? formatDateTime(meetings.lastEndedAt) : "—"}
+          value={summary.lastEndedAt ? formatDateTime(summary.lastEndedAt) : "—"}
         />
-        <Figure label="Total" value={formatTimer(meetings.totalSecs)} />
+        <Figure label="Total" value={formatTimer(summary.totalSecs)} />
       </dl>
 
       <div className="mt-4 border-t border-hairline pt-3">
@@ -444,8 +565,18 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                 </span>
                 <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
                   {formatDateTime(s.startedAt)}
-                  {s.endedAt === null && (
+                  {/* `running`, not "still open". A row here said "running"
+                      for any session without an `endedAt`, which is how an
+                      abandoned room announced itself as a live meeting in the
+                      one place a reader goes to check the history. It is the
+                      running session only if somebody is actually in it. */}
+                  {running?.id === s.id && (
                     <span className="ml-2 text-[11px] text-ink-faint">running</span>
+                  )}
+                  {s.endedAt === null && running?.id !== s.id && (
+                    <span className="ml-2 text-[11px] text-ink-faint">
+                      closing
+                    </span>
                   )}
                 </span>
                 {/* Said in words, not only as a tooltip. A zero next to "3

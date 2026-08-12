@@ -73,6 +73,17 @@ const T0 = Date.now() - 20 * 60_000;
 const at = (min: number) => new Date(T0 + min * 60_000).toISOString();
 
 /**
+ * A beat from a browser that is in the room RIGHT NOW.
+ *
+ * The fixtures below backdate joins by minutes so a fifteen-minute meeting can
+ * be proved in milliseconds — but presence is now evidenced by beats against
+ * the real clock, so "still here" has to be stamped against the real clock too.
+ * An open row with no beat describes somebody who walked out and left the tab
+ * open, which is a different scenario with its own cases below.
+ */
+const beating = () => new Date().toISOString();
+
+/**
  * A live task for one person, with a three-hour budget and a 17:00 deadline —
  * the shape from the report.
  */
@@ -282,9 +293,15 @@ async function main() {
   /* The HOD is in for one minute of a ten-minute meeting and has left; the two
      mandatory people are still in the room. */
   vSession.startedAt = at(0);
+  /* Still in the room, and SAYING SO. An open row is no longer presence on its
+     own — a browser that stopped beating is somebody who has gone, and that is
+     what lets an abandoned room settle itself. So a fixture meaning "these two
+     are still talking" has to carry a beat, exactly as a live panel sends one
+     every twenty seconds. Without it, this closed a ten-minute conversation one
+     minute in. */
   vSession.attendance = [
-    { employeeId: RECEIVER, joinedAt: at(0), leftAt: null },
-    { employeeId: SENDER, joinedAt: at(0), leftAt: null },
+    { employeeId: RECEIVER, joinedAt: at(0), leftAt: null, lastSeenAt: beating() },
+    { employeeId: SENDER, joinedAt: at(0), leftAt: null, lastSeenAt: beating() },
     { employeeId: APPROVER, joinedAt: at(1), leftAt: at(2) },
   ];
 
@@ -335,8 +352,8 @@ async function main() {
      own second visit, which must merge rather than add. */
   wSession.startedAt = at(0);
   wSession.attendance = [
-    { employeeId: RECEIVER, joinedAt: at(0), leftAt: null },
-    { employeeId: SENDER, joinedAt: at(0), leftAt: null },
+    { employeeId: RECEIVER, joinedAt: at(0), leftAt: null, lastSeenAt: beating() },
+    { employeeId: SENDER, joinedAt: at(0), leftAt: null, lastSeenAt: beating() },
     { employeeId: APPROVER, joinedAt: at(2), leftAt: at(3) },
     { employeeId: APPROVER, joinedAt: at(6), leftAt: at(8) },
     { employeeId: APPROVER, joinedAt: at(7), leftAt: at(8) },

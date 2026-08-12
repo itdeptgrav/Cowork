@@ -219,7 +219,14 @@ check("three tasks all in progress", who([t("P1", "in_progress"), t("P2", "in_pr
 check("P1 completed, P2 and P3 live", who([t("P1", "completed"), t("P2", "in_progress"), t("P3", "in_progress")]), "P2,P3", "Rule 3 — P1 frozen");
 check("accepted but not started (kickoff)", who([t("K", "confirmed")]), "K", "the headline case");
 check("cancelled / rejected / in review / done", who([t("a", "cancelled"), t("b", "assignment_rejected"), t("c", "in_review"), t("d", "completed")]), "(none)");
-check("draft / awaiting approval / assigned", who([t("a", "draft"), t("b", "pending_approval"), t("c", "assigned"), t("d", "deadline_negotiation")]), "(none)");
+/* `assigned` is LIVE and unstarted — handed over, nobody has pressed play —
+   and it is the state the legacy engine actually reports for that (`open`).
+   Excluding it was why a kickoff moved no deadline in the running product
+   while the rules-level `confirmed` case below passed. Held work stays out:
+   a task at a gate has no agreed hours, so there is no committed deadline for
+   a meeting to move. */
+check("assigned — handed over, not started", who([t("c", "assigned")]), "c", "the kickoff the engine actually reports");
+check("draft / awaiting approval / negotiating", who([t("a", "draft"), t("b", "pending_approval"), t("d", "deadline_negotiation")]), "(none)");
 check("a colleague's task in the same call", who([t("mine", "in_progress"), t("theirs", "in_progress", "someone-else")]), "mine", "credit follows the receiver");
 check("already credited this session", who([t("P1", "in_progress"), t("P2", "in_progress")], ["P1"]), "P2", "retry is harmless");
 check("no tasks at all", who([]), "(none)");
@@ -270,11 +277,18 @@ const settle = (tasks: SettlementTask[], from = "10:00", to = "10:10") =>
       counterpartyId: CREATOR,
       startedAtMs: T("04", from),
       endedAtMs: T("04", to),
-      attendance: [span(CREATOR, "04", from, to)],
+      /* Both sides in the room. Everybody earns their OWN time in it now, so a
+         fixture meaning "they met about the work" has to put the assignee
+         there — otherwise these assert what somebody who never attended
+         earned, which is nothing. */
+      attendance: [
+        span(CREATOR, "04", from, to),
+        span(ASSIGNEE, "04", from, to),
+      ],
     },
     onTaskId: tasks[0].taskId,
-    assigneeId: ASSIGNEE,
-    tasks,
+    receiverId: ASSIGNEE,
+    tasksByEmployee: new Map([[ASSIGNEE, tasks]]),
   });
 
 const three = settle([st("P1", { rank: 1 }), st("P2", { rank: 2 }), st("P3", { rank: 3 })]);
@@ -292,8 +306,8 @@ const absent = settleSession({
     attendance: [span(ASSIGNEE, "04", "10:00", "11:00")],
   },
   onTaskId: "T",
-  assigneeId: ASSIGNEE,
-  tasks: [st("T")],
+  receiverId: ASSIGNEE,
+  tasksByEmployee: new Map([[ASSIGNEE, [st("T")]]]),
 });
 check("creator absent → nothing moves", `${absent.updates[0].newWindowSecs}/${absent.updates[0].newDueAtMs}`, "null/null");
 check("  …but the session is still recorded", clock(absent.updates[0].totals.firstStartedAtMs!), "10:00");
