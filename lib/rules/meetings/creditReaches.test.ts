@@ -121,8 +121,14 @@ test("the legacy writer does not bail out before writing the budget", () => {
     /if \(!movesDate && !growsWindow\) return;/,
     "Expected the early return to require BOTH axes to be absent.",
   );
-  /* The window write must not sit behind the date's condition. */
-  assert.match(body, /growsWindow\s*\?\s*\{\s*deadlineWindowSecs/);
+  /* The window write must not sit behind the date's condition. It now leads
+     with the field `resolveTimeBudget` actually wins on — the mirrors alone
+     were shadowed by `agreedWindowSecs` on every accepted task, so the budget
+     was written and never read. See `budgetWriteReaches.test.ts`. */
+  assert.match(
+    body,
+    /growsWindow\s*\?\s*\{[\s\S]{0,200}deadlineWindowSecs: input\.newWindowSecs/,
+  );
 });
 
 test("closing a meeting tells the open screens to re-read", () => {

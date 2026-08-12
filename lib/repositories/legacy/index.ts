@@ -4769,12 +4769,45 @@ export class LegacyRepository {
     const growsWindow = typeof input.newWindowSecs === "number";
     if (!movesDate && !growsWindow) return;
 
+    /**
+     * **The budget field the READ wins on, not just the two mirrors.**
+     *
+     * `resolveTimeBudget` resolves four fields in order and takes the first —
+     * `agreedWindowSecs`, then `deadlineWindowSecs`, then `senderWindowSecs`,
+     * then `senderTimerWindowSecs`. This wrote only the second and fourth. On
+     * any task whose hours have been AGREED — which is every accepted task —
+     * `agreedWindowSecs` shadows both, so the grown window was written and then
+     * never read: the Details panel went on printing the original figure, and
+     * the queue went on laying the task out from it, so Expected completion
+     * never moved either.
+     *
+     * That is the whole of the reported fault. A meeting settled, its minutes
+     * appeared in the sessions list, the stored due date moved — which is why
+     * the slack line changed by exactly the meeting's length — and the two
+     * figures anybody actually looks at did not move at all.
+     *
+     * The date write already picks its source field for exactly this reason,
+     * three lines above. The window write did not.
+     */
+    const budgetField = growsWindow
+      ? (["agreedWindowSecs", "deadlineWindowSecs", "senderWindowSecs", "senderTimerWindowSecs"] as const).find(
+          (name) => {
+            const n = Number(data[name]);
+            return Number.isFinite(n) && n > 0;
+          },
+        )
+      : undefined;
+
     await updateDoc(doc(db, "cowork_tasks", input.taskId), {
       ...(movesDate ? { [field!]: new Date(input.newDueAtMs!).toISOString() } : {}),
-      /* Both fields legacy reads a window from, so the queue and the Details
-         panel cannot end up describing different amounts of work. */
+      /* The winning field, plus the two mirrors legacy also reads a window
+         from, so the queue and the Details panel cannot end up describing
+         different amounts of work. `senderWindowSecs` is deliberately not
+         mirrored: it is the assignor's original offer and is history once the
+         hours are agreed. */
       ...(growsWindow
         ? {
+            ...(budgetField ? { [budgetField]: input.newWindowSecs } : {}),
             deadlineWindowSecs: input.newWindowSecs,
             senderTimerWindowSecs: input.newWindowSecs,
           }
