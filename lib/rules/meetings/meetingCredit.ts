@@ -976,13 +976,6 @@ function updatesFor(input: {
    * detects rather than prevents (OWNER DECISION O10) — always pick the same
    * one, instead of depending on the order Firestore happened to return.
    */
-  const head =
-    creditedSecs > 0
-      ? [...input.tasks]
-          .filter((t) => CREDITED_STATUSES.includes(t.status))
-          .sort((a, b) => a.rank - b.rank || a.taskId.localeCompare(b.taskId))[0]
-      : undefined;
-
   return input.tasks
     .filter((t) => targets.has(t.taskId))
     .map((t) => ({
@@ -1001,13 +994,25 @@ function updatesFor(input: {
         creditedSecs > 0 && t.dueAtMs !== null
           ? t.dueAtMs + creditedSecs * 1000
           : null,
-      /* The head of the queue, and nothing else. The chain does the rest: a
-         task behind it starts when it finishes, so it inherits exactly this
-         shift and no more. Growing every window here is what produced
-         +10/+20/+30 — see the note on `settleSession`. */
+      /**
+       * **Every task the person holds, not one of them — OWNER DECISION.**
+       *
+       * This grew exactly one window: the head of the queue, with the chain
+       * carrying the shift to everything behind it. That kept the line moving
+       * by the meeting ONCE, and it made the figure people actually look at —
+       * the budget on the task they met about — stand still unless that task
+       * happened to be their top-ranked one. Asked for repeatedly and decided:
+       * the hours go up on every live task, and priority decides nothing here.
+       *
+       * The cost is stated plainly because it was stated when the decision was
+       * taken: a queue is worked end to end, so growing every window means the
+       * last task slips by the meeting times the number of tasks in front of
+       * it. Ten minutes across three tasks moves the third by thirty. That is
+       * the owner's call, not an oversight.
+       */
       newWindowSecs:
-        t.taskId === head?.taskId && t.windowSecs !== null
-          ? t.windowSecs + creditedSecs
+        creditedSecs > 0 && (t.windowSecs ?? 0) > 0
+          ? t.windowSecs! + creditedSecs
           : null,
       reason,
     }));

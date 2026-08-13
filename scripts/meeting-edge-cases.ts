@@ -294,9 +294,13 @@ const settle = (tasks: SettlementTask[], from = "10:00", to = "10:10") =>
   });
 
 const three = settle([st("P1", { rank: 1 }), st("P2", { rank: 2 }), st("P3", { rank: 3 })]);
-check("10m meeting → ONE window absorbs it", three.updates.map((u) => u.newWindowSecs === null ? "—" : mins(u.newWindowSecs)).join(" "), "70m — —", "the head of the queue");
-check("10m meeting → every due date moves once", three.updates.map((u) => clock(u.newDueAtMs!)).join(" "), "17:10 17:10 17:10", "the same 10m, not 10/20/30");
-check("the head is picked by rank, not by which task", settle([st("P3", { rank: 3 }), st("P1", { rank: 1 })]).updates.filter((u) => u.newWindowSecs !== null).map((u) => u.taskId).join(" "), "P1");
+/* Every live task with a budget gains the meeting — OWNER DECISION. This
+   replaced a rule that grew one window per person, the head of their queue,
+   which left the budget on the task people had just met about standing still
+   unless it happened to be their top-ranked one. */
+check("10m meeting → EVERY window gains it", three.updates.map((u) => u.newWindowSecs === null ? "—" : mins(u.newWindowSecs)).join(" "), "70m 70m 70m", "priority decides nothing");
+check("10m meeting → every due date moves once", three.updates.map((u) => clock(u.newDueAtMs!)).join(" "), "17:10 17:10 17:10", "the same 10m each");
+check("rank does not decide who gains it", settle([st("P3", { rank: 3 }), st("P1", { rank: 1 })]).updates.filter((u) => u.newWindowSecs !== null).map((u) => u.taskId).join(" "), "P3 P1");
 check("fixed-deadline task (no window)", String(settle([st("F", { windowSecs: null })]).updates[0].newWindowSecs), "null", "date still moves");
 check("task with no due date", String(settle([st("N", { dueAtMs: null })]).updates[0].newDueAtMs), "null", "window still grows");
 
@@ -340,14 +344,14 @@ check("three 1h tasks, no meetings", laid([3600, 3600, 3600]), "10:30 11:30 12:3
 check(
   "after a 10m meeting",
   laid(three.updates.map((u) => u.newWindowSecs ?? 3600)),
-  "10:40 11:40 12:40",
-  "+10 / +10 / +10",
+  "10:40 11:50 13:00",
+  "+10 / +20 / +30 — the accepted cost of every window gaining it",
 );
 check(
-  "the rejected shape, for comparison",
-  laid([4200, 4200, 4200]),
-  "10:40 11:50 13:00",
-  "what growing EVERY window would give — 10/20/30",
+  "the shape this replaced, for comparison",
+  laid([4200, 3600, 3600]),
+  "10:40 11:40 12:40",
+  "one window absorbing it — the line moved by 10 once",
 );
 
 /* ── G · Cross-department ─────────────────────────────────────────────────── */

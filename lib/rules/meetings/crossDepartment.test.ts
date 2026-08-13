@@ -398,9 +398,11 @@ test("no window means nothing is CREDITED — but the meeting is recorded", () =
   assert.notEqual(u.totals.firstStartedAtMs, null, "the meeting is on the record");
 });
 
-test("each person's own queue shifts once — the head, not every task", () => {
-  /* Option B, per person. Pramod has three tasks; only his P1 window grows,
-     and the chain carries the shift to P2 and P3. */
+test("each person's whole queue gains the meeting — OWNER DECISION", () => {
+  /* Every live task with a budget grows, per person, and priority decides
+     nothing. This replaced a rule that grew one window per person — the head of
+     their queue — which left the budget on the task people had just met about
+     standing still unless it happened to be their top-ranked one. */
   const s = session([[RECEIVER, 0, 30], [SENDER, 0, 30]]);
   const r = settleCrossDeptSession({
     session: s,
@@ -420,8 +422,14 @@ test("each person's own queue shifts once — the head, not every task", () => {
 
   assert.deepEqual(
     r.updates.map((u) => `${u.taskId}:${u.newWindowSecs === null ? "-" : "grew"}`),
-    ["P1:grew", "P2:-", "P3:-", "R1:grew", "R2:-"],
-    "more than one window grew in somebody's queue",
+    ["P1:grew", "P2:grew", "P3:grew", "R1:grew", "R2:grew"],
+    "somebody's task was left out",
+  );
+  /* And each person's own tasks only — the sender's queue never gains the
+     receiver's minutes, which is what keeps two people's work apart. */
+  assert.deepEqual(
+    r.updates.map((u) => u.forEmployeeId),
+    [RECEIVER, RECEIVER, RECEIVER, SENDER, SENDER],
   );
   /* Every task's stored date still shifts by the same 30 minutes. */
   assert.deepEqual(
@@ -462,12 +470,17 @@ test("a task already credited this session is not credited again", () => {
     ]),
     alreadyCredited: ["P1"],
   });
-  assert.deepEqual(r.updates.map((u) => u.taskId), ["P2"]);
-  assert.equal(
-    r.updates[0].newWindowSecs,
-    null,
-    "P2 absorbed the shift on a retry, moving the queue twice",
+  assert.deepEqual(
+    r.updates.map((u) => u.taskId),
+    ["P2"],
+    "P1 was credited twice for one meeting",
   );
+  /* P2 grows, and that is right: every live task gains the meeting exactly
+     once, and this is P2's first. The retry-safety that matters is
+     `alreadyCredited`, which is what keeps P1 out — under the rule this
+     replaced, the guard was also load-bearing for WHICH task absorbed the
+     shift, and it no longer has to be. */
+  assert.equal(r.updates[0].newWindowSecs, 3600 + 30 * 60);
 });
 
 test("the history sentence names each person's OWN minutes", () => {

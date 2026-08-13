@@ -8191,6 +8191,39 @@ export class LegacyRepository {
        * actually saw. Not an error — a meeting where nobody has live work is a
        * legitimate nothing.
        */
+      /* Always, not only when nothing was credited. A settlement that produces
+         updates can still move nothing anybody looks at — the budget write has
+         now been aimed at the wrong field twice — and the only way to tell the
+         two apart from outside is to print what was decided. */
+      if (settlement.creditedSecs > 0) {
+        console.warn(
+          "[meeting] settled",
+          JSON.stringify({
+            onTask: String(input.taskId),
+            secs: settlement.creditedSecs,
+            applied: settlement.updates.map((u) => ({
+              task: u.taskId,
+              for: u.forEmployeeId,
+              newWindowSecs: u.newWindowSecs,
+              newDueAtMs: u.newDueAtMs,
+            })),
+            /* The queues the head was chosen from. Exactly one task per person
+               grows a window — the lowest rank — so this is what says whether
+               the task somebody is staring at was ever a candidate. */
+            queues: [...queues].map(([who, q]) => ({
+              who,
+              tasks: q.map((t) => ({
+                id: t.taskId,
+                status: t.status,
+                rank: t.rank,
+                window: t.windowSecs,
+                holders: t.assigneeIds,
+              })),
+            })),
+          }),
+        );
+      }
+
       if (settlement.creditedSecs > 0 && settlement.updates.length === 0) {
         console.warn(
           "[meeting] credited nothing",

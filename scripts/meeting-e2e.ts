@@ -238,8 +238,8 @@ async function main() {
   check(
     "host task (already live) grew by",
     mins(budgetOf(HOST) - before[HOST]),
-    "0m",
-    "R-1 is the head of that queue",
+    "15m",
+    "every held task gains the meeting",
   );
 
   heading("THE THREE REPORTED FAULTS");

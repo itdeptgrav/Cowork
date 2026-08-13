@@ -347,52 +347,33 @@ import { chainDeadlines } from "../tasks/priorityDeadline.ts";
  * one of the two repositories while the other grew the window. Same meeting,
  * two different answers depending on which one you asked.
  */
-test("ONE window absorbs the meeting; the queue carries the shift", () => {
-  const walk = (from: number, secs: number) =>
-    new Date(from + secs * 1000).toISOString();
+test("EVERY window gains the meeting — OWNER DECISION", () => {
+  /* This replaced a rule that grew exactly one window per person: the head of
+     their queue, with the chain carrying the shift to everything behind it.
+     It was rejected because the figure people actually look at — the budget on
+     the task they just met about — stood still unless that task happened to be
+     their top-ranked one, and because a person whose top task carried no budget
+     lost the credit entirely.
 
-  const queue = (windows: number[]) =>
-    chainDeadlines({
-      queue: windows.map((w, i) => ({
-        taskId: `P${i + 1}`,
-        assigneeIds: [ASSIGNEE],
-        assigneePriorities: { [ASSIGNEE]: i + 1 },
-        status: "in_progress",
-        deadlineWindowSecs: w,
-        loggedSecs: 0,
-      })) as never,
-      anchorMs: T("09:30"),
-      addWorkingSecs: walk,
-    }).map((c) => hhmm(Date.parse(c.dueDate)));
-
-  /* Three one-hour tasks, no meetings. */
-  assert.deepEqual(queue([3600, 3600, 3600]), ["10:30", "11:30", "12:30"]);
-
-  /* A 10-minute meeting. It credits all three tasks — every one of them gets
-     the session recorded and its stored date shifted — but exactly ONE window
-     absorbs the lost time: the head of the queue, the work in hand. */
+     Priority decides nothing here now. Every live task with a budget grows. */
   const r = meet("10:00", "10:10", [
     target("P1", { rank: 1 }),
     target("P2", { rank: 2 }),
     target("P3", { rank: 3, status: "confirmed" }),
   ]);
+
   assert.deepEqual(
     r.updates.map((u) => u.newWindowSecs),
-    [4200, null, null],
-    "more than one window grew, which is what compounds the shift",
+    [4200, 4200, 4200],
+    "a task the person holds was left out",
   );
-
-  /* Laid out again: the WHOLE LINE moves by ten minutes, once. P2 and P3 shift
-     because they start when the task ahead finishes — not because they were
-     each given ten minutes of their own. */
-  const grown = [4200, 3600, 3600];
-  assert.deepEqual(queue(grown), ["10:40", "11:40", "12:40"]);
 });
 
-test("OWNER DECISION: the line shifts once — never +10, +20, +30", () => {
-  /* The rejected shape, asserted directly so it cannot come back quietly.
-     Growing every window makes P2 wait through P1's extra ten minutes AND
-     collect its own; the person lost ten minutes, not sixty. */
+test("the accepted cost: a queue worked end to end compounds", () => {
+  /* Stated, not hidden. The tasks run one after another, so growing every
+     window slips the last one by the meeting times the number of tasks ahead
+     of it. That was shown as the trade-off when the decision was taken, and it
+     is asserted here so nobody re-derives it as a bug and quietly reverts. */
   const walk = (anchorMs: number, secs: number) =>
     new Date(anchorMs + secs * 1000).toISOString();
   const queue = (windows: number[]) =>
@@ -414,28 +395,30 @@ test("OWNER DECISION: the line shifts once — never +10, +20, +30", () => {
     target("P3", { rank: 3 }),
   ]);
 
-  /* Every task moves by the SAME ten minutes. */
-  const shifts = r.updates.map(
-    (u) => (u.newDueAtMs! - T("17:00")) / 60_000,
-  );
+  /* Every stored date still moves by the SAME ten minutes — that axis is per
+     task and was never affected by which window grew. */
+  const shifts = r.updates.map((u) => (u.newDueAtMs! - T("17:00")) / 60_000);
   assert.deepEqual(shifts, [10, 10, 10], "the stored dates did not shift evenly");
 
-  /* And the derived chain moves by the same ten, not by 10/20/30. */
-  const windows = r.updates.map((u) => u.newWindowSecs ?? 3600);
-  const after = queue(windows);
+  /* The derived chain is where the compounding shows. */
+  const after = queue(r.updates.map((u) => u.newWindowSecs ?? 3600));
   const before = queue([3600, 3600, 3600]);
   const moved = after.map((a, i) => {
     const [ah, am] = a.split(":").map(Number);
     const [bh, bm] = before[i].split(":").map(Number);
     return ah * 60 + am - (bh * 60 + bm);
   });
-  assert.deepEqual(moved, [10, 10, 10], `the line compounded: ${after.join(" ")}`);
+  assert.deepEqual(
+    moved,
+    [10, 20, 30],
+    `expected the accepted compounding, got: ${after.join(" ")}`,
+  );
 });
 
-test("the head is chosen by RANK, not by which task the meeting was on", () => {
-  /* A meeting opened from P3 still costs the person ten minutes of the work
-     they are actually doing, so P1's window absorbs it and the whole line
-     shifts — exactly as a break taken during P1 would. */
+test("the task the meeting was held ON gains it, whatever its rank", () => {
+  /* The case that drove the decision. A meeting opened from P3 must move P3's
+     own budget — under the head rule it moved P1's and left P3 looking
+     untouched to the person who had just sat in the meeting. */
   const r = meet(
     "10:00",
     "10:10",
@@ -446,30 +429,33 @@ test("the head is chosen by RANK, not by which task the meeting was on", () => {
     ],
     { onTaskId: "P3" },
   );
-  const grew = r.updates.filter((u) => u.newWindowSecs !== null);
-  assert.equal(grew.length, 1, "exactly one window may grow");
-  assert.equal(grew[0].taskId, "P1");
+
+  const onHost = r.updates.find((u) => u.taskId === "P3");
+  assert.equal(onHost?.newWindowSecs, 4200, "the task met about did not grow");
+  assert.equal(
+    r.updates.filter((u) => u.newWindowSecs !== null).length,
+    3,
+    "every held task grows, not only the one met about",
+  );
 });
 
-test("a settlement replayed after a partial failure does not shift twice", () => {
-  /* The head is picked from the LIVE tasks, not from the remaining targets — so
-     a retry that has already credited P1 does not promote P2 to head and move
-     the queue a second time. */
+test("a settlement replayed after a partial failure credits each task once", () => {
+  /* `alreadyCredited` is what makes a retry safe: P1 was credited by the first
+     attempt and is skipped, P2 was not and gets its first credit now. Under the
+     rule this replaced the guard was ALSO load-bearing for which task absorbed
+     the shift; it no longer has to be. */
   const r = meet(
     "10:00",
     "10:10",
-    [
-      target("P1", { rank: 1 }),
-      target("P2", { rank: 2 }),
-    ],
+    [target("P1", { rank: 1 }), target("P2", { rank: 2 })],
     { alreadyCredited: ["P1"] },
   );
-  assert.deepEqual(r.updates.map((u) => u.taskId), ["P2"]);
-  assert.equal(
-    r.updates[0].newWindowSecs,
-    null,
-    "P2 absorbed the lost time on a retry, shifting the queue twice",
+  assert.deepEqual(
+    r.updates.map((u) => u.taskId),
+    ["P2"],
+    "P1 was credited twice for one meeting",
   );
+  assert.equal(r.updates[0].newWindowSecs, 4200);
 });
 
 test("a task with no window is credited but grows nothing", () => {
