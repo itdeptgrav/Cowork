@@ -183,7 +183,24 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * whether anybody is still beating — `roomIsEmpty`, the same question the
    * repository asks before it settles.
    */
-  const open = list.find((s) => s.endedAt === null) ?? null;
+  /**
+   * **The session THIS reader is in, before any other open one.**
+   *
+   * Two places choose an open session and they could choose differently: the
+   * join takes the first document an unordered Firestore query returns, and
+   * this list is sorted newest-first. With more than one session open — a race
+   * between two people joining, or one left open by a client that never closed
+   * it — a reader's attendance row lands in one session while the panel reads
+   * the other. The panel then cannot find them in the room they are standing
+   * in: `Counting 00:00:00`, "you are not in the room with somebody else",
+   * three faces on the screen. Reported exactly that way.
+   *
+   * Their own session is the one that describes what they are looking at.
+   */
+  const open =
+    (joined && list.find((s) => s.id === joined.sessionId)) ??
+    list.find((s) => s.endedAt === null) ??
+    null;
   /* The COUNTERPARTY, not the owner. On a self task the owner is the assignee,
      and naming them here would tell somebody sitting alone in a room that their
      own presence was earning time — which it is not. `assigner` is the assigner

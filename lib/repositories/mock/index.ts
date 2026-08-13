@@ -8202,9 +8202,14 @@ export class MockRepository implements CoworkRepository {
     /* Re-enter the session that is already running rather than opening a
        second one — two rooms for one task would split the attendance and
        credit each half separately. */
-    let session = s.taskMeetingSessions.find(
-      (x) => x.taskId === taskId && x.endedAt === null,
-    );
+    /* The NEWEST open one, matching the engine and the panel — both of which
+       read newest-first. Taking the first in insertion order picked the OLDEST,
+       so with two sessions open a joiner was recorded against one while the
+       panel displayed the other, and neither could see the other's attendance. */
+    let session = [...s.taskMeetingSessions]
+      .filter((x) => x.taskId === taskId && x.endedAt === null)
+      .sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+      .at(0);
     if (!session) {
       session = {
         id: `tms-${s.taskMeetingSessions.length + 1}`,

@@ -81,6 +81,62 @@ test("the reset addresses the CoWork account, not the HR record", () => {
   );
 });
 
+test("a row HR cannot describe fully is not offered Add", () => {
+  /**
+   * **The refusal used to arrive after the click.** HR records one address per
+   * person under either `email` or `personalEmail` and fills whichever it was
+   * given; the engine read only the first, so half the directory arrived
+   * looking address-less. The row showed a blank where the address goes,
+   * offered Add anyway, and the engine answered "Name, email and department are
+   * required" — naming a department it had all along, and an email HR was
+   * holding under the other field.
+   *
+   * The engine now resolves both addresses and says what is genuinely absent.
+   * What is left is a record only HR can fix, so the row says so instead.
+   */
+  const panel = readFileSync(
+    "components/features/admin/AddFromHrPanel.tsx",
+    "utf8",
+  );
+
+  /* No button where there is nothing a click could achieve. */
+  assert.match(panel, /gaps\.length === 0 \? \(/);
+  assert.match(panel, /Add \{listGaps\(gaps\)\} in HR/);
+  /* And the blank that used to render as a bare "· GR0123" now says why. */
+  assert.match(panel, /No email in HR/);
+
+  /* Not sweepable into a bulk create that would half-fail on them. */
+  assert.match(panel, /disabled=\{pending \|\| gaps\.length > 0\}/);
+  assert.match(
+    panel,
+    /hrGaps\(e\)\.length === 0 && statuses\.get\(e\.hrId\)\?\.kind !== "done"/,
+    "Select all no longer excludes rows the engine cannot provision",
+  );
+  assert.match(
+    panel,
+    /selected\.has\(e\.hrId\) && !e\.hasCoworkAccount && hrGaps\(e\)\.length === 0/,
+    "the bulk create no longer excludes rows the engine cannot provision",
+  );
+
+  /* An empty selectable set must not read as "all selected" — a ticked box
+     over nothing, where every row needs HR edited first. */
+  assert.match(panel, /selectable\.length > 0 &&\s*selectable\.every/);
+});
+
+test("an engine that predates missingInHr leaves every row addable", () => {
+  /* The engine deploys separately. Absent means "this engine does not report
+     gaps", which is how the panel behaved before — not "every row is broken",
+     which would take Add away from the whole list. */
+  const src = readFileSync("lib/legacy/employeeAdmin.ts", "utf8");
+  assert.match(src, /missingInHr\?: string\[\];/);
+
+  const panel = readFileSync(
+    "components/features/admin/AddFromHrPanel.tsx",
+    "utf8",
+  );
+  assert.match(panel, /return emp\.missingInHr \?\? \[\];/);
+});
+
 test("what the reset costs is stated before it is done, not after", () => {
   /* It revokes every refresh token the person holds: they are signed out of
      every device within moments, mid-task if they were working. An admin should

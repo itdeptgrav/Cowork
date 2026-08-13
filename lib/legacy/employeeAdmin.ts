@@ -21,6 +21,23 @@ export interface HrEmployee {
    * existing account is taken against the right account.
    */
   coworkEmployeeId: string | null;
+  /**
+   * HR fields this person genuinely has no value for — `[]` when the row is
+   * ready to provision.
+   *
+   * **Not the same as "the panel did not receive one".** HR records one address
+   * under either of two fields and fills whichever it was given, so reading
+   * only the work `email` reported half the directory as having none; the
+   * engine now resolves the personal address too and this names only what is
+   * actually absent. An account cannot be created without an email — Firebase
+   * Auth is keyed on one — so a non-empty list means the fix is in HR, not
+   * here, and the row says so instead of offering a button that gets refused.
+   *
+   * Optional because the engine deploys separately: an older one answers
+   * without the field, and every row then reads as provisionable, which is the
+   * behaviour that came before this and not a new failure.
+   */
+  missingInHr?: string[];
 }
 
 export interface HrEmployeeList {
@@ -28,6 +45,8 @@ export interface HrEmployeeList {
   departments: string[];
   total: number;
   withAccount: number;
+  /** How many listed people HR does not hold enough detail to provision. */
+  missingDetails?: number;
 }
 
 export interface ProvisionResult {

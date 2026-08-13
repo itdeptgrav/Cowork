@@ -12,6 +12,13 @@
  * have accounts are what an administrator comes here about second: somebody
  * locked out needs a new password, and the row for them used to be a green chip
  * with nothing to press. See `ResetPasswordDialog`.
+ *
+ * **Nothing on this panel is typed in, and nothing is asked for twice.** Every
+ * field the create needs is already in the HR record, so the panel sends what
+ * HR holds and the engine fills any gap from HR again before it validates. What
+ * remains after that is a record HR itself is short of — see `hrGaps` — and the
+ * row says which field and where, rather than offering a button that the engine
+ * refuses after the click.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -45,6 +52,36 @@ type ProvisionStatus =
   | { kind: "pending" }
   | { kind: "done"; employeeId: string; tempPassword: string }
   | { kind: "error"; message: string };
+
+// ── What HR holds, and what it genuinely does not ─────────────────────────────
+
+/**
+ * The HR fields this person has no value for.
+ *
+ * **A gap here is not a question to ask the admin — it is a record to fix in
+ * HR.** An account is a Firebase login and Firebase keys on an email address,
+ * so somebody HR has no address for cannot be created from this panel at all.
+ * Offering them Add anyway is what produced a red refusal after the click,
+ * naming three fields — name, email and department — when the row's only real
+ * gap was one of them, and leaving the admin to guess which and where.
+ *
+ * Most of what used to land here was never a gap. HR records one address under
+ * either of two fields and fills whichever it was given; the engine read only
+ * the work one, so half the directory arrived looking address-less. It now
+ * resolves both, and this names what is left.
+ *
+ * An engine that does not send the field yet reports no gaps — which is exactly
+ * how this panel behaved before, not a new failure.
+ */
+function hrGaps(emp: HrEmployee): string[] {
+  return emp.missingInHr ?? [];
+}
+
+/** `name, email and department` — the fields, in the words the row uses. */
+function listGaps(fields: string[]): string {
+  if (fields.length <= 1) return fields[0] ?? "details";
+  return `${fields.slice(0, -1).join(", ")} and ${fields[fields.length - 1]}`;
+}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -107,6 +144,19 @@ export function AddFromHrPanel() {
 
   const visible = employees;
 
+  const withoutAccount = visible.filter((e) => !e.hasCoworkAccount);
+  /**
+   * The rows a Create can actually succeed on.
+   *
+   * Somebody HR has no email for is not merely unselected — they are kept out
+   * of Select all and out of the bulk create, because sweeping them in means a
+   * batch that half-fails on records this panel cannot fix.
+   */
+  const selectable = withoutAccount.filter(
+    (e) => hrGaps(e).length === 0 && statuses.get(e.hrId)?.kind !== "done",
+  );
+  const blockedCount = withoutAccount.length - selectable.length;
+
   function toggleSelect(hrId: string) {
     setSelected((prev) => {
       const next = new Set(prev);
@@ -117,20 +167,17 @@ export function AddFromHrPanel() {
   }
 
   function toggleSelectAll() {
-    const provisionable = visible.filter(
-      (e) => !e.hasCoworkAccount && statuses.get(e.hrId)?.kind !== "done",
-    );
-    const allSelected = provisionable.every((e) => selected.has(e.hrId));
+    const allSelected = selectable.every((e) => selected.has(e.hrId));
     if (allSelected) {
       setSelected((prev) => {
         const next = new Set(prev);
-        provisionable.forEach((e) => next.delete(e.hrId));
+        selectable.forEach((e) => next.delete(e.hrId));
         return next;
       });
     } else {
       setSelected((prev) => {
         const next = new Set(prev);
-        provisionable.forEach((e) => next.add(e.hrId));
+        selectable.forEach((e) => next.add(e.hrId));
         return next;
       });
     }
@@ -184,7 +231,7 @@ export function AddFromHrPanel() {
   async function provisionSelected() {
     setBulkPending(true);
     const toProvision = employees.filter(
-      (e) => selected.has(e.hrId) && !e.hasCoworkAccount,
+      (e) => selected.has(e.hrId) && !e.hasCoworkAccount && hrGaps(e).length === 0,
     );
     await Promise.allSettled(toProvision.map(provision));
     setBulkPending(false);
@@ -193,7 +240,7 @@ export function AddFromHrPanel() {
 
   const provisionableCount = [...selected].filter((id) => {
     const emp = employees.find((e) => e.hrId === id);
-    return emp && !emp.hasCoworkAccount;
+    return emp && !emp.hasCoworkAccount && hrGaps(emp).length === 0;
   }).length;
 
   return (
@@ -253,16 +300,20 @@ export function AddFromHrPanel() {
       ) : (
         <Panel padded={false}>
           {/* Select-all row */}
-          {visible.some((e) => !e.hasCoworkAccount) && (
+          {withoutAccount.length > 0 && (
             <div className="flex items-center gap-3 border-b border-hairline px-4 py-2.5">
               <input
                 type="checkbox"
                 id="select-all-hr"
-                checked={visible
-                  .filter((e) => !e.hasCoworkAccount && statuses.get(e.hrId)?.kind !== "done")
-                  .every((e) => selected.has(e.hrId))}
+                /* An empty `selectable` makes `every` true — a ticked box over
+                   nothing. Everyone here needs HR edited first. */
+                checked={
+                  selectable.length > 0 &&
+                  selectable.every((e) => selected.has(e.hrId))
+                }
                 onChange={toggleSelectAll}
-                className="h-3.5 w-3.5 rounded-sm accent-ink"
+                disabled={selectable.length === 0}
+                className="h-3.5 w-3.5 rounded-sm accent-ink disabled:opacity-40"
               />
               <label
                 htmlFor="select-all-hr"
@@ -271,7 +322,8 @@ export function AddFromHrPanel() {
                 Select all without account
               </label>
               <span className="ml-auto text-[11px] text-ink-faint">
-                {visible.filter((e) => !e.hasCoworkAccount).length} without account
+                {withoutAccount.length} without account
+                {blockedCount > 0 && ` · ${blockedCount} need details in HR`}
               </span>
             </div>
           )}
@@ -281,6 +333,7 @@ export function AddFromHrPanel() {
               const status = statuses.get(emp.hrId) ?? { kind: "idle" };
               const done = status.kind === "done" || emp.hasCoworkAccount;
               const pending = status.kind === "pending";
+              const gaps = hrGaps(emp);
 
               return (
                 <li
@@ -292,7 +345,7 @@ export function AddFromHrPanel() {
                       type="checkbox"
                       checked={selected.has(emp.hrId)}
                       onChange={() => toggleSelect(emp.hrId)}
-                      disabled={pending}
+                      disabled={pending || gaps.length > 0}
                       className="h-3.5 w-3.5 shrink-0 rounded-sm accent-ink disabled:opacity-40"
                     />
                   ) : (
@@ -304,7 +357,14 @@ export function AddFromHrPanel() {
                       {emp.name}
                     </p>
                     <p className="truncate text-[11px] text-ink-faint">
-                      {emp.email}
+                      {/* An absent address used to render as a bare "· GR0123",
+                          which reads as a row with nothing wrong with it —
+                          right up until Add was refused. */}
+                      {emp.email || (
+                        <span className="text-[var(--state-overdue-ink)]">
+                          No email in HR
+                        </span>
+                      )}
                       {emp.biometricId && (
                         <span className="ml-2 text-ink-faint">
                           · {emp.biometricId}
@@ -378,15 +438,25 @@ export function AddFromHrPanel() {
                     {status.kind === "pending" && (
                       <span className="text-[11px] text-ink-faint">Creating…</span>
                     )}
-                    {status.kind === "idle" && !emp.hasCoworkAccount && (
-                      <button
-                        type="button"
-                        onClick={() => void provision(emp)}
-                        className="rounded-inset bg-[var(--control)] px-2.5 py-1 text-[12px] text-ink transition-colors hover:bg-[var(--control-active)]"
-                      >
-                        Add
-                      </button>
-                    )}
+                    {status.kind === "idle" &&
+                      !emp.hasCoworkAccount &&
+                      (gaps.length === 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => void provision(emp)}
+                          className="rounded-inset bg-[var(--control)] px-2.5 py-1 text-[12px] text-ink transition-colors hover:bg-[var(--control-active)]"
+                        >
+                          Add
+                        </button>
+                      ) : (
+                        /* Nothing to press. The record is HR's and so is the
+                           fix, so the row names the missing field and where it
+                           lives — which is the whole difference between this
+                           and the refusal it replaces. */
+                        <span className="max-w-[190px] text-right text-[11px] text-ink-faint">
+                          Add {listGaps(gaps)} in HR
+                        </span>
+                      ))}
                   </div>
                 </li>
               );

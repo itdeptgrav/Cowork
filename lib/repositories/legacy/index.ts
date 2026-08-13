@@ -7785,7 +7785,24 @@ export class LegacyRepository {
       const open = await getDocs(
         query(collection(db, ...path), where("endedAt", "==", null)),
       );
-      const existing = open.docs[0] ?? null;
+      /**
+       * **The NEWEST open session, not whichever Firestore returned first.**
+       *
+       * The query is unordered, so with more than one session open this picked
+       * arbitrarily — while the panel, whose list is sorted newest-first, picked
+       * the newest. Two people could then be in one video room (its name is
+       * derived from the task id, so there is only ever one) and recorded
+       * against two different sessions, each unable to see the other in the
+       * attendance they were reading. Both sides choose the same session now.
+       */
+      const existing =
+        [...open.docs]
+          .sort((a, b) =>
+            String(b.data()?.startedAt ?? "").localeCompare(
+              String(a.data()?.startedAt ?? ""),
+            ),
+          )
+          .at(0) ?? null;
 
       const attendance = {
         employeeId: me,
