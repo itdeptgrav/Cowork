@@ -31,6 +31,7 @@ import {
 import { RELATIONSHIP_COPY } from "./relationshipCopy";
 import { allowsMultipleAssignees } from "@/lib/rules/tasks/assignment";
 import { improveText, textSignature } from "@/lib/workspace/ai/textAssist";
+import { goalPoolView } from "@/lib/rules/scoring/goalPoints";
 import type { TaskType } from "@/lib/domain";
 
 /**
@@ -285,6 +286,40 @@ export function NewTaskForm({
   );
   const parent = parentView.data ?? null;
   const [goalId, setGoalId] = useState("");
+  /**
+   * C2 · the share of the company's goal points this task claims.
+   *
+   * Held as text so a half-typed "12." is not rewritten under the person
+   * mid-keystroke, exactly as the conduct rule's percentage is. Only read when
+   * the type is `goal`; every other kind of task ignores it entirely.
+   */
+  const [c2Weightage, setC2Weightage] = useState("");
+  const goalPool = useQuery((r) => r.getGoalPool(), []);
+  /* The figure and the refusal, from one function, so what the field shows and
+     what the submit refuses can never be two different opinions. */
+  const goalView =
+    type === "goal" && goalPool.data
+      ? goalPoolView({
+          weightagePercent: Number(c2Weightage),
+          globalMaxPoints: goalPool.data.globalMaxPoints,
+          remainingPercent: goalPool.data.remainingPercent,
+        })
+      : null;
+  /**
+   * C2 · what the goal is, and the date it is measured against.
+   *
+   * A goal task carries NEITHER a time budget nor a task-level deadline — its
+   * time lives on the roadmap steps, one deadline each. This is the outer date
+   * the whole goal is aimed at, which is a different thing from a step's due
+   * date and is why it is asked here rather than left to the roadmap.
+   *
+   * Both are the old Cowork's own fields — `goalConfig.goalDescription` and
+   * `goalConfig.deadline` — kept under those names so a goal created here is
+   * readable by the old app rather than being a second, incompatible shape.
+   */
+  const [goalStatement, setGoalStatement] = useState("");
+  const [goalDeadline, setGoalDeadline] = useState("");
+
   const [assigneeSearch, setAssigneeSearch] = useState("");
   const [filterDept, setFilterDept] = useState("");
   const [filterRole, setFilterRole] = useState("");
@@ -441,18 +476,42 @@ export function NewTaskForm({
           projectId: projectId || null,
           parentTaskId: parentTaskId || null,
           goalId: goalId || null,
+          /* Sent only on a goal task — see `CreateTaskInput`. The pool is
+             snapshotted alongside the share so a later settings change cannot
+             rewrite what this task was agreed for. */
+          c2WeightagePercent:
+            type === "goal" ? Number(c2Weightage) || null : null,
+          c2GlobalMaxPoints:
+            type === "goal" ? (goalPool.data?.globalMaxPoints ?? null) : null,
           /* No approver is chosen in the form. For a self task the backend resolves
              the assignee's primary manager from HR and makes them the counterparty
              (budget, priority, review); for every other type this stays null. */
           approverId: null,
+          /* What the goal is, and the date it is aimed at. Only on a goal. */
+          goalStatement: type === "goal" ? goalStatement.trim() || null : null,
+          goalDeadline: type === "goal" && goalDeadline ? goalDeadline : null,
           deadlineMode: mode,
-          fixedDueAt: mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
-          senderWindowSecs: mode === "timer" ? budgetSecs : null,
+          /**
+           * A goal task carries NO timing of its own — no budget, no deadline.
+           *
+           * The old Cowork did the same, by treating a goal as a special type:
+           * `hasTimer: undefined`, `fixedDeadline: null`, `etcHours: 0`. Its
+           * time is the roadmap's, a deadline per step, and a task-level window
+           * here would be a second answer that nothing reads and that the
+           * assignee would be measured against by mistake.
+           */
+          fixedDueAt:
+            type !== "goal" && mode === "fixed"
+              ? new Date(fixedDueAt).toISOString()
+              : null,
+          senderWindowSecs:
+            type !== "goal" && mode === "timer" ? budgetSecs : null,
           /* Only when a budget was actually entered. This previously sent four
              hours of "estimated effort" on every deadline-based task, taken from a
              control the reader never saw — a number nobody chose, recorded as
              though they had. */
-          estimatedEffortSecs: mode === "timer" ? budgetSecs : null,
+          estimatedEffortSecs:
+            type !== "goal" && mode === "timer" ? budgetSecs : null,
         }),
   );
 
@@ -1044,13 +1103,113 @@ export function NewTaskForm({
 
           </Panel>
 
-          {/* 4 — deadline.
+          {/**
+           * 4 — the goal's own date, INSTEAD of the deadline panel below.
+           *
+           * A goal task carries no time budget and no task-level deadline. Its
+           * time is the roadmap's: each step has its own date, and a step is
+           * paid only if it was handed in by that date. A budget here would be
+           * a second answer to "when is this due" with nothing reading it —
+           * and being asked for hours on a goal is what the old Cowork
+           * deliberately avoided by treating a goal as a special type.
+           *
+           * What it does carry is the outer date the whole goal is aimed at.
+           * That is stored, and shown on the roadmap, but it does NOT create a
+           * step — the old app's own "sets the deadline for the final goal
+           * node" hint stopped being true when its auto-final node was
+           * removed, and reproducing a claim its code no longer honours would
+           * be worse than not making it.
+           */}
+          {type === "goal" ? (
+            <Panel>
+              <h2 className="text-sm font-medium text-ink">Goal</h2>
+              <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+                A goal carries no time budget. Each step of its roadmap has its
+                own deadline, and each earns its points only if it is handed in
+                by that date.
+              </p>
+
+              <div className="mt-3 flex flex-col gap-3">
+                <Field
+                  label="Goal statement"
+                  hint="What the goal is, in one line. The roadmap is how it gets done."
+                >
+                  <Textarea
+                    rows={2}
+                    value={goalStatement}
+                    onChange={(e) => setGoalStatement(e.target.value)}
+                    placeholder="e.g. Achieve ₹5 crore in net sales by end of Q2."
+                  />
+                </Field>
+
+                <Field
+                  label="Target date"
+                  required
+                  hint="The date the whole goal is aimed at. Steps are dated separately on the roadmap."
+                >
+                  <Input
+                    type="date"
+                    value={goalDeadline}
+                    onChange={(e) => setGoalDeadline(e.target.value)}
+                  />
+                </Field>
+
+                {/**
+                 * C2 · what this goal is worth.
+                 *
+                 * The share is typed and the points follow from it, so the
+                 * person committing to a goal sees the figure they are
+                 * committing to rather than discovering it later.
+                 *
+                 * **Here, not behind "Placement and links".** It is REQUIRED
+                 * and it blocks creation, and it spent its first version
+                 * inside a collapsed section — so the button was disabled by a
+                 * field the reader could not see. A required field belongs
+                 * beside the other required fields of the thing it describes.
+                 */}
+                <Field
+                  label="Share of the year's goal points"
+                  required
+                  hint={
+                    goalPool.data
+                      ? `${goalPool.data.remainingPercent}% of ${goalPool.data.globalMaxPoints} points is unclaimed.`
+                      : goalPool.isLoading
+                        ? "Reading what is left of this year's goal points…"
+                        : "This year's goal points could not be read, so the share cannot be checked yet."
+                  }
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      value={c2Weightage}
+                      inputMode="decimal"
+                      placeholder="20"
+                      onChange={(e) =>
+                        setC2Weightage(e.target.value.replace(/[^0-9.]/g, ""))
+                      }
+                      className="max-w-[120px]"
+                    />
+                    <span className="text-xs text-ink-faint">%</span>
+                    {goalView && goalView.taskMaxPoints > 0 && (
+                      <span className="text-xs text-ink-muted">
+                        worth{" "}
+                        <span data-figure className="text-ink">
+                          {goalView.taskMaxPoints}
+                        </span>{" "}
+                        points
+                      </span>
+                    )}
+                  </div>
+                </Field>
+              </div>
+            </Panel>
+          ) : (
+          /* 4 — deadline.
               Not a choice, and so not presented as one. Which model applies is
               decided by the relationship between you and the assignee, and the
               repository decides it again on the way in — a control here could
               only ever disagree with the answer. What the form owes the reader
               is the answer and the reason for it, then the one value that
-              model actually needs. */}
+              model actually needs. */
           <Panel>
             <h2 className="text-sm font-medium text-ink">Deadline</h2>
               {!relationshipKnown ? (
@@ -1120,6 +1279,7 @@ export function NewTaskForm({
                 </>
               )}
           </Panel>
+          )}
 
           {/* 5 — placement, disclosed on demand. */}
           <Panel>
@@ -1172,8 +1332,11 @@ export function NewTaskForm({
                     </Select>
                   </Field>
                 )}
-                {type === "goal" && (
-                  <Field label="Goal" required>
+                {/* The existing link-to-a-goal control, left as it was. It
+                    lists nothing until `listGoals` is wired, and it has never
+                    blocked submission. */}
+                {type === "goal" && (goals.data ?? []).length > 0 && (
+                  <Field label="Goal">
                     <Select
                       value={goalId}
                       onChange={(e) => setGoalId(e.target.value)}
@@ -1189,6 +1352,7 @@ export function NewTaskForm({
                     </Select>
                   </Field>
                 )}
+
               </div>
             )}
           </Panel>
@@ -1238,6 +1402,31 @@ export function NewTaskForm({
             <InlineError message={state.error} code={state.errorCode} />
           )}
 
+          {/* Why the goal cannot be created, in the words that name the
+              figures — "only 40% is unclaimed, and this asks for 60%". A
+              disabled button with no sentence beside it is the thing this
+              form is careful never to be. */}
+          {type === "goal" && c2Weightage.trim() && goalView?.refusal && (
+            <div className="mb-2">
+              <InlineError message={goalView.refusal} />
+            </div>
+          )}
+
+          {/* And which goal field is still empty, by name. The same rule as
+              above applied to the other reason the button is off: the reader
+              should never have to guess which control is holding it. */}
+          {type === "goal" &&
+            (!c2Weightage.trim() || !goalDeadline) &&
+            title.trim() !== "" && (
+              <p className="mb-2 text-[11px] text-ink-faint">
+                {!c2Weightage.trim() && !goalDeadline
+                  ? "A goal needs a target date and a share of the year's goal points before it can be created."
+                  : !c2Weightage.trim()
+                    ? "A goal needs a share of the year's goal points before it can be created."
+                    : "A goal needs a target date before it can be created."}
+              </p>
+            )}
+
           {/* The "run the check first" note is part of the gate, so it goes
               with it. Leaving it while the button works anyway would tell
               people they must do something they do not have to do. */}
@@ -1258,6 +1447,31 @@ export function NewTaskForm({
                 hasForbidden ||
                 needsAssignee ||
                 (GRAMMAR_GATE_BLOCKS_CREATION && !grammarChecked) ||
+                /**
+                 * A goal must claim a share, and it must fit the pool.
+                 *
+                 * Two separate checks, because they fail for different reasons
+                 * and only one of them needs the pool to have loaded. Typing
+                 * nothing is refused here and always can be. Whether what was
+                 * typed FITS can only be judged against a pool that was
+                 * actually read — so when `goalPool` has not answered,
+                 * `goalView` is null and this deliberately does not block.
+                 *
+                 * It used to, and that was the bug: `goalView?.refusal` is
+                 * `undefined` when there is no view, `undefined !== null` is
+                 * true, and the button stayed disabled for ever with nothing
+                 * on screen explaining why. The engine's
+                 * `validate-weightage` is the real hard block and refuses in
+                 * its own words; this only saves a round trip when it can.
+                 */
+                (type === "goal" && !c2Weightage.trim()) ||
+                (type === "goal" &&
+                  goalView !== null &&
+                  goalView.refusal !== null) ||
+                /* And a date it is aimed at. Required in the old Cowork too —
+                   a goal with no target date is a roadmap with no outer bound
+                   to check its steps against. */
+                (type === "goal" && !goalDeadline) ||
                 /* The claim the repository refuses without. Checked here so the
                    button is honest before the round trip, and there too so the
                    form can never permit what the engine rejects. */
@@ -1311,11 +1525,18 @@ export function NewTaskForm({
                   ? "Your manager approves the time budget, sets its priority, and reviews it — you propose, they decide."
                   : "Each assignee receives it at the bottom of their priority list."}
               </Consequence>
-              {relationshipKnown && (
+              {relationshipKnown && type !== "goal" && (
                 <Consequence>
                   {mode === "timer"
                     ? "No deadline is set yet — the assignee proposes one inside your budget and you decide."
                     : "The deadline is fixed and scored from the date you set."}
+                </Consequence>
+              )}
+              {type === "goal" && (
+                <Consequence>
+                  No budget and no task deadline. You build the roadmap next —
+                  each step carries its own date and its own share of the
+                  points, and each earns them only if it is handed in on time.
                 </Consequence>
               )}
               {gate === "cross_department" && (

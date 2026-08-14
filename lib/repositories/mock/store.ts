@@ -73,7 +73,7 @@ import type {
   WorkCommit,
 } from "@/lib/domain";
 import * as seed from "@/lib/seed/seed";
-import type { SimulatedFailure } from "../types";
+import type { GoalReportFile, GoalStepPerson, SimulatedFailure } from "../types";
 /* A value, not a type — the store's default has to exist at runtime. */
 import { DEFAULT_MAX_BREAK_MINUTES_PER_DAY } from "../../domain/breaks.ts";
 import * as persistence from "./persistence";
@@ -193,6 +193,42 @@ export interface Store {
   projectActivity: ProjectActivity[];
 
   goals: Goal[];
+  /**
+   * A goal task's roadmap, keyed by task.
+   *
+   * Kept beside the tasks rather than on them: the domain `Task` is shared by
+   * every surface, and a field only the goal panel reads does not belong on it.
+   * The engine keeps the same list on its own task document.
+   */
+  goalRoadmaps: {
+    taskId: string;
+    taskMaxPoints: number;
+    submitted: boolean;
+    submittedAt: string | null;
+    /* The date the whole goal is aimed at, and what it is. Both agreed at
+       creation; neither gates anything, since the steps carry the deadlines. */
+    targetDate: string | null;
+    goalStatement: string | null;
+    activities: {
+      id: string;
+      heading: string;
+      description: string;
+      deadline: string | null;
+      weightPercent: number;
+      /* Where the step has got to, and what was handed in against it. */
+      status: string;
+      report: {
+        text: string;
+        submittedAt: string | null;
+        submittedBy: string | null;
+        /* What was attached to it. Empty where nothing was. */
+        files: GoalReportFile[];
+      } | null;
+      /* Per-person progress on a goal shared by several people. Null where the
+         goal has one assignee and the flat fields above are the whole truth. */
+      perUserStatus: Record<string, Partial<GoalStepPerson>> | null;
+    }[];
+  }[];
   goalActivities: GoalActivity[];
   conductEvents: ConductEvent[];
   conductPolicies: ConductPolicy[];
@@ -315,6 +351,10 @@ function build(): Store {
   );
 
   return {
+    /* No seeded roadmaps: a goal's steps are built by its owner, and inventing
+       one would put words in somebody's mouth on a demo task. The panel's empty
+       state is the honest first thing to see. */
+    goalRoadmaps: [],
     employees: clone(seed.employees),
     roles: clone(seed.roles),
     reporting: clone(seed.reporting),

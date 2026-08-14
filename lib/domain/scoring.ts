@@ -181,6 +181,31 @@ export interface ScoreLedgerEntry {
   reversalOf: string | null;
   /** Mirrors the rule version that produced it, surfaced for labelling. */
   isProvisional: boolean;
+
+  /**
+   * The argument about this entry, where there has been one.
+   *
+   * Optional because only C3 entries can be disputed and only the engine
+   * records it — everything else leaves these absent rather than claiming a
+   * dispute that cannot exist.
+   *
+   * **Without them the row could not tell the truth about itself.** It offered
+   * "Ask for a recheck" to somebody who had already asked, because it had no
+   * way to know; and when the manager decided, they wrote a reason that reached
+   * nobody — the person whose score it was never saw why. Both were reported.
+   *
+   * `status` is the engine's own word: `"none"`, `"pending"`, `"confirmed"`
+   * (the deduction was REVERSED — the employee was right) or `"rejected"` (it
+   * stands). That vocabulary is inverted for a reader, so nothing renders it
+   * raw; see `disputeOutcome` in `lib/rules/scoring/conduct.ts`.
+   */
+  disputeStatus?: string | null;
+  /** What the person said when they asked for the recheck. */
+  disputeNote?: string | null;
+  /** What the reviewer wrote when they decided it. */
+  disputeReviewNote?: string | null;
+  /** Who decided it. */
+  disputeReviewedBy?: string | null;
 }
 
 /** Derived cache. Must be rebuildable from the ledger alone. */

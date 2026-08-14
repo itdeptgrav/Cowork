@@ -108,7 +108,11 @@ test("the repository chains the queue rather than reading the stored deadline", 
   const src = code(REPO);
   const at = src.indexOf("async #chainQueue(");
   assert.ok(at > 0);
-  const fn = src.slice(at, at + 2800);
+  /* Wide enough to reach the `chainDeadlines({...})` call itself. At 2800 the
+     window stopped short of the `anchorMs` argument at ~3100, so the assertion
+     below was reporting "the anchor is missing" for a function that passes it —
+     a slice length is not a fact about the code. */
+  const fn = src.slice(at, at + 4200);
   assert.match(fn, /chainDeadlines\(\{/);
   assert.match(fn, /addWorkingSecs\(fromMs, secs, policy\.schedule, blocked, policy\.breaks\)/);
   /* Settled hours only. Planning against a proposed budget would promise time
@@ -122,7 +126,9 @@ test("the repository chains the queue rather than reading the stored deadline", 
      with the wall clock. It falls back to now only when they are genuinely away.
      Never a creation time, an approval time, or a stored deadline. */
   assert.match(fn, /const anchorMs = queueAnchorMs\(duty, nowMs\)/);
-  assert.match(fn, /anchorMs,\n/);
+  /* `\r?\n`, because the working copy is not guaranteed LF — a checkout with
+     CRLF endings failed this on line endings while the code was correct. */
+  assert.match(fn, /anchorMs,\r?\n/);
   assert.equal(
     /anchorMs: Date\.now\(\)/.test(fn),
     false,
@@ -133,6 +139,42 @@ test("the repository chains the queue rather than reading the stored deadline", 
     false,
     "the chain is seeded from the stored deadline",
   );
+});
+
+test("a projection that has fallen behind the clock does not become the clock", () => {
+  /**
+   * **The last step used to undo the rule the whole layer exists to hold.**
+   *
+   * `#chainQueue` ended by flooring every answer at `now`:
+   * `Date.parse(c.dueDate) < nowMs ? nowIso : c.dueDate`. The stated reason was
+   * that a past date "reads as broken". The effect was that any projection
+   * which fell behind the wall clock BECAME the wall clock — read at 16:00 it
+   * answered 16:00, read at 16:03 it answered 16:03 — and the line beneath it
+   * reported the deadline being missed by an amount that grew a second per
+   * second while nobody touched the task.
+   *
+   * `anchorStability.test.ts` and `dueDateCases` CASE 12 both assert this
+   * cannot happen, and both went on passing: they test `chainDeadlines`, and
+   * this clamped its output afterwards. So the guard has to live here, at the
+   * layer that did the clamping.
+   */
+  const src = code(REPO);
+  const at = src.indexOf("async #chainQueue(");
+  assert.ok(at > 0, "the #chainQueue anchor drifted");
+  const fn = src.slice(at, at + 3600);
+
+  assert.match(
+    fn,
+    /dueDates\.set\(String\(c\.taskId\), c\.dueDate\);/,
+    "the chained date is no longer passed through unchanged",
+  );
+  for (const clamp of ["nowIso", "< nowMs ?", "Math.max(nowMs"]) {
+    assert.equal(
+      fn.includes(clamp),
+      false,
+      `the projection is floored at the live clock again (${clamp}) — that is the creep`,
+    );
+  }
 });
 
 test("a held cross-department task is in its pending assignee's queue", () => {

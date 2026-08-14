@@ -72,7 +72,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
@@ -129,6 +129,24 @@ import {
   reviewRecheck,
 } from "../../legacy/sop.ts";
 import { legacyFetch } from "../../legacy/http.ts";
+import {
+  creditNode,
+  fetchC2Pool,
+  fetchC2Score,
+  fetchRoadmap,
+  saveRoadmap,
+  submitNodeReport,
+  uploadReportFile,
+  validateWeightage,
+} from "../../legacy/goals.ts";
+import {
+  rollUpStatus,
+  withDecision,
+  withReport,
+  type StepWithPeople,
+} from "../../rules/scoring/goalPeople.ts";
+import { taskMaxPointsFor } from "../../rules/scoring/goalPoints.ts";
+import { approvalOutcome, nodePointsFor } from "../../rules/scoring/goalNodes.ts";
 import { LEGACY_ORGANISATION_ID, hueFor, initialsOf, toEmployee, toScoreHistory, toScoreOverview, toViewer } from "./map.ts";
 import { computeProgress } from "../mock/progress.ts";
 /* Playlists are browser-local personal state with no engine counterpart — see
@@ -612,6 +630,20 @@ function toTimerSession(
       startedAtRealMs !== null ? new Date(startedAtRealMs).toISOString() : null,
     startedAtRealMs,
   };
+}
+
+/**
+ * A step's per-person map, as the engine stored it.
+ *
+ * Null rather than `{}` where there is none: absent means this goal was never
+ * shared and its flat fields are the whole truth, which is a different thing
+ * from a shared goal where nobody has started yet.
+ */
+function readPerUser(
+  raw: unknown,
+): Record<string, Partial<GoalStepPerson>> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  return raw as Record<string, Partial<GoalStepPerson>>;
 }
 
 export class LegacyRepository {
@@ -2015,6 +2047,51 @@ export class LegacyRepository {
                mine self-assigned, which changes who the engine records as the
                assigner and puts it in a different tab. */
             isSelfAssigned: selfAssigned,
+            /**
+             * C2 · a goal task carries the share it claims.
+             *
+             * `isGoldTask` is the engine's own accounting key: `/cowork/c2/config`
+             * sums `c2Config.weightagePercent` across tasks carrying it, and
+             * `goal-credit` gates the C2 score cache on it. The Gold Task
+             * CONCEPT is gone from the interface — every goal task scores C2,
+             * so an opt-in was one state too many — but the flag is still set,
+             * because a goal this app wrote must be counted in the same pool
+             * the old app is counting.
+             *
+             * `globalMaxPointsAtCreation` is the snapshot: change the company
+             * pool later and a task already agreed keeps what it was agreed
+             * for.
+             */
+            ...(input.type === "goal" && input.c2WeightagePercent
+              ? {
+                  isGoal: true,
+                  isGoldTask: true,
+                  /**
+                   * The old app's own field names, so a goal written here is
+                   * readable by it rather than being a second shape.
+                   *
+                   * `goalDescription` is the GOAL STATEMENT, not the task's
+                   * description — it used to be fed the description, which
+                   * meant the outcome being aimed at and the work to be done
+                   * were recorded as the same sentence. `deadline` is the
+                   * target date, which used to be fed `fixedDueAt` and is now
+                   * always null on a goal: a goal task carries no task-level
+                   * deadline, so that field could only ever have been empty.
+                   */
+                  goalConfig: {
+                    goalDescription: input.goalStatement ?? "",
+                    deadline: input.goalDeadline ?? null,
+                  },
+                  c2Config: {
+                    weightagePercent: input.c2WeightagePercent,
+                    taskMaxPoints: taskMaxPointsFor(
+                      input.c2WeightagePercent,
+                      input.c2GlobalMaxPoints ?? 0,
+                    ),
+                    globalMaxPointsAtCreation: input.c2GlobalMaxPoints ?? 0,
+                  },
+                }
+              : {}),
           },
         }),
       (task) => (typeof task.taskId === "string" ? task.taskId : null),
@@ -9016,7 +9093,6 @@ export class LegacyRepository {
          the projected completion holds steady and moves only by time genuinely
          lost — the committed deadline's rule, applied to its projection. */
       const anchorMs = queueAnchorMs(duty, nowMs);
-      const nowIso = new Date(nowMs).toISOString();
 
       const chained = chainDeadlines({
         queue: order
@@ -9053,14 +9129,29 @@ export class LegacyRepository {
       });
       for (const c of chained) {
         if (!c.dueDate) continue;
-        /* A frozen anchor can place a task the person has already been available
-           long enough to finish behind the clock. Show that as due NOW rather
-           than as a past date, which reads as broken; a future completion passes
-           through frozen, which is the whole point. */
-        dueDates.set(
-          String(c.taskId),
-          Date.parse(c.dueDate) < nowMs ? nowIso : c.dueDate,
-        );
+        /**
+         * **The chained date stands, including when it is in the past.**
+         *
+         * This used to floor the answer at `now` — "show it as due NOW rather
+         * than as a past date, which reads as broken". The cost was that the
+         * moment a projection fell behind the clock it BECAME the clock: read
+         * at 16:00 it said 16:00, read at 16:03 it said 16:03, and the
+         * companion line reported the deadline being missed by a figure that
+         * grew a second per second while nobody touched the task.
+         *
+         * It also overrode, at the last step, the exact rule the layer below
+         * exists to hold. `anchorStability.test.ts` puts it plainly: a due date
+         * that has passed means the work is LATE, which is information, and an
+         * anchor that follows the clock is a deadline nobody can ever miss
+         * because it retreats as they approach it. `dueDateCases` CASE 12
+         * asserts two reads minutes apart are equal. Both still passed — they
+         * test the rule, and this clamped its output afterwards.
+         *
+         * A past date is not the display problem it was taken for: the task
+         * already carries an Overdue chip, and "this was due at 15:30" is the
+         * honest reading of a plan that has not been kept.
+         */
+        dueDates.set(String(c.taskId), c.dueDate);
       }
     } catch {
       /* A failed calendar read costs the derived date, not the queue. */
@@ -10693,6 +10784,13 @@ export class LegacyRepository {
           isManualAdjustment: e.sopId === null && e.policyId === null,
           adjustmentReason: null,
           reversalOf: null,
+          /* The argument about this entry, carried through rather than
+             dropped. The reader is the person whose score it is: they have to
+             see that they already asked, and what the answer was. */
+          disputeStatus: e.recheck.status,
+          disputeNote: e.recheck.requestNote,
+          disputeReviewNote: e.recheck.reviewNote,
+          disputeReviewedBy: e.recheck.reviewedByName,
         })),
     );
     return entries;
@@ -10768,15 +10866,31 @@ export class LegacyRepository {
     scope: "global" | "department";
     departmentIds: string[];
   }): Promise<ActionResult<ConductPolicy>> {
-    /* Legacy stores the department by NAME. The domain passes ids, so the one
-       chosen is resolved back through the directory; an unresolvable id sends
-       an empty department, which legacy reads as company-wide. */
-    const department =
+    /**
+     * Legacy stores the department by NAME, and **requires one**.
+     *
+     * The domain passes ids, so a chosen department is resolved back through
+     * the directory. What is new is the fallback: an unnamed department used to
+     * send `""`, and the engine refuses that — `name, percent, description,
+     * department are required`. So a rule written from the C3 page, which asks
+     * for no department at all, could never be saved.
+     *
+     * A rule written by somebody with no department chosen is filed under THEIR
+     * OWN — owner decision. It is the department the rule came out of, it keeps
+     * the rule visible to the team it was written for (the catalogue is filtered
+     * by department for a team lead), and it asks the author for nothing.
+     */
+    const chosen =
       input.scope === "department"
         ? ((await this.listDepartments()).find(
             (d) => d.id === input.departmentIds[0],
           )?.name ?? "")
         : "";
+    const department =
+      chosen ||
+      (await this.#employeesById()).get(String(this.#ctx.employeeId))
+        ?.departmentName ||
+      "";
 
     const result = await createSop({
       token: await this.#token(),
@@ -11677,6 +11791,510 @@ export class LegacyRepository {
         })),
       };
     });
+  }
+
+  /**
+   * The C2 pool, from the engine's own accounting.
+   *
+   * `GET /cowork/c2/config` sums the live goal tasks' shares and reports what
+   * is left. Read rather than recomputed here: the engine excludes done and
+   * cancelled tasks, and a second opinion about the same number is how two
+   * screens come to disagree about what a goal may claim.
+   *
+   * A failure answers an empty pool, which the form renders as "no C2 points
+   * have been set" — the same thing an unconfigured company sees. That is the
+   * safe direction: it refuses the share rather than granting one against a
+   * pool nobody could read.
+   */
+  async getGoalPool() {
+    const r = await fetchC2Pool(await this.#token());
+    return r.ok
+      ? r.data
+      : { globalMaxPoints: 0, claimedPercent: 0, remainingPercent: 0 };
+  }
+
+  async validateGoalWeightage(input: {
+    weightagePercent: number;
+    excludeTaskId?: string | null;
+  }) {
+    const r = await validateWeightage({
+      token: await this.#token(),
+      weightagePercent: input.weightagePercent,
+      excludeTaskId: input.excludeTaskId ?? null,
+    });
+    return r.ok
+      ? r.data
+      : { valid: false, remainingPercent: 0, error: r.error.message };
+  }
+
+  /**
+   * A goal task's roadmap, with the pool it is spent against.
+   *
+   * The pool comes from the task's own `c2Config.taskMaxPoints` — the figure
+   * agreed when the goal was created and snapshotted there, so a later change
+   * to the company total cannot rewrite what this roadmap is dividing up.
+   */
+  async getGoalRoadmap(taskId: TaskId) {
+    const token = await this.#token();
+    const [roadmap, taskDoc] = await Promise.all([
+      fetchRoadmap({ token, taskId: String(taskId) }),
+      (async () => {
+        const { doc, getDoc } = await import("firebase/firestore");
+        const { legacyDb } = await import("../../legacy/firebase.ts");
+        const snap = await getDoc(
+          doc(legacyDb(), "cowork_tasks", String(taskId)),
+        );
+        return snap.exists() ? (snap.data() as Record<string, unknown>) : null;
+      })(),
+    ]);
+
+    const c2 = (taskDoc?.c2Config ?? {}) as Record<string, unknown>;
+    const taskMaxPoints = Number(c2.taskMaxPoints) || 0;
+    /* The old app's own field, read under its own name. */
+    const goalCfg = (taskDoc?.goalConfig ?? {}) as Record<string, unknown>;
+    const targetDate =
+      typeof goalCfg.deadline === "string" && goalCfg.deadline
+        ? goalCfg.deadline
+        : null;
+    const goalStatement =
+      typeof goalCfg.goalDescription === "string" && goalCfg.goalDescription
+        ? goalCfg.goalDescription
+        : null;
+
+    if (!roadmap.ok) {
+      /* A roadmap that cannot be read is an empty one, not a crash. The panel
+         says so and offers to build it; throwing would take the task page
+         down over a feature the task may not even use. */
+      return {
+        activities: [],
+        submitted: false,
+        submittedAt: null,
+        taskMaxPoints,
+        targetDate,
+        goalStatement,
+      };
+    }
+
+    return {
+      activities: roadmap.data.activities.map((a) => ({
+        id: a.id,
+        heading: a.heading,
+        description: a.description,
+        deadline: a.deadline,
+        /* `percentage` is the engine's name for the share. Where an older
+           roadmap has points but no percentage, the share is derived back from
+           the pool so the editor has something to show. */
+        weightPercent:
+          a.percentage ??
+          (taskMaxPoints > 0 ? (a.points / taskMaxPoints) * 100 : 0),
+        points: a.points,
+        status: a.status,
+        report: a.report,
+        /* The engine's own per-person map, carried through `rest` untouched.
+           Absent on every goal that was never shared, which is why this reads
+           as null rather than as an empty object — the difference is "nobody
+           has ever written per-person state here" versus "everybody's row is
+           empty", and only the first is true of a single-assignee goal. */
+        perUserStatus: readPerUser(a.rest.perUserStatus),
+      })),
+      submitted: roadmap.data.submitted,
+      submittedAt: roadmap.data.submittedAt,
+      taskMaxPoints,
+      targetDate,
+      goalStatement,
+    };
+  }
+
+  async saveGoalRoadmap(input: {
+    taskId: TaskId;
+    activities: {
+      id: string;
+      heading: string;
+      description: string;
+      deadline: string | null;
+      weightPercent: number;
+    }[];
+  }): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    /* Read first, to recover everything the engine keeps that this app does
+       not render — `status`, `report`, `history`, `perUserStatus`. The write
+       replaces the array, so a save built only from what is on screen would
+       delete work somebody had already submitted. */
+    const existing = await fetchRoadmap({ token, taskId: String(input.taskId) });
+    const byId = new Map(
+      (existing.ok ? existing.data.activities : []).map((a) => [a.id, a]),
+    );
+    const current = await this.getGoalRoadmap(input.taskId);
+
+    const result = await saveRoadmap({
+      token,
+      taskId: String(input.taskId),
+      activities: input.activities.map((a) => ({
+        id: a.id,
+        heading: a.heading,
+        description: a.description,
+        deadline: a.deadline,
+        percentage: a.weightPercent,
+        points: nodePointsFor(a.weightPercent, current.taskMaxPoints),
+        /* Carried from what the engine already holds. Editing a step's heading
+           must not reset its status or discard the report handed in against
+           it — a new step simply has neither. */
+        status: byId.get(a.id)?.status ?? "pending",
+        report: byId.get(a.id)?.report ?? null,
+        rest: byId.get(a.id)?.rest ?? {},
+      })),
+    });
+
+    return result.ok
+      ? { ok: true, data: undefined }
+      : this.#refusal(result.error);
+  }
+
+  /**
+   * Hand the roadmap over, once.
+   *
+   * The engine announces this on the TRANSITION — `submitted === true` while
+   * the stored flag is still false — so submitting an already-submitted
+   * roadmap would either re-announce it or, worse, be relied upon to. Read
+   * first and return early: handing something over twice is not a thing that
+   * happens, and the second attempt is a no-op rather than a refusal, because
+   * the roadmap is in exactly the state the caller asked for.
+   *
+   * The steps are re-sent unchanged: the engine replaces the array on every
+   * write, so submitting without them would hand over an empty roadmap.
+   */
+  async submitGoalRoadmap(taskId: TaskId): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const existing = await fetchRoadmap({ token, taskId: String(taskId) });
+    if (!existing.ok) return this.#refusal(existing.error);
+    if (existing.data.submitted) return { ok: true, data: undefined };
+
+    const result = await saveRoadmap({
+      token,
+      taskId: String(taskId),
+      activities: existing.data.activities,
+      submitted: true,
+      submittedAt: new Date().toISOString(),
+    });
+    return result.ok
+      ? { ok: true, data: undefined }
+      : this.#refusal(result.error);
+  }
+
+  async submitGoalStepReport(input: {
+    taskId: TaskId;
+    stepId: string;
+    text: string;
+    files?: GoalReportFile[];
+    personId?: string;
+  }): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    /* The engine's own call, ALWAYS, and first. It writes the flat report, sets
+       `reportSubmitted` and sends the head their two emails — none of which
+       this app reimplements. On a single-assignee goal it is the whole of the
+       work, exactly as before. */
+    const r = await submitNodeReport({
+      token,
+      taskId: String(input.taskId),
+      activityId: input.stepId,
+      text: input.text,
+      files: input.files,
+    });
+    if (!r.ok) return this.#refusal(r.error);
+    if (!input.personId) return { ok: true, data: undefined };
+
+    /* Shared: record it against this person's own row too, so a second
+       assignee handing in does not overwrite the first one's report. Read back
+       first — the engine has just rewritten the array, and saving from a copy
+       taken before that call would undo it. */
+    const after = await this.#writePerson({
+      token,
+      taskId: input.taskId,
+      stepId: input.stepId,
+      personId: input.personId,
+      change: (step, assigneeIds) => ({
+        perUserStatus: withReport({
+          step,
+          personId: input.personId!,
+          report: step.report,
+        }),
+        assigneeIds,
+      }),
+    });
+    /* A failure here leaves the engine's flat report written and this person's
+       row not — visible as "handed in" to the head, which is the safe way for
+       it to fail. Reported so it is not silent. */
+    return after;
+  }
+
+  /**
+   * Rewrite one person's row on one step, and roll the flat status up.
+   *
+   * Read-modify-write over the whole activity array, because that is the only
+   * shape the engine's roadmap route accepts. Everything it holds that this app
+   * does not render survives — `history`, `reportSubmitted`, and every OTHER
+   * person's row.
+   */
+  async #writePerson(input: {
+    token: string;
+    taskId: TaskId;
+    stepId: string;
+    personId: string;
+    change: (
+      step: StepWithPeople,
+      assigneeIds: string[],
+    ) => {
+      perUserStatus: Record<string, Partial<GoalStepPerson>>;
+      assigneeIds: string[];
+    };
+  }): Promise<ActionResult<void>> {
+    const [existing, assigneeIds] = await Promise.all([
+      fetchRoadmap({ token: input.token, taskId: String(input.taskId) }),
+      this.#assigneesOf(input.taskId),
+    ]);
+    if (!existing.ok) return this.#refusal(existing.error);
+
+    const found = existing.data.activities.find((a) => a.id === input.stepId);
+    if (!found)
+      return { ok: false, code: "not_found", message: "That step could not be found." };
+
+    const asStep: StepWithPeople = {
+      status: found.status,
+      report: found.report,
+      perUserStatus: readPerUser(found.rest.perUserStatus),
+    };
+    const { perUserStatus } = input.change(asStep, assigneeIds);
+
+    const next = existing.data.activities.map((a) =>
+      a.id !== input.stepId
+        ? a
+        : {
+            ...a,
+            /* Flat `done` only once EVERYBODY is — the engine counts finished
+               steps from this field, and it must not claim a step is complete
+               while somebody still owes a report. */
+            status: rollUpStatus({ step: asStep, assigneeIds, next: perUserStatus }),
+            rest: { ...a.rest, perUserStatus },
+          },
+    );
+
+    const saved = await saveRoadmap({
+      token: input.token,
+      taskId: String(input.taskId),
+      activities: next,
+    });
+    return saved.ok ? { ok: true, data: undefined } : this.#refusal(saved.error);
+  }
+
+  /** Who the task is assigned to. Empty rather than throwing. */
+  async #assigneesOf(taskId: TaskId): Promise<string[]> {
+    const { doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDoc(doc(legacyDb(), "cowork_tasks", String(taskId)));
+    if (!snap.exists()) return [];
+    const data = snap.data() as Record<string, unknown>;
+    const ids = Array.isArray(data.assigneeIds) ? data.assigneeIds : [];
+    /* `pendingAssigneeId` counts: somebody who has been handed the task but has
+       not accepted it yet is still one of the people who has to do it, and
+       leaving them out would let the flat status roll up to done without
+       them. */
+    const all = [...ids, data.pendingAssigneeId]
+      .map((v) => String(v ?? ""))
+      .filter(Boolean);
+    return [...new Set(all)];
+  }
+
+  /**
+   * One file, to Drive, ready to be named on a report.
+   *
+   * Nothing is written to the task here — the returned link is only stored
+   * when the report is submitted. An upload the person then abandons leaves an
+   * orphaned Drive file and no half-written report, which is the right way
+   * round.
+   */
+  async uploadGoalReportFile(file: File): Promise<ActionResult<GoalReportFile>> {
+    const r = await uploadReportFile({ token: await this.#token(), file });
+    return r.ok ? { ok: true, data: r.data } : this.#refusal(r.error);
+  }
+
+  /**
+   * Settle one step.
+   *
+   * Two writes, and the order is deliberate. The step is marked first, so the
+   * decision is recorded even if the credit call then fails — a step approved
+   * and not paid is a visible discrepancy somebody can chase, while a step paid
+   * and not marked would be paid AGAIN on the next attempt.
+   *
+   * The engine is the one that decides whether the points are actually paid: it
+   * re-checks the deadline and refuses a second credit for the same step. This
+   * only asks.
+   */
+  async decideGoalStep(input: {
+    taskId: TaskId;
+    stepId: string;
+    approve: boolean;
+    personId?: string;
+  }): Promise<ActionResult<{ pointsEarned: number }>> {
+    const token = await this.#token();
+    const existing = await fetchRoadmap({ token, taskId: String(input.taskId) });
+    if (!existing.ok) return this.#refusal(existing.error);
+
+    const step = existing.data.activities.find((a) => a.id === input.stepId);
+    if (!step)
+      return { ok: false, code: "not_found", message: "That step could not be found." };
+
+    /* What approving WILL do. Computed before the write, because the write for
+       a shared goal needs to record whether this person was late, and both
+       sides must be the same judgement rather than two. */
+    const outcome = approvalOutcome({
+      submittedAt:
+        (input.personId
+          ? readPerUser(step.rest.perUserStatus)?.[input.personId]?.report
+              ?.submittedAt
+          : step.report?.submittedAt) ?? null,
+      deadline: step.deadline,
+      points: step.points,
+    });
+
+    const decidedAt = new Date().toISOString();
+
+    if (input.personId) {
+      /* Shared: this person's row alone, and the flat status rolled up from
+         everybody's. Another assignee mid-roadmap is untouched. */
+      const written = await this.#writePerson({
+        token,
+        taskId: input.taskId,
+        stepId: input.stepId,
+        personId: input.personId,
+        change: (asStep, assigneeIds) => ({
+          perUserStatus: withDecision({
+            step: asStep,
+            personId: input.personId!,
+            approve: input.approve,
+            points: step.points,
+            late: input.approve && !outcome.earns,
+            nowIso: decidedAt,
+          }),
+          assigneeIds,
+        }),
+      });
+      if (!written.ok) return written;
+      if (!input.approve || !outcome.earns)
+        return { ok: true, data: { pointsEarned: 0 } };
+      return this.#creditGoalStep({
+        token,
+        taskId: input.taskId,
+        step,
+        employeeId: input.personId,
+        points: outcome.points,
+        submittedAt:
+          readPerUser(step.rest.perUserStatus)?.[input.personId]?.report
+            ?.submittedAt ?? null,
+      });
+    }
+
+    const next = existing.data.activities.map((a) =>
+      a.id !== input.stepId
+        ? a
+        : input.approve
+          ? { ...a, status: "done", rest: { ...a.rest, doneAt: decidedAt } }
+          : /* Sent back: the report is cleared so the person can hand in
+               another, which is what `reportSubmitted: false` means to the
+               engine's own screens. */
+            {
+              ...a,
+              status: "pending",
+              report: null,
+              rest: { ...a.rest, report: null, reportSubmitted: false },
+            },
+    );
+
+    const saved = await saveRoadmap({
+      token,
+      taskId: String(input.taskId),
+      activities: next,
+    });
+    if (!saved.ok) return this.#refusal(saved.error);
+
+    if (!input.approve || !outcome.earns)
+      return { ok: true, data: { pointsEarned: 0 } };
+
+    /* Nobody named: the one assignee, as it always was. */
+    const only = (await this.#assigneesOf(input.taskId))[0] ?? "";
+    return this.#creditGoalStep({
+      token,
+      taskId: input.taskId,
+      step,
+      employeeId: only,
+      points: outcome.points,
+      submittedAt: step.report?.submittedAt ?? null,
+    });
+  }
+
+  /**
+   * Pay one person for one step.
+   *
+   * Shared by both paths, so a shared goal and a solo one are credited by the
+   * same code with a different name in it. The step is already marked done by
+   * the time this runs — a credit that fails is reported and the approval is
+   * NOT rolled back, because the work was approved and losing that decision
+   * over a failed score write would be the worse of the two outcomes.
+   */
+  async #creditGoalStep(input: {
+    token: string;
+    taskId: TaskId;
+    step: { id: string; heading: string; points: number; deadline: string | null };
+    employeeId: string;
+    points: number;
+    /** THIS person's submission — not the step's flat one, on a shared goal. */
+    submittedAt: string | null;
+  }): Promise<ActionResult<{ pointsEarned: number }>> {
+    const taskSnap = await (async () => {
+      const { doc, getDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const s = await getDoc(doc(legacyDb(), "cowork_tasks", String(input.taskId)));
+      return s.exists() ? (s.data() as Record<string, unknown>) : null;
+    })();
+    const c2 = (taskSnap?.c2Config ?? {}) as Record<string, unknown>;
+
+    const credited = await creditNode({
+      token: input.token,
+      targetEmployeeId: input.employeeId,
+      taskId: String(input.taskId),
+      componentId: input.step.id,
+      componentName: input.step.heading,
+      taskTitle: String(taskSnap?.title ?? ""),
+      points: input.step.points,
+      /* The engine re-checks `submittedAt <= deadline` for itself and refuses a
+         late one. Both figures go across untouched so it can. */
+      submittedAt: input.submittedAt,
+      deadline: input.step.deadline,
+      weightagePercent: Number(c2.weightagePercent) || null,
+      taskMaxPoints: Number(c2.taskMaxPoints) || null,
+    });
+
+    if (!credited.ok) return this.#refusal(credited.error);
+    return { ok: true, data: { pointsEarned: input.points } };
+  }
+
+  /**
+   * Where somebody's C2 came from.
+   *
+   * The engine's own cache, written as each step is approved. Read rather than
+   * reassembled from the ledger: both are written by the same call, and
+   * recomputing one from the other is how a page comes to disagree with the
+   * score it is explaining.
+   *
+   * An unreadable breakdown answers empty rather than throwing — the C2 tab's
+   * other panels are independent of it, and a failed explanation must not take
+   * down the figure it was explaining.
+   */
+  async getC2Breakdown(employeeId: EmployeeId) {
+    const r = await fetchC2Score({
+      token: await this.#token(),
+      employeeId: String(employeeId),
+    });
+    return r.ok ? r.data : { totalEarned: 0, globalMaxPoints: 0, tasks: [] };
   }
 
   async listGoals() { return []; }

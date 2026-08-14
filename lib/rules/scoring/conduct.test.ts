@@ -5,6 +5,7 @@ import {
   applyRefusal,
   approvalRefusal,
   conductNet,
+  disputeOutcome,
   mayDecideFor,
   quarterOf,
   scoreWithConduct,
@@ -210,4 +211,57 @@ test("a component with nothing to measure is left out, not counted as zero", () 
     scoreWithConduct({ c1: null, c2: null, c4: null, conduct: -5 }),
     -5,
   );
+});
+
+/* ── The argument about a deduction ───────────────────────────────────────── */
+
+test("the engine's inverted words are translated exactly once", () => {
+  /* `"confirmed"` means the dispute was upheld and the deduction REVERSED —
+     the employee was right. Rendered raw it reads as the deduction being
+     confirmed, which is the opposite. Nothing may print the engine's word. */
+  const upheld = disputeOutcome("confirmed");
+  assert.equal(upheld.removed, true);
+  assert.match(upheld.label, /removed/);
+  assert.ok(
+    !/confirmed/i.test(upheld.label),
+    "the engine's word reached the reader, and it means the opposite",
+  );
+
+  const stands = disputeOutcome("rejected");
+  assert.equal(stands.removed, false);
+  assert.match(stands.label, /stands/);
+  assert.ok(
+    !/rejected/i.test(stands.label),
+    "'rejected' reads as the deduction being rejected, not the appeal",
+  );
+});
+
+test("a dispute in progress says so, and is not decided either way", () => {
+  const pending = disputeOutcome("pending");
+  assert.equal(pending.raised, true);
+  assert.equal(pending.pending, true);
+  assert.equal(pending.removed, null, "a pending dispute has no outcome yet");
+});
+
+test("a deduction nobody has argued with reads as nothing at all", () => {
+  /* This is what decides whether the row offers "Ask for a recheck". Anything
+     that reported `raised` here would hide the control on every deduction. */
+  for (const none of ["none", "", null, undefined]) {
+    const o = disputeOutcome(none);
+    assert.equal(o.raised, false, `${String(none)} was read as an argument`);
+    assert.equal(o.label, "");
+  }
+});
+
+test("an unrecognised status is not treated as an argument", () => {
+  /* Legacy writes what it likes. A word this does not know must not silently
+     become "removed" — the safe reading is that nothing has happened. */
+  const o = disputeOutcome("something-else");
+  assert.equal(o.raised, false);
+  assert.equal(o.removed, null);
+});
+
+test("the status is read case-insensitively", () => {
+  assert.equal(disputeOutcome("PENDING").pending, true);
+  assert.equal(disputeOutcome("Confirmed").removed, true);
 });

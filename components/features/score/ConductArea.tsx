@@ -20,7 +20,7 @@ import { usePermissions } from "@/lib/hooks/usePermissions";
 import { SCORE_TABS } from "./tabs";
 import { CHANNEL_CODE, CHANNEL_LABEL } from "@/lib/domain";
 import type { ConductPolicy, ConductSeverity, EmployeeId } from "@/lib/domain";
-import { conductNet } from "@/lib/rules/scoring/conduct";
+import { conductNet, disputeOutcome } from "@/lib/rules/scoring/conduct";
 
 /**
  * C3 · Conduct.
@@ -52,8 +52,20 @@ export function ConductPage() {
   const perms = usePermissions();
   const viewerId = perms.employeeId;
 
+  /**
+   * **Not asked until there is somebody to ask about.**
+   *
+   * `usePermissions` answers null on the first renders, while the viewer is
+   * still being fetched. Sending that on as `""` built
+   * `/cowork/sop/bleach/` with no id on the end, which matches no route — and
+   * Express answers a plain HTML 404 page, so the panel rendered
+   * `<!DOCTYPE html> … Cannot GET /cowork/sop/bleach/` where the deductions
+   * should be, and kept rendering it. An empty id is not a person; there is
+   * nothing to fetch yet, and an empty list is the honest answer until there
+   * is. The dependency below refetches the moment the viewer lands.
+   */
   const ledger = useQuery(
-    (r) => r.listLedger(viewerId ?? "", "c3"),
+    (r) => (viewerId ? r.listLedger(viewerId, "c3") : Promise.resolve([])),
     [viewerId],
   );
   const policies = useQuery((r) => r.listConductPolicies(), []);
@@ -162,6 +174,9 @@ type LedgerRow = {
   effectiveDate: string;
   actorLabel: string;
   reversalOf: string | null;
+  disputeStatus?: string | null;
+  disputeReviewNote?: string | null;
+  disputeReviewedBy?: string | null;
 };
 
 function MyDeductions({
@@ -213,6 +228,9 @@ function DeductionRow({ entry }: { entry: LedgerRow }) {
 
   const penalty = entry.deduction > 0;
   const amount = penalty ? entry.deduction : entry.credit;
+  /* Read once, through the shared translator — the engine's `"confirmed"`
+     means the deduction was REVERSED, which is the opposite of how it reads. */
+  const dispute = disputeOutcome(entry.disputeStatus);
 
   return (
     <article className="px-4 py-3.5">
@@ -246,10 +264,48 @@ function DeductionRow({ entry }: { entry: LedgerRow }) {
         {entry.reversalOf && <span>· reversed</span>}
       </p>
 
+      {/**
+       * The argument, where there has been one.
+       *
+       * **Shown before the button, and instead of it once it has been used.**
+       * The row offered "Ask for a recheck" to somebody who had already asked —
+       * it had no way to know — so the only way to find out what had happened
+       * was to ask again. And when the manager decided, they wrote a reason
+       * that reached nobody: the person whose score it was never saw why it
+       * stood. Both reported.
+       */}
+      {dispute.raised && (
+        <div className="mt-2.5 rounded-inset bg-[var(--surface-sunken)] px-3 py-2">
+          <p
+            className={`text-[11px] font-medium ${
+              dispute.pending
+                ? "text-ink-muted"
+                : dispute.removed
+                  ? "text-[var(--state-positive-ink)]"
+                  : "text-ink"
+            }`}
+          >
+            {dispute.label}
+          </p>
+          {/* The reviewer's own words. A decision without its reason is a
+              verdict, which is the thing this whole flow exists to avoid. */}
+          {entry.disputeReviewNote && (
+            <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
+              “{entry.disputeReviewNote}”
+              {entry.disputeReviewedBy && (
+                <span className="text-ink-faint"> — {entry.disputeReviewedBy}</span>
+              )}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* A deduction nobody can argue with is a verdict. The control sits on
           the row itself rather than behind a separate screen, because the
-          moment somebody disagrees is the moment they are reading the row. */}
+          moment somebody disagrees is the moment they are reading the row.
+          Offered once: a dispute already raised is not raised again. */}
       {!entry.reversalOf &&
+        !dispute.raised &&
         (arguing ? (
           <div className="mt-2.5 rounded-inset bg-[var(--surface-sunken)] p-3">
             {state.error && (
@@ -790,17 +846,28 @@ function DisputeQueue({
  */
 function ApplyPanel({ policies }: { policies: ConductPolicy[] }) {
   const people = useQuery((r) => r.listEmployees(), []);
-  const perms = usePermissions();
+  const viewer = useQuery((r) => r.getViewer(), []);
   const [employeeId, setEmployeeId] = useState("");
 
-  /* Only people this viewer may actually charge. The engine asks the reporting
-     line again and refuses, so a list of everybody would be a list of mostly
-     refusals — and never yourself, which `conduct.apply` forbids by scope. */
+  /**
+   * **The people who report to you — the reporting line, not a permission.**
+   *
+   * This filtered by `can("conduct.apply", id)`, and that check applies an
+   * ADMINISTRATIVE FLOOR: it refuses a target whose administrative level is not
+   * strictly below the viewer's. Against the engine's data those levels are
+   * routinely equal — often zero on both sides, because a role id that resolves
+   * to no role scores nothing — so the floor denied every person and the picker
+   * offered nobody at all. The reporting relationship, which is the actual
+   * authority here, was never reached.
+   *
+   * `directReportIds` IS "whose primary manager is you", which is exactly the
+   * question. The engine asks it again through `_mayDecideFor` and refuses
+   * anybody else, so this is the list narrowing to what it says on the panel
+   * rather than the thing granting the power.
+   */
+  const reports = new Set(viewer.data?.directReportIds ?? []);
   const chargeable = (people.data ?? []).filter(
-    (p) =>
-      !p.exitedAt &&
-      p.id !== perms.employeeId &&
-      perms.can("conduct.apply", p.id),
+    (p) => !p.exitedAt && reports.has(p.id),
   );
 
   return (

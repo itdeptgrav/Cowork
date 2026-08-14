@@ -186,3 +186,60 @@ export function scoreWithConduct(input: {
       : 0;
   return Number((average + input.conduct).toFixed(2));
 }
+
+/* ── The argument about a deduction ───────────────────────────────────────── */
+
+/** What has happened to a dispute, in words a reader can act on. */
+export interface DisputeOutcome {
+  /** Has this deduction been argued about at all? */
+  raised: boolean;
+  /** Is it still with the reviewer? */
+  pending: boolean;
+  /** Was it decided, and which way? Null while pending or never raised. */
+  removed: boolean | null;
+  /** One line for the row, already in the reader's vocabulary. */
+  label: string;
+}
+
+/**
+ * A deduction's dispute, read.
+ *
+ * **The engine's words are inverted and must never reach a screen.** It stores
+ * `"confirmed"` for a dispute that was UPHELD — the deduction is reversed and
+ * the employee was right — and `"rejected"` for one that failed, leaving the
+ * deduction standing. Rendered raw, "confirmed" reads as the deduction being
+ * confirmed, which is the opposite of what happened. Every surface goes through
+ * here so that word is translated exactly once.
+ *
+ * This exists because the row could not tell the truth about itself: it offered
+ * "Ask for a recheck" to somebody who had already asked, and a reviewer's
+ * written reason reached nobody. Both reported.
+ */
+export function disputeOutcome(status: string | null | undefined): DisputeOutcome {
+  const s = (status ?? "none").toLowerCase();
+  if (s === "pending") {
+    return {
+      raised: true,
+      pending: true,
+      removed: null,
+      label: "Recheck requested — with your manager",
+    };
+  }
+  if (s === "confirmed") {
+    return {
+      raised: true,
+      pending: false,
+      removed: true,
+      label: "Recheck upheld — this deduction was removed",
+    };
+  }
+  if (s === "rejected") {
+    return {
+      raised: true,
+      pending: false,
+      removed: false,
+      label: "Recheck decided — this deduction stands",
+    };
+  }
+  return { raised: false, pending: false, removed: null, label: "" };
+}

@@ -285,13 +285,30 @@ export function ScoreOverviewPage({
 
 export function ChannelPage({ channel }: { channel: ChannelId }) {
   const viewerId = useViewerId();
-  const overview = useQuery((r) => r.getScoreOverview(viewerId ?? ""), []);
+  /**
+   * **Nothing is asked until there is somebody to ask about.**
+   *
+   * `useViewerId` answers null on the first renders while the viewer is being
+   * fetched, and passing that on as `""` builds paths with no id on the end —
+   * `/cowork/sop/bleach/`, `/cowork/pmp//c1`. Those match no route, so the
+   * engine answers a plain HTML 404 page and the panel renders
+   * `<!DOCTYPE html> … Cannot GET …` where the figures should be. Reported on
+   * C3, which had the identical shape; these three are the same page.
+   *
+   * `viewerId` is also a dependency of the overview now — without it the query
+   * never re-ran once the viewer landed, so skipping the empty call would have
+   * left the panel empty for good rather than briefly.
+   */
+  const overview = useQuery(
+    (r) => (viewerId ? r.getScoreOverview(viewerId) : Promise.resolve(null)),
+    [viewerId],
+  );
   const units = useQuery(
-    (r) => r.listScoreUnits(viewerId ?? "", channel),
+    (r) => (viewerId ? r.listScoreUnits(viewerId, channel) : Promise.resolve([])),
     [channel, viewerId],
   );
   const ledger = useQuery(
-    (r) => r.listLedger(viewerId ?? "", channel),
+    (r) => (viewerId ? r.listLedger(viewerId, channel) : Promise.resolve([])),
     [channel, viewerId],
   );
 
@@ -452,7 +469,15 @@ export function ChannelPage({ channel }: { channel: ChannelId }) {
             </Panel>
           </div>
 
-          <div className="deck:col-span-5">
+          <div className="deck:col-span-5 space-y-4">
+            {/* C2 only. The ledger below lists the individual credits; this
+                says which goal each came from and how far through its pool the
+                goal has got. No other channel has a source to break down this
+                way, so no other channel grows a panel explaining one. */}
+            {channel === "c2" && viewerId && (
+              <GoalContributions employeeId={viewerId} />
+            )}
+
             <Panel padded={false}>
               <div className="flex items-center gap-2 border-b border-hairline px-4 py-2">
                 <h2 className="text-sm font-medium text-ink">Ledger</h2>
@@ -706,6 +731,93 @@ function TrendChart({
         deduction always reads downward. Channels are independent and are never
         summed.
       </p>
+    </Panel>
+  );
+}
+
+/**
+ * C2 · which goals earned it.
+ *
+ * The ledger beside this already lists every credit — each approved step lands
+ * there as a `type: "C2"` entry. What a list of credits cannot answer is which
+ * GOAL each belongs to and how far through its pool that goal has got, and that
+ * is the question somebody opening C2 is actually asking: not "what did I earn"
+ * but "where is this coming from, and what is still available".
+ *
+ * The figures are the engine's own, written as each step is approved. Nothing
+ * here recomputes them from the ledger — the two are written by the same call,
+ * and a page that recalculated the score it was explaining would eventually
+ * explain a different number than the one above it.
+ */
+function GoalContributions({ employeeId }: { employeeId: string }) {
+  const breakdown = useQuery(
+    (r) => (employeeId ? r.getC2Breakdown(employeeId) : Promise.resolve(null)),
+    [employeeId],
+  );
+
+  if (breakdown.isLoading) {
+    return (
+      <Panel>
+        <SkeletonRows rows={3} />
+      </Panel>
+    );
+  }
+
+  const data = breakdown.data;
+  const tasks = data?.tasks ?? [];
+
+  return (
+    <Panel padded={false}>
+      <div className="flex flex-wrap items-baseline gap-x-2 border-b border-hairline px-4 py-3">
+        <h2 className="text-sm font-medium text-ink">Goals you have earned from</h2>
+        {data && data.totalEarned > 0 && (
+          <span data-figure className="text-xs text-ink-muted">
+            {data.totalEarned} points
+          </span>
+        )}
+      </div>
+
+      {!tasks.length ? (
+        <EmptyState
+          compact
+          title="No goal points yet"
+          body="A goal earns when one of its steps is approved, and only when the step was handed in on or before its deadline."
+        />
+      ) : (
+        <div className="divide-y divide-hairline">
+          {tasks.map((t) => (
+            <div key={t.taskId} className="px-4 py-3">
+              <div className="flex items-baseline gap-2">
+                <Link
+                  href={`/tasks/${t.taskId}/roadmap`}
+                  className="min-w-0 flex-1 truncate text-sm text-ink hover:underline"
+                >
+                  {t.taskTitle || "Untitled goal"}
+                </Link>
+                {/* Earned OF the goal's own pool, not of the company's — the
+                    figure that says how much of THIS goal is still to play
+                    for. */}
+                <span data-figure className="shrink-0 text-xs text-ink-muted">
+                  {t.earnedPoints} of {t.taskMaxPoints}
+                </span>
+              </div>
+              <div className="mt-1.5">
+                {/* `Meter` takes a percentage, not a pair — the pair is
+                    printed above it, so the bar is the shape and the numbers
+                    are the fact. */}
+                <Meter
+                  value={
+                    t.taskMaxPoints > 0
+                      ? Math.min(100, (t.earnedPoints / t.taskMaxPoints) * 100)
+                      : 0
+                  }
+                  label={`${t.taskTitle || "Untitled goal"}: ${t.earnedPoints} of ${t.taskMaxPoints} points earned`}
+                />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </Panel>
   );
 }

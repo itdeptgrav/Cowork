@@ -40,6 +40,8 @@ import type {
   ExternalShareInvite,
   ExternalShareKind,
   ExternalShareRole,
+  GoalReportFile,
+  GoalStepPerson,
   Page,
   ProjectQuery,
   ProjectView,
@@ -258,6 +260,21 @@ import {
   emergencyRequestRefusal,
 } from "@/lib/rules/tasks/emergency";
 import { shiftableTasks, shiftedDueAt } from "@/lib/rules/tasks/deadlineShift";
+import {
+  claimedPercent,
+  remainingPercent,
+  weightageRefusal,
+} from "@/lib/rules/scoring/goalPoints";
+import {
+  approvalOutcome,
+  nodePointsFor,
+  reportRefusal,
+} from "@/lib/rules/scoring/goalNodes";
+import {
+  rollUpStatus,
+  withDecision,
+  withReport,
+} from "@/lib/rules/scoring/goalPeople";
 import {
   type Attendance as MeetingAttendance,
   creditsIn,
@@ -6196,6 +6213,334 @@ export class MockRepository implements CoworkRepository {
   }
 
   /* ── Goals, conduct, attendance ─────────────────────────────────────────── */
+
+  /**
+   * The C2 pool, from the seeded goals.
+   *
+   * The engine keeps the company total in a settings document; the prototype
+   * has no such document, so a fixed pool stands in and the CLAIMED share is
+   * computed from the seeded goals — which is the half that has to be real, so
+   * the creation form's "what is left" figure moves as goals are added.
+   */
+  async getGoalPool() {
+    const globalMaxPoints = 200;
+    const claimed = claimedPercent(
+      getStore()
+        .goals.filter((g) => g.status === "active" || g.status === "draft")
+        .map((g) => ({ weightagePercent: g.weightPercent })),
+    );
+    return delay({
+      globalMaxPoints,
+      claimedPercent: claimed,
+      remainingPercent: remainingPercent(claimed),
+    });
+  }
+
+  async validateGoalWeightage(input: {
+    weightagePercent: number;
+    excludeTaskId?: string | null;
+  }) {
+    /* The same rule the form applies, asked of the store — so the prototype
+       refuses exactly what the engine would, in the same words. */
+    const pool = await this.getGoalPool();
+    const error = weightageRefusal({
+      weightagePercent: input.weightagePercent,
+      remainingPercent: pool.remainingPercent,
+      globalMaxPoints: pool.globalMaxPoints,
+    });
+    return {
+      valid: error === null,
+      remainingPercent: pool.remainingPercent,
+      error,
+    };
+  }
+
+  /**
+   * A goal task's roadmap, from the store.
+   *
+   * The prototype keeps the steps on the task itself, the way the engine keeps
+   * them on the document — one array, replaced wholesale — so the two behave
+   * the same when a roadmap is reordered or a step removed.
+   */
+  async getGoalRoadmap(taskId: TaskId) {
+    const held = getStore().goalRoadmaps.find((r) => r.taskId === taskId);
+    const taskMaxPoints = held?.taskMaxPoints ?? 0;
+    return delay({
+      activities: (held?.activities ?? []).map((a) => ({
+        ...a,
+        points: nodePointsFor(a.weightPercent, taskMaxPoints),
+        perUserStatus: a.perUserStatus ?? null,
+      })),
+      submitted: held?.submitted ?? false,
+      submittedAt: held?.submittedAt ?? null,
+      taskMaxPoints,
+      targetDate: held?.targetDate ?? null,
+      goalStatement: held?.goalStatement ?? null,
+    });
+  }
+
+  async saveGoalRoadmap(input: {
+    taskId: TaskId;
+    activities: {
+      id: string;
+      heading: string;
+      description: string;
+      deadline: string | null;
+      weightPercent: number;
+    }[];
+  }): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    if (!s.tasks.some((t) => t.id === input.taskId))
+      return fail("not_found", "That task could not be found.");
+    tick();
+    const held = s.goalRoadmaps.find((r) => r.taskId === input.taskId);
+    /* Status and report are carried from what is already held, not taken from
+       the caller: editing a step's heading must not reset it to `pending` or
+       discard the report handed in against it. The same rule the engine
+       adapter applies, for the same reason. */
+    const carried = (
+      activities: typeof input.activities,
+      previous: {
+        id: string;
+        status: string;
+        report: unknown;
+        perUserStatus?: Record<string, Partial<GoalStepPerson>> | null;
+      }[],
+    ) =>
+      activities.map((a) => {
+        const was = previous.find((p) => p.id === a.id);
+        return {
+          ...a,
+          status: was?.status ?? "pending",
+          report: (was?.report ?? null) as {
+            text: string;
+            submittedAt: string | null;
+            submittedBy: string | null;
+            files: GoalReportFile[];
+          } | null,
+          /* Carried for the same reason as the report, and it matters more:
+             this holds every OTHER assignee's progress, and a save built from
+             the editor alone would delete all of it. */
+          perUserStatus: was?.perUserStatus ?? null,
+        };
+      });
+
+    if (held) held.activities = carried(input.activities, held.activities);
+    else
+      s.goalRoadmaps.push({
+        taskId: String(input.taskId),
+        /* The prototype has no `c2Config` on its tasks, so a roadmap saved
+           against a task that never had a pool gets the seed's default — enough
+           for the panel's arithmetic to be exercised. */
+        taskMaxPoints: 40,
+        submitted: false,
+        submittedAt: null,
+        /* The prototype's tasks carry no goal config, so a roadmap saved here
+           has no agreed target date — the panel says so rather than inventing
+           one. */
+        targetDate: null,
+        goalStatement: null,
+        activities: carried(input.activities, []),
+      });
+    return ok(undefined);
+  }
+
+  async submitGoalRoadmap(taskId: TaskId): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const held = getStore().goalRoadmaps.find((r) => r.taskId === taskId);
+    if (!held) return fail("not_found", "That roadmap could not be found.");
+    /* Once, like the engine — a roadmap already handed over is left alone
+       rather than stamped with a second, later moment. */
+    if (held.submitted) return ok(undefined);
+    tick();
+    held.submitted = true;
+    held.submittedAt = nowIso();
+    return ok(undefined);
+  }
+
+  async submitGoalStepReport(input: {
+    taskId: TaskId;
+    stepId: string;
+    text: string;
+    files?: GoalReportFile[];
+    personId?: string;
+  }): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const held = getStore().goalRoadmaps.find((r) => r.taskId === input.taskId);
+    const step = held?.activities.find((a) => a.id === input.stepId);
+    if (!step) return fail("not_found", "That step could not be found.");
+    const refusal = reportRefusal(input.text);
+    if (refusal) return fail("validation_failed", refusal, "text");
+    tick();
+    /* The flat report, always — the engine writes it either way and everything
+       that is not the per-person panel reads it. */
+    const report = {
+      text: input.text.trim(),
+      submittedAt: nowIso(),
+      submittedBy: actingId(),
+      files: input.files ?? [],
+    };
+    step.report = report;
+
+    if (!input.personId) {
+      step.status = "pending_approval";
+      return ok(undefined);
+    }
+
+    const assigneeIds = this.#goalAssignees(input.taskId);
+    step.perUserStatus = withReport({
+      step: { status: step.status, report, perUserStatus: step.perUserStatus },
+      personId: input.personId,
+      report,
+    });
+    step.status = rollUpStatus({
+      step: { status: step.status, report, perUserStatus: step.perUserStatus },
+      assigneeIds,
+      next: step.perUserStatus,
+    });
+    return ok(undefined);
+  }
+
+  /** Who a goal task is assigned to. Empty rather than throwing. */
+  #goalAssignees(taskId: TaskId): string[] {
+    return getStore()
+      .assignments.filter((a) => a.taskId === taskId)
+      .map((a) => String(a.employeeId));
+  }
+
+  /**
+   * A file, stood up without a store behind it.
+   *
+   * The seeded repository has no Drive, so the link is a `blob:` URL for the
+   * file the person actually picked — it opens, for as long as the page lives.
+   * That is enough to demonstrate attach-and-open, and it is honestly nothing
+   * more: nothing here survives a reload, exactly like the rest of the mock.
+   */
+  async uploadGoalReportFile(file: File): Promise<ActionResult<GoalReportFile>> {
+    const g = guard();
+    if (g) return g;
+    tick();
+    const url = URL.createObjectURL(file);
+    return ok({
+      name: file.name,
+      driveUrl: url,
+      downloadUrl: url,
+      mimeType: file.type || "application/octet-stream",
+      size: file.size,
+    });
+  }
+
+  async decideGoalStep(input: {
+    taskId: TaskId;
+    stepId: string;
+    approve: boolean;
+    personId?: string;
+  }): Promise<ActionResult<{ pointsEarned: number }>> {
+    const g = guard();
+    if (g) return g;
+    const held = getStore().goalRoadmaps.find((r) => r.taskId === input.taskId);
+    const step = held?.activities.find((a) => a.id === input.stepId);
+    if (!held || !step) return fail("not_found", "That step could not be found.");
+    tick();
+
+    const points = nodePointsFor(step.weightPercent, held.taskMaxPoints);
+    /* The same rule the engine applies: on or before earns, after earns
+       nothing. Held in one place so the prototype cannot pay for a late step
+       the product would refuse. */
+    const outcome = approvalOutcome({
+      submittedAt:
+        (input.personId
+          ? step.perUserStatus?.[input.personId]?.report?.submittedAt
+          : step.report?.submittedAt) ?? null,
+      deadline: step.deadline,
+      points,
+    });
+
+    if (input.personId) {
+      const assigneeIds = this.#goalAssignees(input.taskId);
+      const asStep = {
+        status: step.status,
+        report: step.report,
+        perUserStatus: step.perUserStatus,
+      };
+      step.perUserStatus = withDecision({
+        step: asStep,
+        personId: input.personId,
+        approve: input.approve,
+        points,
+        late: input.approve && !outcome.earns,
+        nowIso: nowIso(),
+      });
+      step.status = rollUpStatus({
+        step: asStep,
+        assigneeIds,
+        next: step.perUserStatus,
+      });
+      return ok({ pointsEarned: input.approve ? outcome.points : 0 });
+    }
+
+    if (!input.approve) {
+      /* Sent back, so another report can be handed in. */
+      step.status = "pending";
+      step.report = null;
+      return ok({ pointsEarned: 0 });
+    }
+
+    step.status = "done";
+    return ok({ pointsEarned: outcome.points });
+  }
+
+  /**
+   * Where somebody's C2 came from, from the store.
+   *
+   * Built from the roadmaps rather than kept as a second figure: the prototype
+   * has no cache to read, and summing the approved steps is the same arithmetic
+   * the engine performs when it writes its own.
+   */
+  async getC2Breakdown(employeeId: EmployeeId) {
+    const s = getStore();
+    const tasks = s.goalRoadmaps
+      .map((r) => {
+        const task = s.tasks.find((t) => t.id === r.taskId);
+        const mine = s.assignments.some(
+          (a) => a.taskId === r.taskId && String(a.employeeId) === String(employeeId),
+        );
+        if (!task || !mine) return null;
+        const earned = r.activities
+          .filter((a) => a.status === "done")
+          .reduce(
+            (sum, a) =>
+              sum +
+              approvalOutcome({
+                submittedAt: a.report?.submittedAt ?? null,
+                deadline: a.deadline,
+                points: nodePointsFor(a.weightPercent, r.taskMaxPoints),
+              }).points,
+            0,
+          );
+        return {
+          taskId: r.taskId,
+          taskTitle: task.title,
+          taskMaxPoints: r.taskMaxPoints,
+          earnedPoints: Number(earned.toFixed(2)),
+          weightagePercent: 0,
+        };
+      })
+      .filter((t): t is NonNullable<typeof t> => t !== null)
+      .sort((a, b) => b.earnedPoints - a.earnedPoints);
+
+    return delay({
+      totalEarned: Number(
+        tasks.reduce((sum, t) => sum + t.earnedPoints, 0).toFixed(2),
+      ),
+      globalMaxPoints: 200,
+      tasks,
+    });
+  }
 
   async listGoals(employeeId?: EmployeeId): Promise<Goal[]> {
     const s = getStore();

@@ -1581,6 +1581,196 @@ export interface CoworkRepository {
   >;
 
   /* Goals */
+
+  /**
+   * The C2 pool a goal task claims a share of — Phase 1 of goal support.
+   *
+   * A goal task is worth `weightagePercent × globalMaxPoints ÷ 100`, and the
+   * shares of all live goal tasks must not exceed the whole pool. This is what
+   * the creation form needs to compute the figure and to say what is left.
+   *
+   * The arithmetic is in `lib/rules/scoring/goalPoints.ts`; this only fetches
+   * the two numbers it works from. The engine is asked again at the moment of
+   * writing — see `validateGoalWeightage` — because between reading this and
+   * submitting, another task can claim the pool.
+   */
+  getGoalPool(): Promise<{
+    globalMaxPoints: number;
+    claimedPercent: number;
+    remainingPercent: number;
+  }>;
+
+  /**
+   * The engine's verdict on a share, at the moment of asking.
+   *
+   * A hard block, and its refusal is the engine's own sentence — shown as
+   * written rather than restated, because it names the figures the person has
+   * to act on.
+   */
+  validateGoalWeightage(input: {
+    weightagePercent: number;
+    excludeTaskId?: string | null;
+  }): Promise<{ valid: boolean; remainingPercent: number; error: string | null }>;
+
+  /**
+   * A goal task's roadmap — Phase 2 of goal support.
+   *
+   * The steps the goal is delivered through, each with a share of the task's
+   * points. The engine keeps them as an array on the task and replaces it
+   * wholesale, so `saveGoalRoadmap` sends the whole list; anything this app
+   * does not render is carried through untouched rather than dropped.
+   */
+  getGoalRoadmap(taskId: TaskId): Promise<{
+    activities: {
+      id: string;
+      heading: string;
+      description: string;
+      deadline: string | null;
+      weightPercent: number;
+      points: number;
+      /** `pending`, `pending_approval` or `done` — the engine's own words. */
+      status: string;
+      /** What was handed in against this step, where anything was. */
+      report: {
+        text: string;
+        submittedAt: string | null;
+        submittedBy: string | null;
+        /** What was attached to it. Empty where nothing was. */
+        files: GoalReportFile[];
+      } | null;
+      /**
+       * Per-person progress, on a goal assigned to more than one person.
+       *
+       * Null on a single-assignee goal — there the flat `status` and `report`
+       * above are the one person's state, unchanged from before goals were
+       * shareable.
+       */
+      perUserStatus: Record<string, Partial<GoalStepPerson>> | null;
+    }[];
+    submitted: boolean;
+    submittedAt: string | null;
+    /** The task's own pool, so the editor can guard against it. */
+    taskMaxPoints: number;
+    /**
+     * The date the whole goal is aimed at, as agreed at creation.
+     *
+     * Shown so the roadmap has the bound it is being built towards. It does
+     * NOT gate anything: steps carry their own deadlines and those are what
+     * earn or forfeit points. Null on a goal created before this was asked
+     * for.
+     */
+    targetDate: string | null;
+    /** What the goal is, in the creator's words. Null where none was given. */
+    goalStatement: string | null;
+  }>;
+
+  saveGoalRoadmap(input: {
+    taskId: TaskId;
+    activities: {
+      id: string;
+      heading: string;
+      description: string;
+      deadline: string | null;
+      weightPercent: number;
+    }[];
+  }): Promise<ActionResult<void>>;
+
+  /**
+   * Hand the roadmap to the person doing the work — Phase 3.
+   *
+   * Marks it submitted and stamps when. The engine notifies on the transition,
+   * so this is sent once and never re-sent: `submitGoalRoadmap` on an already
+   * submitted roadmap is a no-op rather than a second announcement.
+   */
+  submitGoalRoadmap(taskId: TaskId): Promise<ActionResult<void>>;
+
+  /**
+   * Hand in a report against one step — Phase 4.
+   *
+   * The engine refuses anybody who is not an assignee of the task, which is the
+   * rule that matters: a report is the person doing the work saying they have
+   * done it. It moves the step to `pending_approval` and tells the head.
+   */
+  submitGoalStepReport(input: {
+    taskId: TaskId;
+    stepId: string;
+    text: string;
+    /**
+     * Files to attach, already uploaded by `uploadGoalReportFile`.
+     *
+     * Uploaded FIRST and separately, so a failed upload costs a retry of that
+     * one file rather than the written report along with it.
+     */
+    files?: GoalReportFile[];
+    /**
+     * Who is handing it in, on a goal shared by several people.
+     *
+     * When given, the report is ALSO recorded against this person's own row so
+     * a second assignee's submission cannot overwrite the first one's. The
+     * engine's flat report is still written either way — it is what drives its
+     * emails and what the old Cowork reads.
+     *
+     * Omit on a single-assignee goal.
+     */
+    personId?: string;
+  }): Promise<ActionResult<void>>;
+
+  /**
+   * Put one file where a goal report can point at it — Phase 4.
+   *
+   * Separate from `submitGoalStepReport` because the two fail differently: an
+   * upload is slow and worth showing progress for, and a report should not be
+   * lost because the third of four files timed out.
+   */
+  uploadGoalReportFile(file: File): Promise<ActionResult<GoalReportFile>>;
+
+  /**
+   * Settle a step — Phase 5.
+   *
+   * `approve: true` marks it done and pays its points, **if** it was handed in
+   * on or before its deadline. Late earns nothing; the engine re-checks that
+   * itself and answers `skipped`, so a late approval still records the work
+   * without moving anybody's score.
+   *
+   * `approve: false` sends it back: the step returns to `pending` and the
+   * report is cleared, so the person can hand in another.
+   */
+  decideGoalStep(input: {
+    taskId: TaskId;
+    stepId: string;
+    approve: boolean;
+    /**
+     * Whose work is being decided, on a goal shared by several people.
+     *
+     * The decision, and the points, land on this person alone — the others'
+     * rows are untouched, and the step's flat status only reads `done` once
+     * every assignee has been approved.
+     *
+     * Omit on a single-assignee goal, where the credit goes to the one
+     * assignee as it always did.
+     */
+    personId?: string;
+  }): Promise<ActionResult<{ pointsEarned: number }>>;
+
+  /**
+   * Where somebody's C2 came from — Phase 6.
+   *
+   * The C2 tab can already list the individual credits: each approved step
+   * lands in the ledger as a `type: "C2"` entry. What that cannot answer is
+   * WHICH GOAL each belongs to and how far through its pool the goal has got.
+   */
+  getC2Breakdown(employeeId: EmployeeId): Promise<{
+    totalEarned: number;
+    globalMaxPoints: number;
+    tasks: {
+      taskId: string;
+      taskTitle: string;
+      taskMaxPoints: number;
+      earnedPoints: number;
+      weightagePercent: number;
+    }[];
+  }>;
+
   listGoals(employeeId?: EmployeeId): Promise<Goal[]>;
   getGoal(
     id: string,
@@ -2308,6 +2498,34 @@ export interface CreateTaskInput {
   senderWindowSecs?: number | null;
   approverId?: EmployeeId | null;
   goalId?: string | null;
+  /**
+   * C2 · the share of the company pool a GOAL task claims, as a percentage.
+   *
+   * Optional, and only read when `type` is `"goal"` — every other kind of task
+   * is unaffected. Absent means the task carries no C2 config at all, which is
+   * what a goal created before this existed looks like.
+   */
+  c2WeightagePercent?: number | null;
+  /** The pool that share was agreed against, snapshotted onto the task. */
+  c2GlobalMaxPoints?: number | null;
+  /**
+   * C2 · what the goal is, in one line.
+   *
+   * The old Cowork's `goalConfig.goalDescription`, kept under that name so a
+   * goal created here reads correctly in the old app. Separate from the task's
+   * own description: one says what the work is, the other states the outcome
+   * being aimed at.
+   */
+  goalStatement?: string | null;
+  /**
+   * C2 · the date the whole goal is aimed at, as `YYYY-MM-DD`.
+   *
+   * **Not a deadline the task is scored against.** A goal task carries no
+   * budget and no task-level due date — its steps do, one each, and those are
+   * what earn or forfeit points. This is the outer date the roadmap is built
+   * towards, stored as the old app's `goalConfig.deadline`.
+   */
+  goalDeadline?: string | null;
   tags?: string[];
   recurrence?: Task["recurrence"];
 }
@@ -2464,6 +2682,56 @@ export interface UploadedMedia {
   name: string;
   mimeType: string;
   sizeBytes: number;
+}
+
+/**
+ * A file attached to a goal step's report.
+ *
+ * The link lives ON the report rather than behind an id, because that is where
+ * the engine has kept it since the old Cowork and every stored report points
+ * at it. Unlike the private attachment system behind `getAttachments`, these
+ * are Drive links: whoever holds one can open the file, so nothing that needs
+ * a permission check belongs here.
+ *
+ * @see CoworkRepository.uploadGoalReportFile
+ */
+export interface GoalReportFile {
+  name: string;
+  /** Where to open it. */
+  driveUrl: string;
+  /** Where to fetch the bytes. Falls back to `driveUrl`. */
+  downloadUrl: string;
+  mimeType: string;
+  /** Bytes, or 0 where the engine did not record it. */
+  size: number;
+}
+
+/**
+ * One person's progress against one step of a shared goal.
+ *
+ * A goal assigned to several people is walked independently by each of them:
+ * their own report, their own approval, their own points. This is the row that
+ * holds that, keyed by employee id under a step's `perUserStatus`.
+ *
+ * Absent entirely on a single-assignee goal, where the step's flat fields are
+ * the one person's state and nothing extra is written.
+ *
+ * @see lib/rules/scoring/goalPeople.ts for what may be read from it
+ */
+export interface GoalStepPerson {
+  /** `pending`, `pending_approval` or `done` — the engine's own words. */
+  status: string;
+  report: {
+    text: string;
+    submittedAt: string | null;
+    submittedBy: string | null;
+    files: GoalReportFile[];
+  } | null;
+  doneAt: string | null;
+  /** Handed in after the deadline, so it earned nothing. */
+  lateSubmission: boolean;
+  /** What this person earned. The step's FULL points, or 0 if it was late. */
+  pointsAwarded: number;
 }
 
 export interface CreateSubtaskInput {

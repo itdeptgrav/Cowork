@@ -23,7 +23,6 @@ import { PersonMonitor } from "./PersonMonitor";
 import { TeamCards } from "./TeamCards";
 import { PersonCalendar } from "./PersonCalendar";
 import { useQuery } from "@/lib/hooks/useRepository";
-import { usePermissions } from "@/lib/hooks/usePermissions";
 import { useDutyModes } from "@/lib/hooks/useDutyMode";
 import { totalMeasured } from "@/lib/rules/scoring/scoreDisplay";
 import { STATUS_META } from "@/lib/status/employeeStatus";
@@ -537,10 +536,16 @@ function ApplyConduct({
   employeeId: string;
   name: string;
 }) {
-  const perms = usePermissions();
+  const viewer = useQuery((r) => r.getViewer(), []);
   const [open, setOpen] = useState(false);
 
-  if (!perms.can("conduct.apply", employeeId)) return null;
+  /* Shown to the person this employee REPORTS TO — the same question the C3
+     picker asks, and for the same reason. `can("conduct.apply", id)` applies an
+     administrative floor that refuses a target whose level is not strictly
+     below the viewer's; against the engine's data those levels are routinely
+     equal, so the control was hidden from the very manager it exists for. The
+     engine still refuses anybody but their own primary manager. */
+  if (!(viewer.data?.directReportIds ?? []).includes(employeeId)) return null;
 
   return (
     <Panel>

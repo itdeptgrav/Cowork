@@ -12,6 +12,7 @@ import { ProjectPanel } from "./ProjectPanel";
 import { ResponsibilityPanel } from "./ResponsibilityPanel";
 import { RelatedMeetings } from "@/components/features/meetings/RelatedMeetings";
 import { TaskMeetingPanel } from "./TaskMeetingPanel";
+import { GoalRoadmapPanel } from "./GoalRoadmapPanel";
 import { ApprovalActionCard } from "./ApprovalActionCard";
 import { budgetTurn } from "@/lib/rules/tasks/budgetNegotiation";
 import { BudgetNegotiationCard } from "./BudgetNegotiationCard";
@@ -89,7 +90,10 @@ type Tab =
   | "history"
   | "chat"
   | "files"
-  | "meetings";
+  | "meetings"
+  /* C2 · the steps a goal task is delivered through. Offered only on a goal,
+     so no other kind of task grows a tab it has nothing to put in. */
+  | "roadmap";
 
 export function TaskDetail({
   taskId,
@@ -230,6 +234,18 @@ export function TaskDetail({
       href: `/tasks/${taskId}/meetings`,
       icon: "meeting" as const,
     },
+    /* C2 · only on a goal task. Every other kind has no pool to share out, so
+       the tab would open on an explanation of why it is empty. */
+    ...(v.task.type === "goal"
+      ? [
+          {
+            id: "roadmap",
+            label: "Roadmap",
+            href: `/tasks/${taskId}/roadmap`,
+            icon: "score" as const,
+          },
+        ]
+      : []),
     {
       id: "files",
       label: "Files",
@@ -569,6 +585,8 @@ export function TaskDetail({
             <ReviewPanel view={v} onChange={refetch} />
           )}
           {tab === "meetings" && <TaskMeetingPanel view={v} />}
+
+          {tab === "roadmap" && <GoalRoadmapPanel view={v} />}
           {tab === "files" && <TaskFilesPanel view={v} />}
           {tab === "history" && <HistoryPanel taskId={taskId} />}
           {tab === "chat" && (

@@ -23,7 +23,17 @@ import { getExtensionActions } from "./extensionAuthority.ts";
 export type BudgetState =
   /** The assignor's opening figure, waiting on the assignee. */
   | "waiting_for_assignee"
-  /** The assignee has asked for something else; the assignor decides. */
+  /**
+   * The assignee has asked for something else, and the person who decides
+   * their hours is answering.
+   *
+   * **That is their MANAGER, not whoever sent the work** — hours are a
+   * management decision about a person, so the engine passes this turn down the
+   * reporting line, falling back to the assignor only where no manager can be
+   * resolved. The name of the state is left as it is because it is persisted in
+   * `budgetNegotiation.state` on every task in flight, and renaming it would
+   * strand each of them mid-negotiation.
+   */
   | "waiting_for_assignor"
   /** Settled. The task has a deadline and work can start. */
   | "agreed"
@@ -150,7 +160,9 @@ export function waitingOnLabel(
   const name = nameOf(turn.ownerId);
   if (!name) {
     return turn.state === "waiting_for_assignor"
-      ? "Waiting for the task's creator to decide"
+      ? /* Not "the task's creator": this turn goes to whoever decides the
+           assignee's hours, which is their manager wherever one is recorded. */
+        "Waiting for the assignee's manager to decide"
       : "Waiting for the assignee to accept";
   }
   return turn.state === "waiting_for_assignor"
