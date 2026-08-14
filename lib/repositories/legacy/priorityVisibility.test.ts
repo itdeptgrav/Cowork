@@ -264,8 +264,15 @@ test("the list and the task page get their dates from one chain", () => {
      stands: `dueAtMs` and `fixedDeadline` are this chain's own output, so
      reading them back would let a date drift a little further every time it was
      recomputed. */
-  const fn = src.slice(src.indexOf("async #chainQueue("), src.indexOf("async #chainQueue(") + 2600);
-  assert.match(fn, /const anchorMs = queueAnchorMs\(duty, nowMs\)/);
+  /* 4200, not 2600: the anchor comment grew when the pairing below was
+     documented, and a slice length is not a fact about the code. */
+  const fn = src.slice(src.indexOf("async #chainQueue("), src.indexOf("async #chainQueue(") + 4200);
+  /* The day's opening, paired with the FULL budget — see the fuller note in
+     `operationalDueDate.test.ts`. Presence is not consulted: anchoring on the
+     online session while subtracting logged time counted the same hour twice
+     and made the date run backwards as work was done. */
+  assert.match(fn, /const anchorMs = officeOpenMsFor\(policy\.schedule, nowMs\)/);
+  assert.match(fn, /budget: "full"/);
   assert.match(fn, /senderTimerWindowSecs: resolveTimeBudget\(x\)/);
   assert.equal(
     /dueAtMs|fixedDeadline/.test(fn),

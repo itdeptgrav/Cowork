@@ -362,11 +362,32 @@ test("submitting without files still works", () => {
   assert.match(src, /if \(staged\.length > 0\)/);
 });
 
-test("the reviewer sees each attempt separately, oldest first", () => {
+test("the reviewer sees each attempt separately, and in a defined order", () => {
+  /**
+   * **What matters is the audit trail, not the syntax that produces it.**
+   *
+   * This asserted `attempt ${i + 1}` and `.reverse()` — two implementation
+   * details that have both been improved out of existence, so it was failing
+   * for code that does the job better than the code it was written against.
+   *
+   * `i + 1` was the array INDEX. The label now comes from `submissionContext`,
+   * which reads the submission's own `attempt` number — so a list that is
+   * filtered or partially loaded cannot mislabel attempt 3 as attempt 1.
+   *
+   * `.reverse()` was replaced by `sortTaskFiles`, which orders newest-first and
+   * puts undated files LAST rather than first; reversing an array only orders
+   * it correctly if it arrived sorted, which is an assumption about a caller.
+   */
   const src = code(FILES);
+  /* One read per attempt — pooling files under the task id would lose which
+     version of the work each belongs to, which is the whole trail after a
+     rework. */
   assert.match(src, /listSubmissions\(taskId\)/);
-  assert.match(src, /attempt \$\{i \+ 1\}/);
-  assert.match(src, /\.reverse\(\)/);
+  assert.match(src, /r\.getAttachments\("submission", sub\.id\)/);
+  /* Labelled from the submission's own attempt number. */
+  assert.match(src, /submissionContext\(sub\)/);
+  /* Ordered by the shared rule rather than by array position. */
+  assert.match(src, /sortTaskFiles\(files\)/);
 });
 
 test("composite entity ids resolve to their task for the permission check", (t) => {
@@ -444,7 +465,18 @@ test("the files surface is mounted for every viewer of a task", () => {
   );
   /* And the tab itself is not conditioned on the container check the work tabs
      use — `isContainer ? [] : [...]` must not contain it. */
-  const bar = detail.slice(detail.indexOf("const tabs = ["), detail.indexOf("return ("));
+  /**
+   * To the END of the tabs array, not to the first `return (`.
+   *
+   * That boundary was searched from the start of the FILE, and this component
+   * has an earlier `return (` — an early-out above the tab list. So the slice
+   * ran backwards and came out EMPTY, every `indexOf` below answered -1, and
+   * `-1 > -1` failed. The assertion reported "Files is inside the tabs list"
+   * about a file where it plainly is. A slice boundary is not a fact about the
+   * code, and this is the second time that has bitten in this suite.
+   */
+  const tabsAt = detail.indexOf("const tabs = [");
+  const bar = detail.slice(tabsAt, detail.indexOf("];", tabsAt));
   const filesEntry = bar.indexOf('id: "files"');
   assert.ok(filesEntry > bar.indexOf("...(isContainer"), "Files is inside the tabs list");
   assert.ok(

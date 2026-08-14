@@ -1,4 +1,8 @@
-import { classify, type LegacyResult } from "./envelope";
+/* `.ts` extension REQUIRED. This was `"./envelope"`, which worked only while it
+   was a type-only import — those are erased before anything resolves them.
+   Adding `classify` made it a value import, and Node's ESM resolver does not
+   guess extensions, so the module failed to load at runtime. */
+import { classify, type LegacyResult } from "./envelope.ts";
 import { legacyFetch } from "./http.ts";
 import { readConfig } from "./config.ts";
 import { PUBLIC_ENV } from "./publicEnv.ts";

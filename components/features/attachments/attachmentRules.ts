@@ -7,11 +7,17 @@
  * file is described.
  */
 
-/* Mirrors the engine's allow-list. Checked here to save a person a round trip
-   on an obvious mistake; the ENGINE is still the authority, and it re-reads the
-   file's real bytes rather than trusting any of this. */
-export const ACCEPT =
-  ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.txt,.csv";
+/**
+ * What the file picker offers. **Everything** — the engine's allow-list was
+ * withdrawn on the owner's instruction, so a list here would be the only thing
+ * left refusing a file the server accepts.
+ *
+ * Empty string rather than a wildcard: an `accept` attribute set to the empty
+ * string is treated as absent, which is exactly "no filter", whereas some
+ * pickers treat a wildcard as a filter that happens to match everything and
+ * still hide files without an extension.
+ */
+export const ACCEPT = "";
 /**
  * No size cap — withdrawn on the owner's instruction.
  *

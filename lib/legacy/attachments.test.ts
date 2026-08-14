@@ -124,13 +124,67 @@ test("binary content cannot be passed off as text", (t) => {
   assert.equal(sniffMimeType(Buffer.from("a,b,c\n1,2,3"), "text/csv"), "text/csv");
 });
 
-test("an unrecognised file is refused rather than defaulted", (t) => {
+test("an unrecognised file is not given a type it did not earn", (t) => {
   if (!available()) return t.skip("backend not present");
-  /* "unknown" must never become application/octet-stream and slip past the
-     allow-list. */
+  /* The sniff answers null and the service turns that into
+     `application/octet-stream` — which downloads rather than renders. What must
+     never happen is the CLAIMED type being believed: an ELF binary declared
+     `application/pdf` must not come back as a PDF. */
   const { sniffMimeType } = svc();
   assert.equal(sniffMimeType(Buffer.from([0x7f, 0x45, 0x4c, 0x46]), "application/pdf"), null);
   assert.equal(sniffMimeType(Buffer.alloc(0), "application/pdf"), null);
+});
+
+/**
+ * **Where the type rule lives now that every type may be uploaded.**
+ *
+ * The allow-list used to refuse an upload; it was withdrawn on the owner's
+ * instruction. The security property it was carrying did not go away — it moved
+ * to the download, where `inline` versus `attachment` is decided. An HTML file
+ * stored and served `inline` from this origin would run its author's JavaScript
+ * in the session of whoever opened it, and that is the whole of the risk.
+ */
+test("only image and PDF types may render inline; everything else downloads", (t) => {
+  if (!available()) return t.skip("backend not present");
+  const { mayRenderInline } = svc();
+  for (const safe of ["image/png", "image/jpeg", "image/webp", "application/pdf"]) {
+    assert.equal(mayRenderInline(safe), true, `${safe} should preview`);
+  }
+  for (const unsafe of [
+    "text/html",
+    "image/svg+xml",
+    "application/xhtml+xml",
+    "text/plain",
+    "application/zip",
+    "video/mp4",
+    "application/octet-stream",
+    "",
+    null,
+  ]) {
+    assert.equal(mayRenderInline(unsafe), false, `${unsafe} must not render`);
+  }
+});
+
+test("the download decides disposition from the sniffed type, not the claim", (t) => {
+  if (!available()) return t.skip("backend not present");
+  /* Reading the client's label here would undo the whole thing: an HTML file
+     announced as `image/png` would preview. `record.mimeType` is what the sniff
+     stored at upload. */
+  const src = code(ROUTE);
+  const get = src.slice(src.indexOf('router.get(\n  "/attachments/:id"'));
+  assert.match(get.slice(0, 2600), /mayRenderInline\(mimeType\)/);
+  /* `[\s\S]` rather than the `s` flag, which this tsconfig's target rejects. */
+  assert.match(get.slice(0, 2600), /X-Content-Type-Options[\s\S]*nosniff/);
+});
+
+test("the upload no longer refuses any type", (t) => {
+  if (!available()) return t.skip("backend not present");
+  const s = svc();
+  assert.equal(typeof s.mayRenderInline, "function");
+  /* `ALLOWED` is gone from the service surface entirely — a leftover export
+     would invite somebody to reinstate the gate from it. */
+  assert.equal("ALLOWED" in s, false);
+  assert.doesNotMatch(code(SERVICE), /ALLOWED\.has/);
 });
 
 test("the filename cannot traverse or inject a header", (t) => {

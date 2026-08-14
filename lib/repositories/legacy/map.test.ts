@@ -370,10 +370,14 @@ test("the proxy throws only for genuinely unwired methods", async () => {
     .ensureSessionEmployee();
 
   /* Unwired: throws by name, so the failure is visible rather than a plausible
-     empty value nobody can distinguish from real emptiness. */
+     empty value nobody can distinguish from real emptiness.
+     `getBreakBudget`, not `createProject` — that one has since been wired, so
+     it stopped being an example of the thing being asserted and the test began
+     reporting "Missing expected exception" for a method that works. The one
+     below uses `getBreakBudget` for the same purpose, so the two now agree. */
   assert.throws(
-    () => (repo as unknown as Record<string, () => unknown>).createProject(),
-    /createProject is not connected/,
+    () => (repo as unknown as Record<string, () => unknown>).getBreakBudget(),
+    /getBreakBudget is not connected/,
   );
 });
 

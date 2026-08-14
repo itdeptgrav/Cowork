@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readFileSync } from "node:fs";
 
+import { backendAvailable, backendSource } from "../../legacy/backendSource.ts";
 import { LegacyRepository, toCoworkRepository } from "./index.ts";
 
 /**
@@ -327,7 +328,8 @@ test("priority is clamped the way legacy clamps it", () => {
   assert.match(source, /Math\.max\(1, Math\.min\(10/);
 });
 
-test("a reorder is one batch, so the queue is never half-renumbered", () => {
+test("a reorder is one batch, so the queue is never half-renumbered", (t) => {
+  if (!backendAvailable()) return t.skip("engine checkout not present");
   /* A partial reorder leaves two tasks holding the same rank, and the queue
      then has no defined order at all. */
   /* Anchored on the NEXT method's declaration, not on a name that also appears
@@ -374,10 +376,9 @@ test("a reorder is one batch, so the queue is never half-renumbered", () => {
      route (and its `order` stride) lives there, not in the older `cowork-old-backend`
      checkout, which predates it. Reading the stale path made `indexOf` miss and the
      slice fall back to the file's last character. */
-  const engine = readFileSync(
-    "/Users/risheeray/grav-cms-backend/routes/task_routes/taskForward.js",
-    "utf8",
-  );
+  /* Through the shared resolver, so this reads the engine wherever this machine
+     keeps it rather than one person's absolute path. */
+  const engine = backendSource("routes/task_routes/taskForward.js");
   const route = engine.slice(
     engine.indexOf('router.post("/employee/:employeeId/priority-order"'),
   );

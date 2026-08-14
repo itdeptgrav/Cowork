@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "../../legacy/backendSource.ts";
 import { toDeadlineProposal, toPendingExtension } from "./deadlineMap.ts";
 import { extensionFromAddition } from "../../rules/tasks/deadlineExtension.ts";
 
@@ -92,8 +93,9 @@ test("the assignee's request is hours, and carries no date", () => {
 
 /* ── 2 · The stored record ────────────────────────────────────────────────── */
 
-test("the legacy route stores previous, added and total", () => {
-  const src = code("/Users/risheeray/Documents/cowork-old-backend/routes/task_routes/taskForward.js");
+test("the legacy route stores previous, added and total", (t) => {
+  if (!backendAvailable()) return t.skip("engine checkout not present");
+  const src = backendSource("routes/task_routes/taskForward.js");
   const at = src.indexOf('router.post("/task/:taskId/request-deadline-extension"');
   assert.ok(at > 0);
   const fn = src.slice(at, at + 4000);
@@ -107,10 +109,11 @@ test("the legacy route stores previous, added and total", () => {
   }
 });
 
-test("both copies of the route agree", () => {
+test("both copies of the route agree", (t) => {
+  if (!backendAvailable()) return t.skip("engine checkout not present");
   /* Both register `/cowork` and taskForward wins on mount order. One patched
      and the other not is a bug waiting for somebody to reorder the mounts. */
-  const twin = code("/Users/risheeray/Documents/cowork-old-backend/routes/task_routes/taskTree.routes.js");
+  const twin = backendSource("routes/task_routes/taskTree.routes.js");
   const at = twin.indexOf('router.post("/task/:taskId/request-deadline-extension"');
   assert.ok(at > 0);
   assert.match(twin.slice(at, at + 4000), /const addedSecs = _num\(req\.body\.addedSecs\);/);

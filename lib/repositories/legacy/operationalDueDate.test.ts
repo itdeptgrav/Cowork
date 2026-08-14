@@ -121,11 +121,28 @@ test("the repository chains the queue rather than reading the stored deadline", 
      the Details panel shows — they were different numbers, which is how T646
      read "00:00:00" beside a correct completion date. */
   assert.match(fn, /senderTimerWindowSecs: resolveTimeBudget\(x\)/);
-  /* The anchor is FROZEN while the assignee is online — their session start, not
-     the live clock — so an available person's projected finish does not creep
-     with the wall clock. It falls back to now only when they are genuinely away.
-     Never a creation time, an approval time, or a stored deadline. */
-  assert.match(fn, /const anchorMs = queueAnchorMs\(duty, nowMs\)/);
+  /**
+   * **The anchor is the DAY'S OPENING, and the budget laid out is the FULL one.**
+   *
+   * The two belong together and the pairing is the whole rule — `chainDeadlines`
+   * documents it as "decided once and then holds still". Only half was ever
+   * wired: the anchor froze at the online-session start while the figure added
+   * to it was `budget − logged`, which shrank as work was logged. The date
+   * therefore ran BACKWARDS — a minute worked pulled the completion a minute
+   * earlier — because the anchor counted being ONLINE as work and the remainder
+   * counted only TIMER time as work, so the same hour was counted twice.
+   *
+   * Asserted as a pair. Either one alone reintroduces a moving date: a fixed
+   * anchor with `"remaining"` walks backwards, and `"full"` from a live clock
+   * walks forwards.
+   */
+  assert.match(fn, /const anchorMs = officeOpenMsFor\(policy\.schedule, nowMs\)/);
+  assert.match(fn, /budget: "full"/);
+  assert.equal(
+    /queueAnchorMs\(/.test(fn),
+    false,
+    "the projection is anchored on presence again — that is the backwards drift",
+  );
   /* `\r?\n`, because the working copy is not guaranteed LF — a checkout with
      CRLF endings failed this on line endings while the code was correct. */
   assert.match(fn, /anchorMs,\r?\n/);

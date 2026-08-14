@@ -123,6 +123,9 @@ export const musicStore = {
   },
 
   toggleFavourite(item: MusicResult): boolean {
+    /* No item means nothing was toggled — `false`, not a crash. Same reason as
+       `recordSearch` and `saveQueue`. */
+    if (!item || typeof item.id !== "string") return false;
     const list = readResults(KEY.favourites);
     const at = list.findIndex((f) => f.id === item.id);
     const next =
@@ -142,6 +145,10 @@ export const musicStore = {
   },
 
   saveQueue(q: MusicQueue): void {
+    /* Nothing to save is a no-op, for the same reason as `recordSearch`: this
+       is reached from a shell-mounted component, where a throw blanks the
+       application rather than one widget. */
+    if (!q || !Array.isArray(q.items)) return;
     write(KEY.queue, {
       items: q.items.slice(0, LIMITS.queue),
       currentIndex: q.currentIndex,
@@ -155,6 +162,12 @@ export const musicStore = {
   },
 
   recordSearch(q: string): void {
+    /* A missing or non-string query is a no-op, not a crash. This read
+       `q.trim()` directly and threw a TypeError on `undefined` — and this store
+       is reached from a shell-mounted component, where a rejection escapes and
+       blanks the whole application rather than one widget. A search box with
+       nothing in it is not an error worth taking the page down for. */
+    if (typeof q !== "string") return;
     const term = q.trim();
     if (term.length < 2) return;
     const list = musicStore

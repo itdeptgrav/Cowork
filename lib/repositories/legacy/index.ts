@@ -11,7 +11,7 @@ import {
   dutyTransition,
   heartbeatPatch,
   ownsClaim,
-  queueAnchorMs,
+
   readDutyMode,
   readDutySnapshot,
   storedMode,
@@ -6730,7 +6730,6 @@ export class LegacyRepository {
     return node?.managerId ?? null;
   }
 
-
   /**
    * A task's chat thread.
    *
@@ -9229,25 +9228,52 @@ export class LegacyRepository {
       const to = new Date(nowMs + 365 * 86_400_000)
         .toISOString()
         .slice(0, 10);
-      const [policy, blockedDates, logged, duty] = await Promise.all([
+      const [policy, blockedDates, logged] = await Promise.all([
         this.getOfficePolicy(),
         this.listBlockedDates(employeeId, from, to).catch(() => []),
-        /* What is already done, so the chain schedules what is LEFT. Work done
-           at 04:53 counts in full; the office calendar governs only when the
+        /* What is already done. Still read, and still passed to the chain — it
+           is `loggedSecs` on each queue entry — but with `budget: "full"` below
+           the chain no longer subtracts it from the figure it lays out. The
+           value remains part of the queue shape and other readers of it. Work
+           done at 04:53 counts in full; the office calendar governs only when the
            remainder can happen. */
         this.#loggedSecsByTask(employeeId),
-        /* The assignee's presence, to freeze the projection while they are
-           online — an available person's finish date must not creep with the
-           clock. A failed read costs the freeze, not the projection. */
-        this.#readDutyDoc(employeeId).catch(() => null),
+        /* Presence is no longer read here. The projection is anchored at the
+           day's opening and lays out the FULL budget, so it holds still whether
+           or not the person is online — which is what freezing against the duty
+           document was reaching for, and could not achieve while the figure it
+           anchored was shrinking. See the anchor below. */
       ]);
       const blocked = new Set(blockedDates.map((b) => b.date));
       const byId = new Map(tasks.map((t) => [t.id, t as never]));
 
-      /* Anchored at the online-session start while the assignee is available, so
-         the projected completion holds steady and moves only by time genuinely
-         lost — the committed deadline's rule, applied to its projection. */
-      const anchorMs = queueAnchorMs(duty, nowMs);
+      /**
+       * **The day's opening. Fixed, and not a function of presence.**
+       *
+       * This was `queueAnchorMs(duty, nowMs)` — the online-session start while
+       * available, `now` otherwise. Paired with the `"remaining"` budget below
+       * it produced a date that ran BACKWARDS: the anchor stood still while
+       * `budget − logged` shrank, so every minute worked pulled the completion
+       * a minute earlier. Followed far enough, a task worked continuously
+       * predicted its own completion at the moment the person started.
+       *
+       * The cause was two definitions of "working" in one formula — the anchor
+       * treated being ONLINE as work, the remainder treated only TIMER time as
+       * work, and the same hour was counted twice. `chainDeadlines` already
+       * documents the intended pairing: a fixed anchor with the FULL budget,
+       * "decided once and then holds still". Only half of it was ever wired.
+       *
+       * `officeOpenMsFor` is that fixed point, and the rule it implements is
+       * already tested in `anchorStability.test.ts` — "the anchor is always the
+       * day's opening, whatever the leader did". Each task's `createdAtMs`
+       * below moves it later where the work arrived mid-day, which is the "or
+       * when the task was handed to you if that is later" half of the rule.
+       *
+       * What this leaves, and what the owner asked for: working moves the date
+       * nothing, being online and idle moves it nothing, and an absence moves
+       * it by exactly what was credited back to the budget — once, not twice.
+       */
+      const anchorMs = officeOpenMsFor(policy.schedule, nowMs);
 
       const chained = chainDeadlines({
         queue: order
@@ -9279,6 +9305,27 @@ export class LegacyRepository {
             };
           }) as never,
         anchorMs,
+        /**
+         * **The whole agreed budget, not what is left of it.**
+         *
+         * The other half of the pairing `chainDeadlines` documents, and the
+         * half that was never passed — so it defaulted to `"remaining"` and
+         * gave the fixed anchor a shrinking figure to add, which is what made
+         * the date walk backwards as work was logged.
+         *
+         * Expected completion is a PLAN: when this work lands if it is done as
+         * agreed. Subtracting logged time turns it into a running estimate that
+         * improves as you work, which is a different thing wearing the same
+         * label — and it double-counts, because the hour you spent has already
+         * passed on the clock the anchor is measured from.
+         *
+         * Progress is not lost from the screen: the Time budget line beside
+         * this reads "00:52:33 of 10:26:53", which is where progress belongs.
+         * And a plan that has been passed is allowed to read in the past — the
+         * Overdue mark is what says so, rather than the date sliding along to
+         * meet the clock.
+         */
+        budget: "full",
         addWorkingSecs: (fromMs: number, secs: number) =>
           addWorkingSecs(fromMs, secs, policy.schedule, blocked, policy.breaks),
       });
@@ -14315,7 +14362,6 @@ export type LegacyRepositoryShape = Pick<
   CoworkRepository,
   "getViewer" | "listEmployees" | "getScoreOverview" | "listTasks"
 >;
-
 
 /**
  * The `LegacyRepository` as a full `CoworkRepository`.

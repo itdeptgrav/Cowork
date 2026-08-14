@@ -12,7 +12,7 @@
     "meeting:clear-budget-rows": "node scripts/clear-meeting-budget-rows.mjs",
     "meeting:e2e": "npx --yes tsx scripts/meeting-e2e.ts",
     "verify": "npm run lint && npx tsc --noEmit && npm test && npm run build && npm run check-secrets",
-    "test": "node --test \"lib/**/*.test.ts\" \"components/**/*.test.ts\""
+    "test": "node --import ./scripts/testSetup.mjs --test \"lib/**/*.test.ts\" \"components/**/*.test.ts\""
   },
   "dependencies": {
     "@google/generative-ai": "^0.24.1",

@@ -10,8 +10,17 @@ import { readFileSync } from "node:fs";
  * sorted there — and then the preview and the engine quietly disagree.
  */
 
+/**
+ * Source with comments stripped and line endings normalised.
+ *
+ * `\r\n` → `\n` because the assertions below match multi-line shapes — one of
+ * them is `/\n\s*selectable\n/` — and a Windows checkout stores these files with
+ * CRLF. The trailing `\n` never matched, so a correct component reported a
+ * missing control. Same normalisation as the attachment and backend readers.
+ */
 const code = (p: string) =>
   readFileSync(p, "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
