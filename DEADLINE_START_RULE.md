@@ -1,8 +1,15 @@
 # When a task's deadline starts counting
 
-**Agreed with the owner, 14 Aug 2026.** This is the specification; it is not
-implemented yet. Written down because it was settled across a long conversation
-and the reasoning is worth more than the conclusion.
+**Agreed with the owner, 14 Aug 2026. IMPLEMENTED for the stored deadline the
+same day** — `acceptanceAnchorMs` / `resolveAcceptanceAnchor` in the engine's
+`services/officeDeadline.service.js`, wired into all three accept surfaces
+(`acceptBudgetProposal` and both `approve-sender-timer` routes), stamped as
+`clockStartsAtMs` / `clockStartsAtSource`, tested in
+`services/acceptanceAnchor.test.js`, and backfilled across existing tasks
+(T019 → 12:56:20 first_online; T002/T003/T011/T013/T017 → written from their
+acceptance instants, the only provable historical anchor). **Still pending:**
+aligning the PROJECTION (`#chainQueue`) to read the same stamp, and the
+report-only corrections for T012/T014/T016/T018 listed at backfill time.
 
 ## The principle
 
