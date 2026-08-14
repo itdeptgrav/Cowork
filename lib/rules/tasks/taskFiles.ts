@@ -267,6 +267,42 @@ export function fromReports(reports: readonly DailyReport[]): TaskFile[] {
   return out;
 }
 
+/**
+ * Files carried ON the submission record itself.
+ *
+ * **A second origin for the same group, because the engine writes to a second
+ * place.** `fromAttachments(…, "submission", …)` covers files registered with
+ * the attachment service. The completion path does not use it: it stores
+ * `imageUrls` and `pdfAttachments` directly on the task document and posts the
+ * same files to the chat thread. So the Files tab asked the attachment service
+ * about a submission and was truthfully told there was nothing — while the
+ * document sat on the task all along.
+ *
+ * `access: "link"` is the honest label rather than the "private" the other
+ * submission files carry. These URLs are public media: the engine posts them
+ * into the task chat, where anybody holding the address can open them. Marking
+ * them private would be a claim about the storage that is not true of it.
+ */
+export function fromSubmissionRecord(
+  sub: Pick<TaskSubmission, "attempt" | "attachments" | "submittedAt" | "submittedById">,
+): TaskFile[] {
+  return sub.attachments.map((a, i) => {
+    const kind = fileKind(a.type, a.name);
+    return {
+      key: `submission-record:${sub.attempt}:${i}:${a.url}`,
+      name: fileNameFrom(a.name, a.url, kind),
+      kind,
+      source: "submission" as const,
+      context: `Attempt ${sub.attempt}`,
+      sizeBytes: null,
+      uploadedAt: sub.submittedAt || null,
+      uploadedBy: sub.submittedById || null,
+      access: "link" as const,
+      handle: { via: "url" as const, url: a.downloadUrl || a.url },
+    };
+  });
+}
+
 /** The label an attempt carries in the list. Numbered from the submission. */
 export function submissionContext(sub: Pick<TaskSubmission, "attempt">): string {
   return `Attempt ${sub.attempt}`;

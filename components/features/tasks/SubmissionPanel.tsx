@@ -12,7 +12,11 @@ import {
 } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
-import { FileUploader } from "@/components/features/attachments/Attachments";
+import {
+  EntityAttachments,
+  FileUploader,
+} from "@/components/features/attachments/Attachments";
+import { SubmittedFiles } from "./SubmittedFiles";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { formatDateTime } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
@@ -122,26 +126,17 @@ export function SubmissionPanel({
             />
           </Field>
 
+          {/**
+           * **The demo "Attach file" button is gone, and it was the bug.**
+           *
+           * It appended the literal string `at-demo-1`, `at-demo-2`… and drew
+           * each as a chip indistinguishable from a real attachment. Nothing
+           * opened a file picker, nothing was uploaded, and the ids it produced
+           * were dropped on the way to the engine — so somebody who used the
+           * obvious paperclip button watched their document "attach" and then
+           * reach nobody. The real uploader is below, and is now the only one.
+           */}
           <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => setFiles((f) => [...f, `at-demo-${f.length + 1}`])}
-            >
-              <Icon.attach className="h-3.5 w-3.5" /> Attach file
-            </Button>
-            {files.map((f) => (
-              <Chip key={f}>
-                {f}
-                <button
-                  type="button"
-                  aria-label={`Remove ${f}`}
-                  onClick={() => setFiles((cur) => cur.filter((x) => x !== f))}
-                  className="ml-1 opacity-60 hover:opacity-100"
-                >
-                  <Icon.close className="h-3 w-3" />
-                </button>
-              </Chip>
-            ))}
           </div>
 
           {/* The shared uploader in staging mode — no submission id yet. */}
@@ -263,15 +258,17 @@ export function SubmissionPanel({
                   </span>
                 </div>
                 <p className="mt-1.5 text-sm text-ink-muted">{s.message}</p>
-                {s.attachmentIds.length > 0 && (
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {s.attachmentIds.map((a) => (
-                      <Chip key={a}>
-                        <Icon.attach className="h-3 w-3" /> {a}
-                      </Chip>
-                    ))}
-                  </div>
-                )}
+                {/* Both origins, exactly as the reviewer sees them — Cowork's
+                    uploader writes to the attachment service, the old
+                    application wrote URLs onto the task record. A chip carrying
+                    the raw URL as text stood here before: unreadable, and not a
+                    link, so the file could be neither identified nor opened. */}
+                <EntityAttachments
+                  entityType="submission"
+                  entityId={s.id}
+                  title="Attached"
+                />
+                <SubmittedFiles files={s.attachments} label="Also attached" />
               </div>
             ))}
           </div>

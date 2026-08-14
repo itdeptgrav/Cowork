@@ -14,7 +14,11 @@ import {
   Textarea,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
-import { FileUploader } from "@/components/features/attachments/Attachments";
+import {
+  EntityAttachments,
+  FileUploader,
+} from "@/components/features/attachments/Attachments";
+import { SubmittedFiles } from "./SubmittedFiles";
 import type { AttachmentMeta } from "@/lib/legacy/attachments";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { formatDateTime } from "@/lib/utils/format";
@@ -119,6 +123,26 @@ export function ReviewPanel({
           <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
             {latest.message}
           </p>
+          {/**
+           * **The work itself.**
+           *
+           * This panel showed the covering note and the review chain and
+           * nothing else, so somebody deciding whether to approve a document
+           * could not open the document.
+           *
+           * Both origins are rendered, because a submission can carry files in
+           * two places and neither alone is the answer. Cowork's own uploader
+           * puts them in the attachment service keyed to this submission —
+           * private, streamed, and what `EntityAttachments` fetches. The old
+           * application instead wrote URLs onto the task record itself, and
+           * work submitted there still has to be reviewable here.
+           */}
+          <EntityAttachments
+            entityType="submission"
+            entityId={latest.id}
+            title="Submitted work"
+          />
+          <SubmittedFiles files={latest.attachments} label="Also attached" />
           {latest.reviewChain.length > 1 && (
             <p className="mt-2 text-xs text-ink-faint">
               Stage {latest.currentStage} of {latest.reviewChain.length} —

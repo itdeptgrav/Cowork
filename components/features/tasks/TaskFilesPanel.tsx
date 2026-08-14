@@ -34,6 +34,7 @@ import {
   fromAttachments,
   fromChat,
   fromReports,
+  fromSubmissionRecord,
   sortTaskFiles,
   submissionContext,
   totalSize,
@@ -152,6 +153,11 @@ async function collect(
         continue;
       }
       const { sub, res } = entry.value;
+      /* The files the completion path stored ON the submission — added
+         regardless of what the attachment service says, because they are a
+         different origin rather than a copy of the same one. The service read
+         failing is not a reason to withhold a document that is right here. */
+      files.push(...fromSubmissionRecord(sub));
       if (!res.ok) {
         problems.push(
           `Files on ${submissionContext(sub).toLowerCase()} could not be read — ${res.message}`,

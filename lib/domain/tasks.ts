@@ -436,6 +436,20 @@ export interface TaskEvent {
   occurredAt: string;
 }
 
+/**
+ * A file attached to submitted work.
+ *
+ * The same four fields the engine already stores on a rework's attachments, so
+ * one renderer serves both. `downloadUrl` is what a link points at; `url` is the
+ * stored address and is what identifies the file.
+ */
+export interface TaskAttachment {
+  url: string;
+  name: string;
+  type: string;
+  downloadUrl: string;
+}
+
 export interface TaskSubmission {
   id: string;
   taskId: TaskId;
@@ -443,7 +457,23 @@ export interface TaskSubmission {
   submittedById: EmployeeId;
   submittedAt: string;
   message: string;
+  /**
+   * The attachment URLs alone. Kept because callers already read it.
+   *
+   * A URL is not something to show a person — it has no filename in it and
+   * cannot be clicked — which is why `attachments` below exists beside it.
+   */
   attachmentIds: string[];
+  /**
+   * The same files WITH their names and download links.
+   *
+   * **The reviewer's whole view of the work.** The engine stores
+   * `completionSubmission.pdfAttachments` as objects carrying a name and a
+   * download address, and this was being flattened to bare URL strings on the
+   * way in — so the one screen that decides whether the work is acceptable had
+   * a message, a date, and no way to open what was submitted.
+   */
+  attachments: TaskAttachment[];
   /** Ordered reviewer ids, resolved from the reporting chain at submission. */
   reviewChain: EmployeeId[];
   currentStage: number;

@@ -239,7 +239,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "What happens after I submit?",
     ],
     answer:
-      "Submitting moves the task to in review and starts the approval chain configured for your organisation. You cannot approve your own submission — that is blocked outright, and it is the single most serious defect carried over from the previous system, where any signed-in employee could approve any task including their own.",
+      "Submitting moves the task to in review and starts the approval chain configured for your organisation. You cannot approve your own submission — that is blocked outright, and it is the single most serious defect carried over from the previous system, where any signed-in employee could approve any task including their own. **Whatever you attach goes with it.** Use the Attachments box on the submission form — pick your files there, write the note, then press Submit for review. The files upload once the submission exists, which is why they are chosen before you submit and sent immediately after; if one fails you are told which, and the work is still submitted rather than being thrown away with it. What you attached then appears in three places, and it is the same file rather than three uploads: on the Review tab under the covering note, which is the copy the reviewer decides against; on the Submission tab, so you can check what you sent; and on the Files tab under Attempt 1, 2 and so on, so it can be found later without remembering which screen it arrived through. Files attached this way are private — stored by the engine and streamed only to somebody it will already show the task to — and they are not posted into the task chat. Work submitted from the older application behaves differently: it carried file addresses rather than uploads, and those were posted into the chat thread, so they are marked link-accessible on the Files tab because anybody holding the address can open one. Both kinds show up together wherever a submission is displayed.",
     related: [
       "approvals-what-happens",
       "approvals-who-approves",
@@ -247,7 +247,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "task-daily-reports",
     ],
     source:
-      "submitCompletion, reviewSubmission self-approval guard (spec defect P1)",
+      "submitCompletion, reviewSubmission self-approval guard (spec defect P1); the engine stores files on completionSubmission.imageUrls/pdfAttachments and posts the same set to task chat (taskForward.service.js submitCompletionRequest), read by readSubmissionAttachments in lib/rules/tasks/submissionFiles.ts and rendered by SubmittedFiles.tsx on ReviewPanel and SubmissionPanel; the Files tab pools them via fromSubmissionRecord, marked access link",
   },
   {
     id: "task-daily-reports",

@@ -5009,6 +5009,15 @@ export class MockRepository implements CoworkRepository {
       submittedAt: nowIso(),
       message: input.message.trim(),
       attachmentIds: input.attachmentIds,
+      /* The mock takes attachment IDENTIFIERS, not the engine's `{url, name}`
+         records, so there is no name or download address to invent here. The
+         list stays derivable from what was actually supplied. */
+      attachments: input.attachmentIds.map((url) => ({
+        url,
+        name: url,
+        type: "file",
+        downloadUrl: url,
+      })),
       reviewChain,
       currentStage: 1,
       supersededById: null,

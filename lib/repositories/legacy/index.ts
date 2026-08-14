@@ -162,6 +162,7 @@ import {
   resolveTaskPriority,
 } from "../../rules/tasks/resolveTaskPriority.ts";
 import { resolveTimeBudget } from "../../rules/tasks/resolveTimeBudget.ts";
+import { readSubmissionAttachments } from "../../rules/tasks/submissionFiles.ts";
 import { extensionFromAddition } from "../../rules/tasks/deadlineExtension.ts";
 import type { RoleArchetype } from "../../domain/identity.ts";
 import type {
@@ -6368,6 +6369,7 @@ export class LegacyRepository {
     const sub = raw as Record<string, unknown>;
 
     const submittedAtMs = readInstant(sub.submittedAt);
+    const submissionFiles = readSubmissionAttachments(sub);
     const chain = await this.#reviewChainOf(doc);
     return [
       {
@@ -6379,18 +6381,13 @@ export class LegacyRepository {
         submittedById: (typeof sub.submittedBy === "string" ? sub.submittedBy : "") as EmployeeId,
         submittedAt: submittedAtMs ? new Date(submittedAtMs).toISOString() : "",
         message: typeof sub.message === "string" ? sub.message : "",
-        attachmentIds: [
-          ...(Array.isArray(sub.imageUrls) ? sub.imageUrls : []),
-          ...(Array.isArray(sub.pdfAttachments) ? sub.pdfAttachments : []),
-        ]
-          .map((a) =>
-            typeof a === "string"
-              ? a
-              : a && typeof a === "object" && typeof (a as { url?: unknown }).url === "string"
-                ? (a as { url: string }).url
-                : null,
-          )
-          .filter((u): u is string => u !== null),
+        /* Names and download links kept, not flattened away — see
+           `readSubmissionAttachments`. The reviewer's screen is the one that
+           has to open these, and a bare URL cannot be shown to anybody. */
+        attachments: submissionFiles,
+        /* Derived FROM the list above rather than gathered separately, so the
+           two cannot come to disagree about what was submitted. */
+        attachmentIds: submissionFiles.map((f) => f.url),
         reviewChain: chain.chain,
         currentStage: chain.currentStage,
         supersededById: null,
