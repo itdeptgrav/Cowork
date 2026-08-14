@@ -240,7 +240,7 @@ export function TimerControl({
      trip. `useMyDutyMode` (below) is the durable, staleness-aware mode and lags a
      manual toggle; this is the immediate one, and it is the difference between
      "stops now" and "stops eventually". */
-  const { status: myPresence, reconnecting } = useEmployeeStatus();
+  const { status: myPresence, reconnecting, hydrated } = useEmployeeStatus();
   const isMine = me.data
     ? view.assignments.some((a) => a.employeeId === me.data!.id)
     : false;
@@ -253,7 +253,21 @@ export function TimerControl({
      clock was never paused on unload, so the reconnect banked minutes nobody
      worked. Excluding `reconnecting` holds the timer exactly as it was until the
      person genuinely goes online (it continues) or deliberately away (it pauses). */
-  const away = isMine && myPresence !== "online" && !reconnecting;
+  /* **And `hydrated` is the other half of that guard, which was missing.**
+     `reconnecting` only becomes true once the durable duty document has been
+     read back. Between mount and that first read the store still holds its
+     INITIAL value — `offline`, with `reconnecting` false — and the store itself
+     calls that a guess rather than a fact: "initialises to offline, which is a
+     GUESS until the duty document has been heard from... surfaces that would
+     otherwise assert Offline wait on this instead."
+
+     Without it every reload spent a few frames looking exactly like somebody
+     stepping away, so the auto-pause below fired and STOPPED A RUNNING TIMER on
+     each refresh — the clock was live before the reload and paused after it,
+     with no press behind it. `DutySync` already guards `!hydrated` before
+     `reconnecting` for the same reason; this is the same rule applied to the
+     surface that writes a pause. */
+  const away = isMine && hydrated && myPresence !== "online" && !reconnecting;
 
   const state = timerDisplayState(session, banked, nowMs);
   /* What the ENGINE says, kept separate from what the button says. Everything
@@ -388,7 +402,11 @@ export function TimerControl({
      so the viewer's own status is exactly the right signal. */
   /* Not while reconnecting, for the same reason as `away`: a reload is not a
      departure, so the control stays as it was rather than flipping to "paused". */
-  const blocked = reconnecting ? null : presenceRefusal(myPresence, isMine);
+  /* Ungated until presence is known, for the same reason `away` is: an
+     unhydrated store reports a guess, and gating on it replaced the running
+     clock with "you are offline — timer paused" for a frame on every reload. */
+  const blocked =
+    !hydrated || reconnecting ? null : presenceRefusal(myPresence, isMine);
   const needsStart = view.task.status === "confirmed";
   const startable = view.task.status === "in_progress" || needsStart;
   const pending =

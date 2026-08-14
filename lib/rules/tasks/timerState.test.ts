@@ -199,7 +199,7 @@ test("the timer is coupled to presence: away stops the clock at once", () => {
      eventually paused the session. Now `away` (the immediate in-memory status)
      freezes `running` and a paused write is issued from the control itself. */
   const src = code(CONTROL);
-  assert.match(src, /const away = isMine && myPresence !== "online"/);
+  assert.match(src, /const away = isMine && hydrated && myPresence !== "online"/);
   /* The engine's own answer, which the auto-pause and the heartbeat read. It
      carries the `!away` coupling that used to sit on `running`. */
   assert.match(src, /const serverRunning = state === "running" && !away/);
@@ -211,6 +211,42 @@ test("the timer is coupled to presence: away stops the clock at once", () => {
   /* And it actually pauses the session, not only the display. */
   assert.match(src, /if \(away && state === "running" && !autoPaused\.current\)/);
   assert.match(src, /void pause\(\)/);
+});
+
+test("a reload does not read as stepping away, so it cannot pause the clock", () => {
+  /**
+   * **The reported fault: the timer was running before the refresh and paused
+   * after it, with no press behind it.**
+   *
+   * Nothing was lost on the client — `useTicker` derives elapsed from the
+   * session's real start, so a remount picks a live run straight back up. The
+   * run was being STOPPED, by this component, on the way back in.
+   *
+   * `away` is `myPresence !== "online"`, and the presence store initialises to
+   * `offline` before it has heard from the duty document. `reconnecting` covers
+   * the window after that read; nothing covered the window before it. So every
+   * reload spent a few frames indistinguishable from somebody going offline,
+   * the auto-pause fired, and a real session was banked and closed.
+   *
+   * `hydrated` is the store's own name for "this is a fact, not the initial
+   * guess", and `DutySync` already refuses to publish anything without it. The
+   * clock must not be stopped on weaker evidence than a dot is coloured on.
+   */
+  const src = code(CONTROL);
+  assert.match(
+    src,
+    /useEmployeeStatus\(\);?/,
+    "the control no longer reads presence",
+  );
+  assert.match(
+    src,
+    /const \{ status: myPresence, reconnecting, hydrated \} = useEmployeeStatus\(\)/,
+    "`hydrated` is not being read, so the initial guess is trusted again",
+  );
+  /* Both surfaces that act on presence wait for it: the one that WRITES a pause
+     and the one that replaces the control with a refusal. */
+  assert.match(src, /const away = isMine && hydrated &&/);
+  assert.match(src, /!hydrated \|\| reconnecting \? null : presenceRefusal\(/);
 });
 
 test("the heartbeat follows the engine, never the optimistic flip", () => {
