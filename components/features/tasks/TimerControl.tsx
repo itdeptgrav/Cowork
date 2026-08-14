@@ -12,13 +12,14 @@ import { useWatchedTimerSession } from "@/lib/hooks/useTimerSession";
 import { useNow } from "@/lib/hooks/useNow";
 import { formatTimer } from "@/lib/utils/format";
 import {
+  bankableRunSecs,
   displaySecs,
   elapsedSecs,
   rebaseSecs,
   timerDisplayState,
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
-import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
+import { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS } from "@/lib/rules/presence/duty";
 import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { TaskView } from "@/lib/repositories";
 
@@ -202,7 +203,21 @@ export function TimerControl({
      else's work — usually nothing at all. The subject here is the assignee, so
      Rishee viewing Anant's task sees Anant's timer, live. */
   const live = useWatchedTimerSession(assigneeId ? String(assigneeId) : null, taskId);
-  const session = live ?? timer.data;
+  /**
+   * **The fallback is only valid for the person doing the work.**
+   *
+   * `getTimer` reads the ACTING employee's session — the viewer's own. For the
+   * assignee that is the same document the listener watches, so falling back to
+   * it while the first snapshot arrives is harmless. For anybody else it is a
+   * different document entirely: the manager who created the task sees THEIR
+   * own clock on it, which is why one screen read 40 minutes and the other 20.
+   *
+   * Null instead, so `banked` falls through to `view.loggedSecs` — the task's
+   * own recorded total, which is the same figure for every viewer.
+   */
+  const viewerIsAssignee =
+    !!me.data && !!assigneeId && String(me.data.id) === String(assigneeId);
+  const session = live ?? (viewerIsAssignee ? timer.data : null);
 
   /**
    * Banked work, from the LIVE session document.
@@ -343,6 +358,38 @@ export function TimerControl({
         ? (session?.startedAtRealMs ?? null)
         : null;
   const ticked = useTicker(runOrigin);
+  /**
+   * **The run, capped exactly as the credit is capped.**
+   *
+   * `ticked` is raw wall clock — `now − runOrigin` — and the engine never pays
+   * for all of it: `bankableRunSecs` stops at the last beat plus a grace, and
+   * `#closeGapAndKeepRunning` banks that figure. A backgrounded tab has its
+   * beats throttled to about once a minute and a sleeping laptop sends none, so
+   * the two diverge silently. The screen climbed to 59:10, the engine
+   * reconciled 50:00, and the clock dropped nine minutes.
+   *
+   * Nothing was ever lost — those minutes were never creditable. Showing them
+   * and withdrawing them is the fault, so the display now stops where the
+   * credit stops and simply holds still instead of counting into time it cannot
+   * keep.
+   *
+   * `nowRealMs` is derived from the ticker rather than read from the clock:
+   * `timerState.test.ts` scans this component for `Date.now()`, because reading
+   * the clock during a render makes the same props produce two different
+   * figures. The ticker is the one thing allowed to move.
+   */
+  const runSecs =
+    runOrigin === null
+      ? 0
+      : bankableRunSecs({
+          startedAtRealMs: runOrigin,
+          /* Null for an optimistic run the engine has not seen yet, and for
+             sessions written before beats existed — both mean "no cap known",
+             which `bankableRunSecs` reads as the full run. */
+          heartbeatAtRealMs: session?.heartbeatAtRealMs ?? null,
+          nowRealMs: runOrigin + ticked * 1000,
+          graceMs: STALE_AFTER_MS,
+        });
 
   /* `ticked` only re-renders; the FIGURE comes from the rule, so a throttled
      tab or a stale run cannot make the two disagree.
@@ -371,11 +418,11 @@ export function TimerControl({
      says running until the write lands — and falling back to `banked` would
      drop the run that is being closed. Neither is what the person just did. */
   const elapsed = away
-    ? banked + ticked
+    ? banked + runSecs
     : optimistic?.kind === "paused"
       ? optimistic.heldSecs
       : running
-        ? banked + ticked
+        ? banked + runSecs
         : displaySecs(session, banked, nowMs);
 
   const other =
@@ -474,9 +521,29 @@ export function TimerControl({
     };
     void beat();
     const id = setInterval(() => void beat(), HEARTBEAT_INTERVAL_MS);
+
+    /**
+     * **Beat again the moment the tab comes back.**
+     *
+     * `setInterval` is the one thing a browser throttles hardest: Chrome clamps
+     * a hidden tab to roughly one tick a minute, and stops it altogether when
+     * the window is occluded or the machine sleeps. So the gap between beats is
+     * widest exactly when somebody is working in another window — and every
+     * second past the bankable grace is time taken off their record.
+     *
+     * `visibilitychange` is not throttled. Returning to the tab lands a beat
+     * immediately, which closes the gap at its source rather than relying on
+     * the grace to forgive it.
+     */
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void beat();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+
     return () => {
       cancelled = true;
       clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
     };
   }, [serverRunning, taskId, repo, timer, active]);
 

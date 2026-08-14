@@ -62,7 +62,24 @@ test("a missing document reads as zero and nothing running", () => {
   assert.deepEqual(readTimerFigures(null), {
     accumulatedSecs: 0,
     startedAtRealMs: null,
+    /* No document, so no beat either — and null is what the display reads as
+       "no cap known", never as "capped at zero". */
+    heartbeatAtRealMs: null,
   });
+});
+
+test("the last beat is read, so the display can cap where the credit caps", () => {
+  /**
+   * The figure the write path already used and the read path did not carry.
+   * `bankableRunSecs` stops at the last beat plus a grace; the screen counted
+   * raw wall clock, so it climbed past what could ever be banked and dropped
+   * back when the engine reconciled — 59:10 down to 50:00.
+   */
+  assert.equal(readTimerFigures({ heartbeatAt: 1_700_000_000_000 }).heartbeatAtRealMs, 1_700_000_000_000);
+  assert.equal(readTimerFigures({ heartbeatAt: "2026-08-14T06:00:00.000Z" }).heartbeatAtRealMs, Date.parse("2026-08-14T06:00:00.000Z"));
+  assert.equal(readTimerFigures({ heartbeatAt: { seconds: 1_700_000_000 } }).heartbeatAtRealMs, 1_700_000_000_000);
+  /* Sessions written before beats existed carry none. Null, not the start. */
+  assert.equal(readTimerFigures({ lastStartTime: 123 }).heartbeatAtRealMs, null);
 });
 
 test("the SAME figure however the start was stored — the whole point", () => {

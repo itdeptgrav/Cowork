@@ -4679,6 +4679,10 @@ export class MockRepository implements CoworkRepository {
         accumulatedSecs: 0,
         startedAt: nowIso(),
         startedAtRealMs: Date.now(),
+        /* The mock has no heartbeat loop — nothing throttles or sleeps here —
+           so there is no last beat to cap against. Null means "no cap", which
+           is the honest reading for a session nothing can starve. */
+        heartbeatAtRealMs: null,
       };
       s.timers.push(session);
     } else {

@@ -483,10 +483,24 @@ export function calculateDeadlineFeasibility(input: {
       };
     });
 
-  /* The queue as it stands today: the ranked order with the subject where it
-     currently sits — or at the back when it is not in the queue yet, which is
-     the product's own rule for new work. Chained from the same `nowMs` as the
-     simulation, so a before/after comparison measures one moment. */
+  /**
+   * The queue as it stands today: the ranked order with the subject where it
+   * currently sits — or at the back when it is not in the queue yet, which is
+   * the product's own rule for new work.
+   *
+   * **Chained exactly as the simulation above is**, and that is the whole point
+   * of it. These two are rendered side by side as "Now" and "After this
+   * change", with every row marked later, earlier or unmoved — so they have to
+   * be the same calculation with one thing varied, or the differences are the
+   * calculations disagreeing rather than the reorder doing anything.
+   *
+   * They were not. This anchored at `input.nowMs` and took the default
+   * `"remaining"` budget while the simulation used the office opening and
+   * `"full"` — two different models compared row by row. The dialog that asks
+   * for a written reason before it will apply a reorder was therefore reporting
+   * movement on tasks nothing had moved, by whatever the two models happened to
+   * differ by.
+   */
   const currentIndex =
     currentPosition !== null
       ? Math.max(0, Math.min(ordered.length, currentPosition - 1))
@@ -495,8 +509,9 @@ export function calculateDeadlineFeasibility(input: {
   baselineOrder.splice(currentIndex, 0, subject);
   const baselineChain = chainDeadlines({
     queue: baselineOrder as QueueTask[],
-    anchorMs: input.nowMs,
+    anchorMs: startedAnchorMs,
     addWorkingSecs: input.addWorkingSecs,
+    budget: "full",
   });
   const baselineQueue: SimulatedEntry[] = baselineOrder
     .filter((t) => windowSecsFor(t) > 0)

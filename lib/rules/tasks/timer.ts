@@ -101,6 +101,33 @@ export function runDurationSecs(input: {
  * before beats existed) falls back to the start, so an un-beaten run banks at
  * most the grace — safe, and self-corrects the moment beats resume.
  */
+/**
+ * How long a run may go un-beaten and still be credited in full.
+ *
+ * **Its own constant, and deliberately far larger than `STALE_AFTER_MS`.** That
+ * one is 120 seconds and answers a different question — which browser tab owns
+ * a presence claim, where being tight is right because a stale claim should be
+ * adoptable quickly. Reusing it here answered "was this person working?" with a
+ * two-minute silence, and two minutes of silence is not evidence that somebody
+ * stopped working.
+ *
+ * It is evidence of an ordinary browser. Chrome clamps a hidden tab's timers to
+ * roughly once a minute, stops them entirely when the window is occluded, and a
+ * brief system sleep or a slow write stops them too. A 45-second beat therefore
+ * lands outside a 120-second window routinely — and every second past it was
+ * DISCARDED. That is the reported fault: half an hour at the desk, banked as
+ * twenty minutes, with nothing on screen to say where the rest went.
+ *
+ * Fifteen minutes is the trade, stated plainly. A person whose tab was
+ * backgrounded, whose laptop slept briefly, or whose network stalled is credited
+ * in full. A session genuinely abandoned — a laptop left open overnight — is
+ * capped at fifteen minutes past its last beat rather than crediting the night.
+ * Over-crediting a quarter of an hour occasionally is the smaller wrong:
+ * under-crediting takes real work off somebody's record, and their score reads
+ * it as idleness they have to explain.
+ */
+export const TIMER_BANKABLE_GRACE_MS = 15 * 60_000;
+
 export function bankableRunSecs(input: {
   startedAtRealMs: number | null;
   heartbeatAtRealMs: number | null;

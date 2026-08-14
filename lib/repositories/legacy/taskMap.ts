@@ -343,7 +343,27 @@ export function toTask(legacy: LegacyTask): Task {
     blockedReason: null,
     tags: [],
     createdAt: "",
-    updatedAt: "",
+    /**
+     * **Read from the document, not left empty.**
+     *
+     * This was `""`. `new Date("")` is `NaN`, and every comparison against NaN
+     * is false — so `formatRelative` fell past "just now", past minutes, past
+     * hours, and printed the last branch: `NaN` + `d`. That is the **"in NaNd"**
+     * on every row of the task list.
+     *
+     * The worse half is invisible. Several panels key their refetch on this
+     * field — `useQuery(…, [taskId, view.task.updatedAt])` in `TimerControl` and
+     * `SubmissionPanel`. A value that never changes is a dependency that never
+     * fires, so those queries ran once on mount and never again: a timer moving
+     * on one screen while another shows the figure from page load, and "it only
+     * updates after I refresh".
+     */
+    /* `Number.isFinite`, not `!== null`: a fixture or a pre-migration document
+       can carry `undefined` or a NaN, and `new Date(NaN).toISOString()` throws
+       rather than returning a bad string — taking the whole task with it. */
+    updatedAt: Number.isFinite(legacy.updatedAtMs as number)
+      ? new Date(legacy.updatedAtMs as number).toISOString()
+      : "",
     deletedAt: legacy.isDeleted ? new Date(0).toISOString() : null,
   };
 }

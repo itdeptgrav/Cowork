@@ -20,7 +20,10 @@ import {
   type DutyMode,
   type DutySnapshot,
 } from "../../rules/presence/duty.ts";
-import { bankableRunSecs } from "../../rules/tasks/timer.ts";
+import {
+  bankableRunSecs,
+  TIMER_BANKABLE_GRACE_MS,
+} from "../../rules/tasks/timer.ts";
 import { presenceWriteRefusal } from "../../rules/presence/taskGate.ts";
 import {
   currentStageOf,
@@ -630,6 +633,7 @@ function toTimerSession(
     startedAt:
       startedAtRealMs !== null ? new Date(startedAtRealMs).toISOString() : null,
     startedAtRealMs,
+    heartbeatAtRealMs: figures.heartbeatAtRealMs,
   };
 }
 
@@ -3928,7 +3932,7 @@ export class LegacyRepository {
       startedAtRealMs: startedAt,
       heartbeatAtRealMs: Number(data.heartbeatAt) || null,
       nowRealMs: Date.now(),
-      graceMs: STALE_AFTER_MS,
+      graceMs: TIMER_BANKABLE_GRACE_MS,
     });
     const total = base + elapsed;
     const pauseReason =
@@ -4038,7 +4042,11 @@ export class LegacyRepository {
     const now = Date.now();
     const lastBeat =
       Number(data.heartbeatAt) || Number(data.lastStartTime) || now;
-    if (now - lastBeat > STALE_AFTER_MS) {
+    /* The BANKING grace, not the presence one. A gap shorter than this costs
+       nothing — `bankableRunSecs` credits it in full — so reconciling at two
+       minutes restarted the run for gaps that were never going to lose a
+       second. This fires only where time would actually be dropped. */
+    if (now - lastBeat > TIMER_BANKABLE_GRACE_MS) {
       await this.#closeGapAndKeepRunning(ref, id);
       return { ok: true, data: undefined };
     }
@@ -4098,13 +4106,15 @@ export class LegacyRepository {
         const now = Date.now();
         const lastBeat =
           Number(d.heartbeatAt) || Number(d.lastStartTime) || now;
-        if (now - lastBeat <= STALE_AFTER_MS) return;
+        /* Same threshold as the caller, re-checked inside the transaction: a
+           racing beat may have closed this gap already. */
+        if (now - lastBeat <= TIMER_BANKABLE_GRACE_MS) return;
 
         const banked = bankableRunSecs({
           startedAtRealMs: Number(d.lastStartTime) || now,
           heartbeatAtRealMs: Number(d.heartbeatAt) || null,
           nowRealMs: now,
-          graceMs: STALE_AFTER_MS,
+          graceMs: TIMER_BANKABLE_GRACE_MS,
         });
         tx.set(
           ref,

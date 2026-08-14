@@ -621,6 +621,18 @@ export interface TimerSession {
    * count from where it really is instead of from zero.
    */
   startedAtRealMs: number | null;
+  /**
+   * The last beat from the tab running this session (epoch ms), or null.
+   *
+   * **Carried so the DISPLAY can obey the same cap as the credit.** Time is
+   * banked only up to the last beat plus a grace — a backgrounded tab has its
+   * beats throttled, a sleeping laptop sends none — but the screen counted raw
+   * `now − startedAtRealMs` with no cap. So it climbed to 59:10, the engine
+   * reconciled and banked 50:00, and the figure dropped by nine minutes. The
+   * time was never going to be credited; showing it and withdrawing it is the
+   * fault. Null on sessions written before beats existed.
+   */
+  heartbeatAtRealMs: number | null;
 }
 
 /**

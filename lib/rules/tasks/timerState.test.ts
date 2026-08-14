@@ -190,7 +190,45 @@ test("the control derives its state from the rule, not from React", () => {
 
 test("a stale run contributes no time to the display", () => {
   const src = code(CONTROL);
-  assert.match(src, /running\s*\?\s*banked \+ ticked\s*:\s*displaySecs\(/);
+  assert.match(src, /running\s*\?\s*banked \+ runSecs\s*:\s*displaySecs\(/);
+});
+
+test("the running figure is capped where the CREDIT is capped", () => {
+  /**
+   * **The reported fault: the clock reached 59:10 and then dropped to 50:00.**
+   *
+   * `ticked` is raw wall clock. The engine never pays for all of it —
+   * `bankableRunSecs` stops at the last beat plus a grace, and
+   * `#closeGapAndKeepRunning` banks exactly that. A backgrounded tab has its
+   * beats throttled to roughly once a minute and a sleeping laptop sends none,
+   * so the display and the credit drifted apart in silence until a beat landed
+   * and reconciled them downwards.
+   *
+   * The minutes were never creditable. Showing them and taking them back is
+   * the fault, so the display now stops where the credit stops.
+   */
+  const src = code(CONTROL);
+  assert.match(src, /const runSecs =/);
+  assert.match(src, /bankableRunSecs\(\{/);
+  assert.match(src, /heartbeatAtRealMs: session\?\.heartbeatAtRealMs \?\? null/);
+  assert.match(src, /graceMs: STALE_AFTER_MS/);
+  /* Derived from the ticker, never from the clock: reading `Date.now()` during
+     a render makes the same props produce two different figures, which is what
+     the assertion further down this file exists to prevent. */
+  assert.match(src, /nowRealMs: runOrigin \+ ticked \* 1000/);
+});
+
+test("the two sides of a task cannot show different clocks", () => {
+  /**
+   * `getTimer` reads the ACTING employee's session — the viewer's own. For the
+   * assignee that is the same document the listener watches. For the manager
+   * who created the task it is a different document entirely, so falling back
+   * to it showed them THEIR clock on somebody else's work: 40 minutes on one
+   * screen and 20 on the other, for one running timer.
+   */
+  const src = code(CONTROL);
+  assert.match(src, /const viewerIsAssignee =/);
+  assert.match(src, /live \?\? \(viewerIsAssignee \? timer\.data : null\)/);
 });
 
 test("the timer is coupled to presence: away stops the clock at once", () => {
@@ -327,7 +365,7 @@ test("the away figure is per-second, not measured against the coarse clock", () 
      against it: stepping away dropped the clock by up to a minute and banking
      the real elapsed a moment later threw it forward again. */
   const src = code(CONTROL);
-  assert.match(src, /const elapsed = away\s*\n?\s*\? banked \+ ticked/);
+  assert.match(src, /const elapsed = away\s*\n?\s*\? banked \+ runSecs/);
   assert.equal(
     /elapsedSecs\(session\?\.startedAtRealMs \?\? null, nowMs\)/.test(src),
     false,
@@ -371,7 +409,12 @@ test("the control watches the ASSIGNEE's session, not the viewer's", () => {
 
 test("the live session outranks the one-shot read", () => {
   /* Otherwise the first paint would keep winning and the view would never move. */
-  assert.match(code(CONTROL), /const session = live \?\? timer\.data/);
+  /* Still preferred over the one-shot read — but only where that read is the
+     SAME document. See "the two sides of a task cannot show different clocks". */
+  assert.match(
+    code(CONTROL),
+    /const session = live \?\? \(viewerIsAssignee \? timer\.data : null\)/,
+  );
 });
 
 test("a previous person's clock cannot linger under a new one", () => {

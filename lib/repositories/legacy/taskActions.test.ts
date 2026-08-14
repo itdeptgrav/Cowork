@@ -94,23 +94,54 @@ test("the timer writes the collections the old app reads", () => {
 });
 
 test("pause banks elapsed time rather than trusting a tick", () => {
-  /* `totalSeconds + bankableRunSecs(...)` — real elapsed measured from the
-     stored start stamp (so a session paused after the tab was throttled is still
-     correct), but CAPPED at the last liveness beat plus the staleness grace so a
-     gap where nothing beat — a closed tab, a sleeping laptop — is not credited.
-     That cap is what stops "1:59:39 for a five-minute run". */
+  /**
+   * `totalSeconds + bankableRunSecs(...)` — real elapsed from the stored start
+   * stamp, capped at the last beat plus a grace so a gap where nothing beat is
+   * not credited. That cap is what stops "1:59:39 for a five-minute run".
+   *
+   * **The grace is the TIMER's own, not `STALE_AFTER_MS`.** That one is 120
+   * seconds and answers which tab owns a presence claim. Used here it discarded
+   * every second past two minutes of beat-silence — and a browser throttles a
+   * hidden tab's timers to about one a minute and stops them entirely when the
+   * window is occluded, so half an hour at the desk banked as twenty.
+   */
   assert.match(source, /bankableRunSecs\(\{/);
   assert.match(source, /heartbeatAtRealMs:\s*Number\(data\.heartbeatAt\)/);
-  assert.match(source, /graceMs:\s*STALE_AFTER_MS/);
+  assert.match(source, /graceMs:\s*TIMER_BANKABLE_GRACE_MS/);
+  assert.equal(
+    /graceMs:\s*STALE_AFTER_MS/.test(source),
+    false,
+    "banking is back on the presence window, which drops worked time",
+  );
 });
 
-test("a running session is kept alive by a heartbeat that caps abandonment", () => {
-  /* The beat moves `heartbeatAt` forward while the clock runs; a beat that finds
-     the previous one already stale pauses the session instead, so an abandoned
-     run banks only up to its last beat rather than the whole gap. */
+test("a quiet spell closes its gap and keeps the clock running", () => {
+  /**
+   * **The beat does not stop the timer.** It used to: a beat arriving after the
+   * previous one had gone stale called `pauseTimer(…, "went_away")`, which is
+   * self-contradictory — the beat is written BY the running tab, so its arrival
+   * is proof the tab is alive.
+   *
+   * Asserted on the ABSENCE of `went_away` in code as well as the presence of
+   * the replacement. The previous version of this test matched `/"went_away"/`
+   * against the source WITH comments, so it went on passing off the comment
+   * that explains the removal — a test green because of prose describing the
+   * behaviour it was meant to be checking.
+   */
   assert.match(source, /async heartbeatTimer\(/);
   assert.match(source, /heartbeatAt: now/);
-  assert.match(source, /"went_away"/);
+  assert.match(source, /#closeGapAndKeepRunning\(/);
+  /* Comments stripped, so the explanation above the removal cannot satisfy it. */
+  const code = source
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+  assert.equal(
+    /"went_away"/.test(code),
+    false,
+    "the beat pauses the session again — that is the stopping-timer fault",
+  );
+  /* Still capped: the gap itself is not credited, only the clock survives it. */
+  assert.match(code, /isActive: true/);
 });
 
 test("starting one task pauses any other running timer", () => {

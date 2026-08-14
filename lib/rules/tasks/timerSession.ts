@@ -39,6 +39,19 @@ export interface StoredTimerFigures {
    * so a caller must not read it as "unknown" and substitute the clock.
    */
   startedAtRealMs: number | null;
+  /**
+   * Epoch ms of the last beat from the tab that is running, or null.
+   *
+   * **The display needs this, not only the write path.** `bankableRunSecs` caps
+   * credit at the last beat plus a grace, so a backgrounded tab — Chrome
+   * throttles its beats to about once a minute, a sleeping laptop stops them —
+   * banks less than the wall clock ran for. The screen counted raw
+   * `now - startedAtRealMs` with no cap, so it climbed to 59:10 and then
+   * dropped to 50:00 when the engine reconciled: nine minutes shown and taken
+   * back. Nothing was lost, but a clock that counts up and then retreats is
+   * worse than one that never promised the time.
+   */
+  heartbeatAtRealMs: number | null;
 }
 
 /** Epoch ms out of an epoch number, a Firestore `Timestamp`, or an ISO string. */
@@ -66,7 +79,8 @@ export function readTimerInstant(value: unknown): number | null {
 export function readTimerFigures(
   data: Record<string, unknown> | null | undefined,
 ): StoredTimerFigures {
-  if (!data) return { accumulatedSecs: 0, startedAtRealMs: null };
+  if (!data)
+    return { accumulatedSecs: 0, startedAtRealMs: null, heartbeatAtRealMs: null };
 
   const banked = [data.totalSecs, data.totalSeconds].find(
     (v): v is number => typeof v === "number" && Number.isFinite(v),
@@ -77,5 +91,8 @@ export function readTimerFigures(
     /* `startedAt` is the older name, kept as a fallback for sessions written
        before the rename. */
     startedAtRealMs: readTimerInstant(data.lastStartTime ?? data.startedAt),
+    /* Absent on sessions written before beats existed. Null rather than the
+       start time, so the grace is applied in one place by the caller. */
+    heartbeatAtRealMs: readTimerInstant(data.heartbeatAt),
   };
 }
