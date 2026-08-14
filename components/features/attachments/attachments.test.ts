@@ -32,11 +32,14 @@ function file(name: string, size: number, type = ""): File {
 
 /* ── Local validation, before a round trip ────────────────────────────────── */
 
-test("an oversized file is refused before it is sent", () => {
-  /* The engine refuses it too — this only saves somebody uploading 60 MB to be
-     told no. */
-  assert.match(localRefusal(file("big.pdf", 51 * 1024 * 1024))!, /50 MB/);
+test("there is no size cap — a large file is not refused", () => {
+  /* The 50 MB cap was withdrawn on the owner's instruction, on this side and in
+     the engine together. Asserted rather than merely deleted: a client check
+     that outlived the server's would refuse a file the product accepts, with no
+     error to read and nothing to appeal to. */
   assert.equal(localRefusal(file("ok.pdf", 49 * 1024 * 1024)), null);
+  assert.equal(localRefusal(file("big.pdf", 51 * 1024 * 1024)), null);
+  assert.equal(localRefusal(file("huge.pdf", 2 * 1024 * 1024 * 1024)), null);
 });
 
 test("an empty file is refused", () => {

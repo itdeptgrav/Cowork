@@ -12,7 +12,18 @@
    file's real bytes rather than trusting any of this. */
 export const ACCEPT =
   ".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.png,.jpg,.jpeg,.webp,.txt,.csv";
-export const MAX_BYTES = 50 * 1024 * 1024;
+/**
+ * No size cap — withdrawn on the owner's instruction.
+ *
+ * It was 50 MB, mirroring the engine's own. The engine's is gone too, so a
+ * limit left here would refuse a file the server would happily take — a client
+ * check that is stricter than the authority it mirrors is worse than none,
+ * because there is no error to read and nothing to appeal to.
+ *
+ * `null` rather than a very large number, so "no cap" is a state a reader can
+ * see rather than a threshold they have to recognise as unreachable.
+ */
+export const MAX_BYTES: number | null = null;
 
 export function isPreviewableImage(type: string): boolean {
   return /^image\/(png|jpeg|webp)$/.test(type);
@@ -39,10 +50,16 @@ export function formatBytes(size: number): string {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/** Why a file cannot be sent, before one is. Null when it is fine. */
+/**
+ * Why a file cannot be sent, before one is. Null when it is fine.
+ *
+ * Size is no longer one of the reasons. The empty check stays: a zero-byte file
+ * is not a large file somebody chose to send, it is a file that failed to read,
+ * and the engine refuses it anyway with "No file was received."
+ */
 export function localRefusal(file: File): string | null {
-  if (file.size > MAX_BYTES) {
-    return `${file.name} is larger than the 50 MB limit.`;
+  if (MAX_BYTES !== null && file.size > MAX_BYTES) {
+    return `${file.name} is larger than the ${Math.round(MAX_BYTES / (1024 * 1024))} MB limit.`;
   }
   if (file.size === 0) return `${file.name} is empty.`;
   return null;

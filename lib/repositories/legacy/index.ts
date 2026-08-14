@@ -4016,11 +4016,9 @@ export class LegacyRepository {
    * the staleness grace, so a beat that never comes — a closed tab, a sleeping
    * laptop — is precisely what keeps the untracked hours out of the total.
    *
-   * If the previous beat is ALREADY older than the staleness window, the session
-   * was abandoned rather than merely between beats. It is paused here instead of
-   * refreshed, which banks only the worked time up to that last beat: a person
-   * returning hours later finds the clock stopped at the right figure rather
-   * than still running on the gap.
+   * If the previous beat is already older than the staleness window, the gap
+   * between them was not worked and is not credited — but the clock is NOT
+   * stopped. See `#closeGapAndKeepRunning`.
    */
   async heartbeatTimer(taskId: TaskId): Promise<ActionResult<void>> {
     const employeeId = String(this.#ctx.employeeId);
@@ -4041,13 +4039,98 @@ export class LegacyRepository {
     const lastBeat =
       Number(data.heartbeatAt) || Number(data.lastStartTime) || now;
     if (now - lastBeat > STALE_AFTER_MS) {
-      /* Abandoned since the last beat — pause, which caps the banked time at
-         that beat so the gap is not credited. */
-      await this.pauseTimer(id as TaskId, null, "went_away" as never);
+      await this.#closeGapAndKeepRunning(ref, id);
       return { ok: true, data: undefined };
     }
     await setDoc(ref, { heartbeatAt: now, updatedAt: now }, { merge: true });
     return { ok: true, data: undefined };
+  }
+
+  /**
+   * A beat arrived after a quiet gap. Bank what was worked; keep running.
+   *
+   * **This used to call `pauseTimer(…, "went_away")`, and that was the bug.**
+   * A beat is written BY the running tab, so a beat arriving is proof the tab is
+   * alive — stopping the clock at the moment the evidence of life shows up is
+   * self-contradictory. What actually happened in practice: a backgrounded tab
+   * has its interval throttled (Chrome clamps a hidden tab's timers to about
+   * once a minute, and an occluded window or a sleeping laptop stops them
+   * outright), so an ordinary 45s beat lands past the 120s window, and somebody
+   * working at their desk in another window came back to a stopped timer. The
+   * event log shows eight of these against one task, each restarted by hand
+   * within twenty seconds.
+   *
+   * **The integrity property is unchanged.** The gap is still not paid for:
+   * `bankableRunSecs` is the same function `pauseTimer` uses, and it caps the
+   * credit at the last beat plus the grace. The difference is only what happens
+   * to the clock afterwards — the run restarts from now instead of stopping, so
+   * a person who never left does not have to notice and press Start again.
+   *
+   * A genuine departure is still handled, and by the thing that actually knows
+   * about it: going on break or offline pauses the timer through presence, and a
+   * tab that is truly gone sends no beat at all, so nothing here runs and the
+   * cap applies whenever the session is finally closed.
+   *
+   * Done in a TRANSACTION because two beats can race — the log shows every
+   * `went_away` written twice in the same second, which is this path firing
+   * concurrently. Two un-transacted resumes would each bank the same gap.
+   */
+  async #closeGapAndKeepRunning(
+    ref: import("firebase/firestore").DocumentReference,
+    id: string,
+  ): Promise<void> {
+    const { runTransaction } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    try {
+      await runTransaction(legacyDb(), async (tx) => {
+        const fresh = await tx.get(ref);
+        if (!fresh.exists()) return;
+        const d = fresh.data() as {
+          isActive?: boolean;
+          totalSeconds?: number;
+          lastStartTime?: number;
+          heartbeatAt?: number;
+        };
+        /* Re-checked inside the transaction: the racing beat may have closed
+           this gap already, and banking it twice is the failure this exists to
+           prevent. */
+        if (d.isActive !== true) return;
+        const now = Date.now();
+        const lastBeat =
+          Number(d.heartbeatAt) || Number(d.lastStartTime) || now;
+        if (now - lastBeat <= STALE_AFTER_MS) return;
+
+        const banked = bankableRunSecs({
+          startedAtRealMs: Number(d.lastStartTime) || now,
+          heartbeatAtRealMs: Number(d.heartbeatAt) || null,
+          nowRealMs: now,
+          graceMs: STALE_AFTER_MS,
+        });
+        tx.set(
+          ref,
+          {
+            totalSeconds: (Number(d.totalSeconds) || 0) + banked,
+            /* The run restarts HERE. Everything between the last beat and now
+               is outside both the old run and the new one, which is exactly
+               how it goes uncredited without the clock stopping. */
+            lastStartTime: now,
+            heartbeatAt: now,
+            isActive: true,
+            updatedAt: now,
+          },
+          { merge: true },
+        );
+      });
+      console.info("[timerdbg] ↻ gap closed, still running", { id });
+    } catch (e) {
+      /* A failed reconcile leaves the session running with an old beat. The
+         next beat tries again, and the cap in `pauseTimer` still protects the
+         total whenever it is eventually stopped. */
+      console.error(
+        "[timer] gap reconcile failed:",
+        e instanceof Error ? e.message : e,
+      );
+    }
   }
 
   /* ── Office policy ──────────────────────────────────────────────────────
@@ -4813,6 +4896,53 @@ export class LegacyRepository {
    * "your budget grew by five minutes" are different sentences and only one of
    * them is true on any given task.
    */
+  /**
+   * File a receipt for a budget that GREW, so the growth has an account.
+   *
+   * **A separate collection from `cowork_task_budget_extensions`, and that is
+   * the whole point.** That one is a NEGOTIATION: an approved row in it means
+   * "your manager has offered you this, confirm it to put it in force", so
+   * writing an automatic credit there produced a card asking somebody to accept
+   * five minutes they had already been given — and accepting it would have SET
+   * the budget to five minutes rather than adding to it. This collection is
+   * append-only and asks nobody for anything; nothing reads it but the history.
+   *
+   * Never awaited into a critical path and never allowed to fail a credit. The
+   * budget write is the record; this is the account of it, and losing the
+   * account must not cost somebody the time.
+   */
+  async #fileBudgetCredit(input: {
+    taskId: string;
+    previousSecs: number;
+    newSecs: number;
+    reason: string;
+    forEmployeeId: string;
+  }): Promise<void> {
+    /* Growth only. A credit of nothing is not an event, and a shrinking budget
+       is a different thing that this history does not claim to explain. */
+    if (!(input.newSecs > input.previousSecs)) return;
+    try {
+      const { addDoc, collection } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await addDoc(collection(legacyDb(), "cowork_task_budget_credits"), {
+        taskId: input.taskId,
+        forEmployeeId: input.forEmployeeId,
+        previousSecs: input.previousSecs,
+        newSecs: input.newSecs,
+        reason: input.reason,
+        at: new Date().toISOString(),
+        /* Nobody decided this — a rule applied itself. The flag is what lets a
+           reader tell it from a negotiated extension. */
+        automatic: true,
+      });
+    } catch (e) {
+      console.error(
+        "[budget] credit receipt write failed:",
+        e instanceof Error ? e.message : e,
+      );
+    }
+  }
+
   async #compensateOneDeadline(input: {
     taskId: string;
     /** Null on a task whose date is derived rather than stored. */
@@ -4892,6 +5022,19 @@ export class LegacyRepository {
         : {}),
       updatedAt: new Date(),
     });
+
+    /* The budget's own receipt, whether or not a date also moved. Filed here
+       and not in the negotiation collection — see `#fileBudgetCredit`. This is
+       what the History panel beside Time budget reads. */
+    if (growsWindow && budgetField) {
+      void this.#fileBudgetCredit({
+        taskId: input.taskId,
+        previousSecs: Number(data[budgetField]) || 0,
+        newSecs: input.newWindowSecs!,
+        reason: input.reason,
+        forEmployeeId: input.byEmployeeId,
+      });
+    }
 
     const nowIso = new Date().toISOString();
 
@@ -5042,6 +5185,21 @@ export class LegacyRepository {
           updatedAt: new Date(),
         });
         shifted += 1;
+
+        /* The budget's receipt, filed BEFORE the date check below.
+           It used to sit after it, so a task whose date is derived from the
+           queue rather than stored — which is most of them — grew its window
+           and recorded nothing at all. That is exactly how a nine-hour task
+           came to read 10:26:53 with no account of the difference. */
+        if (newWindowSecs !== null) {
+          void this.#fileBudgetCredit({
+            taskId: d.id,
+            previousSecs: currentWindow,
+            newSecs: newWindowSecs,
+            reason,
+            forEmployeeId: employeeId,
+          });
+        }
 
         /* Nothing to file where no date moved — the receipt below names a
            previous and a proposed deadline, and there was neither. */
@@ -11831,6 +11989,72 @@ export class LegacyRepository {
    * agreed when the goal was created and snapshotted there, so a later change
    * to the company total cannot rewrite what this roadmap is dividing up.
    */
+  /**
+   * Where this task's hours came from.
+   *
+   * `givenSecs` reads `etcHours`, which is the creator's figure and is not
+   * rewritten by a credit — the growth paths touch only the window fields. That
+   * is what makes it usable as a baseline, and it is the only field on the task
+   * that still remembers what was originally agreed.
+   *
+   * Sorted here rather than in the query: the collection has no composite index
+   * on `taskId` + `at`, and adding one for a panel this small would be a
+   * migration to pay for a sort of a handful of rows.
+   */
+  async getBudgetHistory(taskId: TaskId) {
+    const empty = { givenSecs: 0, currentSecs: 0, credits: [] };
+    try {
+      const { collection, doc, getDoc, getDocs, query, where } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const db = legacyDb();
+
+      const [taskSnap, creditSnap] = await Promise.all([
+        getDoc(doc(db, "cowork_tasks", String(taskId))),
+        getDocs(
+          query(
+            collection(db, "cowork_task_budget_credits"),
+            where("taskId", "==", String(taskId)),
+          ),
+        ),
+      ]);
+      if (!taskSnap.exists()) return empty;
+
+      const data = taskSnap.data() as Record<string, unknown>;
+      const hours = Number(data.etcHours);
+      /* `readTask` answers null on a document it cannot map. Zero is the honest
+         current budget then — the panel says the account is incomplete rather
+         than inventing a figure to reconcile against. */
+      const mapped = readTask({ ...data, id: String(taskId) } as never);
+
+      return {
+        givenSecs: Number.isFinite(hours) && hours > 0 ? Math.round(hours * 3600) : 0,
+        currentSecs: mapped ? resolveTimeBudget(mapped) : 0,
+        credits: creditSnap.docs.map((d) => {
+          const c = d.data() as Record<string, unknown>;
+          return {
+            id: d.id,
+            at: typeof c.at === "string" ? c.at : "",
+            previousSecs: Number(c.previousSecs) || 0,
+            newSecs: Number(c.newSecs) || 0,
+            reason: typeof c.reason === "string" ? c.reason : "",
+            byEmployeeId:
+              typeof c.forEmployeeId === "string" ? c.forEmployeeId : null,
+          };
+        }),
+      };
+    } catch (e) {
+      /* The panel this feeds hangs off Details. A history that cannot be read
+         must cost the history, never the task page. */
+      console.error(
+        "[budget] history read failed:",
+        e instanceof Error ? e.message : e,
+      );
+      return empty;
+    }
+  }
+
   async getGoalRoadmap(taskId: TaskId) {
     const token = await this.#token();
     const [roadmap, taskDoc] = await Promise.all([

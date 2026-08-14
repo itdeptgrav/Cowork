@@ -1613,6 +1613,35 @@ export interface CoworkRepository {
   }): Promise<{ valid: boolean; remainingPercent: number; error: string | null }>;
 
   /**
+   * Where a task's hours came from.
+   *
+   * A budget can grow after the task is created, without anybody asking: a
+   * break credited back, an offline span, an approved emergency, a meeting
+   * attended. This is the account of that — every recorded increase, oldest
+   * first, with the engine's own reason on each.
+   *
+   * `givenSecs` is what the task was created with. It will NOT always equal
+   * `currentSecs` minus the credits: receipts were only introduced recently, so
+   * a task credited before that carries budget nothing explains. The caller is
+   * expected to say so rather than hide it — see `budgetHistoryView`.
+   *
+   * An unreadable history answers empty rather than throwing. The Details panel
+   * it hangs off must survive it.
+   */
+  getBudgetHistory(taskId: TaskId): Promise<{
+    givenSecs: number;
+    currentSecs: number;
+    credits: {
+      id: string;
+      at: string;
+      previousSecs: number;
+      newSecs: number;
+      reason: string;
+      byEmployeeId: string | null;
+    }[];
+  }>;
+
+  /**
    * A goal task's roadmap — Phase 2 of goal support.
    *
    * The steps the goal is delivered through, each with a share of the task's

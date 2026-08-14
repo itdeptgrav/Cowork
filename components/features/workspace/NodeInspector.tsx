@@ -40,7 +40,10 @@ import {
  * They go to Drive now, so the cap can be what a picture on a card actually
  * warrants rather than what a browser will tolerate.
  */
-const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+/* No size cap — withdrawn on the owner's instruction, with the ones on task
+   attachments and MRF photos. Null rather than a large number so "no cap" is a
+   state a reader can see. */
+const MAX_IMAGE_BYTES: number | null = null;
 
 export function NodeInspector({
   map,
@@ -108,7 +111,7 @@ export function NodeInspector({
       setImageError("Attach an image. Other files are not supported here yet.");
       return;
     }
-    if (file.size > MAX_IMAGE_BYTES) {
+    if (MAX_IMAGE_BYTES !== null && file.size > MAX_IMAGE_BYTES) {
       setImageError(
         `That image is ${Math.round(file.size / 1024 / 1024)} MB. The limit is ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
       );
@@ -200,7 +203,9 @@ export function NodeInspector({
           <p className="text-sm font-medium text-ink">Images</p>
           <p className="mt-0.5 text-[11px] text-ink-faint">
             {canUpload
-              ? `Stored with the rest of your files, so anyone you share the map with sees them. Up to ${MAX_IMAGE_BYTES / 1024 / 1024} MB each.`
+              ? MAX_IMAGE_BYTES === null
+                ? "Stored with the rest of your files, so anyone you share the map with sees them."
+                : `Stored with the rest of your files, so anyone you share the map with sees them. Up to ${MAX_IMAGE_BYTES / 1024 / 1024} MB each.`
               : "Image storage is not configured on this deployment."}
           </p>
 

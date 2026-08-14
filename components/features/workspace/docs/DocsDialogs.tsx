@@ -338,7 +338,10 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
 
 /** The same ceiling `NodeInspector.tsx` uses for a mindmap card's image — one
     number for what "too large to attach" means across the workspace. */
-const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
+/* No size cap — withdrawn on the owner's instruction, with the ones on task
+   attachments and MRF photos. Null rather than a large number so "no cap" is a
+   state a reader can see. */
+const MAX_IMAGE_BYTES: number | null = null;
 
 /**
  * A link or an image address.
@@ -385,7 +388,7 @@ export function AddressDialog({
       setUploadError("Choose an image file.");
       return;
     }
-    if (file.size > MAX_IMAGE_BYTES) {
+    if (MAX_IMAGE_BYTES !== null && file.size > MAX_IMAGE_BYTES) {
       setUploadError(
         `That image is ${Math.round(file.size / 1024 / 1024)} MB. The limit is ${MAX_IMAGE_BYTES / 1024 / 1024} MB.`,
       );
@@ -487,7 +490,9 @@ export function AddressDialog({
         {isLink
           ? "An address without http:// is treated as https://."
           : canUpload
-            ? `Up to ${MAX_IMAGE_BYTES / 1024 / 1024} MB. Uploaded images are stored with the rest of your files, so anyone you share the document with sees them.`
+            ? MAX_IMAGE_BYTES === null
+              ? "Uploaded images are stored with the rest of your files, so anyone you share the document with sees them."
+              : `Up to ${MAX_IMAGE_BYTES / 1024 / 1024} MB. Uploaded images are stored with the rest of your files, so anyone you share the document with sees them.`
             : "Images are linked by address. Upload isn't configured on this deployment, so a file from your machine can't be added here."}
       </p>
     </DocsDialog>

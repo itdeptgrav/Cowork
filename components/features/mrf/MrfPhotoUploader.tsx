@@ -43,7 +43,10 @@ function mrfImageDownloadUrl(im: MrfImage): string {
 const MAX = 5;
 /* Raised from 8 MB. Phone cameras routinely produce 10–15 MB originals, and
    the point of storing the original is defeated by a limit that rejects one. */
-const MAX_BYTES = 25 * 1024 * 1024;
+/* No size cap now — withdrawn on the owner's instruction, along with the 50 MB
+   one on task attachments. The reasoning above, taken to its end: the original
+   is what is worth storing, whatever it weighs. */
+const MAX_BYTES: number | null = null;
 
 async function uploadMrfImage(file: File): Promise<MrfImage> {
   const { idToken } = await import("@/lib/legacy/firebase");
@@ -102,8 +105,10 @@ export function MrfPhotoUploader({
         failed.push(`${f.name} (not an image)`);
         continue;
       }
-      if (f.size > MAX_BYTES) {
-        failed.push(`${f.name} (over 25 MB)`);
+      if (MAX_BYTES !== null && f.size > MAX_BYTES) {
+        failed.push(
+          `${f.name} (over ${Math.round(MAX_BYTES / (1024 * 1024))} MB)`,
+        );
         continue;
       }
       try {

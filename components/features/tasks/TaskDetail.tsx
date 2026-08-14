@@ -27,6 +27,7 @@ import { ReworkPanel } from "./ReworkPanel";
 import { TaskFilesPanel } from "./TaskFilesPanel";
 import { FeasibilityPreview } from "./FeasibilityPreview";
 import { ExpectedCompletion } from "./ExpectedCompletion";
+import { BudgetHistory } from "./BudgetHistory";
 import { TaskFlowSection } from "./TaskFlowSection";
 import { RelationshipNote } from "./RelationshipNote";
 import { PriorityDialog } from "./PriorityDialog";
@@ -1112,6 +1113,10 @@ function FactsRail({
                 of {formatDurationTimer(v.task.estimatedEffortSecs)}
               </span>
             </span>
+            {/* Where the second figure came from. A budget grows on its own —
+                breaks, offline spans, emergencies, meetings — and the number
+                alone cannot say which. */}
+            <BudgetHistory taskId={v.task.id} />
           </Fact>
         )}
 

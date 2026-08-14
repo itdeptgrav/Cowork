@@ -20,6 +20,11 @@ import {
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import {
+  attendeeCount,
+  distinctAttendees,
+  realMeetingsOnly,
+} from "@/lib/rules/meetings/realMeeting";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import {
   liveCrossDeptFigures,
@@ -76,6 +81,9 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
     url: string;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /* Whether the "start a meeting?" confirmation is open. Opening the room is
+     irreversible and credits time to everybody in it, so the press asks first. */
+  const [confirmingJoin, setConfirmingJoin] = useState(false);
 
   const [join, joinState] = useAction((r) => r.joinTaskMeeting(taskId));
   const [leave] = useAction((r, sessionId: string) =>
@@ -164,7 +172,34 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   };
 
   const meetings = view.task.meetings;
-  const list = sessions.data ?? [];
+  /**
+   * **Only the sessions that were actually meetings.**
+   *
+   * A session with one person in it is somebody opening the room and closing
+   * it — 327 of the 366 stored across the product are exactly that, and 324 of
+   * those credited nothing. Listing them put a meeting on the record of tasks
+   * where no conversation took place, which is what people reported.
+   *
+   * Filtered for DISPLAY only. Nothing is deleted: a solo session is a true
+   * record of somebody opening the room, and `sessions.data` is still what the
+   * live-room logic below reads, so a room with one person waiting in it is
+   * still found and joined.
+   */
+  const list = realMeetingsOnly(sessions.data ?? []);
+
+  /* Names for the attendance line. Attendees are usually the assignee and the
+     assigner, both of which `view` already carries, but a third person joining
+     is ordinary — so the directory is read and the ids are the fallback. */
+  const directory = useQuery((r) => r.listEmployees(), []);
+  const nameOf = (id: string): string => {
+    const known =
+      directory.data?.find((e) => String(e.id) === String(id))?.displayName ??
+      [view.owner, view.assigner, ...view.assignees, ...view.pendingAssignees]
+        .find((p) => p && String(p.id) === String(id))?.displayName;
+    /* The id, never "Unknown": a reader who recognises GR0045 is better served
+       than one told the system has lost track of somebody. */
+    return known ?? id;
+  };
 
   /* ── The meeting that is happening right now ──────────────────────────────
    *
@@ -415,29 +450,71 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
           <Button
             size="sm"
             disabled={joinState.isPending}
-            onClick={async () => {
+            /**
+             * **Asked first, because opening the room IS the meeting.**
+             *
+             * There is no scheduling step: the press starts a session, stamps
+             * attendance and begins crediting time to everybody's deadlines —
+             * and nothing undoes it. Somebody pressing this to see what it does
+             * has held a meeting, and the record cannot be withdrawn.
+             *
+             * A task carrying a meeting nobody meant to hold is what this
+             * prevents. One press against an irreversible, shared consequence
+             * is exactly where a confirmation earns its place.
+             */
+            onClick={() => {
               setError(null);
-              const r = await join();
-              if (!r.ok) {
-                setError(r.message);
-                return;
-              }
-              /* A rejoin after a settled departure is a fresh arrival, so the
-                 once-only guard is released rather than carried over. */
-              departingRef.current = null;
-              setJoined(r.data);
-              /* **Immediately, not on the next tick.** The snapshot this panel
-                 is holding was taken before this join — it contains neither
-                 this reader's own attendance row nor anybody already inside, so
-                 without this the figure reads zero and the reason line blames
-                 the other person for not being in a room they are standing in. */
-              sessions.refetch();
+              setConfirmingJoin(true);
             }}
           >
             {joinState.isPending ? "…" : "Join meeting"}
           </Button>
         )}
       </div>
+
+      {confirmingJoin && (
+        <div className="mt-3 rounded-inset border border-hairline bg-[var(--surface-sunken)] p-4">
+          <p className="text-sm text-ink">Start a meeting on this task?</p>
+          <p className="mt-1 max-w-[62ch] text-[12px] text-ink-faint">
+            There is nothing to schedule — opening the room starts it. The clock
+            begins at once, everyone who joins is recorded, and the time is
+            credited to their deadlines. A meeting cannot be withdrawn
+            afterwards.
+          </p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button
+              disabled={joinState.isPending}
+              onClick={async () => {
+                setConfirmingJoin(false);
+                const r = await join();
+                if (!r.ok) {
+                  setError(r.message);
+                  return;
+                }
+                /* A rejoin after a settled departure is a fresh arrival, so the
+                   once-only guard is released rather than carried over. */
+                departingRef.current = null;
+                setJoined(r.data);
+                /* **Immediately, not on the next tick.** The snapshot this
+                   panel holds was taken before this join — it contains neither
+                   this reader's own attendance row nor anybody already inside,
+                   so without this the figure reads zero and the reason line
+                   blames the other person for not being in a room they are
+                   standing in. */
+                sessions.refetch();
+              }}
+            >
+              {joinState.isPending ? "…" : "Yes, start the meeting"}
+            </Button>
+            <Button
+              tone="secondary"
+              onClick={() => setConfirmingJoin(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
+      )}
 
       {error && (
         <div className="mt-3">
@@ -604,10 +681,21 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                     {counterpartyName.split(" ")[0]} was not in the room
                   </span>
                 )}
-                <span className="shrink-0 text-[11px] text-ink-faint">
-                  {s.attendance.length === 1
-                    ? "1 person"
-                    : `${s.attendance.length} people`}
+                {/* **Who was in the room, by name.**
+                    Counted DISTINCT: `attendance` gains a row every time
+                    somebody arrives, so two people rejoining five times each
+                    read as "10 people" — the one figure on this panel somebody
+                    will argue about. The same person is one person. */}
+                <span
+                  className="min-w-0 shrink text-right text-[11px] text-ink-faint"
+                  title={distinctAttendees(s).map(nameOf).join(", ")}
+                >
+                  <span className="truncate">
+                    {distinctAttendees(s).map(nameOf).join(", ")}
+                  </span>
+                  <span className="ml-1.5 whitespace-nowrap opacity-70">
+                    ({attendeeCount(s)})
+                  </span>
                 </span>
                 <span
                   data-figure

@@ -17,7 +17,32 @@ import { createRequire } from "node:module";
  * only prove the code exists.
  */
 
-const BACKEND = "/Users/risheeray/Documents/cowork-old-backend";
+/**
+ * Where the engine's source lives, on whichever machine this is running on.
+ *
+ * It was a single hardcoded macOS path. On any other checkout `available()`
+ * returned false and all twenty-one tests here SKIPPED — reported as passing,
+ * so a change to the engine's attachment rules could be made with no coverage
+ * at all and nothing would say so. That is how a security claim quietly stops
+ * being checked.
+ *
+ * `COWORK_BACKEND` wins where it is set, then the known checkout locations.
+ * A machine with none of them still skips, which is honest; what it no longer
+ * does is skip on a machine that HAS the backend under a different path.
+ */
+const BACKEND =
+  [
+    process.env.COWORK_BACKEND,
+    "D:/GRAV_Project/grav-cms-backend",
+    "/Users/risheeray/Documents/cowork-old-backend",
+  ].find((dir) => {
+    if (!dir) return false;
+    try {
+      return statSync(join(dir, "services/coworkAttachmentRules.js")).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? "/Users/risheeray/Documents/cowork-old-backend";
 const SERVICE = join(BACKEND, "services/coworkAttachment.service.js");
 /* The validation half, dependency-free so it can be driven without a
    credential — which is the point of it being a separate module. */
@@ -32,8 +57,18 @@ const available = () => {
     return false;
   }
 };
+/**
+ * The engine's source, comments stripped and line endings normalised.
+ *
+ * **`\r\n` → `\n` matters.** The assertions below match multi-line shapes like
+ * `router.post(\n  "/attachments"`, and the backend checkout on Windows has
+ * CRLF endings — so every one of them silently failed to match on this
+ * platform. Combined with the hardcoded path that used to skip the whole file,
+ * a security claim could be false on one machine and unverifiable on the other.
+ */
 const code = (p: string) =>
   readFileSync(p, "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
@@ -111,13 +146,18 @@ test("the filename cannot traverse or inject a header", (t) => {
   assert.equal(safeName(null), "attachment");
 });
 
-test("the size cap is enforced in the service, not only by multer", (t) => {
+test("there is no size cap, in the service or on the route", (t) => {
   if (!available()) return t.skip("backend not present");
-  /* Multer guards the HTTP boundary; a non-HTTP caller would cross this one. */
+  /* Withdrawn on the owner's instruction. Checked in all three places at once,
+     because a cap surviving in ANY of them is the failure: the route would
+     reject before the service ever saw the bytes, and the service is the
+     boundary a non-HTTP caller crosses. */
   const s = svc();
-  assert.equal(s.MAX_BYTES, 50 * 1024 * 1024);
-  assert.match(code(SERVICE), /buffer\.length > MAX_BYTES/);
-  assert.match(code(RULES), /MAX_BYTES = 50 \* 1024 \* 1024/);
+  assert.equal(s.MAX_BYTES, null);
+  assert.match(code(RULES), /MAX_BYTES = null/);
+  /* The check is kept but guarded, so restoring a cap is a one-line change. */
+  assert.match(code(SERVICE), /MAX_BYTES !== null && buffer\.length > MAX_BYTES/);
+  assert.doesNotMatch(code(ROUTE), /limits:\s*\{\s*fileSize/);
 });
 
 /* ── Privacy ──────────────────────────────────────────────────────────────── */
@@ -273,7 +313,9 @@ test("a missing credential warns at boot but does not stop the server", (t) => {
   if (!available()) return t.skip("backend not present");
   /* Every other Cowork feature works without it; refusing to start would turn
      a missing attachment credential into a total outage. */
-  const server = code("/Users/risheeray/Documents/cowork-old-backend/server.js");
+  /* Through `BACKEND`, not a second hardcoded path — this one was missed when
+     the others were resolved and failed with ENOENT rather than skipping. */
+  const server = code(join(BACKEND, "server.js"));
   assert.match(server, /Private attachment storage is disabled because GOOGLE_SERVICE_ACCOUNT_KEY is missing/);
   assert.match(server, /console\.warn\(/);
   const at = server.indexOf("storageConfigured()");

@@ -4471,12 +4471,16 @@ export class MockRepository implements CoworkRepository {
     onProgress?: (fraction: number) => void;
   }): Promise<ActionResult<AttachmentMeta>> {
     /* The fixture mirrors the engine's refusals rather than accepting anything,
-       so a component's error path is reachable without a server. */
-    if (input.file.size > 50 * 1024 * 1024) {
+       so a component's error path is reachable without a server.
+       The SIZE refusal is gone, because the engine's is: a mock that refused a
+       file the product accepts would send somebody hunting for a limit that no
+       longer exists. An empty file is still refused — the engine answers "No
+       file was received." to that one. */
+    if (input.file.size === 0) {
       return {
         ok: false,
         code: "validation_failed",
-        message: "That file is larger than the 50 MB limit.",
+        message: "No file was received.",
       };
     }
     input.onProgress?.(1);
@@ -6271,6 +6275,30 @@ export class MockRepository implements CoworkRepository {
    * them on the document — one array, replaced wholesale — so the two behave
    * the same when a roadmap is reordered or a step removed.
    */
+  /**
+   * Where this task's hours came from, from the store.
+   *
+   * The seeded repository records no credits, so this answers "given, and
+   * nothing since" — which reconciles, and is honest: nothing in the prototype
+   * has ever credited a budget back.
+   */
+  async getBudgetHistory(taskId: TaskId) {
+    const t = getStore().tasks.find((x) => x.id === taskId);
+    const current = t?.estimatedEffortSecs ?? 0;
+    return delay({
+      givenSecs: current,
+      currentSecs: current,
+      credits: [] as {
+        id: string;
+        at: string;
+        previousSecs: number;
+        newSecs: number;
+        reason: string;
+        byEmployeeId: string | null;
+      }[],
+    });
+  }
+
   async getGoalRoadmap(taskId: TaskId) {
     const held = getStore().goalRoadmaps.find((r) => r.taskId === taskId);
     const taskMaxPoints = held?.taskMaxPoints ?? 0;
