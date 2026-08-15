@@ -498,6 +498,10 @@ function guard() {
 }
 
 /** A small store catalogue, so search returns real hits in the demo. */
+/* The prototype's HR-holiday switch. Module-level, like the store itself, so
+   every screen reads one truth and a toggle flips the whole app at once. */
+let hrHolidaySyncMock = true;
+
 export class MockRepository implements CoworkRepository {
   /* ── Identity ───────────────────────────────────────────────────────────── */
 
@@ -3522,11 +3526,23 @@ export class MockRepository implements CoworkRepository {
     return delay(getStore().extensions.filter((e) => e.taskId === taskId));
   }
 
+  async getHrHolidaySync(): Promise<boolean> {
+    return hrHolidaySyncMock;
+  }
+
+  async setHrHolidaySync(enabled: boolean): Promise<ActionResult<boolean>> {
+    hrHolidaySyncMock = enabled;
+    return delay(ok(enabled));
+  }
+
   async listBlockedDates(
     _employeeId: EmployeeId,
     from: string,
     to: string,
   ): Promise<BlockedDate[]> {
+    /* Same gate as the live repository: OFF fetches nothing HR-shaped, so the
+       prototype demonstrates the disconnect the same way production does. */
+    if (!hrHolidaySyncMock) return delay([]);
     const out: BlockedDate[] = [];
     const start = new Date(`${from}T00:00:00Z`);
     const end = new Date(`${to}T00:00:00Z`);

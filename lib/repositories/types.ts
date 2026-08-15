@@ -1197,6 +1197,21 @@ export interface CoworkRepository {
     reason?: string,
   ): Promise<ActionResult<OfficePolicy>>;
 
+  /**
+   * Whether deadline maths fetches holidays and approved leave from the HR
+   * system.
+   *
+   * ON — the default, and the product's standing behaviour: `listBlockedDates`
+   * asks the engine, which reads HR, and deadline walks skip those days. OFF —
+   * nothing is fetched from the HR side; every day reads as available. A
+   * testing switch: task logic can be exercised without HR data moving the
+   * dates. Deadlines computed while OFF ignore real holidays, which is the
+   * point and the risk in one sentence.
+   */
+  getHrHolidaySync(): Promise<boolean>;
+  /** Requires `score.configure`, as every other organisation setting does. */
+  setHrHolidaySync(enabled: boolean): Promise<ActionResult<boolean>>;
+
   /* Timer SOP Point Engine — work-time deficit and overtime. Configured on the
      office-policy settings surface; the counters read live from work commits. */
   getTimerSopConfig(): Promise<TimerSopConfig>;

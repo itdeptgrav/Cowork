@@ -66,6 +66,13 @@ export function ProvisionalRulesSection() {
     r.setRuleOverrides(next, reason || undefined),
   );
 
+  /* The HR-holiday disconnect. Lives on this page by the owner's choice: it is
+     a provisional, testing-time switch, and this is the page for those. */
+  const hrSync = useQuery((r) => r.getHrHolidaySync(), []);
+  const [saveHrSync, hrSyncState] = useAction((r, on: boolean) =>
+    r.setHrHolidaySync(on),
+  );
+
   const draft = edits ?? stored.data ?? null;
 
   if (stored.error && !draft) {
@@ -135,6 +142,45 @@ export function ProvisionalRulesSection() {
           are marked wherever they appear. Publishing a value records the
           decision and removes the mark.
         </p>
+      </Panel>
+
+      {/* ── HR holiday sync ─────────────────────────────────────────────────
+          One gate, one sentence of consequence. OFF is for TESTING: deadlines
+          computed while disconnected ignore real holidays and leave, and they
+          are not recomputed when it comes back on. */}
+      <Panel className="mb-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-medium text-ink">HR holiday sync</h2>
+            <p className="mt-1 max-w-[62ch] text-[12px] text-ink-muted">
+              On — deadline calculations fetch company holidays and approved
+              leave from the HR system and skip those days. Off — nothing is
+              fetched from the HR side and every day counts as working time.
+              Off is a testing switch: deadlines computed while it is off
+              ignore real holidays, and switching back on does not recompute
+              them.
+            </p>
+          </div>
+          <label className="inline-flex shrink-0 cursor-pointer items-center gap-2 text-[13px] text-ink">
+            <input
+              type="checkbox"
+              checked={hrSync.data !== false}
+              disabled={!canEdit || hrSync.data === null || hrSyncState.isPending}
+              onChange={(e) => void saveHrSync(e.target.checked)}
+              className="h-3.5 w-3.5 rounded-sm accent-ink disabled:opacity-40"
+            />
+            {hrSyncState.isPending
+              ? "Saving…"
+              : hrSync.data !== false
+                ? "Connected"
+                : "Disconnected"}
+          </label>
+        </div>
+        {hrSyncState.error && (
+          <p className="mt-2 text-[12px] text-[var(--state-overdue-ink)]">
+            {hrSyncState.error}
+          </p>
+        )}
       </Panel>
 
       <div className="space-y-4">

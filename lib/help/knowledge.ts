@@ -2087,6 +2087,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
     title: "Provisional rules — publishing a value nobody had decided",
     keywords: [
       "provisional rules",
+      "hr holiday sync",
+      "disconnect hr",
+      "holiday sync toggle",
+      "turn off holidays",
       "placeholder value",
       "publish a rule",
       "unresolved decision",
@@ -2100,7 +2104,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Can I undo a published value?",
     ],
     answer:
-      "Administration, then Settings, then Provisional rules. Every value here started as a placeholder so the product could run, and none of them was a recommendation \u2014 anything derived from one is marked wherever it appears. Publishing a value records the decision, and the mark goes away: the rule shows as Resolved with the placeholder it replaced beside it, so you can always see whether the current figure was chosen by anybody. Published values persist and are what the rules read; they survive a reload and apply to everybody in this workspace. Unpublishing is not the same as publishing the placeholder's own number \u2014 it removes the decision entirely and restores the provisional mark, because \u201Csomebody chose this\u201D and \u201Cnobody has decided, and the placeholder happens to be this\u201D are different facts. Each rule is grouped under the owner decision it belongs to, with what the old system did for context. These values are enforced by Cowork only; the figures the scoring engine computes published scores from are in Priority and scoring, and the two are separate screens on purpose so that changing a placeholder is not mistaken for changing a score.",
+      "Administration, then Settings, then Provisional rules. Every value here started as a placeholder so the product could run, and none of them was a recommendation \u2014 anything derived from one is marked wherever it appears. Publishing a value records the decision, and the mark goes away: the rule shows as Resolved with the placeholder it replaced beside it, so you can always see whether the current figure was chosen by anybody. Published values persist and are what the rules read; they survive a reload and apply to everybody in this workspace. Unpublishing is not the same as publishing the placeholder's own number \u2014 it removes the decision entirely and restores the provisional mark, because \u201Csomebody chose this\u201D and \u201Cnobody has decided, and the placeholder happens to be this\u201D are different facts. Each rule is grouped under the owner decision it belongs to, with what the old system did for context. These values are enforced by Cowork only; the figures the scoring engine computes published scores from are in Priority and scoring, and the two are separate screens on purpose so that changing a placeholder is not mistaken for changing a score. **HR holiday sync** also lives on this page: On, the default, means deadline calculations fetch company holidays and approved leave from the HR system and skip those days; Off means nothing is fetched from the HR side and every day counts as working time. The switch reads “Connected” or “Disconnected” beside the checkbox. Off is a testing switch — deadlines computed while it is off ignore real holidays, and switching back on does not recompute them — and changing it needs the same administrator permission as every other setting here.",
     related: [
       "settings-console",
       "settings-scoring-rules",
@@ -2108,7 +2112,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "settings-audit-log",
     ],
     source:
-      "cowork_settings/rule_overrides; applyRuleOverrides installs them at session start",
+      "cowork_settings/rule_overrides; applyRuleOverrides installs them at session start; the HR switch is cowork_settings/integrations.hrHolidaySync (absent = on) via getHrHolidaySync/setHrHolidaySync, gating listBlockedDates in both repositories — the single path HR holidays take into deadline maths",
   },
   {
     id: "settings-workflows",

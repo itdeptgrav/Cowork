@@ -3720,6 +3720,12 @@ export class LegacyRepository {
     from: string,
     to: string,
   ): Promise<BlockedDate[]> {
+    /* The HR disconnect switch (Administration → Settings → Provisional
+       rules). OFF means NOTHING is fetched from the HR side — no holidays, no
+       leave — and every day reads as available. The deadline walk, the person
+       calendar and the feasibility preview all pass through this method, so
+       one gate covers every consumer. */
+    if (!(await this.getHrHolidaySync())) return [];
     const token = await this.#token();
     /* `from` and `to` pass straight through — the live route takes a range and
        400s without both. It previously took a start plus a day COUNT, on a path
@@ -4477,6 +4483,42 @@ export class LegacyRepository {
         if (!result.ok) throw new Error(result.error.message);
       },
     });
+  }
+
+  async getHrHolidaySync(): Promise<boolean> {
+    const doc = await this.#settingsDoc("cowork_settings", "integrations");
+    /* Absent means ON — the standing behaviour. Only an explicit false
+       disconnects, so shipping this setting changes nothing by itself. */
+    return doc?.hrHolidaySync !== false;
+  }
+
+  /**
+   * The HR disconnect switch. `listBlockedDates` reads it on every call, so
+   * flipping it takes effect on the next deadline computation — no reload.
+   */
+  async setHrHolidaySync(enabled: boolean): Promise<ActionResult<boolean>> {
+    try {
+      const { doc, setDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await setDoc(
+        doc(legacyDb(), "cowork_settings", "integrations"),
+        {
+          hrHolidaySync: enabled,
+          updatedAt: Date.now(),
+          updatedBy: String(this.#ctx.employeeId),
+        },
+        { merge: true },
+      );
+      notifyRepositoryChanged();
+      return { ok: true, data: enabled };
+    } catch (e) {
+      return {
+        ok: false,
+        code: "offline",
+        message:
+          e instanceof Error ? e.message : "The setting could not be saved.",
+      };
+    }
   }
 
   async getRuleOverrides(): Promise<RuleOverrides> {
