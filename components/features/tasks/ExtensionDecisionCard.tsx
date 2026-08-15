@@ -170,14 +170,28 @@ export function ExtensionDecisionCard({
     });
   });
 
+  /**
+   * The second half of "Approve X and move the deadline".
+   *
+   * `escalate` FILES the revised date; nothing approved it. The click granted
+   * the hours, the deadline stayed put, the ⚠ misses-by warning stayed lit,
+   * and the freshly filed request rendered as a second approval card back at
+   * the same person — who owns both decisions and had just made them. Same
+   * decide call the revision card uses, so no new rule is introduced: the one
+   * owner simply answers their own record in the same press that raised it.
+   */
+  const [applyDate, applyDateState] = useAction((r, recordId: string) =>
+    r.decideDeadlineExtension(recordId, "approved"),
+  );
+
   if (!record || addedSecs <= 0 || !subject) return null;
 
   const needsEscalation = needsDeadlineEscalation({
     kind,
     feasible: route?.outcome === "approve_budget",
   });
-  const busy = decideState.isPending || escalateState.isPending;
-  const error = decideState.error ?? escalateState.error;
+  const busy = decideState.isPending || escalateState.isPending || applyDateState.isPending;
+  const error = decideState.error ?? escalateState.error ?? applyDateState.error;
 
   return (
     <Panel data-help="extension-decision">
@@ -325,7 +339,13 @@ export function ExtensionDecisionCard({
                 onClick={async () => {
                   const granted = await decide("approved");
                   if (!granted.ok) return;
-                  await escalate(Date.now());
+                  /* File AND answer in one press — the caption's promise. A
+                     failure part-way leaves the pending card as the fallback,
+                     which is the old behaviour, never something worse. */
+                  const filed = await escalate(Date.now());
+                  if (filed.ok && filed.data?.id) {
+                    await applyDate(filed.data.id);
+                  }
                   onChange();
                 }}
               >

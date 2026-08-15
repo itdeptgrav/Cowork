@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Panel, SkeletonRows } from "@/components/ui/Primitives";
 import { useQuery } from "@/lib/hooks/useRepository";
 import {
@@ -106,6 +107,8 @@ export function ExtensionTimeline({
   viewerId: string | null;
 }) {
   const taskId = view.task.id;
+  /* Closed until asked for — see the header button below. */
+  const [open, setOpen] = useState(false);
   const budget = useQuery((r) => r.listTimeBudgetExtensions(taskId), [taskId]);
   const dates = useQuery((r) => r.listDeadlineExtensionRecords(taskId), [taskId]);
 
@@ -140,10 +143,27 @@ export function ExtensionTimeline({
 
   return (
     <Panel data-help="extension-timeline">
-      <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-        Extension history
-      </p>
+      {/* Collapsed by default, by the owner's choice: the history matters when
+          it is looked for and is noise the rest of the time. The count keeps
+          the closed state honest about what it is hiding. */}
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex w-full items-center gap-2 text-left"
+      >
+        <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+          Extension history
+        </p>
+        <span data-figure className="text-[11px] text-ink-faint">
+          {events.length}
+        </span>
+        <span aria-hidden className="ml-auto text-[11px] text-ink-faint">
+          {open ? "Hide ▴" : "Show ▾"}
+        </span>
+      </button>
 
+      {open && (
       <ol className="mt-2 divide-y divide-hairline">
         {events.map((e) => (
           <li key={e.id} className="py-2.5 first:pt-0 last:pb-0">
@@ -182,6 +202,7 @@ export function ExtensionTimeline({
           </li>
         ))}
       </ol>
+      )}
     </Panel>
   );
 }
