@@ -139,10 +139,24 @@ test("the overview carries the engine's composite through unchanged", () => {
   assert.equal(c4.percentage, 92.5);
   assert.equal(c4.direction, "up");
 
-  /* Unscored channels surface as 0 here because `ScoreOverview` admits no
-     null — the caption is what distinguishes "no maximum reported" from a real
-     ceiling of zero. */
+  /**
+   * **Unscored channels surface as null, not 0 — reversed 16 Aug 2026.**
+   *
+   * `ScoreOverview` used to admit no null, so the engine's `net: null` was
+   * flattened here and a person with nothing approved yet read a confident
+   * "C1 0%" on their performance page — a claim the engine never made, beside
+   * real ledger points. Null now carries through and the screen shows "—" with
+   * "not scored yet".
+   *
+   * The ceiling is still reported: 40 points are AT STAKE in C1, which is a
+   * different fact from how many have been earned, and is what the caption
+   * distinguishes from "no maximum reported".
+   */
   const c1 = overview.channels.find((c) => c.code === "C1")!;
-  assert.equal(c1.percentage, 0);
+  assert.equal(c1.percentage, null);
   assert.equal(c1.possiblePoints, 40);
+  /* A channel the engine DID score at zero keeps its zero — the dash is only
+     ever for nothing-scored-yet. */
+  const c3 = overview.channels.find((c) => c.code === "C3")!;
+  assert.equal(c3.percentage, 0);
 });

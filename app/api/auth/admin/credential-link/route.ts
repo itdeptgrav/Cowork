@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { currentSession, mayOpenAdmin } from "@/lib/server/session";
 import { identityStore, normaliseEmail } from "@/lib/server/store";
 import { issueToken, type TokenPurpose } from "@/lib/server/tokens";
+import { callbackOrigin } from "@/lib/server/requestOrigin";
 
 /**
  * Issue an invitation or a password-reset link for somebody else.
@@ -104,7 +105,15 @@ export async function POST(request: Request) {
   });
   await identityStore.createToken(record);
 
-  const origin = new URL(request.url).origin;
+  /* NOT `new URL(request.url).origin` — under `next dev -H 0.0.0.0` that is the
+     BIND address, and this link gets copied and sent to a person who cannot
+     diagnose why `http://0.0.0.0:3000/reset-password` will not open. */
+  const origin = callbackOrigin({
+    requestUrl: request.url,
+    hostHeader: request.headers.get("host"),
+    forwardedProto: request.headers.get("x-forwarded-proto"),
+    configuredRedirectUri: process.env.NEXT_PUBLIC_APP_URL ?? null,
+  });
   return NextResponse.json({
     ok: true,
     purpose,

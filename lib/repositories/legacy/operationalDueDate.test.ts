@@ -209,7 +209,12 @@ test("the derived date is a separate field from the committed one", () => {
      ahead of somebody would change what they are marked against. */
   const map = code(MAP);
   assert.match(map, /task\.deadline\.operationalDueAt = input\.queue\?\.dueDates\?\.get\(legacy\.id\) \?\? null;/);
-  assert.match(map, /officialDueAt:\s*\n?\s*legacy\.dueAtMs === null \? null : new Date\(legacy\.dueAtMs\)/);
+  /* The invariant is the SOURCE — `officialDueAt` reads `dueAtMs`, the
+     committed field, and nothing else. The conversion moved to
+     `instantOrNull` because the old inline `new Date(...).toISOString()`
+     threw on an absent field and took the whole task mapping with it. */
+  assert.match(map, /officialDueAt: instantOrNull\(legacy\.dueAtMs\)/);
+  assert.match(map, /dueAt: instantOrNull\(legacy\.dueAtMs\)/);
 });
 
 test("the operational date is claimed only for the queue that was fetched", () => {
