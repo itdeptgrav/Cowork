@@ -75,6 +75,8 @@ function task(over: Partial<Task> = {}): Task {
       dueAt: "2026-07-28T17:00:00.000Z",
       officialDueAt: "2026-07-28T17:00:00.000Z",
       operationalDueAt: null,
+      clockStartsAt: null,
+      clockStartsAtSource: null,
       state: "agreed",
       assignorWindowRejection: null,
     },

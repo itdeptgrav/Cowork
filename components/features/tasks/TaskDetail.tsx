@@ -4,6 +4,10 @@ import Link from "next/link";
 import { formatRankDisplay, rankFor, rankTitle } from "@/lib/rules/tasks/priorityDisplay";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { isProjectContainer } from "@/lib/rules/tasks/completion";
+import {
+  deadlineOrigin,
+  formatWindow,
+} from "@/lib/rules/tasks/deadlineOrigin";
 import { useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
@@ -26,7 +30,10 @@ import { CounterDeadlineCard } from "./CounterDeadlineCard";
 import { ReworkPanel } from "./ReworkPanel";
 import { TaskFilesPanel } from "./TaskFilesPanel";
 import { FeasibilityPreview } from "./FeasibilityPreview";
-import { ExpectedCompletion } from "./ExpectedCompletion";
+/* `ExpectedCompletion` is no longer rendered here — the facts panel names the
+   deadline itself now, see the Deadline fact below. The component is kept and
+   still tested: it is a correct queue projection carrying the feasibility
+   warning, and deleting it would take a working calculation with it. */
 import { BudgetHistory } from "./BudgetHistory";
 import { TaskFlowSection } from "./TaskFlowSection";
 import { RelationshipNote } from "./RelationshipNote";
@@ -172,50 +179,53 @@ export function TaskDetail({
       href: `/tasks/${taskId}`,
       icon: "overview" as const,
     },
-    /* **A project has no deadline, no reports, no submission and no review of
-       its own.** Nobody works it, so there is no day to report on and nothing
-       to hand in; and with nothing handed in there is nothing to decide on. Its
-       completion is derived instead — it closes when every completion
-       requirement is satisfied, and each one is satisfied by the subtask that
-       claimed it completing. Each of those subtasks runs its own deadline,
-       daily reports, submission and review with its own assignee, which is
-       where all four of these tabs actually live.
-
-       Dropped rather than shown empty: a Submission tab on a project invites
-       somebody to hand in work they did not do, a Deadline tab invites a date
-       that binds nobody, and a Reports tab invites progress on work this
-       document does not carry. */
+    /**
+     * **A project keeps its deadline, its submission and its review.**
+     * OWNER DECISION, 16 Aug 2026.
+     *
+     * All three were dropped on a container, on the reasoning that nobody works
+     * a project so there is nothing to hand in and no date that binds anybody.
+     * The owner's model is the opposite and is coherent: a parent is real work
+     * that was DIVIDED, not an empty folder. It keeps the deadline it was
+     * given — and that deadline is the cap every subtask sits under, so it has
+     * to be visible and negotiable. Its submission and review are how the whole
+     * divided job is handed over and signed off once the parts are done.
+     *
+     * **Reports is the exception and stays dropped.** A daily report is written
+     * against time a timer measured, and a project has no timer — its days are
+     * reported on the subtasks where the work actually happened.
+     */
+    {
+      id: "deadline",
+      label: "Deadline",
+      href: `/tasks/${taskId}/deadline`,
+      icon: "clock" as const,
+    },
+    /* Between the deadline and the submission because that is where it falls in
+       the work: the time is settled, then the days are reported as they pass,
+       then the work is handed in. */
     ...(isContainer
       ? []
       : [
-          {
-            id: "deadline",
-            label: "Deadline",
-            href: `/tasks/${taskId}/deadline`,
-            icon: "clock" as const,
-          },
-          /* Between the deadline and the submission because that is where it
-             falls in the work: the time is settled, then the days are reported
-             as they pass, then the work is handed in. */
           {
             id: "reports",
             label: "Reports",
             href: `/tasks/${taskId}/reports`,
             icon: "timeline" as const,
           },
-          {
-            id: "submission",
-            label: "Submission",
-            href: `/tasks/${taskId}/submission`,
-            icon: "send" as const,
-          },
-          {
-            id: "review",
-            label: "Review",
-            href: `/tasks/${taskId}/review`,
-            icon: "approvals" as const,
-          },
         ]),
+    {
+      id: "submission",
+      label: "Submission",
+      href: `/tasks/${taskId}/submission`,
+      icon: "send" as const,
+    },
+    {
+      id: "review",
+      label: "Review",
+      href: `/tasks/${taskId}/review`,
+      icon: "approvals" as const,
+    },
     {
       id: "chat",
       label: "Chat",
@@ -392,7 +402,6 @@ export function TaskDetail({
             simply should never have been there. */}
           {action.actor !== "nobody" &&
             tab === "overview" &&
-            !isContainer &&
             !v.pendingApprovals.some(
               (a) => a.approverId === me && a.kind === "cross_department",
             ) && (
@@ -402,7 +411,7 @@ export function TaskDetail({
           {/* **Accepting the work itself**, before any of the negotiations below.
               It renders only where acceptance is the outstanding step and decides
               for itself whether this viewer is the person who owes it. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <AssignmentConfirmationCard
               view={v}
               viewerId={me}
@@ -415,20 +424,20 @@ export function TaskDetail({
               a request, and it decides for itself whether this viewer is the
               manager who owns the hours. Above the budget card because it is a
               live question rather than a standing state. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <ExtensionDecisionCard view={v} viewerId={me} onChange={refetch} />
           )}
 
           {/* The assignor's half of the same escalation, in DATES only. It
               renders only for a deadline request and decides for itself whether
               this viewer owns the commitment. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <DeadlineRevisionCard view={v} viewerId={me} onChange={refetch} />
           )}
 
           {/* The move that had no surface: a counter-offer hands the turn back
               to whoever asked, and nothing rendered for them. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <CounterDeadlineCard view={v} viewerId={me} onChange={refetch} />
           )}
 
@@ -436,7 +445,7 @@ export function TaskDetail({
               answers a request for hours, and the assignee — whose week the
               figure binds — has to agree to it. `approved` used to be terminal,
               so the record said "confirm this" and nothing rendered. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <BudgetConfirmationCard view={v} viewerId={me} onChange={refetch} />
           )}
 
@@ -444,27 +453,27 @@ export function TaskDetail({
               plain statement of whose turn it is for everybody else. One card
               for both parties: two cards each with their own conditions is how
               an assignee came to be offered an accept over their own proposal. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <BudgetNegotiationCard view={v} viewerId={me} onChange={refetch} />
           )}
 
           {/* Both extension conversations in the order they happened, each in
               its own unit. Filtered by the rule: the assignor sees the dates
               only, because the hours are not their decision. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <ExtensionTimeline view={v} viewerId={me} />
           )}
 
           {/* What was asked to be corrected, above the flow — somebody whose
               work came back needs the list before the diagram. Renders nothing
               on a task that has never been returned. */}
-          {tab === "overview" && !isContainer && <ReworkPanel view={v} />}
+          {tab === "overview" && <ReworkPanel view={v} />}
 
           {/* The decision this viewer owes, above everything else — a person
               who has a button to press should not have to read a timeline to
               discover it. Renders for the current approver only; everyone else
               falls straight through to the read-only flow below. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <ApprovalActionCard
               task={v.task}
               approvals={v.approvals}
@@ -482,7 +491,7 @@ export function TaskDetail({
               questions: that one is "what can I do", this is "what is going on"
               — and a reader with no action to take was previously left with a
               status label and no way to find out who was holding the work. */}
-          {tab === "overview" && !isContainer && (
+          {tab === "overview" && (
             <TaskFlowSection
               task={v.task}
               approvals={v.approvals}
@@ -518,7 +527,7 @@ export function TaskDetail({
               something is blocked means the answer disappears the moment it is
               approved. Absent on a container: it explains a deadline model
               that no longer applies to this document. */}
-          {tab === "overview" && !isContainer && <RelationshipNote view={v} />}
+          {tab === "overview" && <RelationshipNote view={v} />}
 
           {/* The project's own explanation, in the ONE card's place all the
               above would otherwise occupy. Says plainly that this task is a
@@ -575,14 +584,14 @@ export function TaskDetail({
                 </p>
               </Panel>
             )}
-          {tab === "deadline" && !isContainer && (
+          {tab === "deadline" && (
             <DeadlinePanel view={v} onChange={refetch} />
           )}
           {tab === "reports" && !isContainer && <ReportsPanel view={v} />}
-          {tab === "submission" && !isContainer && (
+          {tab === "submission" && (
             <SubmissionPanel view={v} onChange={refetch} />
           )}
-          {tab === "review" && !isContainer && (
+          {tab === "review" && (
             <ReviewPanel view={v} onChange={refetch} />
           )}
           {tab === "meetings" && <TaskMeetingPanel view={v} />}
@@ -1070,25 +1079,52 @@ function FactsRail({
             </Fact>
           )}
 
-        {/* WHEN IT WILL BE DONE, from the assignee's real queue. Placed above
-            the requested date because it is the operational answer — the one a
-            person plans against. Renders nothing where there is no queue answer
-            to give. Absent on a container: nobody's queue is being asked, since
-            nobody is doing this document. */}
-        {!isContainer && (
-          <Fact label="Expected completion">
-            <ExpectedCompletion view={v} />
+        {/**
+         * **THE DEADLINE — one date, the same one the Deadline tab shows.**
+         * OWNER DECISION, 16 Aug 2026.
+         *
+         * This row was `Expected completion`: a projection of when the queue
+         * would finish the work, deliberately shown INSTEAD of the deadline on
+         * the reasoning that two dates side by side would make people plan
+         * against the wrong one.
+         *
+         * It did the opposite. The projection is what people read as their
+         * deadline — it is the only date on the panel — so the real one lived
+         * only on another tab, and the two disagreed. A rework that moved the
+         * deadline from 11:18 to 12:17 changed nothing here, and was reported
+         * as the rework rule having failed when the engine had written it
+         * correctly. Two dates on two screens is worse than two dates on one:
+         * at least side by side they can be labelled.
+         *
+         * So this reads `task.deadline.dueAt` — the identical field
+         * `DeadlinePanel` renders as "Working deadline". One source, one date.
+         * The projection still exists in `ExpectedCompletion` and is still
+         * tested; it is no longer what this panel calls the answer.
+         */}
+        {/**
+         * **Shown on a container too — OWNER DECISION, 16 Aug 2026.**
+         *
+         * A project keeps a real deadline and it is the umbrella its subtasks
+         * sit under: no subtask may be due after it. A cap nobody can see is a
+         * cap nobody can plan against, so the date the children are measured
+         * against has to be on the parent's own page.
+         *
+         * This reverses "a container has no deadline of its own". It has one —
+         * it is the commitment the whole divided job was given.
+         */}
+        {v.task.deadline.dueAt && (
+          <Fact label="Deadline">
+            <span className="text-sm text-ink">
+              {formatDateTime(v.task.deadline.dueAt)}
+            </span>
+            {/* Where the count began is stated inside the budget history, not
+                here — OWNER DECISION, 16 Aug 2026. The deadline itself stays a
+                single clean date; the reasoning belongs with the other workings
+                somebody opens deliberately. See `BudgetHistory`. */}
           </Fact>
         )}
 
-        {/* The assignor's requested deadline is deliberately NOT shown.
-            Expected completion is the operational answer, and two dates side by
-            side invited the reader to plan against the wrong one. The commitment
-            still constrains: it is what the completion line above is measured
-            against, and what the feasibility warning fires on. */}
-
-        {!isContainer &&
-          v.task.deadline.officialDueAt !== v.task.deadline.dueAt && (
+        {v.task.deadline.officialDueAt !== v.task.deadline.dueAt && (
             <Fact label="Scored against">
               <span
                 className="text-sm text-ink"
@@ -1116,7 +1152,13 @@ function FactsRail({
             {/* Where the second figure came from. A budget grows on its own —
                 breaks, offline spans, emergencies, meetings — and the number
                 alone cannot say which. */}
-            <BudgetHistory taskId={v.task.id} />
+            {/* The instant the deadline was counted from travels with the
+                history rather than sitting under the date — one line, opened
+                deliberately, beside the other workings. */}
+            <BudgetHistory
+              taskId={v.task.id}
+              countedFrom={v.task.deadline.clockStartsAt}
+            />
           </Fact>
         )}
 

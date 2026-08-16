@@ -14,19 +14,23 @@
  *
  * ---
  *
- * `_reviewFlow` (`taskForward.service.js:1137`) decides the shape, and legacy
+ * `_reviewFlow` (`taskForward.service.js`) decides the shape, and legacy
  * stores its answer on the task as `reviewFlow` when the completion is
- * submitted. Three shapes, and the root creator's ROLE picks between them:
+ * submitted.
+ *
+ * **One step: whoever assigned the task reviews it, and their approval is
+ * final.** OWNER DECISION, 16 Aug 2026. The old model escalated by ROLE
+ * STRING — an assigner whose record read "employee" got a two-stage chain
+ * (their approval, then the chief executive's), so their approval credited
+ * nothing while a "tl" assigner's identical approval completed the task. The
+ * rest of the product routes by the primary-manager relationship; role strings
+ * no longer decide anything here either.
  *
  * | Flow | When | Stages |
  * |---|---|---|
- * | `tl_final` | a team lead created it | the lead, alone |
- * | `ceo_direct` | the chief executive created it, no parent and no forward | the chief executive, alone |
- * | `tl_then_ceo` | anything else — including a CEO task that was forwarded or is a subtask | the lead, then the chief executive |
- *
- * That third row is why the reported case resolves to one stage rather than
- * two: a task the CEO raised directly has no parent and no forward, so it is
- * `ceo_direct` and the CEO is the only reviewer.
+ * | `tl_final` | anyone assigned it | the assigner, alone |
+ * | `ceo_direct` | the chief executive created it, no parent and no forward | the chief executive — who IS the assigner — alone |
+ * | `tl_then_ceo` | **never derived any more** | kept only so submissions stamped before 16 Aug 2026 still render their own history |
  */
 
 export type ReviewFlow = "tl_final" | "ceo_direct" | "tl_then_ceo";
@@ -56,21 +60,16 @@ export function readReviewFlow(doc: Record<string, unknown>): ReviewFlow {
   const hasParent = !!doc.parentTaskId;
   const rootRole = doc.rootCreatedByRole ?? doc.assignedByRole;
 
-  if (rootRole === "tl") return "tl_final";
+  /* The assigner's approval is final for everyone — `tl_then_ceo` is never
+     derived. The one distinction kept is the CEO's own direct task, whose
+     review record lands in `ceoReview` where the engine expects it. The
+     stored-value branch above still admits `tl_then_ceo` so a submission
+     stamped before 16 Aug 2026 renders the two stages it really had. */
   if (rootRole === "ceo") {
-    return !hasParent && !forwarded ? "ceo_direct" : "tl_then_ceo";
+    return !hasParent && !forwarded ? "ceo_direct" : "tl_final";
   }
-
-  /* Legacy flags, for tasks predating the role fields. */
-  if (doc.createdByTl === true) return "tl_final";
-  if (doc.createdByCeo === true) {
-    return forwarded ? "tl_then_ceo" : "ceo_direct";
-  }
-
-  /* Legacy's own last resort. It calls this the "safe default" — two stages
-     asks for more scrutiny than one, so guessing here withholds an approval
-     rather than granting one. */
-  return "tl_then_ceo";
+  if (doc.createdByCeo === true && !forwarded && !hasParent) return "ceo_direct";
+  return "tl_final";
 }
 
 /** The stages, in order. */

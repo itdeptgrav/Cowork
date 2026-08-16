@@ -16,6 +16,10 @@ import {
 import { useAction } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { isProjectContainer } from "@/lib/rules/tasks/completion";
+import {
+  coverageSummary,
+  requirementCoverage,
+} from "@/lib/rules/tasks/requirementCoverage";
 import { statusMeta } from "./statusMeta";
 import type { TaskView } from "@/lib/repositories";
 
@@ -49,6 +53,9 @@ export function ProjectPanel({
   const [draft, setDraft] = useState("");
 
   const c = view.completion;
+  /* Assigned versus nobody's — a different question from the meter's
+     satisfied-versus-not, and the one an owner asks while breaking work down. */
+  const coverage = requirementCoverage(c.requirements);
   const isOwner = view.task.createdById === me;
   const isAssignee = view.assignments.some((a) => a.employeeId === me);
   /* The same pair the repository checks. Rendering a control this test fails
@@ -120,6 +127,25 @@ export function ProjectPanel({
               label={`${c.satisfiedCount} of ${c.total} requirements satisfied`}
               tone={c.canComplete ? undefined : "risk"}
             />
+            {/**
+             * **How much of this is somebody's, and how much is nobody's.**
+             *
+             * The meter above counts SATISFIED, which is a different question
+             * and a slower-moving one: work can be fully handed out and the
+             * meter still read zero. An owner mid-breakdown needs to know what
+             * is left to delegate, and reading that off the rows one at a time
+             * is the count people get wrong.
+             *
+             * Shown only once something has been delegated. On a plain task
+             * with acceptance criteria and no subtasks, "none of the 4 is
+             * assigned to a subtask" would be noise about a breakdown nobody
+             * started.
+             */}
+            {coverage.assigned.length > 0 && (
+              <p className="mt-2 text-[11px] text-ink-muted">
+                {coverageSummary(coverage)}
+              </p>
+            )}
           </div>
         )}
 
@@ -280,6 +306,20 @@ export function ProjectPanel({
                     ) : r.satisfiedDirectly ? (
                       <p className="mt-1 text-[11px] text-ink-faint">
                         Done directly
+                      </p>
+                    ) : coverage.assigned.length > 0 ? (
+                      /* **Pending, said as such — but only once the work has
+                         started being broken down.**
+                         With siblings already delegated, "checked by the
+                         reviewer" understates this: the reader is looking at
+                         the gap in their own breakdown, and the row carried
+                         nothing to distinguish it from the delegated ones
+                         except the absence of a note. On a task with no
+                         subtasks at all, the branch below is still right —
+                         there is no breakdown for it to be missing from. */
+                      <p className="mt-1 text-[11px] text-[var(--state-rework-ink)]">
+                        Pending — no subtask has taken this yet. Break one out,
+                        or leave it for the reviewer.
                       </p>
                     ) : (
                       <p className="mt-1 text-[11px] text-ink-faint">

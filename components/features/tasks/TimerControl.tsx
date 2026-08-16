@@ -19,6 +19,7 @@ import {
   timerDisplayState,
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
+import { blockedMessage, deadlineBlock } from "@/lib/rules/tasks/deadlineBlock";
 import { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS } from "@/lib/rules/presence/duty";
 import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { TaskView } from "@/lib/repositories";
@@ -197,10 +198,32 @@ export function TimerControl({
   /* Re-entrancy guard, in a ref rather than `disabled`. The button stays live
      to the touch — it is the WRITE that must not overlap, not the press. */
   const inFlight = useRef(false);
+  /**
+   * **A press that lands mid-write is remembered, not thrown away.**
+   *
+   * The guard above kept two writes from overlapping, which is right, but it
+   * did it by discarding the second press in silence. That is the reported
+   * fault: pausing flips the display instantly while its write is still going,
+   * so the obvious next press — Resume, a moment later — arrived while the
+   * guard was still held and vanished. Nothing moved, nothing was said, and the
+   * button worked "after some time", meaning after the person pressed a second
+   * time with the guard finally free.
+   *
+   * One slot, deliberately. Jabbing the button five times should not queue five
+   * writes; the last intent is the one that stands.
+   */
+  const queued = useRef(false);
+  const [replay, setReplay] = useState(0);
   /* A write that did not come back in time. Said out loud, because the display
      has just reverted to the engine's state under the person's hands and an
      unexplained jump back is worse than the delay itself. */
-  const [stalled, setStalled] = useState(false);
+  /* What the server held when we gave up waiting, or null. Read by the
+     derivation beside `error` — not a plain boolean, because the message has to
+     expire on its own. */
+  const [stall, setStall] = useState<{ serverRunning: boolean } | null>(null);
+  /* Whether the "pause the timer?" confirmation is open. Pausing writes a work
+     commit and closes the run, so the deliberate press asks once first. */
+  const [confirmingPause, setConfirmingPause] = useState(false);
 
   /* The assignee's live session is the source of truth. `timer.data` (the
      viewer's own one-shot read) is kept only as the first paint before the
@@ -225,7 +248,27 @@ export function TimerControl({
    */
   const viewerIsAssignee =
     !!me.data && !!assigneeId && String(me.data.id) === String(assigneeId);
-  const session = live ?? (viewerIsAssignee ? timer.data : null);
+  /**
+   * **Once the listener has spoken, it is never overruled by the one-shot read.**
+   *
+   * This was `live ?? timer.data`, and the fallback is what made the button
+   * flicker ON → OFF → ON within a second of a press. A successful write calls
+   * `notifyRepositoryChanged()`, which re-runs every mounted query including
+   * `getTimer`; while that refetch is in flight — or on any frame where the
+   * listener has not yet re-delivered — `live` is momentarily null and the
+   * display fell back to a `timer.data` that still described the PREVIOUS
+   * state. The clock flipped back to what it had just stopped being, then
+   * forward again when the snapshot arrived.
+   *
+   * The last live snapshot is remembered instead, keyed by task so opening a
+   * different one cannot inherit it. The one-shot read survives for exactly
+   * what it was for: the first paint, before the listener has ever delivered.
+   */
+  const lastLive = useRef<{ taskId: string; data: NonNullable<typeof live> } | null>(null);
+  if (live) lastLive.current = { taskId, data: live };
+  const remembered =
+    lastLive.current?.taskId === taskId ? lastLive.current.data : null;
+  const session = live ?? remembered ?? (viewerIsAssignee ? timer.data : null);
 
   /**
    * Banked work, from the LIVE session document.
@@ -464,13 +507,53 @@ export function TimerControl({
     !hydrated || reconnecting ? null : presenceRefusal(myPresence, isMine);
   const needsStart = view.task.status === "confirmed";
   const startable = view.task.status === "in_progress" || needsStart;
+
+  /**
+   * **Past the deadline the clock stops — OWNER DECISION, 15 Aug 2026.**
+   *
+   * Read from the task's CURRENT deadline on every render, never stored: an
+   * approved extension moves the date and the next render is simply no longer
+   * past it, so the timer returns without anything being cleared. See
+   * `deadlineBlock`.
+   *
+   * `nowMs` is the minute-quantised clock, which is ample — a block that
+   * arrives up to a minute late is a minute of work, not a wrong figure, and
+   * reading the real clock during a render is what `timerState.test.ts`
+   * forbids.
+   */
+  const block = deadlineBlock({
+    dueAt: view.task.deadline.dueAt,
+    nowMs,
+    isActionable: startable,
+  });
   const pending =
     startState.isPending || pauseState.isPending || beginState.isPending;
+  /**
+   * **The stall message expires when the server moves, not only on the next
+   * press.**
+   *
+   * A write that "did not reach the server in time" has very often NOT failed —
+   * it lands a moment after we stop waiting for it. The listener then delivers
+   * the new state and the button correctly reads Pause · Working, while this
+   * banner sat underneath still saying the press did not land. A running clock
+   * and "try again" on the same screen is worse than either alone: it teaches
+   * people to distrust the control that is in fact working, and to press again,
+   * which stops the timer they just started.
+   *
+   * The message's own words are the rule. It says the timer is showing what the
+   * server holds — so the moment the server holds something ELSE, it is
+   * describing a past that has been overtaken, and it goes. A write that really
+   * did fail leaves the server where it was, so the message stays.
+   *
+   * Derived rather than cleared from an effect, the same shape as `optimistic`
+   * above: nothing has to remember to tidy up.
+   */
+  const stalledNow = stall !== null && stall.serverRunning === serverRunning;
   const error =
     startState.error ??
     pauseState.error ??
     beginState.error ??
-    (stalled
+    (stalledNow
       ? "That did not reach the server in time. The timer is showing what the server holds — try again."
       : null);
 
@@ -481,6 +564,27 @@ export function TimerControl({
      presence leaves online; the two are idempotent, because pausing an
      already-paused session is a no-op, so whichever lands first is fine. The ref
      fires it once per departure rather than on every render the deps churn. */
+  /**
+   * **A run that crosses its own deadline is stopped.**
+   *
+   * The same shape as the presence auto-pause below and for the same reason:
+   * the display refusing to count is not enough, because the ENGINE's session
+   * would still be open and would go on banking minutes against a commitment
+   * that has already been missed. Time already worked is never touched — this
+   * closes the session, it does not take anything back.
+   *
+   * Fires once per block; the ref is released when the deadline moves, so an
+   * approved extension leaves it able to fire again on the next one.
+   */
+  const deadlinePaused = useRef(false);
+  useEffect(() => {
+    if (block && state === "running" && !deadlinePaused.current) {
+      deadlinePaused.current = true;
+      void pause();
+    }
+    if (!block) deadlinePaused.current = false;
+  }, [block, state, pause]);
+
   const autoPaused = useRef(false);
   useEffect(() => {
     if (away && state === "running" && !autoPaused.current) {
@@ -572,10 +676,36 @@ export function TimerControl({
    * the person was already waiting on.
    */
   async function toggle() {
-    /* Not `disabled`: the guard is on the write, so a second press during a
-       round trip is dropped rather than being able to interleave a start and a
-       pause on one session. */
-    if (inFlight.current) return;
+    /**
+     * **Pausing asks first — OWNER DECISION, 15 Aug 2026.**
+     *
+     * Pausing is not a display change: it writes a work commit and closes the
+     * run, which is what credits the time. A mis-press mid-session is
+     * therefore a real write, and the confirmation is one press against it.
+     *
+     * Only the deliberate press asks. The automatic pauses — presence, the
+     * deadline block above, the task switch inside `startTimer` — never reach
+     * here and could not wait for an answer anyway: nobody is at the screen
+     * when a laptop sleeps.
+     */
+    if (running && !confirmingPause) {
+      setConfirmingPause(true);
+      return;
+    }
+    /**
+     * Not `disabled`: the guard is on the write, so a second press during a
+     * round trip cannot interleave a start and a pause on one session.
+     *
+     * It is now HELD rather than dropped — see `queued`. The confirmation flag
+     * is deliberately left standing while a press waits: it is what tells the
+     * replay below that this pause was already agreed to, so nobody is asked
+     * the same question twice.
+     */
+    if (inFlight.current) {
+      queued.current = true;
+      return;
+    }
+    setConfirmingPause(false);
     inFlight.current = true;
 
     const wasRunning = running;
@@ -595,7 +725,7 @@ export function TimerControl({
          did not have. */
       const stalled = () => {
         setPressed(null);
-        setStalled(true);
+        setStall({ serverRunning });
       };
 
       if (wasRunning) {
@@ -621,12 +751,34 @@ export function TimerControl({
           return;
         }
       }
-      setStalled(false);
+      setStall(null);
       onChange?.();
     } finally {
       inFlight.current = false;
+      /* Handed to a render rather than called straight from here. Re-entering
+         `toggle` at this point would run the closure of the render that STARTED
+         the write, which still believes the timer is in the state it was in
+         then — a queued Resume would read itself as a Pause. Bumping a counter
+         makes the replay happen in a render that has seen the write land. */
+      if (queued.current) {
+        queued.current = false;
+        setReplay((n) => n + 1);
+      }
     }
   }
+
+  /**
+   * The held press, run against the state as it now stands.
+   *
+   * Deps are the counter alone on purpose: `toggle` is rebuilt every render, so
+   * depending on it would fire this on each one. The counter only moves when a
+   * press was actually held back.
+   */
+  useEffect(() => {
+    if (replay === 0) return;
+    void toggle();
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [replay]);
 
   /* Away, and it is my work. Legacy withheld the control entirely here —
      `page.js:7824` returns null, `:6601` disables — and the detail view says
@@ -641,6 +793,58 @@ export function TimerControl({
     ? "h-9 min-w-[108px] gap-1.5 px-3.5 text-[15px]"
     : "h-6 w-[74px] gap-1 text-[11px]";
   const glyphSize = isBar ? "h-4 w-4" : "h-3 w-3";
+  /**
+   * **Blocked: the deadline has passed.**
+   *
+   * Before the presence branch, because it outranks it — somebody who is
+   * online has a different reason they cannot start, and naming presence here
+   * would send them to fix the wrong thing.
+   *
+   * The banked figure is still shown: it was really worked. What is withheld
+   * is only the control that would accrue more.
+   */
+  if (block && startable) {
+    if (size === "row") {
+      return (
+        <span
+          data-figure
+          className="inline-flex h-6 w-[74px] shrink-0 items-center justify-center text-[11px] text-[var(--state-overdue-ink)]"
+          title={blockedMessage(block)}
+        >
+          {elapsed > 0 ? formatTimer(elapsed) : "Blocked"}
+        </span>
+      );
+    }
+    return (
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-3 py-1.5 text-[13px] text-[var(--state-overdue-ink)]">
+          <Icon.blocked className="h-3.5 w-3.5" />
+          Blocked
+        </span>
+        <div className="min-w-0">
+          <p className="flex items-baseline gap-1.5">
+            <span
+              data-figure
+              className="text-[22px] leading-none tracking-[-0.025em] text-ink-muted"
+            >
+              {formatTimer(elapsed)}
+            </span>
+            <span data-figure className="text-xs text-ink-faint">
+              of {formatTimer(view.task.estimatedEffortSecs ?? 0)}
+            </span>
+          </p>
+          <p className="mt-1 text-[11px] text-ink-faint">
+            Deadline passed{" "}
+            <span data-figure>{formatTimer(block.overdueSecs)}</span> ago
+          </p>
+        </div>
+        <p className="w-full max-w-[62ch] text-[11px] text-[var(--state-overdue-ink)]">
+          {blockedMessage(block)}
+        </p>
+      </div>
+    );
+  }
+
   if (blocked && startable) {
     if (compact) {
       return (
@@ -845,6 +1049,30 @@ export function TimerControl({
           <span className="text-ink">“{other.taskTitle}”</span> — only one task
           runs at a time.
         </p>
+      )}
+
+      {/* Pausing writes a work commit and closes the run, so the deliberate
+          press asks once. Nothing is written until Yes. */}
+      {confirmingPause && (
+        <div className="w-full rounded-inset border border-hairline bg-[var(--surface-sunken)] p-3">
+          <p className="text-[13px] text-ink">Pause the timer?</p>
+          <p className="mt-0.5 max-w-[58ch] text-[11px] text-ink-faint">
+            This closes the current run and credits the time worked so far. You
+            can resume afterwards.
+          </p>
+          <div className="mt-2.5 flex flex-wrap gap-2">
+            <Button size="sm" onClick={() => void toggle()}>
+              Yes, pause
+            </Button>
+            <Button
+              size="sm"
+              tone="secondary"
+              onClick={() => setConfirmingPause(false)}
+            >
+              Keep running
+            </Button>
+          </div>
+        </div>
       )}
 
       {error && (

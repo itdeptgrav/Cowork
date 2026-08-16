@@ -229,7 +229,18 @@ export interface ChannelBreakdown {
   label: string;
   earnedPoints: number;
   possiblePoints: number;
-  percentage: number;
+  /**
+   * The engine's normalised figure, or **null when it has not scored the
+   * channel**.
+   *
+   * The same distinction `unitCount` documents below, and it matters for the
+   * same reason: the engine answers `net: null` for a channel with nothing
+   * completed in the period, and flattening that to 0 (`?? 0` did, for a
+   * while) rendered a confident "0%" on somebody's performance page — a
+   * claim, and the wrong one. C1 with an approved task that scored badly IS
+   * 0%; C1 with nothing approved yet is null, and the screen shows "—".
+   */
+  percentage: number | null;
   /**
    * How many things were measured, or **null when the provider does not say**.
    *

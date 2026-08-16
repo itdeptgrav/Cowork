@@ -9,6 +9,7 @@ import {
   gmailConfig,
   verifyState,
 } from "@/lib/integrations/mail/gmail/gmailAuth";
+import { callbackOrigin } from "@/lib/server/requestOrigin";
 
 /**
  * Where Google returns.
@@ -32,7 +33,17 @@ export const dynamic = "force-dynamic";
  * they browse under.
  */
 function back(request: Request, reason: string, ok = false) {
-  const origin = new URL(request.url).origin;
+  /* `request.url` is NOT "the origin the request arrived at": under
+     `next dev -H 0.0.0.0` it reports the BIND address, and the flow's last hop
+     sent the person to `http://0.0.0.0:3000/settings` — ERR_ADDRESS_INVALID on
+     an otherwise finished connection. The browser's own Host header is the
+     faithful source; see `callbackOrigin` for the fallbacks. */
+  const origin = callbackOrigin({
+    requestUrl: request.url,
+    hostHeader: request.headers.get("host"),
+    forwardedProto: request.headers.get("x-forwarded-proto"),
+    configuredRedirectUri: gmailConfig()?.redirectUri ?? null,
+  });
   return NextResponse.redirect(
     new URL(
       `/settings?gmail=${ok ? "connected" : "error"}&reason=${encodeURIComponent(reason)}`,

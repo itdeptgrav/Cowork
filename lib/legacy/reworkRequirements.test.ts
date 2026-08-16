@@ -143,17 +143,22 @@ test("the submit button refuses before the engine has to", () => {
   /* A round trip to be told to pick something is worse than not being able to
      press the button. */
   const panel = code("components/features/tasks/ReviewPanel.tsx");
+  /* Widened 16 Aug 2026: a subtask may also be sent back on one of its
+     PROJECT's requirements, so the gate counts both kinds. The invariant is
+     unchanged — rework with something selectable and nothing selected is
+     refused before the round trip. */
   assert.match(
     panel,
-    /decision === "rework" &&\s*requirements\.length > 0 &&\s*failed\.length === 0/,
+    /decision === "rework" &&\s*\(requirements\.length > 0 \|\|[\s\S]{0,140}?\) &&\s*failed\.length === 0/,
   );
 });
 
 test("approve and reject are untouched by the requirement", () => {
   const panel = code("components/features/tasks/ReviewPanel.tsx");
   assert.match(panel, /decision === "rework" \? failed : \[\]/);
-  /* The checklist renders only for rework. */
-  assert.match(panel, /decision === "rework" && requirements\.length > 0/);
+  /* The checklist renders only for rework — that is what this guards. Its
+     second clause now also counts the project's requirements. */
+  assert.match(panel, /decision === "rework" &&\s*\(requirements\.length > 0 \|\|/);
 });
 
 /* ── Correction notes and attachments ─────────────────────────────────────── */

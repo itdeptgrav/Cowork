@@ -79,6 +79,33 @@ export interface TaskDeadline {
    * the two differ by everything ahead of it.
    */
   operationalDueAt: string | null;
+  /**
+   * **When the clock started — the instant `dueAt` was counted from.**
+   *
+   * `dueAt` is this plus the agreed window, walked through the office calendar.
+   * Without it the deadline is a bare date with no visible reasoning: somebody
+   * given thirty minutes sees "16:03" and cannot tell whether the count began
+   * when the task was written, when they accepted it, or when they came online
+   * — so they cannot tell whether it is right.
+   *
+   * Stamped ONCE by the engine and never recomputed, because presence history
+   * is not kept: an anchor re-derived later would drift with the assignee's
+   * next session, and a deadline must stay re-derivable from the record that
+   * set it. Null on tasks written before it was stamped.
+   */
+  clockStartsAt: string | null;
+  /**
+   * WHICH rule chose that instant. Null when unknown.
+   *
+   * · `hours_granted` — a cross-department manager granted the hours; nothing
+   *    could begin before that.
+   * · `first_online`  — the assignee's first online moment at or after the task
+   *    was given. Sitting on an acceptance while online does not push it later:
+   *    the wait was theirs.
+   * · `acceptance`    — they accepted while not online, so the press itself is
+   *    the first moment presence can be proven.
+   */
+  clockStartsAtSource: string | null;
   state: DeadlineState;
   /**
    * The assignee's refusal of the window the assignor set, if they refused it.

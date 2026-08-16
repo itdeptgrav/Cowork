@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDurationTimer } from "@/lib/utils/format";
 import { budgetHistoryView } from "@/lib/rules/tasks/budgetHistory";
+import { deadlineOrigin } from "@/lib/rules/tasks/deadlineOrigin";
 import type { TaskId } from "@/lib/domain";
 
 /**
@@ -25,7 +26,24 @@ import type { TaskId } from "@/lib/domain";
  * Receipts only began recently, so on older tasks the unaccounted line is the
  * common case rather than the exception. It says what it is.
  */
-export function BudgetHistory({ taskId }: { taskId: TaskId }) {
+export function BudgetHistory({
+  taskId,
+  countedFrom = null,
+}: {
+  taskId: TaskId;
+  /**
+   * The instant the deadline was counted from — `TaskDeadline.clockStartsAt`.
+   *
+   * Shown here rather than under the deadline itself: the date stays a single
+   * clean figure, and the reasoning behind it sits with the other workings
+   * somebody opens on purpose. One line, no rule name and no arithmetic —
+   * OWNER DECISION, 16 Aug 2026.
+   *
+   * Null on tasks written before the engine stamped it, and then nothing is
+   * said at all rather than a half sentence.
+   */
+  countedFrom?: string | null;
+}) {
   const [open, setOpen] = useState(false);
   /* Fetched only once opened. Every task detail would otherwise pay for a
      collection read that most readers never look at. */
@@ -33,6 +51,15 @@ export function BudgetHistory({ taskId }: { taskId: TaskId }) {
     (r) => (open ? r.getBudgetHistory(taskId) : Promise.resolve(null)),
     [taskId, open],
   );
+
+  /* Only the instant is rendered. `deadlineOrigin` also resolves which rule
+     chose it and the window added — kept, tested and deliberately not shown:
+     the owner asked for one line and nothing else. */
+  const origin = deadlineOrigin({
+    clockStartsAt: countedFrom,
+    clockStartsAtSource: null,
+    windowSecs: null,
+  });
 
   const view = history.data
     ? budgetHistoryView({
@@ -55,6 +82,16 @@ export function BudgetHistory({ taskId }: { taskId: TaskId }) {
 
       {open && (
         <div className="mt-2 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
+          {/* Before the figures, because it is the only line here that is not a
+              figure: it says when the clock started, which is what the rest is
+              measured from. Rendered whatever the history read does, since it
+              needs no request of its own. */}
+          {origin && (
+            <p className="mb-2 border-b border-hairline pb-2 text-[11px] text-ink-faint">
+              Counted from{" "}
+              <span data-figure>{formatDateTime(origin.startedAt)}</span>
+            </p>
+          )}
           {history.isLoading || !view ? (
             <p className="text-[11px] text-ink-faint">Reading the history…</p>
           ) : (

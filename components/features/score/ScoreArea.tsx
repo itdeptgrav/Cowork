@@ -1,6 +1,25 @@
 "use client";
 
 import Link from "next/link";
+import { useState } from "react";
+import {
+  describeTotals,
+  filterLedger,
+  groupLedger,
+  isFiltered,
+  isReversed,
+  signedPointsOf,
+  totalsOf,
+  LEDGER_COMPONENTS,
+  NO_FILTER,
+  type LedgerEntryLike,
+  type LedgerQuery,
+} from "@/lib/rules/scoring/scoreLedgerHistory";
+import {
+  offersChoice,
+  resolveSubject,
+  scoreSubjects,
+} from "@/lib/rules/scoring/scoreSubjects";
 import {
   factsOf,
   outcomeOf,
@@ -28,7 +47,7 @@ import {
 import { ComponentBand } from "@/components/ui/ComponentBand";
 import { TimerSopCounters } from "@/components/features/attendance/TimerSopCounters";
 import { useQuery } from "@/lib/hooks/useRepository";
-import { useViewerId } from "@/lib/hooks/usePermissions";
+import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import { formatPoints } from "@/lib/utils/format";
 import { formatPeriod } from "@/lib/rules/scoring/engine";
 import { CHANNEL_CODE, CHANNEL_LABEL, type ChannelId } from "@/lib/domain";
@@ -552,33 +571,392 @@ export function ChannelPage({ channel }: { channel: ChannelId }) {
 
 /* ── History ──────────────────────────────────────────────────────────────── */
 
+/**
+ * **The page answers "where did my points go", not "which periods closed".**
+ *
+ * It used to show only `listScoreHistory` — a trend across CLOSED scoring
+ * periods — so a person with a ledger full of entries and no closed period was
+ * told "No history yet". That was true of the trend and flatly untrue of their
+ * score, and it is the reason the old application's SOP history was the page
+ * people actually used.
+ *
+ * Both are here now. The trend stays exactly as it was and appears when there
+ * are closed periods to plot; the ledger below it is the history in the sense
+ * somebody means when they ask for it — every entry, newest first, what it cost
+ * or earned, and why.
+ */
 export function ScoreHistoryPage() {
   const viewerId = useViewerId();
+  const perms = usePermissions();
+  const people = useQuery((r) => r.listEmployees(), []);
+
+  /**
+   * Whose history is on screen.
+   *
+   * A manager may open a report's record — the old application's SOP page had
+   * the same picker. Who appears in it is decided by `score.view` and nothing
+   * else; see `scoreSubjects`. `resolveSubject` is what makes the selection
+   * safe to hold in component state: a role that changes while the page is open
+   * falls the selection back to the viewer rather than leaving a stale id
+   * deciding whose conduct record gets fetched.
+   */
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const subjects = scoreSubjects({
+    viewerId,
+    employees: people.data ?? [],
+    canView: (id) => perms.can("score.view", id),
+  });
+  const subject = resolveSubject({ selectedId, viewerId, subjects });
+  const viewingOther = subject !== null && subject !== viewerId;
+
+  /* Follows the picker, so the chart and the ledger below it always describe
+     the same person. With nobody picked this is the viewer, which is what it
+     always was. */
   const { data, isLoading } = useQuery(
-    (r) => r.listScoreHistory(viewerId ?? ""),
-    [],
+    (r) => (subject ? r.listScoreHistory(subject) : Promise.resolve([])),
+    [subject],
+  );
+  /**
+   * The whole ledger, unfiltered, once.
+   *
+   * `listLedger` takes an optional component, and asking per filter would mean
+   * a request on every tap of C1..C4 — and a window in which the totals on
+   * screen describe a different set of entries than the rows under them.
+   * Filtering happens in `filterLedger`, over what is already here.
+   *
+   * Gated on `viewerId` for the reason spelled out in `ChannelPage`: an empty
+   * id builds `/cowork/sop/bleach/`, which matches no route and answers an HTML
+   * 404 page.
+   */
+  const ledger = useQuery(
+    (r) => (subject ? r.listLedger(subject) : Promise.resolve([])),
+    [subject],
   );
 
   return (
     <>
       <WorkspaceHead
         title="Score history"
-        count={data ? `${data.length} periods` : undefined}
+        count={
+          ledger.data?.length
+            ? `${ledger.data.length} ${ledger.data.length === 1 ? "entry" : "entries"}`
+            : data
+              ? `${data.length} periods`
+              : undefined
+        }
         tabs={<IconTabs items={TABS} active="history" />}
       />
-      {isLoading ? (
+      {isLoading && ledger.isLoading ? (
         <SkeletonRows rows={6} />
-      ) : !data?.length ? (
-        <Panel>
-          <EmptyState
-            title="No history yet"
-            body="Scores appear here once a period closes."
-          />
-        </Panel>
       ) : (
-        <TrendChart series={data} />
+        <div className="space-y-4">
+          {/* Offered only to somebody who has a choice — an employee sees no
+              control at all, rather than a dropdown holding only themselves. */}
+          {offersChoice(subjects) && (
+            <Panel>
+              <div className="flex flex-wrap items-center gap-2">
+                <label
+                  htmlFor="score-subject"
+                  className="text-[11px] text-ink-faint"
+                >
+                  Whose history
+                </label>
+                <select
+                  id="score-subject"
+                  value={subject ?? ""}
+                  onChange={(e) => setSelectedId(e.target.value || null)}
+                  className="rounded border border-hairline bg-transparent px-2 py-1 text-xs text-ink"
+                >
+                  {subjects.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.isSelf ? `${s.name} (you)` : s.name}
+                    </option>
+                  ))}
+                </select>
+                {/* Said out loud. Somebody who has forgotten they switched
+                    would otherwise read a colleague's deductions as their
+                    own — and this page is exactly where that misreading
+                    would matter. */}
+                {viewingOther && (
+                  <span className="text-[11px] text-ink-muted">
+                    You are reading somebody else&apos;s record.
+                  </span>
+                )}
+              </div>
+            </Panel>
+          )}
+          {/* Only when there is something to plot. An empty chart said less
+              than nothing — it said the history was empty. */}
+          {data && data.length > 0 && <TrendChart series={data} />}
+          <PointHistory
+            entries={ledger.data ?? []}
+            isLoading={ledger.isLoading}
+            error={ledger.error}
+            onRetry={ledger.refetch}
+          />
+        </div>
       )}
     </>
+  );
+}
+
+/**
+ * The point ledger, as history.
+ *
+ * Ported from `OwnHistory` in the old project. The shape is kept because people
+ * already read it: filter row, then year, then a collapsible row per day with
+ * that day's damage stated on it, then the entries.
+ *
+ * The arithmetic lives in `scoreLedgerHistory.ts` and is tested there. This
+ * renders it and owns nothing but the filter state.
+ */
+function PointHistory({
+  entries,
+  isLoading,
+  error,
+  onRetry,
+}: {
+  entries: LedgerEntryLike[];
+  isLoading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const [query, setQuery] = useState<LedgerQuery>(NO_FILTER);
+  /* Collapsed rather than expanded state, so a day the reader has not touched
+     stays open — the same default as the old page, where the history is the
+     point of the screen and hiding it behind a chevron would bury it. */
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const filtered = filterLedger(entries, query);
+  const years = groupLedger(filtered);
+  const totals = totalsOf(filtered);
+  const filtering = isFiltered(query);
+
+  return (
+    <Panel padded={false}>
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-hairline px-4 py-3">
+        <h2 className="text-sm font-medium text-ink">Point history</h2>
+        <span data-figure className="text-xs text-ink-faint">
+          {filtered.length}
+        </span>
+        {/* The net, in words as well as sign — see `describeTotals`. */}
+        {filtered.length > 0 && (
+          <span
+            data-figure
+            className={`ml-auto text-xs ${
+              totals.net > 0
+                ? "text-[var(--state-positive-ink)]"
+                : totals.net < 0
+                  ? "text-[var(--state-rework-ink)]"
+                  : "text-ink-faint"
+            }`}
+          >
+            {describeTotals(totals)}
+          </span>
+        )}
+      </div>
+
+      {/* ── Filters ── */}
+      <div className="flex flex-wrap items-center gap-2 border-b border-hairline px-4 py-2.5">
+        {(["all", ...LEDGER_COMPONENTS] as const).map((c) => (
+          <button
+            key={c}
+            type="button"
+            onClick={() => setQuery((q) => ({ ...q, component: c }))}
+            aria-pressed={query.component === c}
+            className={`rounded px-2.5 py-1 text-[11px] font-medium transition-colors ${
+              query.component === c
+                ? "bg-ink text-canvas"
+                : "border border-hairline text-ink-muted hover:text-ink"
+            }`}
+          >
+            {c === "all" ? "All" : c.toUpperCase()}
+          </button>
+        ))}
+        <input
+          type="date"
+          aria-label="From date"
+          value={query.from}
+          onChange={(e) => setQuery((q) => ({ ...q, from: e.target.value }))}
+          className="rounded border border-hairline bg-transparent px-2 py-1 text-[11px] text-ink"
+        />
+        <span className="text-[11px] text-ink-faint">to</span>
+        <input
+          type="date"
+          aria-label="To date"
+          value={query.to}
+          onChange={(e) => setQuery((q) => ({ ...q, to: e.target.value }))}
+          className="rounded border border-hairline bg-transparent px-2 py-1 text-[11px] text-ink"
+        />
+        {filtering && (
+          <button
+            type="button"
+            onClick={() => setQuery(NO_FILTER)}
+            className="rounded border border-hairline px-2.5 py-1 text-[11px] text-ink-muted hover:text-ink"
+          >
+            Clear
+          </button>
+        )}
+      </div>
+
+      {/* Earned and deducted stated APART while a filter is on. A net of zero
+          from nothing happening and a net of zero from ten points each way are
+          different facts about somebody's month. */}
+      {filtering && filtered.length > 0 && (
+        <div className="flex flex-wrap gap-4 border-b border-hairline px-4 py-2.5 text-[11px]">
+          <span>
+            <span className="text-ink-faint">Earned </span>
+            <span data-figure className="text-[var(--state-positive-ink)]">
+              +{totals.earned.toFixed(1)}
+            </span>
+          </span>
+          <span>
+            <span className="text-ink-faint">Deducted </span>
+            <span data-figure className="text-[var(--state-rework-ink)]">
+              −{totals.deducted.toFixed(1)}
+            </span>
+          </span>
+        </div>
+      )}
+
+      {error ? (
+        <ErrorState
+          title="The point history could not be loaded"
+          body={error}
+          onRetry={onRetry}
+        />
+      ) : isLoading ? (
+        <SkeletonRows rows={5} />
+      ) : !entries.length ? (
+        <EmptyState
+          title="Nothing on your record"
+          body="No points have been added or taken off yet. Entries appear here as they are applied, each with its reason."
+        />
+      ) : !filtered.length ? (
+        <EmptyState
+          compact
+          title="Nothing in this range"
+          body="No entries match the filters above."
+        />
+      ) : (
+        years.map((year) => (
+          <section key={year.year || "undated"}>
+            <div className="flex items-baseline gap-2 border-b border-hairline bg-[var(--surface-sunken,transparent)] px-4 py-2">
+              <h3 data-figure className="text-xs font-medium text-ink">
+                {year.year || "Undated"}
+              </h3>
+              <span className="text-[11px] text-ink-faint">
+                {describeTotals(year.totals)}
+              </span>
+            </div>
+
+            {year.days.map((day) => {
+              const key = `${year.year}:${day.date}`;
+              const shut = collapsed[key] === true;
+              return (
+                <div key={key}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsed((c) => ({ ...c, [key]: !shut }))
+                    }
+                    aria-expanded={!shut}
+                    className="flex w-full items-center gap-2 border-b border-hairline px-4 py-2 text-left hover:bg-[var(--surface-hover,transparent)]"
+                  >
+                    <span
+                      aria-hidden
+                      className={`text-[10px] text-ink-faint transition-transform ${shut ? "" : "rotate-90"}`}
+                    >
+                      ▶
+                    </span>
+                    <span data-figure className="text-xs text-ink">
+                      {day.date || "No date"}
+                    </span>
+                    <span className="ml-auto flex gap-3 text-[11px]">
+                      {day.totals.earned > 0 && (
+                        <span
+                          data-figure
+                          className="text-[var(--state-positive-ink)]"
+                        >
+                          +{day.totals.earned.toFixed(1)} reward
+                        </span>
+                      )}
+                      {day.totals.deducted > 0 && (
+                        <span
+                          data-figure
+                          className="text-[var(--state-rework-ink)]"
+                        >
+                          −{day.totals.deducted.toFixed(1)} penalty
+                        </span>
+                      )}
+                    </span>
+                  </button>
+
+                  {!shut &&
+                    day.entries.map((e) => {
+                      const points = signedPointsOf(e);
+                      const reversed = isReversed(e);
+                      return (
+                        <article
+                          key={e.id}
+                          className={`border-b border-hairline px-4 py-3 pl-8 ${reversed ? "opacity-60" : ""}`}
+                        >
+                          <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                            {e.component && (
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-ink-faint">
+                                {e.component.toUpperCase()}
+                              </span>
+                            )}
+                            <span
+                              className={`min-w-0 flex-1 truncate text-sm text-ink ${reversed ? "line-through" : ""}`}
+                            >
+                              {e.sourceLabel || "Score entry"}
+                            </span>
+                            <span
+                              data-figure
+                              className={`shrink-0 text-xs ${
+                                points > 0
+                                  ? "text-[var(--state-positive-ink)]"
+                                  : points < 0
+                                    ? "text-[var(--state-rework-ink)]"
+                                    : "text-ink-faint"
+                              }`}
+                            >
+                              {points > 0 ? "+" : points < 0 ? "−" : ""}
+                              {formatPoints(Math.abs(points))} pts
+                            </span>
+                          </div>
+                          {/* The REASON. This is what the page is for: a figure
+                              without one is a verdict, and the old application
+                              was preferred precisely because it gave both. */}
+                          {e.reason && (
+                            <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
+                              {e.reason}
+                            </p>
+                          )}
+                          <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
+                            <span>
+                              Applied by{" "}
+                              {e.actorId === "system" || !e.actorLabel.trim()
+                                ? "System"
+                                : e.actorLabel}
+                            </span>
+                            {/* Said plainly rather than only struck through:
+                                the points are back, and somebody scanning for
+                                what happened to their objection needs the
+                                answer in words. */}
+                            {reversed && <span>· reversed after review</span>}
+                          </p>
+                        </article>
+                      );
+                    })}
+                </div>
+              );
+            })}
+          </section>
+        ))
+      )}
+    </Panel>
   );
 }
 

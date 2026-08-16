@@ -1,0 +1,386 @@
+TASK LOGIC - TEST CASES
+Date: 14 Aug 2026
+How to use: test each case, tick it, report failures by code (example: "D4 failed", "S2 wrong")
+[TESTED] = already verified by script against the real database. Browser re-check still useful.
+
+KNOWN OPEN ISSUES BEFORE YOU START:
+- I1 / J1 will fail until the attachment fix is done (submitted PDF not visible - known bug)
+- S7 needs owner decision first (gate time charged or free)
+- Email notifications blocked by Brevo IP allowlist (pushes work)
+
+
+=====================================================
+SECTION A - CREATING TASKS
+=====================================================
+A1 [TESTED] Manager creates task for direct report with budget
+   -> goes to assignee, no department gate
+
+A2 [TESTED] Create for a person in another department (not your report)
+   -> pending department approval, their manager notified, assignee cannot see it yet
+
+A3 Create task with fixed deadline (no timer)
+   -> no budget negotiation, assignor's date stands
+
+A4 Cross-department task with no budget set
+   -> after approval, receiving manager must set hours before assignee gets it
+
+A5 Assign task to yourself
+   -> goes to your manager for self-assign approval
+
+A6 [TESTED] Create two tasks quickly for same person
+   -> each gets a DIFFERENT queue rank
+
+
+=====================================================
+SECTION B - APPROVAL GATES
+=====================================================
+B1 [TESTED] Assignee tries to accept while task still at gate
+   -> refused
+
+B2 Approver rejects at the gate
+   -> assignee never sees the task, creator sees rejection reason
+
+B3 Wrong person tries to approve
+   -> refused, message names who can approve
+
+B4 [TESTED] After approval
+   -> task open, assignee attached, budget offer standing
+
+
+=====================================================
+SECTION C - BUDGET NEGOTIATION
+=====================================================
+C1 [TESTED] Assignee accepts offered budget
+   -> ACCEPTED, deadline written immediately
+
+C2 Assignee counters (asks different hours)
+   -> request goes to the ASSIGNEE'S MANAGER, not the task sender
+
+C3 Manager accepts the counter
+   -> new figure becomes budget, deadline recalculated from same anchor
+
+C4 Manager counters back
+   -> returns to assignee, loop continues, no reject button anywhere
+
+C5 Try to accept your own proposal
+   -> refused ("not your turn")
+
+C6 After acceptance the same number shows in three places:
+   Time budget on Details, Current window on Deadline tab, timer target
+
+
+=====================================================
+SECTION D - DEADLINE (MOST IMPORTANT)
+=====================================================
+D1 [TESTED] Person online BEFORE task created
+   -> clock starts at task creation. Deadline = creation + budget
+
+D2 Person comes online AFTER task created, then accepts
+   -> clock starts at first online moment, NOT at accept press.
+   Sitting on a task while online must NOT move the deadline later
+
+D3 Accept while not Online
+   -> clock starts at the accept press
+
+D4 Cross-department, receiving manager sets hours
+   -> deadline = grant moment + hours
+
+D5 [TESTED] Clock starts after office close (18:30)
+   -> zero time that evening, deadline = next working day 09:30 + budget
+
+D6 Accept very late, computed deadline already in the past
+   -> task shows Overdue immediately. Correct behaviour, not a bug
+
+D7 Deadline on screen = deadline in database
+   -> report any screen where the two differ
+
+D8 [TESTED] Start/pause/run the timer
+   -> deadline moves NOTHING
+
+D9 Weekend or holiday in the middle
+   -> deadline skips non-working days
+
+
+=====================================================
+SECTION E - PRIORITY AND QUEUE
+=====================================================
+E1 [TESTED] New tasks get distinct stored ranks, UI shows creation order
+
+E2 Manager reorders someone's queue
+   -> reason required, assignee gets blocking confirmation with old/new positions
+
+E3 Assignee tries to change own priority
+   -> refused (unless they have no manager)
+
+E4 Complete the P1 task
+   -> next task becomes P1, finished task shows "Was P1"
+
+E5 Task awaiting acceptance shows separate "to accept" numbering
+
+E6 Raising one task's priority
+   -> other tasks' expected completion moves later, never earlier
+
+
+=====================================================
+SECTION F - TIMER (MOST IMPORTANT)
+=====================================================
+F1 [TESTED] Start -> run -> pause
+   -> banked seconds = wall clock seconds, zero loss
+
+F2 [TESTED] Reload page mid-run (press F5 while timer runs)
+   -> timer keeps counting from real start. Not reset, not paused
+
+F3 [TESTED] Pause then resume
+   -> second run adds on top, first run never counted twice
+
+F4 Start timer on task B while task A is running
+   -> A pauses automatically (task switch), only one timer ever runs
+
+F5 Go to Break or Offline while timer running
+   -> timer pauses at once. Coming back does NOT auto-restart it
+
+F6 [TESTED] Laptop sleep / background tab more than 2 minutes
+   -> credit capped at last heartbeat + 2 min grace
+   -> clock restarts alive instead of dying
+   -> display never counts past what will be credited (no jump backwards)
+
+F7 Same figure on: assignee's task page, manager's view, top-bar pill
+
+F8 Timer left running 16+ hours
+   -> shows "requires attention / close session", banked time preserved
+
+F9 Work before 09:30 or after 18:30
+   -> logged time still counts in full
+   (office calendar affects deadlines, never logged work)
+
+
+=====================================================
+SECTION G - EXPECTED COMPLETION
+=====================================================
+G1 Read the same task twice, minutes apart, nobody working
+   -> figure does NOT move on its own
+
+G2 Expected completion can show a PAST time if plan was missed
+   -> it stays there, does not follow the clock. Overdue chip explains
+
+G3 P2 task's expected completion = after P1's remaining work
+
+G4 Logging time moves expected completion EARLIER, never later
+
+
+=====================================================
+SECTION H - EXTENSIONS
+=====================================================
+H1 Assignee asks more hours
+   -> request goes to assignee's manager
+   -> form shows: current + added = new total
+
+H2 Manager approves hours
+   -> assignee must CONFIRM before it binds
+   -> deadline moves by exactly what was granted
+
+H3 Manager declines
+   -> nothing changes anywhere
+
+H4 Deadline (date) change
+   -> only the assignor can approve. Hours and date are separate records
+
+H5 After extension
+   -> queue behind the task shifts
+   -> History tab shows old date -> reason -> new date
+
+
+=====================================================
+SECTION I - SUBMISSION AND FILES
+=====================================================
+I1 Submit with attachments box
+   -> PDF visible on Submission tab, Review tab (reviewer side), Files tab
+   (EXPECTED TO FAIL until the # fix is done - known bug)
+
+I2 Submit with unfinished required items
+   -> blocked if task rules say block
+
+I3 Resubmit after rework
+   -> new attempt listed, old one marked superseded
+
+I4 Files tab groups: reference / submitted / correction / chat / report
+   -> private vs link labels correct
+
+
+=====================================================
+SECTION J - REVIEW, REWORK, REJECTION
+=====================================================
+J1 Reviewer opens Review tab
+   -> sees message AND attached documents (same known bug as I1)
+
+J2 Submitter tries to review own work
+   -> hard refusal
+
+J3 Rework
+   -> reviewer must pick which requirements failed
+   -> assignee gets deadline re-granted (time left at submission)
+   -> rework counter increments
+
+J4 Two-stage chain, approve at stage 1
+   -> passes to next stage, does NOT complete the task
+
+J5 Final approval
+   -> task done, scoring weight = agreed budget hours
+
+J6 Reject
+   -> reason recorded, resubmission still possible
+
+
+=====================================================
+SECTION K - MEETINGS ON A TASK
+=====================================================
+K1 Press Join meeting
+   -> asks "Start a meeting on this task?" first. Cancel writes nothing
+
+K2 One person opens and closes the room alone
+   -> NOT listed as a meeting
+
+K3 Two people in the room
+   -> session listed with NAMES and correct count
+   (same person rejoining is still one person)
+
+K4 Meeting time credits the deadline by exactly the credited minutes
+
+
+=====================================================
+SECTION L - REPORTS AND CHAT
+=====================================================
+L1 Daily report posts to Reports tab, counter increments
+
+L2 Chat message with attachment visible to other party, badge updates
+
+L3 System messages appear in chat at the right moments
+   (submitted, hours set, etc.)
+
+
+=====================================================
+SECTION M - SPECIAL TASK TYPES
+=====================================================
+M1 Break a task into subtasks
+   -> parent becomes container: no own priority, no timer, no accept card
+
+M2 Forward a task
+   -> forwarded-by recorded, budget follows NEW assignee's manager
+
+M3 Repeat task -> next occurrence spawns per config
+
+M4 Goal task -> roadmap steps with own dates, target date not scored
+
+M5 Third-party task -> status updates and payment flow work
+
+
+=====================================================
+SECTION N - PERMISSIONS / NEGATIVE TESTS
+=====================================================
+N1 Outsider (not assignee/assignor/manager) opens the task
+   -> no action buttons anywhere
+
+N2 Every refusal names WHO CAN act, not just "no"
+
+N3 Direct URL to a task you should not see
+   -> blocked
+
+
+=====================================================
+DEADLINE SHIFT SCENARIOS (S-CASES)
+=====================================================
+Rule: DEADLINE moves only by credits and extensions.
+EXPECTED COMPLETION recalculates freely.
+Every legitimate shift must be EXACT to the minute AND leave a History row
+(old date -> reason -> new date). A silent shift is a bug even if the number
+is right.
+
+--- CLOCK START (create -> accept) ---
+
+S1 Person ONLINE when task created, accepts later
+   -> deadline = creation time + budget
+   -> NO shift for sitting on it. Correct = no shift
+
+S2 Person OFFLINE when task created, comes online 2 hours later, accepts
+   -> deadline = came-online time + budget
+   -> SHIFT by the offline wait. Correct = shift
+
+S5 Cross-dept: receiving manager grants hours at 14:30
+   -> deadline = 14:30 + hours
+   -> assignee presence irrelevant, creation time irrelevant
+
+S6 Cross-dept: assignee offline when hours granted
+   -> still grant + hours. Grant rule wins over presence
+
+S7 Task created 10:00, gate approval at 15:00, assignee online all day
+   -> current code: clock from 10:00 (5 gated hours charged to assignee)
+   -> OWNER DECISION PENDING: should gate time be charged or free?
+
+S8 Accept so late that computed deadline already passed
+   -> deadline stays in the past, task Overdue immediately
+   -> never pushed forward to "now". Correct = no rescue
+
+S9 [TESTED] Clock starts after office close (e.g. 18:38)
+   -> zero minutes that evening
+   -> deadline = next working day 09:30 + budget
+
+S10 Clock starts Friday evening / before holiday
+   -> walk skips off days, lands next working day
+
+S11 Budget renegotiated (counter, settled at different hours)
+   -> deadline re-derived from SAME original anchor + new hours
+   -> negotiation minutes never charged to assignee
+
+--- AFTER DEADLINE EXISTS: MUST SHIFT (credited on return) ---
+
+S12 Take a break, come back
+   -> deadline + break minutes (inside daily allowance)
+   -> credited when you RETURN, not while gone
+
+S13 Go offline mid-day, come back
+   -> deadline + the WORKING minutes missed
+
+S14 Offline overnight / weekend
+   -> shift only by minutes inside office hours
+   -> an overnight adds almost nothing
+
+S15 Emergency approved by manager
+   -> deadline + emergency span
+
+S16 Task meeting held (credit rule satisfied)
+   -> deadline + credited meeting minutes, exactly
+
+S17 Extension: manager grants hours, assignee confirms
+   -> deadline + granted hours through office hours
+   -> History shows old -> reason -> new
+
+S18 Rework sent back
+   -> deadline re-granted = time you had left when you submitted
+
+--- AFTER DEADLINE EXISTS: MUST NOT SHIFT (any movement = bug) ---
+
+S19 [TESTED] Timer start / pause / left running -> untouched
+S20 Online but idle, hours passing -> untouched
+S21 Page reload / reopening task / watching it -> untouched
+S22 Solo meeting room opened and closed -> untouched, nothing credited
+S23 Extension declined -> untouched
+S24 Manager reorders priority -> committed deadline untouched
+    (only expected completion of pushed tasks moves later)
+S25 Someone else's activity (their breaks, their tasks) -> untouched
+S26 Admin changes office policy hours -> expected completion recalculates,
+    committed deadline does not move
+S27 Submitting work / entering review -> deadline frozen where it was
+
+
+=====================================================
+SUGGESTED TESTING ORDER
+=====================================================
+1. S1, S2 (clock start - needs you to really go offline/online)
+2. S12, S13 (break and offline credits)
+3. F4, F5 (task switch and away-pause - browser only)
+4. D6, D7 (overdue honesty, screen vs database)
+5. C2, C3 (counter goes to manager - today's routing fix)
+6. H1, H2 (extension flow)
+7. Everything else section by section
+
+Test tasks T023 and T024 are in place for testing.

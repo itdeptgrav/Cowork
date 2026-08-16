@@ -113,16 +113,26 @@ export function ExpectedCompletion({ view }: { view: TaskView }) {
         {formatStamp(completion)}
       </p>
       {/* The comparison, which is the reason both dates are on screen. Without
-          it a reader has to subtract two timestamps in their head. */}
-      {buffer !== null && (
-        <p
-          className={`mt-0.5 text-[12px] ${
-            buffer >= 0 ? "text-ink-faint" : "text-[var(--danger,#c4553d)]"
-          }`}
-        >
-          {buffer >= 0 ? "✓ Finishes " : "⚠ Misses the requested deadline by "}
-          <span data-figure>{formatDurationTimer(Math.abs(buffer))}</span>
-          {buffer >= 0 ? " before the requested deadline" : ""}
+          it a reader has to subtract two timestamps in their head.
+
+          **The red "misses by" half is withheld — OWNER DECISION, 15 Aug 2026.**
+          It compares against the STORED deadline, and a stored deadline can
+          currently be wrong: T031 was written 09:40 on the morning of a task
+          created at 19:49, so the panel reported a ten-hour miss that never
+          happened. The warning was accurate about the number it was given and
+          wrong about the world, which is the worst kind of alarm — it teaches
+          people to disregard the one that matters.
+
+          Only the reassuring half is shown. Nothing else changed: the buffer is
+          still computed above, `Overdue` still marks a passed deadline from the
+          task's own status, and the feasibility warnings on the extension and
+          assignment cards are untouched. Restoring this is deleting the
+          `buffer >= 0 &&` below, once stored deadlines can be trusted. */}
+      {buffer !== null && buffer >= 0 && (
+        <p className="mt-0.5 text-[12px] text-ink-faint">
+          ✓ Finishes{" "}
+          <span data-figure>{formatDurationTimer(buffer)}</span>
+          {" "}before the requested deadline
         </p>
       )}
     </div>

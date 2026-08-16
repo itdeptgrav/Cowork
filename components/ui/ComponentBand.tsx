@@ -156,7 +156,11 @@ export function ComponentBand({
                 data-figure
                 className="mt-1 text-[22px] leading-none tracking-[-0.025em] text-slab-ink"
               >
-                {measured ? (
+                {/* `measured` alone is not enough for a figure: C1 with ledger
+                    points but nothing approved is measured AND unscored — the
+                    engine says `null`, not 0. A dash there is the truth; "0%"
+                    was a claim the engine never made. */}
+                {measured && ch.percentage !== null ? (
                   <>
                     {/* Minus sign U+2212, not a hyphen — this is a value. */}
                     {ch.percentage < 0
@@ -175,10 +179,33 @@ export function ComponentBand({
                   purely because there are more attendance days than tasks.
                   docs/architecture/PRODUCT.md:87 and :107 forbid displaying that split; the unit
                   count gives the same traceability and asserts nothing. */}
+              {/**
+               * **The count is often UNKNOWN, and that is not the same as
+               * measured or unmeasured.**
+               *
+               * `measured` is true whenever the engine reported points — but
+               * the engine sends no unit COUNT, so `unitCount` is deliberately
+               * null (see `toScoreOverview`). This read `${ch.unitCount}`
+               * regardless and printed the literal string **"null units
+               * measured"** on a scored channel.
+               *
+               * Three states, not two: a real count, a channel with nothing
+               * scored, and a channel that was scored without saying across how
+               * many things. The third says nothing rather than inventing a
+               * figure — the percentage above it is the measurement.
+               */}
               <p className="mt-0.5 hidden text-[11px] text-slab-ink-muted @[150px]:block">
-                {measured
-                  ? `${ch.unitCount} ${ch.unitCount === 1 ? "unit" : "units"} measured`
-                  : "not measured"}
+                {!measured
+                  ? "not measured"
+                  : ch.percentage === null
+                    ? /* Measured but unscored — there are points against the
+                         channel, and the engine has not produced a figure yet
+                         (C1 before any task is approved). Named so the dash
+                         above it does not read as C3's "not measured". */
+                      "not scored yet"
+                    : typeof ch.unitCount === "number"
+                      ? `${ch.unitCount} ${ch.unitCount === 1 ? "unit" : "units"} measured`
+                      : ""}
               </p>
               {/* Full-strength muted ink, not a fraction of it: #949494 holds
                   4.99:1 on the slab, and any opacity below that fails 4.5:1. */}

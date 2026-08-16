@@ -228,7 +228,14 @@ test("the two sides of a task cannot show different clocks", () => {
    */
   const src = code(CONTROL);
   assert.match(src, /const viewerIsAssignee =/);
-  assert.match(src, /live \?\? \(viewerIsAssignee \? timer\.data : null\)/);
+  /* The one-shot read is still gated on being the SAME document — a manager
+     must never see their own clock on somebody else's work — and the last live
+     snapshot now sits in front of it, so a refetch cannot flick the display
+     back to a stale state. Both facts pinned. */
+  assert.match(
+    src,
+    /live \?\? remembered \?\? \(viewerIsAssignee \? timer\.data : null\)/,
+  );
 });
 
 test("the timer is coupled to presence: away stops the clock at once", () => {
@@ -413,7 +420,7 @@ test("the live session outranks the one-shot read", () => {
      SAME document. See "the two sides of a task cannot show different clocks". */
   assert.match(
     code(CONTROL),
-    /const session = live \?\? \(viewerIsAssignee \? timer\.data : null\)/,
+    /const session = live \?\? remembered \?\? \(viewerIsAssignee \? timer\.data : null\)/,
   );
 });
 
@@ -515,4 +522,166 @@ test("worked time is shown even though legacy records no run breakdown", () => {
   assert.match(detail, /view\.loggedSecs > 0 \?/);
   assert.match(detail, /formatTimer\(view\.loggedSecs\)/);
   assert.match(detail, /running total rather than a/);
+});
+
+test("a refetch cannot flick the clock back to a stale state", () => {
+  /**
+   * **The reported flicker: ON, then OFF, then ON again a second later.**
+   *
+   * A successful write calls `notifyRepositoryChanged()`, which re-runs every
+   * mounted query including `getTimer`. While that refetch is in flight — or
+   * on any frame the listener has not re-delivered — `live` is momentarily
+   * null, and the display fell through to a `timer.data` still describing the
+   * PREVIOUS state. The button flipped back to what it had just stopped being.
+   *
+   * The last live snapshot is remembered and sits in front of the one-shot
+   * read, so once the listener has spoken it is never overruled.
+   */
+  const src = code(CONTROL);
+  assert.match(src, /const lastLive = useRef</);
+  assert.match(src, /if \(live\) lastLive\.current = \{ taskId, data: live \}/);
+  /* Keyed by task: opening another one must not inherit this one's clock. */
+  assert.match(src, /lastLive\.current\?\.taskId === taskId/);
+});
+
+test("starting a timer does not wait on the whole task view", () => {
+  /**
+   * `#readTaskView` builds the queue chain, the office calendar, blocked dates
+   * and every sibling task. It was awaited before a byte of the session was
+   * written, for one string — `taskTitle`, a label that decides nothing. On a
+   * slow connection it outlasted TIMER_WRITE_TIMEOUT_MS, so Resume answered
+   * "That did not reach the server in time" with the clock still off.
+   */
+  const src = code(REPO);
+  const at = src.indexOf("async startTimer(");
+  const fn = src.slice(at, at + 2000);
+  assert.match(fn, /this\.#taskDoc\(id\)/, "the cheap document read is gone");
+  assert.equal(
+    /#readTaskView\(/.test(fn),
+    false,
+    "starting a timer waits on the full task view again — that is the timeout",
+  );
+});
+
+test("finding what is already running does not fetch every task", () => {
+  /**
+   * **The second half of the Resume timeout, found after the first fix did not
+   * cure it.**
+   *
+   * `getActiveTimer` filled one display string from
+   * `listTasks({ scope: "all" })` — every task the viewer may see. `startTimer`
+   * awaits `getActiveTimer()` to learn what else is running, so every press of
+   * Play or Resume paid for the whole task list. `Promise.all` waits for its
+   * slowest member, so batching the reads around it did not lift the floor.
+   *
+   * The title is written beside the session by `startTimer`, so the snapshot
+   * already in hand carries it.
+   */
+  const src = code(REPO);
+  const at = src.indexOf("async getActiveTimer(");
+  const fn = src.slice(at, src.indexOf("async #taskDocuments("));
+  assert.equal(
+    /listTasks\(/.test(fn),
+    false,
+    "getActiveTimer fetches the task list again — that is the Resume timeout",
+  );
+  assert.match(fn, /taskTitle: session\.title/);
+  assert.match(fn, /typeof data\.taskTitle === "string"/);
+});
+
+test("the stall message clears itself once the server catches up", () => {
+  /**
+   * **The screenshot that proved this: button reading Pause, status reading
+   * Working, and "That did not reach the server in time" underneath.**
+   *
+   * `settledWithin` gives up at twelve seconds; the write frequently lands
+   * anyway. The listener then delivers the new state and the control corrects
+   * itself, but the banner was a plain boolean cleared only by the NEXT
+   * successful press — so it sat under a running clock telling the person to
+   * try again. Trying again pauses the timer they just started.
+   *
+   * The stall now remembers what the server held when we stopped waiting, and
+   * the message is derived: server moved, message gone. A write that really
+   * failed leaves the server where it was, so it stays.
+   */
+  const src = code(CONTROL);
+  assert.match(src, /useState<\{ serverRunning: boolean \} \| null>\(null\)/);
+  assert.match(
+    src,
+    /const stalledNow = stall !== null && stall\.serverRunning === serverRunning/,
+  );
+  assert.match(src, /setStall\(\{ serverRunning \}\)/);
+  /* Still cleared outright on a press that succeeds. `\s` rather than `\n`:
+     this file is checked out with CRLF endings, and an assertion that only
+     matched LF failed on a line nobody had touched. */
+  assert.match(src, /setStall\(null\);\s*onChange\?\.\(\)/);
+  assert.equal(
+    /setStalled\(/.test(src),
+    false,
+    "the boolean stall flag is back — it cannot expire on its own",
+  );
+});
+
+/* ── Resume answering the first press ─────────────────────────────────────── */
+
+test("a press during a write is held, not discarded", () => {
+  /**
+   * **Why Resume "worked after some time" while Pause felt perfect.**
+   *
+   * Pausing flips the display optimistically and returns at once, but its write
+   * is still in flight. The obvious next press — Resume, a second later —
+   * arrived while the re-entrancy guard was still held and was dropped in
+   * silence: nothing moved and nothing was said. The timer started only when
+   * the person pressed a SECOND time, by which point the guard had cleared.
+   *
+   * The guard still stands (two overlapping writes could interleave a start and
+   * a pause on one session). The press is now remembered and run when the way
+   * is clear.
+   */
+  const src = code(CONTROL);
+  const at = src.indexOf("async function toggle()");
+  const fn = src.slice(at, src.indexOf("if (block && startable)"));
+  assert.match(fn, /if \(inFlight\.current\) \{\s*queued\.current = true;\s*return;\s*\}/);
+  assert.equal(
+    /if \(inFlight\.current\) return;/.test(fn),
+    false,
+    "the press is dropped in silence again",
+  );
+});
+
+test("the held press runs against fresh state, not the closure that queued it", () => {
+  /* Calling `toggle()` from the `finally` would use the render that STARTED the
+     write, which still believes the timer is in its pre-write state — a queued
+     Resume would read itself as a Pause and stop the clock. */
+  const src = code(CONTROL);
+  assert.match(src, /setReplay\(\(n\) => n \+ 1\)/);
+  assert.match(src, /if \(replay === 0\) return;\s*void toggle\(\);/);
+});
+
+test("a pause already agreed to is not asked about twice", () => {
+  /* `setConfirmingPause(false)` sits AFTER the guard. A confirmed pause that
+     gets held keeps the flag, so the replay passes the confirmation branch
+     instead of re-opening the dialog. */
+  const src = code(CONTROL);
+  const at = src.indexOf("async function toggle()");
+  const fn = src.slice(at, src.indexOf("if (block && startable)"));
+  assert.ok(
+    fn.indexOf("setConfirmingPause(false)") > fn.indexOf("queued.current = true"),
+    "the confirmation is cleared before the guard — a held pause asks again",
+  );
+});
+
+test("starting costs one round of reads and one write, like pausing", () => {
+  /* The session document was read AFTER the batch — a whole extra round trip
+     for one number, the banked total to resume from. It needs no answer from
+     the other three, and `#timerSession` only builds a path. */
+  const src = code(REPO);
+  const at = src.indexOf("async startTimer(");
+  const fn = src.slice(at, at + 3000);
+  assert.match(fn, /this\.#timerSession\(employeeId, id\)\.then\(\(r\) => getDoc\(r\)\)/);
+  assert.equal(
+    /const existing = await getDoc\(ref\)/.test(fn),
+    false,
+    "the extra sequential read is back",
+  );
 });

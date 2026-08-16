@@ -137,6 +137,10 @@ export function describeField(field: AuditField): string {
  */
 export function affectsDeadlines(fields: AuditField[]): boolean {
   return fields.some((f) =>
-    /^(schedule|breaks|holidays|blockedDates)\b/.test(f.path),
+    /* `hrHolidaySync` belongs here for the same reason `holidays` does, and more
+       bluntly: turning it off makes `listBlockedDates` return nothing, so every
+       subsequent deadline is computed over a calendar with no holidays in it.
+       One switch, the whole company's blocked dates. */
+    /^(schedule|breaks|holidays|blockedDates|hrHolidaySync)\b/.test(f.path),
   );
 }

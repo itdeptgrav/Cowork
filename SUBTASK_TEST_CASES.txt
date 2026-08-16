@@ -1,0 +1,205 @@
+PARENT / SUBTASK / REWORK - TEST CASES
+Date: 16 Aug 2026
+How to use: test each case, tick it, report failures by code (example: "P3 failed", "C2 wrong")
+
+[AUTO] = covered by an automated test that passes now. Browser re-check still useful.
+[MANUAL] = nobody has run this yet. These are the ones that matter most.
+
+BEFORE YOU START - DO THESE TWO THINGS:
+1. RESTART THE BACKEND (Node process, does not hot-reload).
+   Without this: the rework rule, the acceptance cap and the extension cap all
+   still run the OLD code.
+2. Hard-refresh the browser (Ctrl+Shift+R).
+
+KNOWN NOT DONE (do not report these as bugs):
+- E5: the "approve and move the project" BUTTON is not on the screen yet.
+  The engine refuses correctly and says how; the one-press remedy is missing.
+- Reports tab stays hidden on a parent (by your decision).
+- The 9 failing tests in lib/repositories/legacy/ are pre-existing path-alias
+  failures. They fail with or without this work. Not related.
+
+
+=====================================================
+SECTION P - PARENT / PROJECT TASK
+=====================================================
+Setup: Rishee creates a task for Rakesh, 40 hours, deadline 20 Aug 11:00.
+       Rakesh accepts it. It behaves as a normal task at this point.
+
+P1 [MANUAL] Before any subtask: open the task
+   -> Play/Pause timer IS shown
+   -> Deadline IS shown
+   -> Time budget IS shown (40 hours)
+   -> Tabs: Overview, Deadline, Reports, Submission, Review, Chat, Meetings, Files
+
+P2 [MANUAL] Rakesh creates one subtask under it. Reopen the parent.
+   -> Play/Pause timer is GONE
+   -> Deadline STILL shown, same date (20 Aug 11:00) - must not change
+   -> Time budget is GONE
+   -> Priority is GONE
+   -> Reports tab is GONE
+   -> Deadline / Submission / Review / Chat / Meetings / Files tabs ALL still there
+
+P3 [MANUAL] On the parent, open the Deadline tab
+   -> it opens (it used to be missing)
+   -> "Working deadline" shows 20 Aug 11:00
+   -> "Request an extension" is available
+
+P4 [MANUAL] On the parent, open Submission and Review tabs
+   -> both open, both usable
+
+P5 [MANUAL] Parent task, check nothing auto-started
+   -> Time panel says "No time logged yet" and offers NO Start button at all
+   -> not a disabled button - there should be no button
+
+P6 [AUTO] Parent keeps every negotiation / approval / extension card
+P7 [AUTO] Parent still withholds ONLY the timer, budget, priority, Reports
+
+P8 [MANUAL] Delete/cancel the only subtask, reopen the parent
+   -> the timer comes back (it is a normal task again)
+
+
+=====================================================
+SECTION C - SUBTASK DEADLINE CAP (CREATION)
+=====================================================
+Parent due 20 Aug 11:00 throughout.
+
+C1 [MANUAL] Rakesh creates Subtask 1 for Pramod (same reporting line, so you
+   enter a BUDGET not a date). Enter a small budget, e.g. 2 hours.
+   -> allowed, Create button enabled
+
+C2 [MANUAL] Same, but enter a huge budget, e.g. 500 hours
+   -> a red message appears naming the project's date and how far past it runs
+   -> message says "would finish" (it is a projection, not a fixed date)
+   -> the CREATE BUTTON IS DISABLED
+
+C3 [MANUAL] Reduce the budget again
+   -> message disappears, Create button enabled again
+
+C4 [MANUAL] Cross-department subtask (assignee outside your line, so you type a
+   DATE). Type a date AFTER 20 Aug 11:00.
+   -> red message, exact wording "That is X after the project is due"
+   -> Create button DISABLED
+
+C5 [MANUAL] Same, type a date exactly 20 Aug 11:00
+   -> ALLOWED. Equal is not "after".
+
+C6 [MANUAL] Same, type 20 Aug 10:59
+   -> allowed
+
+C7 [AUTO] Parent with no deadline caps nothing
+C8 [AUTO] Unreadable / missing date is never treated as a breach
+
+
+=====================================================
+SECTION A - SUBTASK DEADLINE CAP (ACCEPTANCE)
+=====================================================
+This is the check that actually GUARANTEES the rule. C2 only warns.
+
+A1 [MANUAL] Create a subtask with a budget that fits today, but have the
+   assignee accept it much later (or set a big budget that only overruns once
+   the anchor moves). Accept it.
+   -> the subtask's deadline is never later than 20 Aug 11:00
+   -> if it would have been, it is cut back to exactly 20 Aug 11:00
+
+A2 [MANUAL] Normal subtask that fits comfortably. Accept.
+   -> deadline is the normal calculated one, NOT cut back
+
+A3 [MANUAL] Accept a subtask whose parent has NO deadline
+   -> normal deadline, nothing capped
+
+A4 [AUTO] The parent is read BEFORE the transaction (a write would fail otherwise)
+A5 [AUTO] Parent deadline read order matches the frontend exactly
+
+
+=====================================================
+SECTION E - EXTENSION CAP
+=====================================================
+E1 [MANUAL] Subtask asks for an extension that stays inside 20 Aug 11:00.
+   Approver approves.
+   -> granted normally, nothing unusual
+
+E2 [MANUAL] Subtask asks for an extension that lands AFTER 20 Aug 11:00.
+   Approver approves.
+   -> REFUSED. Message names the project "Task A", its date, how far past
+      (example "2h past its project"), and says a subtask cannot be due after
+      the project it belongs to.
+   -> the subtask's deadline must NOT have moved
+   -> the parent's deadline must NOT have moved
+
+E3 [MANUAL] Same request, REJECT it instead
+   -> rejection always works. The cap must never block a rejection.
+
+E4 [MANUAL] After E2, check both tasks in the database or on screen
+   -> neither deadline changed at all (no half-applied state)
+
+E5 [NOT BUILT] Approve-and-move-the-project in one press
+   -> the engine supports it (send raiseParent), but there is no button yet.
+      Do not report as a bug.
+
+E6 [AUTO] After a raise, the child no longer breaches
+E7 [AUTO] A SECOND extension is judged against the RAISED parent date
+E8 [AUTO] Child and parent move in ONE batch, child never written first
+
+
+=====================================================
+SECTION M - MEETING TIME ON A PARENT
+=====================================================
+M1 [MANUAL] Hold a meeting on the PARENT task. Both sides join, stay 10 minutes,
+   both leave.
+   -> parent deadline moves out by 10 minutes
+   -> parent's time budget/window also grows by 10 minutes
+
+M2 [MANUAL] Same meeting, check Rakesh's other live tasks
+   -> every live task he holds moved by the same 10 minutes (this is the
+      existing rule, unchanged)
+
+M3 [MANUAL] Only ONE side joins the room
+   -> nothing is credited, no deadline moves, but the meeting is still recorded
+
+M4 [AUTO] A project is a credit target like any other task
+M5 [AUTO] A project and its subtask both receive the same credit
+M6 [AUTO] Nothing in the credit path excludes a container
+
+
+=====================================================
+SECTION R - REWORK DEADLINE (settled earlier today)
+=====================================================
+R1 [MANUAL] Task due 12:21. Submit at 12:17 (on time). Send back for rework
+   at 12:19.
+   -> new deadline 12:23 (12:19 + the 4 minutes that were left)
+   -> the "Changes requested" panel names the NEW deadline and the old one
+
+R2 [MANUAL] Submit LATE (after the deadline), then send back for rework
+   -> deadline does NOT move
+   -> task stays overdue, timer stays BLOCKED
+   -> the panel explains why and says to ask for more time
+
+R3 [MANUAL] Submit on time, but reviewer waits a long time before sending back
+   -> still granted. Time is measured from YOUR submission, not from the review.
+
+R4 [MANUAL] Submit exactly at the deadline
+   -> 0 minutes left, so the rework is due immediately. This is correct
+      behaviour, not a bug. Tell me if you want a minimum window.
+
+R5 [AUTO] Office hours: 4 minutes left at 17:58 with a 18:00 close finishes
+   the next working morning, not at 18:02
+
+R6 [AUTO] Friday evening rework lands on Monday
+
+
+=====================================================
+AUTOMATED TEST RESULTS - 16 Aug 2026
+=====================================================
+Frontend:  2885 pass / 0 fail   (plus 9 pre-existing path-alias failures in
+                                 lib/repositories/legacy/, unrelated - they
+                                 fail with this work stashed too)
+Backend:     54 pass / 0 fail
+Typecheck: clean
+
+New automated tests written for this work:
+  subtaskDeadlineCap.test.ts        11   the cap rule
+  parentDeadlineCap.test.js         16   the extension cap (engine)
+  containerMeetingCredit.test.ts     5   meeting time reaches a project
+  projectContainerAffordances.test  18   what a parent shows and hides
+  reworkDeadline.test.ts            17   the rework window
+  budgetNegotiation.test.js          3   acceptance-time cap

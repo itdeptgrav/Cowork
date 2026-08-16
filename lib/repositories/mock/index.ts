@@ -343,6 +343,8 @@ import {
 } from "@/lib/rules/tasks/breakMode";
 import { selfReorderRefusal } from "@/lib/auth/priority";
 import { completionState, subtaskRefusal } from "@/lib/rules/tasks/completion";
+import { requirementCoverage } from "@/lib/rules/tasks/requirementCoverage";
+import { reworkDeadline } from "@/lib/rules/tasks/reworkDeadline";
 import { can, scopeFor, type PermissionContext } from "@/lib/auth/can";
 import {
   assignableIds,
@@ -498,6 +500,10 @@ function guard() {
 }
 
 /** A small store catalogue, so search returns real hits in the demo. */
+/* The prototype's HR-holiday switch. Module-level, like the store itself, so
+   every screen reads one truth and a toggle flips the whole app at once. */
+let hrHolidaySyncMock = true;
+
 export class MockRepository implements CoworkRepository {
   /* ── Identity ───────────────────────────────────────────────────────────── */
 
@@ -1273,6 +1279,8 @@ export class MockRepository implements CoworkRepository {
           resolvedMode === "fixed" ? (input.fixedDueAt ?? null) : null,
         /* Derived from a queue, which a freshly created task has not joined. */
         operationalDueAt: null,
+        clockStartsAt: null,
+        clockStartsAtSource: null,
         state: resolvedMode === "fixed" ? "agreed" : "unset",
         assignorWindowRejection: null,
       },
@@ -1531,6 +1539,8 @@ export class MockRepository implements CoworkRepository {
       dueAt: newDueAt,
       officialDueAt: newDueAt,
       operationalDueAt: null,
+      clockStartsAt: null,
+      clockStartsAtSource: null,
       state: newDueAt === null ? "unset" : "agreed",
     };
     task.updatedAt = nowIso();
@@ -3522,11 +3532,23 @@ export class MockRepository implements CoworkRepository {
     return delay(getStore().extensions.filter((e) => e.taskId === taskId));
   }
 
+  async getHrHolidaySync(): Promise<boolean> {
+    return hrHolidaySyncMock;
+  }
+
+  async setHrHolidaySync(enabled: boolean): Promise<ActionResult<boolean>> {
+    hrHolidaySyncMock = enabled;
+    return delay(ok(enabled));
+  }
+
   async listBlockedDates(
     _employeeId: EmployeeId,
     from: string,
     to: string,
   ): Promise<BlockedDate[]> {
+    /* Same gate as the live repository: OFF fetches nothing HR-shaped, so the
+       prototype demonstrates the disconnect the same way production does. */
+    if (!hrHolidaySyncMock) return delay([]);
     const out: BlockedDate[] = [];
     const start = new Date(`${from}T00:00:00Z`);
     const end = new Date(`${to}T00:00:00Z`);
@@ -5272,6 +5294,29 @@ export class MockRepository implements CoworkRepository {
     } else if (input.decision === "rework") {
       const occurrence =
         s.reworkRequests.filter((r) => r.taskId === t.id).length + 1;
+      /**
+       * **A fresh working hour, and only if the submission beat its deadline.**
+       * OWNER DECISION, 16 Aug 2026 — see `reworkDeadline`.
+       *
+       * `#regrantDeadline` handed back the leftover, which gave whoever
+       * finished earliest the smallest window to redo the work. It is left in
+       * place for the REJECTION branch below, which the owner's rule does not
+       * cover and which is not being changed alongside it.
+       *
+       * The calendar walk is wall-clock here for the same reason
+       * `previewDeadlineFeasibility` uses wall-clock: no calendar in the
+       * fixture, and predictable dates are the point of a prototype. The
+       * DECISION — on-time gate, fresh window rather than leftover — is the
+       * shared rule, so the two repositories cannot disagree about who earns a
+       * reset.
+       */
+      const regrant = reworkDeadline({
+        submittedAtMs: Date.parse(sub.submittedAt),
+        currentDueAtMs: t.deadline.dueAt ? Date.parse(t.deadline.dueAt) : null,
+        reworkAtMs: now().getTime(),
+        addWorkingSecs: (fromMs, secs) =>
+          new Date(fromMs + secs * 1000).toISOString(),
+      });
       const rw: ReworkRequest = {
         id: nextId("rw"),
         reviewId: review.id,
@@ -5281,12 +5326,16 @@ export class MockRepository implements CoworkRepository {
         requestedById: actingId(),
         requestedAt: nowIso(),
         previousDueAt: t.deadline.dueAt,
-        newDueAt: this.#regrantDeadline(t, sub),
+        /* Unchanged when the rule held it — the row still records what the
+           deadline IS, so a reader is never shown a date that was not granted. */
+        newDueAt: regrant.moved ? regrant.newDueAtIso : t.deadline.dueAt,
         deductionWaived: Boolean(input.waiveDeduction),
         waiverReason: input.waiveDeduction ? input.reason.trim() : null,
       };
       s.reworkRequests.push(rw);
-      t.deadline.dueAt = rw.newDueAt;
+      /* Only on a grant. A late submission keeps its date and stays overdue,
+         which is what leaves its timer blocked until somebody grants time. */
+      if (regrant.moved) t.deadline.dueAt = regrant.newDueAtIso;
       t.status = "in_progress";
       t.updatedAt = nowIso();
       this.#event(t.id, "rework_requested", `Rework #${occurrence} requested`);
@@ -5328,7 +5377,13 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(review));
   }
 
-  /** Re-grants the time the person had left when they submitted. */
+  /**
+   * Re-grants the time the person had left when they submitted.
+   *
+   * **Rework no longer uses this** — it grants a fresh working hour instead,
+   * per `reworkDeadline`. This remains the REJECTION path's rule, which the
+   * owner's decision did not cover.
+   */
   #regrantDeadline(t: Task, sub: TaskSubmission): string {
     if (!t.deadline.dueAt)
       return new Date(now().getTime() + 86_400_000).toISOString();
@@ -5591,6 +5646,48 @@ export class MockRepository implements CoworkRepository {
       progress: computeProgress(p, tasks, milestones, s.reworkRequests, now()),
       milestones,
       taskLinks: links,
+      /**
+       * Requirements no subtask took, across the project's broken-down tasks.
+       *
+       * The mock's project is a real entity linking arbitrary tasks rather than
+       * the legacy container-task, so this gathers across the linked tasks
+       * instead of reading one container's `completion`. The RULE is the same
+       * one — `requirementCoverage` over `completionState` — so both
+       * repositories answer this question identically.
+       *
+       * **Only tasks that have actually been broken down count.** A plain task
+       * with acceptance criteria and no subtasks has every requirement
+       * unclaimed, and listing those would report a breakdown gap on work
+       * nobody intended to break down — turning an ordinary checklist into a
+       * card full of warnings.
+       */
+      ...(() => {
+        /* Summed across the project's broken-down tasks — the mock's project
+           links many, where the legacy one IS a single container. The rule is
+           the same either way, so the two repositories cannot disagree about
+           what is covered. */
+        const covers = tasks
+          .map((t) => ({
+            t,
+            children: s.tasks.filter(
+              (c) => c.parentTaskId === t.id && !c.deletedAt,
+            ),
+          }))
+          .filter((x) => x.children.length > 0)
+          .map((x) =>
+            requirementCoverage(
+              completionState(x.t, x.children).requirements,
+            ),
+          );
+        return {
+          unassignedRequirements: covers.flatMap((c) => c.pending),
+          requirementsAssigned: covers.reduce(
+            (n, c) => n + c.assigned.length,
+            0,
+          ),
+          requirementsTotal: covers.reduce((n, c) => n + c.total, 0),
+        };
+      })(),
     };
   }
 
@@ -8794,7 +8891,10 @@ export class MockRepository implements CoworkRepository {
           onTaskId: String(session.taskId),
           receiverId: assigneeId,
           tasksByEmployee: queuesFor(
-            creditsIn(meetingSession, ordinaryWindow(meetingSession)),
+            creditsIn(
+              meetingSession,
+              ordinaryWindow({ ...meetingSession, receiverId: assigneeId }),
+            ),
           ),
           alreadyCredited,
         });

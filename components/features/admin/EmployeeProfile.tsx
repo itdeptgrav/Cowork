@@ -775,7 +775,11 @@ function ActivityPanel({ employeeId }: { employeeId: string }) {
                       <span data-figure className="text-ink">
                         {c.unitCount === 0
                           ? "not measured"
-                          : `${Math.abs(Math.round(c.percentage))}%`}
+                          : c.percentage === null
+                            ? /* Scored nothing yet — the engine said null, and
+                                 `Math.round(null)` would have minted a 0%. */
+                              "—"
+                            : `${Math.abs(Math.round(c.percentage))}%`}
                       </span>
                     </li>
                   ))}

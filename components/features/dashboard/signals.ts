@@ -340,7 +340,7 @@ export const HEALTH_LABEL: Record<Health, string> = {
  * channel was measured.
  */
 function isMeasured(c: {
-  percentage: number;
+  percentage: number | null;
   unitCount: number | null;
   earnedPoints?: number;
   possiblePoints?: number;
@@ -348,13 +348,13 @@ function isMeasured(c: {
   if ((c.unitCount ?? 0) > 0) return true;
   if ((c.possiblePoints ?? 0) > 0) return true;
   if ((c.earnedPoints ?? 0) !== 0) return true;
-  return c.percentage !== 0;
+  return (c.percentage ?? 0) !== 0;
 }
 
 export function scoreInsightShort(
   channels: {
     code: string;
-    percentage: number;
+    percentage: number | null;
     /** Null when the provider reports no count — see `ChannelBreakdown`. */
     unitCount: number | null;
     earnedPoints?: number;
@@ -366,7 +366,14 @@ export function scoreInsightShort(
      yet" over a real score. A channel is measured when it has been SCORED. */
   const measured = channels.filter((c) => isMeasured(c));
   if (!measured.length) return "nothing measured yet";
-  const worst = measured.reduce((w, c) =>
+  /* The worst is chosen among channels the engine actually SCORED. A null
+     percentage is not the lowest figure — it is no figure, and letting it win
+     "worst" would name a channel that has not been judged at all. */
+  const ranked = measured.filter(
+    (c): c is typeof c & { percentage: number } => c.percentage !== null,
+  );
+  if (!ranked.length) return "nothing scored yet";
+  const worst = ranked.reduce((w, c) =>
     c.percentage < w.percentage ? c : w,
   );
   if (worst.percentage < 0) return `${worst.code} is losing points`;
@@ -378,7 +385,7 @@ export function scoreInsight(
   channels: {
     code: string;
     label: string;
-    percentage: number;
+    percentage: number | null;
     unitCount: number | null;
     earnedPoints?: number;
     possiblePoints?: number;
@@ -387,7 +394,14 @@ export function scoreInsight(
   const measured = channels.filter((c) => isMeasured(c));
   if (!measured.length) return "Nothing measured in this period yet.";
 
-  const worst = measured.reduce((w, c) =>
+  /* Same guard as `scoreInsightShort`: a null percentage is no figure, not the
+     lowest one, and must not be named as the channel holding things down. */
+  const ranked = measured.filter(
+    (c): c is typeof c & { percentage: number } => c.percentage !== null,
+  );
+  if (!ranked.length) return "Nothing scored in this period yet.";
+
+  const worst = ranked.reduce((w, c) =>
     c.percentage < w.percentage ? c : w,
   );
   if (worst.percentage < 0)

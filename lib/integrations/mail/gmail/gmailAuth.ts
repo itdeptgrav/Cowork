@@ -157,10 +157,22 @@ export async function exchangeCode(
     }),
   });
   const raw = (await res.json()) as Record<string, unknown>;
-  if (!res.ok)
+  if (!res.ok) {
+    /**
+     * `invalid_grant` is the one a person can fix themselves, and Google's own
+     * `error_description` for it is the useless string "Bad Request". It means
+     * the CODE was spent or expired — a reloaded callback tab, a double
+     * submit, or a consent finished while the server was down. Naming the
+     * action beats echoing Google.
+     */
+    if (raw.error === "invalid_grant")
+      throw new Error(
+        "That sign-in was already used or has expired — reloading an old tab does this. Start again from Settings → Connect Gmail.",
+      );
     throw new Error(
       `Google refused the authorisation: ${String(raw.error_description ?? raw.error ?? res.status)}`,
     );
+  }
   const tokens = toTokens(raw);
   if (!tokens.refreshToken)
     throw new Error(

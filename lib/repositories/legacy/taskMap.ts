@@ -1,5 +1,6 @@
 import type { Employee, Task, TaskStatus, TaskType } from "@/lib/domain";
 import { compositeId } from "./compositeId.ts";
+import { instantOrNull } from "./instantOrNull.ts";
 import { completionState } from "../../rules/tasks/completion.ts";
 import {
   holdersOf,
@@ -266,16 +267,25 @@ export function toTask(legacy: LegacyTask): Task {
          for one task. Null rather than 0 where none was ever set: this field
          feeds "is a window on offer?", where absent and zero differ. */
       currentWindowSecs: resolveTimeBudget(legacy) || null,
-      dueAt: legacy.dueAtMs === null ? null : new Date(legacy.dueAtMs).toISOString(),
+      dueAt: instantOrNull(legacy.dueAtMs),
       /* The scored deadline. Legacy keeps no separate official date, so the
          same value serves both — never a different one, which would make
          scoring disagree with what the assignee was shown. */
-      officialDueAt:
-        legacy.dueAtMs === null ? null : new Date(legacy.dueAtMs).toISOString(),
+      officialDueAt: instantOrNull(legacy.dueAtMs),
       /* Derived, never stored — and not derivable HERE: `toTask` sees one
          document and the chain needs the whole queue. `toTaskView` fills it in
          where a queue was actually fetched. */
       operationalDueAt: null,
+      /* Where the count began, so `dueAt` can show its own arithmetic rather
+         than arriving as a bare date — see `TaskDeadline.clockStartsAt`.
+
+         **Total, not a `=== null` check.** An ABSENT field is `undefined`, not
+         null, and `new Date(undefined).toISOString()` throws `Invalid time
+         value` — which does not fail one line, it fails the whole task
+         mapping, and with it the list the task appears in. A task with no
+         recorded anchor simply does not show the "counted from" line. */
+      clockStartsAt: instantOrNull(legacy.clockStartsAtMs),
+      clockStartsAtSource: legacy.clockStartsAtSource,
       /**
        * The negotiation stage, from the engine's own status.
        *
@@ -647,9 +657,7 @@ export function toTaskView(input: {
           : null,
       assignedAt: "",
       confirmedAt: legacy.confirmedByIds.includes(employeeId) ? "" : null,
-      startedAt: legacy.startedAtMs
-        ? new Date(legacy.startedAtMs).toISOString()
-        : null,
+      startedAt: instantOrNull(legacy.startedAtMs),
       isScoreSubject: true,
     })),
     assignees,

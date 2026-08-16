@@ -17,6 +17,19 @@ import {
   Select,
   Textarea,
 } from "@/components/ui/Primitives";
+import {
+  coverageSummary,
+  duplicateClaimMessage,
+  duplicateClaims,
+  pendingAfter,
+  pendingMessage,
+  requirementCoverage,
+} from "@/lib/rules/tasks/requirementCoverage";
+import {
+  capRefusal,
+  subtaskDeadlineCap,
+} from "@/lib/rules/tasks/subtaskDeadlineCap";
+import { formatDateTime } from "@/lib/utils/format";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import {
@@ -285,7 +298,40 @@ export function NewTaskForm({
     [presetParentTaskId],
   );
   const parent = parentView.data ?? null;
+  /**
+   * How much of the parent is already somebody's, and what is left.
+   *
+   * The picker listed the requirements and said "Also claimed by …" under the
+   * taken ones, which answers the question one row at a time. It never answered
+   * it about the SET — four requirements, two already delegated, which two are
+   * still nobody's — and that is the question being asked while this form is
+   * open. Counting it off the list by eye is what gets a requirement forgotten.
+   *
+   * Nothing here refuses anything. `subtaskRefusal` owns what is forbidden and
+   * is untouched: claiming a requirement a sibling already holds stays legal,
+   * and leaving one for later stays legal. This only makes both visible.
+   */
+  const coverage = requirementCoverage(parent?.completion.requirements ?? []);
+  const duplicates = duplicateClaims(claims, coverage);
+  const stillPending = pendingAfter(claims, coverage);
   const [goalId, setGoalId] = useState("");
+  /**
+   * **A subtask may not be due after its project.** OWNER DECISION, 16 Aug 2026.
+   *
+   * Checked here as a courtesy and enforced again at acceptance — see
+   * `subtaskDeadlineCap`. Only one of the two shapes can be checked exactly:
+   *
+   *  · **A typed date** (cross-department) is the real deadline, so this is the
+   *    whole answer and the form refuses outright.
+   *  · **A budget** (inside a reporting line) has no date yet — the deadline is
+   *    derived at acceptance from when the assignee first comes online. So the
+   *    queue projection stands in, and the wording says "would". It is a
+   *    warning worth having and not a guarantee, which is why the engine checks
+   *    again with the real date.
+   */
+  const parentDueAtMs = parent?.task.deadline.dueAt
+    ? Date.parse(parent.task.deadline.dueAt)
+    : null;
   /**
    * C2 · the share of the company's goal points this task claims.
    *
@@ -395,6 +441,45 @@ export function NewTaskForm({
   const mode = relationship.deadlineMode;
   const relationCopy = RELATIONSHIP_COPY[relationship.relation];
 
+  /**
+   * The projected finish for a budgeted subtask — see `parentDueAtMs` above.
+   *
+   * `taskId` is deliberately omitted: this task does not exist yet, and the
+   * projection is a question about the ASSIGNEE's queue, not about a document.
+   * Skipped entirely unless it can answer anything — no parent deadline to
+   * breach, no assignee to schedule against, or a typed date already known.
+   */
+  const projection = useQuery(
+    (r) =>
+      isSubtask && mode === "timer" && parentDueAtMs !== null && assignees[0]
+        ? r.previewDeadlineFeasibility({
+            employeeId: assignees[0],
+            estimatedWorkSeconds: budgetSecs,
+            committedDeadline: parent?.task.deadline.dueAt ?? null,
+          })
+        : Promise.resolve(null),
+    [isSubtask, mode, parentDueAtMs, assignees[0], budgetSecs],
+  );
+
+  /* The instant being judged: the typed date where there is one, otherwise the
+     projected finish. Null when neither is known, which the cap reads as "no
+     evidence of a breach" rather than as a breach. */
+  const proposedDueAtMs = !isSubtask
+    ? null
+    : mode === "fixed"
+      ? Date.parse(fixedDueAt)
+      : projection.data?.estimatedCompletionTime
+        ? Date.parse(projection.data.estimatedCompletionTime)
+        : null;
+  const capVerdict = subtaskDeadlineCap({ parentDueAtMs, proposedDueAtMs });
+  const capMessage = capRefusal({
+    verdict: capVerdict,
+    parentLabel: parent?.task.deadline.dueAt
+      ? formatDateTime(parent.task.deadline.dueAt)
+      : "",
+    projected: mode !== "fixed",
+  });
+
   /* Which approval this assignment will need, from the same resolver the
      repository routes it with. Shown before anything is saved — legacy created
      the task and let the gate appear afterwards, so the assigner had no idea
@@ -458,6 +543,12 @@ export function NewTaskForm({
           description: description || null,
           assigneeIds: effectiveAssignees,
           satisfiesRequirementIds: claims,
+          /* The child's OWN acceptance criteria, which this call left out — so
+             criteria typed into the subtask form were dropped while the same
+             field on an ordinary task saved. Two different things: `claims`
+             names the PARENT's requirements this child closes; these are what
+             has to be true before the child itself is done. */
+          requirements,
           fixedDueAt:
             mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
           senderWindowSecs: mode === "timer" ? budgetSecs : null,
@@ -615,6 +706,12 @@ export function NewTaskForm({
                 At least one. Choose several if this subtask closes more than
                 one.
               </p>
+              {/* The state of the whole set, before a single row is read. */}
+              {parent && coverage.total > 0 && (
+                <p className="mt-2 text-[11px] text-ink-muted">
+                  {coverageSummary(coverage)}
+                </p>
+              )}
               {parentView.isLoading ? (
                 <p className="mt-3 text-sm text-ink-faint">
                   Loading the parent task…
@@ -674,10 +771,19 @@ export function NewTaskForm({
                                 until this subtask completes.
                               </span>
                             )}
-                            {r.claimants.length > 0 && (
+                            {/* Assigned or pending, said on EVERY row. Only the
+                                taken ones carried a line before, so a pending
+                                requirement was distinguishable only by the
+                                absence of one — which is not something a reader
+                                notices while scanning a list for what is left. */}
+                            {r.claimants.length > 0 ? (
                               <span className="mt-0.5 block text-[11px] text-ink-faint">
-                                Also claimed by{" "}
+                                Already assigned to{" "}
                                 {r.claimants.map((c) => c.title).join(", ")}
+                              </span>
+                            ) : (
+                              <span className="mt-0.5 block text-[11px] text-[var(--state-rework-ink)]">
+                                Pending — no subtask has taken this yet
                               </span>
                             )}
                           </span>
@@ -686,6 +792,25 @@ export function NewTaskForm({
                     );
                   })}
                 </ul>
+              )}
+
+              {/* **Taking one somebody already has.** Allowed, and worth
+                  spelling out: the requirement then waits on both subtasks, so
+                  a chooser who assumed they were covering a gap has instead
+                  tied their own completion to another team's. */}
+              {duplicates.length > 0 && (
+                <p className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
+                  {duplicateClaimMessage(duplicates)}
+                </p>
+              )}
+
+              {/* **What nobody will be doing.** Shown while the form is open,
+                  which is the only moment it can still be acted on — afterwards
+                  the gap is a thing to discover rather than a thing to fix. */}
+              {parent && coverage.total > 0 && stillPending.length > 0 && (
+                <p className="mt-2 rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-relaxed text-ink-muted">
+                  {pendingMessage(stillPending)}
+                </p>
               )}
             </Panel>
           )}
@@ -1276,6 +1401,17 @@ export function NewTaskForm({
                       />
                     </Field>
                   )}
+
+                  {/* **The project's deadline is a ceiling.** Shown against the
+                      control that breaches it, so the fix is in reach — and the
+                      Create button is disabled while it stands, because the
+                      owner asked for the invalid deadline to be prevented and
+                      not merely flagged. */}
+                  {capMessage && (
+                    <p className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-relaxed text-[var(--state-rework-ink)]">
+                      {capMessage}
+                    </p>
+                  )}
                 </>
               )}
           </Panel>
@@ -1446,6 +1582,11 @@ export function NewTaskForm({
                 !title.trim() ||
                 hasForbidden ||
                 needsAssignee ||
+                /* A subtask due after its project is prevented, not merely
+                   warned about — see `subtaskDeadlineCap`. The engine refuses
+                   it too; this saves the round trip and keeps the reason beside
+                   the control that caused it. */
+                !capVerdict.allowed ||
                 (GRAMMAR_GATE_BLOCKS_CREATION && !grammarChecked) ||
                 /**
                  * A goal must claim a share, and it must fit the pool.

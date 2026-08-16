@@ -160,15 +160,46 @@ test("an ORDINARY meeting still needs the person who assigned the work", () => {
      standard task without the person who gave it to them earns nothing, and
      that is the rule the two-people window replaces only for work that crossed
      a department boundary. */
-  const s = room([
+  const s = { ...room([
     [RECEIVER, 0, 30],
     [PRIYA, 0, 30],
-  ]);
+  ]), receiverId: RECEIVER };
   assert.equal(secsOf(ordinaryWindow(s)), 0, "the assigner never came");
 
-  const withSender = room([
+  const withSender = { ...room([
     [SENDER, 0, 30],
     [RECEIVER, 0, 30],
-  ]);
+  ]), receiverId: RECEIVER };
   assert.equal(mins(secsOf(ordinaryWindow(withSender))), 30);
+});
+
+test("an ordinary room needs BOTH sides — neither earns alone", () => {
+  /**
+   * OWNER DECISION, 15 Aug 2026. The window was the counterparty's presence
+   * alone, so the anti-cheat only closed one door: an assignee sitting by
+   * themselves earned nothing, but the ASSIGNER sitting by themselves credited
+   * their own minutes to their own tasks. Now neither can.
+   *
+   * The waiting cost is accepted: a sender who arrives early and waits earns
+   * nothing for the wait, exactly as the receiver already did.
+   */
+  const senderAlone = { ...room([[SENDER, 0, 30]]), receiverId: RECEIVER };
+  assert.equal(secsOf(ordinaryWindow(senderAlone)), 0, "the sender minted time alone");
+
+  const receiverAlone = { ...room([[RECEIVER, 0, 30]]), receiverId: RECEIVER };
+  assert.equal(secsOf(ordinaryWindow(receiverAlone)), 0);
+
+  /* Only the overlap counts: sender 0–30, receiver 10–30 → 20 minutes. */
+  const overlap = { ...room([
+    [SENDER, 0, 30],
+    [RECEIVER, 10, 30],
+  ]), receiverId: RECEIVER };
+  assert.equal(mins(secsOf(ordinaryWindow(overlap))), 20);
+
+  /* A third person cannot substitute for the receiver. */
+  const senderAndBystander = { ...room([
+    [SENDER, 0, 30],
+    [PRIYA, 0, 30],
+  ]), receiverId: RECEIVER };
+  assert.equal(secsOf(ordinaryWindow(senderAndBystander)), 0);
 });

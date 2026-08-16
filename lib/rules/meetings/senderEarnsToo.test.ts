@@ -139,10 +139,18 @@ test("a task two attendees share moves ONCE, by the larger loss", () => {
     ...task("SHARED", SENDER),
     assigneeIds: [SENDER, MANAGER],
   };
-  const r = meet([span(SENDER, 0, 30), span(MANAGER, 20, 30)], {
-    [SENDER]: [shared],
-    [MANAGER]: [shared],
-  });
+  /* The RECEIVER is in the room because since 15 Aug an ordinary meeting needs
+     both sides present for the clock to run at all — without them the window
+     is empty and there is no credit to de-duplicate. The subject of this test
+     is the sharing, not the window. */
+  const r = meet(
+    [span(SENDER, 0, 30), span(RECEIVER, 0, 30), span(MANAGER, 20, 30)],
+    {
+      [SENDER]: [shared],
+      [MANAGER]: [shared],
+      [RECEIVER]: [task("R-1", RECEIVER)],
+    },
+  );
 
   const forShared = r.updates.filter((u) => u.taskId === "SHARED");
   assert.equal(forShared.length, 1, "one deadline moved twice for one meeting");

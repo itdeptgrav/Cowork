@@ -54,10 +54,12 @@ import type { TaskView } from "@/lib/repositories";
  *
  * ## What the person needs to know before they press Join
  *
- * That the clock only runs while the person who ASSIGNED the work is in the
- * room. Without that sentence, an assignee who joins alone and waits will
- * reasonably expect the time to count, and will be wrong. It is said on the
- * panel rather than left for them to discover from a total that did not move.
+ * That the clock only runs while BOTH sides are in the room — the person who
+ * assigned the work and the person doing it. Without that sentence, somebody
+ * who joins alone and waits will reasonably expect the time to count, and will
+ * be wrong. It is said on the panel rather than left for them to discover from
+ * a total that did not move. (Cross-department work keeps its own rule: any two
+ * people, because the sender of record is often not in the call.)
  *
  * ## The room is rendered here, not linked to
  *
@@ -390,7 +392,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
     ? null
     : crossDept
       ? liveCrossDeptFigures({ ...liveSession, receiverId }, viewerId, now)
-      : liveMeetingFigures(liveSession, now);
+      : liveMeetingFigures({ ...liveSession, receiverId }, now);
 
   /* Why the clock is or is not running, in the terms of whichever rule applies.
      One sentence rather than a shared vague one: "nothing is being added" with
@@ -402,8 +404,8 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
         ? "There is more than one of you in the room, so this is being added to your deadlines."
         : "Nothing is being added to yours — it counts only while you are in the room with somebody else."
       : live.counting
-        ? `${counterpartyName} is in the room, so this is being added to your deadlines.`
-        : `Nothing is being added — ${counterpartyName} is not in the room. Time only counts while they are.`;
+        ? `${counterpartyName} and ${receiverName} are both in the room, so this is being added to your deadlines.`
+        : `Nothing is being added — it counts only while ${counterpartyName} and ${receiverName} are both in the room.`;
 
   return (
     <Panel label="Meetings">
@@ -422,7 +424,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                 to be present for the clock to run at all. */}
             {crossDept
               ? "This work came from another department, so the clock runs whenever two people are in the room together — it does not matter which two."
-              : `The clock runs only while ${counterpartyName} is in the room.`}{" "}
+              : `The clock runs only while ${counterpartyName} and ${receiverName} are both in the room — neither side earns time alone.`}{" "}
             Everyone in the room is credited their own time in it, on their own
             tasks.
           </p>
@@ -678,7 +680,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                     about, and a hover they never perform cannot answer them. */}
                 {s.endedAt !== null && s.creditedSecs === 0 && (
                   <span className="shrink-0 text-[10.5px] text-ink-faint">
-                    {counterpartyName.split(" ")[0]} was not in the room
+                    Both sides were not in the room together
                   </span>
                 )}
                 {/* **Who was in the room, by name.**
@@ -705,7 +707,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                   }}
                   title={
                     s.creditedSecs === 0
-                      ? "Nothing was credited — the person who assigned the work was not in the room."
+                      ? "Nothing was credited — the two sides of this work were not in the room at the same time."
                       : "Credited to your deadlines."
                   }
                 >

@@ -18,6 +18,7 @@ import {
 } from "@/components/features/attachments/Attachments";
 import { SubmittedFiles } from "./SubmittedFiles";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { viewerHolds } from "@/lib/rules/tasks/viewerHolds";
 import { formatDateTime } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
 
@@ -57,7 +58,17 @@ export function SubmissionPanel({
     r.submitCompletion({ taskId, message, attachmentIds: files }),
   );
 
-  const isAssignee = view.assignments.some((a) => a.employeeId === me);
+  /**
+   * **Three answers, not two — see `viewerHolds`.**
+   *
+   * This was `assignments.some((a) => a.employeeId === me)`, and `me` is null
+   * while the viewer is being read and again if that read failed. `some` on
+   * null is false, so the panel told the assignee "Only an assignee can submit
+   * this task" about a person it had not yet identified. T051's assignee hit
+   * exactly that: the task was correct and the viewer had simply not resolved.
+   */
+  const holds = viewerHolds({ viewerId: me, assignments: view.assignments });
+  const isAssignee = holds === "yes";
   const canSubmit = isAssignee && view.task.status === "in_progress";
   const latest = submissions.data?.[0];
 
@@ -221,13 +232,19 @@ export function SubmissionPanel({
       ) : (
         <Panel>
           <p className="text-sm text-ink-muted">
-            {!isAssignee
-              ? "Only an assignee can submit this task."
-              : view.task.status === "in_review"
-                ? "This task is with a reviewer."
-                : view.task.status === "completed"
-                  ? "This task is complete."
-                  : "Start the task before submitting it."}
+            {/* A refusal is a statement about somebody's permissions. While the
+                viewer is unresolved there is nothing true to say, so it says
+                what is actually happening instead of accusing them of not
+                holding their own task. */}
+            {holds === "unknown"
+              ? "Working out who you are…"
+              : holds === "no"
+                ? "Only an assignee can submit this task."
+                : view.task.status === "in_review"
+                  ? "This task is with a reviewer."
+                  : view.task.status === "completed"
+                    ? "This task is complete."
+                    : "Start the task before submitting it."}
           </p>
         </Panel>
       )}

@@ -266,6 +266,7 @@ import {
 import { OFFICE_POLICY_CHANGED, type AuditEntry } from "../../rules/settings/audit.ts";
 import {
   AUDIT_SECTION,
+  HR_HOLIDAY_SYNC_CHANGED,
   PROVISIONAL_RULES_CHANGED,
   SCORING_CHANGED,
   TASK_RULES_CHANGED,
@@ -308,6 +309,8 @@ import {
   isActiveWorkload,
   normalizePriorityQueue,
 } from "../../rules/tasks/priorityQueue.ts";
+import { completionState } from "../../rules/tasks/completion.ts";
+import { requirementCoverage } from "../../rules/tasks/requirementCoverage.ts";
 import {
   maySettings,
   mayReadAuditLog,
@@ -2592,6 +2595,8 @@ export class LegacyRepository {
     description?: string | null;
     assigneeIds: EmployeeId[];
     satisfiesRequirementIds?: string[];
+    /** The child's OWN acceptance criteria — see `CreateSubtaskInput`. */
+    requirements?: string[];
     estimatedEffortSecs?: number | null;
     fixedDueAt?: string | null;
     senderWindowSecs?: number | null;
@@ -2613,6 +2618,11 @@ export class LegacyRepository {
           satisfiesRequirementIds: [
             ...new Set(input.satisfiesRequirementIds ?? []),
           ],
+          /* The child's OWN criteria. Left out of this call until 16 Aug 2026:
+             the form offered the field, the engine stored it, and only the wire
+             between them dropped it — so a subtask created WITH criteria
+             arrived with none and nothing said so. */
+          requirements: input.requirements ?? [],
           hasTimer: !onFixedDate,
           /* `estimatedEffortSecs` is the fallback rather than an equal: the
              sender's window is what the engine binds the child to, and an
@@ -2865,6 +2875,7 @@ export class LegacyRepository {
     decision: "approved" | "rejected",
     waivePenalty: boolean,
     reason?: string,
+    raiseParent?: boolean,
   ): Promise<ActionResult<never>> {
     const taskId = taskIdOfProposal(proposalId);
     if (waivePenalty) {
@@ -2882,6 +2893,10 @@ export class LegacyRepository {
           taskId,
           action: decision === "approved" ? "approve" : "reject",
           newDate: reason && decision === "approved" ? undefined : undefined,
+          /* Carried through so an approver who has agreed to move the project
+             can take that in the same press — see `reviewDeadlineExtension`.
+             Absent by default, so the cap refuses first and asks. */
+          raiseParent,
         }),
       () => taskId,
     );
@@ -3720,6 +3735,12 @@ export class LegacyRepository {
     from: string,
     to: string,
   ): Promise<BlockedDate[]> {
+    /* The HR disconnect switch (Administration → Settings → Provisional
+       rules). OFF means NOTHING is fetched from the HR side — no holidays, no
+       leave — and every day reads as available. The deadline walk, the person
+       calendar and the feasibility preview all pass through this method, so
+       one gate covers every consumer. */
+    if (!(await this.getHrHolidaySync())) return [];
     const token = await this.#token();
     /* `from` and `to` pass straight through — the live route takes a range and
        400s without both. It previously took a start plus a day COUNT, on a path
@@ -3812,8 +3833,63 @@ export class LegacyRepository {
     console.info("[timerdbg] ▶ startTimer invoked", { id }, new Error().stack);
     const { getDoc, setDoc } = await import("firebase/firestore");
 
-    const view = await this.#readTaskView(id);
-    const taskTitle = view?.task.title ?? id;
+    /**
+     * **Three independent reads, asked at once.**
+     *
+     * These ran one after another — the task view, then presence, then the
+     * active timer, then the session document — four sequential round trips
+     * before a single byte was written. On a slow connection that stacked past
+     * `TIMER_WRITE_TIMEOUT_MS` and the press came back with "That did not reach
+     * the server in time", which is the reported lag.
+     *
+     * None of them depends on another's answer, so nothing is reordered by
+     * asking together: the refusal below still reads presence, the task-switch
+     * pause below still reads the active timer, and both still run in the same
+     * order against the same values. Only the waiting is shared.
+     *
+     * The session document is fetched here too, for the same reason — it is
+     * keyed by ids already in hand.
+     */
+    const [taskDoc, dutyMode, active, existing] = await Promise.all([
+      /**
+       * **The raw document, not the whole view.**
+       *
+       * This was `#readTaskView`, which builds a complete `TaskView` — the
+       * queue chain, the office calendar, blocked dates, every sibling task —
+       * and it was awaited before a single byte of the session was written.
+       * All of that to read one string: `taskTitle`, a label written beside
+       * the session and passed to a fire-and-forget log. It decides nothing.
+       *
+       * On a slow connection the view alone could outlast
+       * `TIMER_WRITE_TIMEOUT_MS`, so pressing Resume returned "That did not
+       * reach the server in time" while the clock stayed off. One document
+       * read cannot.
+       */
+      this.#taskDoc(id),
+      this.getDutyMode(),
+      this.getActiveTimer(),
+      /**
+       * **The session document joins the batch instead of following it.**
+       *
+       * Reading it was a whole extra round trip AFTER these had all answered,
+       * for one number — the banked `totalSeconds` to resume from. Nothing in
+       * it depends on the three above, and the reference it needs costs no
+       * network at all: `#timerSession` only builds a path.
+       *
+       * That trip is why starting felt slower than pausing. `pauseTimer` is one
+       * read and one write, with the work commit and the event log deliberately
+       * un-awaited behind it; starting was three reads, then a fourth read,
+       * then the write. Now both are one round of reads and one write.
+       *
+       * Safe to read before the task-switch pause below: that pause writes the
+       * session of a DIFFERENT task — the branch requires `active.taskId !== id`
+       * — so it cannot change the document being read here.
+       */
+      this.#timerSession(employeeId, id).then((r) => getDoc(r)),
+    ]);
+    const ref = existing.ref;
+    const taskTitle =
+      (typeof taskDoc?.title === "string" && taskDoc.title.trim()) || id;
 
     /* **The offline restriction, held at the write.**
      *
@@ -3828,17 +3904,16 @@ export class LegacyRepository {
      * and refusing it would strand a running session for as long as somebody
      * stayed away. Legacy's auto-pause makes this rare rather than impossible —
      * a session started before a laptop slept is still running when it wakes. */
-    const refusal = presenceWriteRefusal(await this.getDutyMode());
+    const refusal = presenceWriteRefusal(dutyMode);
     if (refusal) return refusal;
 
-    /* Pause whatever else is running. */
-    const active = await this.getActiveTimer();
+    /* Pause whatever else is running. Still sequential and deliberately so —
+       one timer at a time is the rule, and starting this one before the other
+       has stopped would leave two running. */
     if (active && active.taskId !== id) {
       await this.pauseTimer(active.taskId, null, "switched_task" as never);
     }
 
-    const ref = await this.#timerSession(employeeId, id);
-    const existing = await getDoc(ref);
     const accumulated = existing.exists()
       ? Number((existing.data() as { totalSeconds?: number }).totalSeconds) || 0
       : 0;
@@ -4479,6 +4554,42 @@ export class LegacyRepository {
     });
   }
 
+  async getHrHolidaySync(): Promise<boolean> {
+    const doc = await this.#settingsDoc("cowork_settings", "integrations");
+    /* Absent means ON — the standing behaviour. Only an explicit false
+       disconnects, so shipping this setting changes nothing by itself. */
+    return doc?.hrHolidaySync !== false;
+  }
+
+  /**
+   * The HR disconnect switch. `listBlockedDates` reads it on every call, so
+   * flipping it takes effect on the next deadline computation — no reload.
+   *
+   * **Audited like every other setting**, through the shared writer. It was
+   * briefly its own `setDoc`, which meant the one switch that can empty the
+   * company's holiday calendar was the only settings change leaving no trace of
+   * who flipped it. `affectsDeadlines` marks the row, so it surfaces in the log
+   * beside the office-hours edits it behaves like.
+   */
+  async setHrHolidaySync(enabled: boolean): Promise<ActionResult<boolean>> {
+    const result = await this.#writeSettingsSection<{ hrHolidaySync: boolean }>({
+      section: AUDIT_SECTION["provisional-rules"],
+      type: HR_HOLIDAY_SYNC_CHANGED,
+      refusal: null,
+      before: { hrHolidaySync: await this.getHrHolidaySync().catch(() => true) },
+      after: { hrHolidaySync: enabled },
+      path: ["cowork_settings", "integrations"],
+      body: (value) => ({
+        hrHolidaySync: value.hrHolidaySync,
+        updatedAt: Date.now(),
+        updatedBy: String(this.#ctx.employeeId),
+      }),
+    });
+    return result.ok
+      ? { ok: true, data: result.data.hrHolidaySync }
+      : result;
+  }
+
   async getRuleOverrides(): Promise<RuleOverrides> {
     return readRuleOverrides(
       await this.#settingsDoc("cowork_settings", "rule_overrides"),
@@ -5108,7 +5219,7 @@ export class LegacyRepository {
     if (lostMs <= 0) return 0;
     let shifted = 0;
     try {
-      const { addDoc, collection, query, where, getDocs, doc, updateDoc } = await import(
+      const { addDoc, collection, query, where, getDocs, doc, writeBatch } = await import(
         "firebase/firestore"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
@@ -5150,6 +5261,29 @@ export class LegacyRepository {
         .sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id))[0]?.id;
       const lostSecs = Math.round(lostMs / 1000);
 
+      /**
+       * **One write for the whole queue, not one per task.**
+       *
+       * Every task's `updateDoc` was awaited inside the loop, so a person with
+       * six live tasks paid six sequential round trips while the button read
+       * "Approving…" — the reported delay. A batch is one.
+       *
+       * It is also atomic, which matters more than the speed: a compensation
+       * that failed half way through left some deadlines shifted and the rest
+       * not, with no record of which. Either every deadline moves or none does.
+       *
+       * Nothing about WHAT is written changed — same fields, same arithmetic,
+       * same receipts filed afterwards. Firestore's limit is 500 operations and
+       * this is one person's live queue, so a single batch always suffices.
+       */
+      const batch = writeBatch(db);
+      /* What to record once the batch lands — see the note at the push below. */
+      const receipts: {
+        taskId: string;
+        budget: { previousSecs: number; newSecs: number } | null;
+        date: { previousIso: string; newDueIso: string } | null;
+      }[] = [];
+
       for (const d of active) {
         const data = d.data() as Record<string, unknown>;
 
@@ -5182,7 +5316,7 @@ export class LegacyRepository {
 
         if (newDueIso === null && newWindowSecs === null) continue;
 
-        await updateDoc(doc(db, "cowork_tasks", d.id), {
+        batch.update(doc(db, "cowork_tasks", d.id), {
           ...(newDueIso !== null && field !== null ? { [field]: newDueIso } : {}),
           /* Both fields legacy reads a window from, so the queue and the Details
              panel cannot end up describing different amounts of work. */
@@ -5196,36 +5330,63 @@ export class LegacyRepository {
         });
         shifted += 1;
 
-        /* The budget's receipt, filed BEFORE the date check below.
-           It used to sit after it, so a task whose date is derived from the
-           queue rather than stored — which is most of them — grew its window
-           and recorded nothing at all. That is exactly how a nine-hour task
-           came to read 10:26:53 with no account of the difference. */
-        if (newWindowSecs !== null) {
+        /* **Receipts are DESCRIBED here and filed after the commit.**
+           They used to be written inside the loop, immediately after each
+           task's own `await updateDoc` — so a receipt only ever existed for a
+           write that had already landed. The batch moves the landing to the
+           end, so filing here would record shifts that a failed commit never
+           made. Collected instead, and written once the writes are real. */
+        receipts.push({
+          taskId: d.id,
+          /* The budget's receipt is kept separate from the date's, and filed
+             even where no date moved: a task whose date is derived from the
+             queue rather than stored — which is most of them — grew its window
+             and recorded nothing at all. That is exactly how a nine-hour task
+             came to read 10:26:53 with no account of the difference. */
+          budget:
+            newWindowSecs !== null
+              ? { previousSecs: currentWindow, newSecs: newWindowSecs }
+              : null,
+          /* Nothing to file where no date moved — the deadline receipt names a
+             previous and a proposed deadline, and there was neither. */
+          date:
+            previousIso !== null && newDueIso !== null
+              ? { previousIso, newDueIso }
+              : null,
+        });
+      }
+
+      /* **Sent once, here.** The loop only queued the updates. Committing
+         inside it would have reintroduced the round trip per task that this
+         batch exists to remove.
+
+         Skipped when nothing qualified, because an empty batch is still a
+         network call — and `shifted` is 0 in exactly that case. */
+      if (shifted > 0) await batch.commit();
+
+      /* Only now, with the deadline writes committed. Still not awaited into
+         the caller's critical path and still never allowed to fail the shift —
+         the deadline write is the record, this is the account of it. */
+      for (const r of receipts) {
+        if (r.budget) {
           void this.#fileBudgetCredit({
-            taskId: d.id,
-            previousSecs: currentWindow,
-            newSecs: newWindowSecs,
+            taskId: r.taskId,
+            previousSecs: r.budget.previousSecs,
+            newSecs: r.budget.newSecs,
             reason,
             forEmployeeId: employeeId,
           });
         }
-
-        /* Nothing to file where no date moved — the receipt below names a
-           previous and a proposed deadline, and there was neither. */
-        if (previousIso === null || newDueIso === null) continue;
-
+        if (!r.date) continue;
         /* The receipt: previous → reason → current, in the same collection the
            approved extensions land in, so one history answers "why is this due
-           later" whatever moved it. Not awaited into the caller's critical path
-           and never allowed to fail the shift — the deadline write above is the
-           record, this is the account of it. */
+           later" whatever moved it. */
         void addDoc(collection(db, "cowork_task_deadline_extensions"), {
-          taskId: d.id,
+          taskId: r.taskId,
           requestedBy: employeeId,
           approverId: null,
-          previousDeadline: previousIso,
-          proposedDeadline: newDueIso,
+          previousDeadline: r.date.previousIso,
+          proposedDeadline: r.date.newDueIso,
           reason,
           status: "approved",
           createdAt: new Date().toISOString(),
@@ -5240,6 +5401,10 @@ export class LegacyRepository {
       }
     } catch (error) {
       console.error("[duty] deadline compensation failed:", error);
+      /* The batch is all-or-nothing, so a failure here means NO deadline moved.
+         Reporting a count for writes that did not land would tell the caller —
+         and the person reading "3 deadlines shifted" — something untrue. */
+      return 0;
     }
     return shifted;
   }
@@ -8399,7 +8564,11 @@ export class LegacyRepository {
          only the window they are measured against differs. */
       const earners = hostTask.isCrossDepartment
         ? creditsInWindow(meetingSession)
-        : creditsIn(meetingSession, ordinaryWindow(meetingSession));
+        : creditsIn(
+            meetingSession,
+            /* Both sides, so neither can mint time alone — see ordinaryWindow. */
+            ordinaryWindow({ ...meetingSession, receiverId: assigneeId }),
+          );
 
       const queues = new Map<string, Awaited<ReturnType<typeof queueOf>>>();
       for (const c of earners) {
@@ -9069,6 +9238,46 @@ export class LegacyRepository {
         linkedById: t.createdById,
         milestoneId: null,
       })),
+      /**
+       * The part of the contract nobody picked up.
+       *
+       * Read off `container.completion`, which already resolved each
+       * requirement against the live children — so this agrees with the
+       * Completion requirements panel by construction rather than by a second
+       * calculation that could drift from it.
+       *
+       * A gap here is invisible in every other figure on the card: the missing
+       * work has no task, so it is in no count and no percentage. Completion
+       * can read 100% with a requirement still nobody's.
+       */
+      /**
+       * **Computed from the CHILDREN, not from `container.completion`.**
+       *
+       * That was the bug: a list row's completion state is built from the task
+       * document alone — a list maps each row independently and no row knows
+       * its own children — so every requirement came back with zero claimants
+       * and the card reported ALL of them as unclaimed. T047 showed "6
+       * requirements have no subtask yet" while its subtask was claiming three
+       * of them, and the three it named first were exactly the claimed ones.
+       *
+       * `children` is already in hand here and is the whole point of this
+       * function, so the state is derived once against the real subtasks. That
+       * also makes this card agree with the task page by construction, since
+       * both now answer from `completionState` over the same children.
+       */
+      ...(() => {
+        const coverage = requirementCoverage(
+          completionState(
+            container.task,
+            live.map((c) => c.task),
+          ).requirements,
+        );
+        return {
+          unassignedRequirements: coverage.pending,
+          requirementsAssigned: coverage.assigned.length,
+          requirementsTotal: coverage.total,
+        };
+      })(),
     };
   }
 
@@ -10756,7 +10965,12 @@ export class LegacyRepository {
     const { collection, getDocs } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
-    let running: { taskId: string; startedAtMs: number; totalSecs: number } | null = null;
+    let running: {
+      taskId: string;
+      startedAtMs: number;
+      totalSecs: number;
+      title: string;
+    } | null = null;
     try {
       const snap = await getDocs(
         collection(legacyDb(), "cowork_task_timers", employeeId, "sessions"),
@@ -10775,6 +10989,14 @@ export class LegacyRepository {
             taskId: d.id,
             startedAtMs: startedAtRealMs,
             totalSecs: accumulatedSecs,
+            /* Written beside the session by `startTimer`, so it is already in
+               this snapshot. A session written before the field existed falls
+               back to the id — a real handle on the task, not an invented
+               name. */
+            title:
+              typeof data.taskTitle === "string" && data.taskTitle.trim()
+                ? data.taskTitle.trim()
+                : "",
           };
         }
       });
@@ -10783,12 +11005,33 @@ export class LegacyRepository {
       return null;
     }
     if (!running) return null;
-    const session = running as { taskId: string; startedAtMs: number; totalSecs: number };
+    const session = running as {
+      taskId: string;
+      startedAtMs: number;
+      totalSecs: number;
+      title: string;
+    };
 
-    /* The title comes from the task list the repository already holds, so this
-       costs no extra request. Unknown rather than invented if absent. */
-    const tasks = await this.listTasks({ scope: "all" }).catch(() => null);
-    const match = tasks?.items.find((v) => v.task.id === session.taskId);
+    /**
+     * **The title comes off the session document, which is already in hand.**
+     *
+     * It used to come from `listTasks({ scope: "all" })` — every task this
+     * viewer may see, fetched to fill one display string. The comment beside it
+     * claimed it "costs no extra request"; it cost the largest one in the
+     * repository.
+     *
+     * That mattered far beyond this method. `startTimer` awaits
+     * `getActiveTimer()` to find out what else is running, so EVERY press of
+     * Play or Resume waited on the whole task list. `Promise.all` waits for its
+     * slowest member, so parallelising the reads around it did not help — this
+     * was still the floor, and on a slow connection it outlasted
+     * `TIMER_WRITE_TIMEOUT_MS` and returned "That did not reach the server in
+     * time" with the clock still off.
+     *
+     * The same mistake as the `#readTaskView` call removed from `startTimer`,
+     * one level deeper: an expensive fetch paying for a label that decides
+     * nothing.
+     */
 
     return {
       organisationId: LEGACY_ORGANISATION_ID,
@@ -10798,7 +11041,7 @@ export class LegacyRepository {
       accumulatedSecs: session.totalSecs,
       startedAt: new Date(session.startedAtMs).toISOString(),
       startedAtRealMs: session.startedAtMs,
-      taskTitle: match?.task.title ?? "",
+      taskTitle: session.title,
       loggedSecs: session.totalSecs,
     };
   }

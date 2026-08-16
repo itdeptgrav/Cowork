@@ -161,6 +161,66 @@ export function ProjectSlab({
           ))}
         </div>
 
+        {/**
+         * **Requirements nobody took.**
+         *
+         * Placed here, directly above the button into the project, because it
+         * is the one thing on this card that asks for an action rather than
+         * reporting a number — and the action is "open this and break the rest
+         * out". Above the bars it would compete with the measurements; below
+         * the CTA it would be read after the reader had already left.
+         *
+         * It is invisible in every figure above it. `progressPercent` counts
+         * TASKS, and an unclaimed requirement has no task, so a project can
+         * show completion 100% and on-time 100% with a piece of its own
+         * contract still nobody's — which is exactly the card in the report:
+         * one job, on track, and requirements left behind it.
+         *
+         * Rendered only when there is something to say, so a healthy project
+         * looks exactly as it did.
+         */}
+        {view.unassignedRequirements.length > 0 && (
+          <div className="mt-4 rounded-inset bg-white/[0.045] px-3 py-2.5">
+            {/* BOTH halves. The unclaimed count alone does not say whether it
+                is three out of four or three out of thirty, and the reader's
+                next question is always how much of the job IS covered. */}
+            <p className="text-[11px] text-slab-ink-muted">
+              <span data-figure className="text-slab-ink">
+                {view.requirementsAssigned}
+              </span>{" "}
+              of{" "}
+              <span data-figure className="text-slab-ink">
+                {view.requirementsTotal}
+              </span>{" "}
+              requirements assigned ·{" "}
+              <span data-figure className="text-slab-ink">
+                {view.unassignedRequirements.length}
+              </span>{" "}
+              with no subtask yet
+            </p>
+            {/* Named, not just counted. A count says something was forgotten;
+                the names say what, which is what makes it actionable from
+                here. Capped at three so one neglected project cannot push the
+                rest of the card off the screen — the remainder is stated
+                rather than silently dropped. */}
+            <ul className="mt-1.5 space-y-0.5">
+              {view.unassignedRequirements.slice(0, 3).map((r) => (
+                <li
+                  key={r.id}
+                  className="truncate text-[11px] text-slab-ink-muted"
+                >
+                  · {r.text}
+                </li>
+              ))}
+            </ul>
+            {view.unassignedRequirements.length > 3 && (
+              <p className="mt-1 text-[11px] text-slab-ink-muted">
+                and {view.unassignedRequirements.length - 3} more
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Full-width CTA, as in the reference. */}
         <Link
           href={`/tasks/projects/${p.id}`}
