@@ -276,6 +276,13 @@ export function toTask(legacy: LegacyTask): Task {
          document and the chain needs the whole queue. `toTaskView` fills it in
          where a queue was actually fetched. */
       operationalDueAt: null,
+      /* Where the count began, so `dueAt` can show its own arithmetic rather
+         than arriving as a bare date — see `TaskDeadline.clockStartsAt`. */
+      clockStartsAt:
+        legacy.clockStartsAtMs === null
+          ? null
+          : new Date(legacy.clockStartsAtMs).toISOString(),
+      clockStartsAtSource: legacy.clockStartsAtSource,
       /**
        * The negotiation stage, from the engine's own status.
        *

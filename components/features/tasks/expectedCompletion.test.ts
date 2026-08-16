@@ -178,23 +178,42 @@ test("it measures the person who will do the work", () => {
   assert.match(src, /view\.pendingAssignees\[0\]\?\.id \?\? view\.assignees\[0\]\?\.id/);
 });
 
-test("only the operational date is shown", () => {
-  /* The assignor's requested deadline was removed on purpose: two dates side by
-     side invited the reader to plan against the wrong one. It still constrains
-     — the completion line is measured against it and the warning fires on it —
-     it is simply not presented as a date to work to. */
+test("the facts panel shows ONE date, and it is the real deadline", () => {
+  /**
+   * **REVERSED — OWNER DECISION, 16 Aug 2026.**
+   *
+   * This used to assert the opposite: that the facts panel shows only
+   * `Expected completion` and never the deadline, on the reasoning that two
+   * dates side by side would make people plan against the wrong one.
+   *
+   * In practice it produced two dates on two SCREENS, which is worse — side by
+   * side they could at least be labelled. The projection was the only date on
+   * the panel, so people read it as their deadline; the real one lived on the
+   * Deadline tab and disagreed. A rework that moved the deadline 11:18 → 12:17
+   * left this panel unchanged and was reported as the rework rule failing, when
+   * the engine had written the new date correctly.
+   *
+   * So the panel now reads `task.deadline.dueAt` — the identical field
+   * `DeadlinePanel` renders as "Working deadline". One source, one date.
+   */
   const detail = code("components/features/tasks/TaskDetail.tsx");
-  assert.match(detail, /<Fact label="Expected completion">/);
+  assert.match(detail, /<Fact label="Deadline">/);
+  assert.match(detail, /formatDateTime\(v\.task\.deadline\.dueAt\)/);
+  /* And NOT the projection beside it, which is the whole point of the
+     reversal — a second date on the same panel is what was being avoided. */
   assert.equal(
-    /<Fact label="Requested deadline">/.test(detail),
+    /<Fact label="Expected completion">/.test(detail),
     false,
-    "the assignor deadline is displayed again",
+    "the projection is back on the facts panel — that is two dates again",
   );
-  assert.equal(
-    /<Fact label="Deadline">/.test(detail),
-    false,
-    "an unlabelled deadline remains",
-  );
+});
+
+test("the projection itself is kept, not deleted", () => {
+  /* It is no longer what the facts panel calls the answer; it is still a
+     correct queue projection and still carries the feasibility warning, so
+     removing the component would take a working calculation with it. */
+  const src = code("components/features/tasks/ExpectedCompletion.tsx");
+  assert.match(src, /export function ExpectedCompletion/);
 });
 
 test("the commitment still drives the verdict", () => {
@@ -202,7 +221,31 @@ test("the commitment still drives the verdict", () => {
      would turn a feasibility warning into no warning at all. */
   const src = code("components/features/tasks/ExpectedCompletion.tsx");
   assert.match(src, /committedDeadline: requested/);
-  assert.match(src, /Misses the requested deadline by/);
+  /* The buffer is still computed; only its red half is withheld. */
+  assert.match(src, /const buffer =/);
+});
+
+test("the red miss warning is withheld — OWNER DECISION, 15 Aug 2026", () => {
+  /**
+   * It compared against the STORED deadline, and a stored deadline can
+   * currently be wrong: T031 held 09:40 on the morning of a task created at
+   * 19:49, so the panel announced a ten-hour miss that never happened. An
+   * alarm that is accurate about its input and wrong about the world teaches
+   * people to ignore alarms.
+   *
+   * Pinned rather than simply deleted so the absence stays a DECISION. When
+   * stored deadlines can be trusted, deleting `buffer >= 0 &&` restores it —
+   * and this test is what will fail and say so.
+   */
+  const src = code("components/features/tasks/ExpectedCompletion.tsx");
+  assert.equal(
+    /Misses the requested deadline by/.test(src),
+    false,
+    "the red miss line is back — was that deliberate?",
+  );
+  assert.match(src, /buffer !== null && buffer >= 0 &&/);
+  /* The reassuring half survives: finishing early is still said out loud. */
+  assert.match(src, /Finishes/);
 });
 
 test("the list column says which date it is showing", () => {

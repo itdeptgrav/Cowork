@@ -153,7 +153,16 @@ test("6 · a person can hold only one running timer", () => {
   const at = src.indexOf("async startTimer(");
   const body = src.slice(at, src.indexOf("async pauseTimer(", at));
   assert.ok(body.length > 0, "startTimer slice anchor drifted");
-  assert.match(body, /const active = await this\.getActiveTimer\(\)/);
+  /* Read in the parallel batch now — the three checks are independent and
+     were four sequential round trips before a byte was written, which is what
+     made a press time out. The RULE below is what matters and is unchanged:
+     whatever else is running is paused before this one starts. */
+  assert.match(body, /this\.getActiveTimer\(\),/);
+  assert.match(
+    body,
+    /if \(active && active\.taskId !== id\) \{\s*\n\s*await this\.pauseTimer\(/,
+    "a second timer can now run alongside the first",
+  );
   assert.match(body, /if \(active && active\.taskId !== id\)/);
 });
 
@@ -201,7 +210,10 @@ test("9 · an offline person cannot open a timer at all", () => {
   const src = code(LEGACY);
   const at = src.indexOf("async startTimer(");
   const body = src.slice(at, src.indexOf("async pauseTimer(", at));
-  assert.match(body, /presenceWriteRefusal\(await this\.getDutyMode\(\)\)/);
+  /* The mode is read in the parallel batch and the refusal still consumes it
+     before any write — the ordering assertion below is the one that matters. */
+  assert.match(body, /this\.getDutyMode\(\),/);
+  assert.match(body, /presenceWriteRefusal\(dutyMode\)/);
   assert.ok(
     body.indexOf("presenceWriteRefusal") < body.indexOf("await setDoc("),
     "presence is checked before the timer document is written",

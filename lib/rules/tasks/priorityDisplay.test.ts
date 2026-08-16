@@ -10,6 +10,7 @@ import {
   rankTitle,
   formatRankDisplay,
 } from "./priorityDisplay.ts";
+import { displayPriority } from "./priority.ts";
 import type { TaskView } from "../../repositories/types.ts";
 
 /**
@@ -228,4 +229,107 @@ test("the two can be told apart at a glance in the same list", () => {
     formatRankDisplay(waiting),
     "two different sequences render identically — the reported bug",
   );
+});
+
+/* ── The holder's own provisional position ────────────────────────────────── */
+
+test("a holder's not-yet-accepted task is labelled 'to accept', not a bare P1", () => {
+  /**
+   * **Reported 16 Aug 2026: "both tasks show P1".**
+   *
+   * They were two different sequences and both were genuinely first in their
+   * own — T046 accepted and running at ACTIVE position 1, T048 handed over but
+   * not yet accepted at PROVISIONAL position 1. Only the label could tell them
+   * apart, and the label had lost the distinction.
+   *
+   * `provisional_position` was returned nowhere but the NON-holder branch, so
+   * the one person it matters to — the assignee looking at their own dashboard
+   * — got `queue_position` and therefore a bare `P1`. Fixed for everyone
+   * except the holder.
+   */
+  const mine = displayPriority({
+    status: "assigned",
+    viewerId: "GR0108",
+    /* Already resolved by `getPersonPriority`, and carrying no scale — which is
+       why the branch has to recover it from the holder's own two positions. */
+    myRank: 1,
+    myStoredRank: 2,
+    holders: [
+      {
+        employeeId: "GR0108",
+        rank: 2,
+        queuePosition: null,
+        provisionalPosition: 1,
+      },
+    ],
+  });
+  assert.equal(mine.scale, "provisional_position");
+  assert.equal(mine.isMine, true);
+  assert.equal(
+    formatRankDisplay({
+      rank: mine.rank,
+      isMine: mine.isMine,
+      isHistoric: mine.isHistoric,
+      isProvisional: mine.scale === "provisional_position",
+    }),
+    "P1 to accept",
+  );
+});
+
+test("a holder's accepted task keeps its live queue position", () => {
+  /* The other half of the same screen — this one must stay a bare P1, or the
+     fix would have moved the problem rather than solved it. */
+  const mine = displayPriority({
+    status: "in_progress",
+    viewerId: "GR0108",
+    myRank: 1,
+    myStoredRank: 1,
+    holders: [
+      {
+        employeeId: "GR0108",
+        rank: 1,
+        queuePosition: 1,
+        provisionalPosition: null,
+      },
+    ],
+  });
+  assert.equal(mine.scale, "queue_position");
+  assert.equal(
+    formatRankDisplay({
+      rank: mine.rank,
+      isMine: mine.isMine,
+      isHistoric: mine.isHistoric,
+      isProvisional: false,
+    }),
+    "P1",
+  );
+});
+
+test("a stored rank with no queue read is still called a stored rank", () => {
+  /* No positions were fetched, so the number is the stored one and must not
+     claim to be a queue position. */
+  const mine = displayPriority({
+    status: "assigned",
+    viewerId: "GR0108",
+    myRank: 4,
+    myStoredRank: 4,
+    holders: [
+      { employeeId: "GR0108", rank: 4, queuePosition: null, provisionalPosition: null },
+    ],
+  });
+  assert.equal(mine.scale, "stored_rank");
+});
+
+test("a closed task reports the stored rank whatever positions are passed", () => {
+  const mine = displayPriority({
+    status: "completed",
+    viewerId: "GR0108",
+    myRank: null,
+    myStoredRank: 3,
+    holders: [
+      { employeeId: "GR0108", rank: 3, queuePosition: 1, provisionalPosition: 1 },
+    ],
+  });
+  assert.equal(mine.scale, "stored_rank");
+  assert.equal(mine.isHistoric, true);
 });

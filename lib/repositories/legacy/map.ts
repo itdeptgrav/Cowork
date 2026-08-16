@@ -247,8 +247,14 @@ export function toScoreOverview(
     const possible = component.max ?? 0;
     /* The engine's own percentage. NEVER earned/possible: `net` arrives already
        normalised, and recomputing it produced C1 at 200% against the old app's
-       80%. Zero only when the engine reported nothing. */
-    const percentage = component.percentage ?? 0;
+       80%.
+
+       **Null stays null.** This was `?? 0`, and the engine answers `net: null`
+       for a channel with nothing completed in the period — so a person with no
+       approved task yet read "0%" beside real ledger points, a confident claim
+       the engine never made. The channel that genuinely scored zero still says
+       0%; the one that was never scored says "—". */
+    const percentage = component.percentage ?? null;
 
     return {
       id: meta.id,
@@ -262,7 +268,9 @@ export function toScoreOverview(
          so instead of contradicting the percentage beside it. */
       unitCount: null,
       direction: meta.direction,
-      extent: clampPercent(percentage),
+      /* An unscored channel draws no bar. Zero extent and null percentage are
+         different facts and both are shown: the empty track, and the dash. */
+      extent: clampPercent(percentage ?? 0),
       caption: component.max === null ? "Maximum not reported" : "",
       hasProvisionalRules: false,
     };

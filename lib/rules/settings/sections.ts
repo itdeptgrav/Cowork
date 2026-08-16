@@ -91,6 +91,15 @@ export const TASK_RULES_CHANGED = "TASK_RULES_CHANGED";
 export const SCORING_CHANGED = "SCORING_CHANGED";
 export const WORKFLOW_ROUTING_CHANGED = "WORKFLOW_ROUTING_CHANGED";
 export const PROVISIONAL_RULES_CHANGED = "PROVISIONAL_RULES_CHANGED";
+/**
+ * The HR holiday connection, opened or closed.
+ *
+ * Its own event rather than a provisional-rule row: this one switch decides
+ * whether the company's holidays reach the deadline chain at all, and somebody
+ * asking "why did every deadline shift" needs to find it without reading a
+ * page of unrelated placeholder values.
+ */
+export const HR_HOLIDAY_SYNC_CHANGED = "HR_HOLIDAY_SYNC_CHANGED";
 
 export const SETTINGS_SECTIONS: SettingsSection[] = [
   {

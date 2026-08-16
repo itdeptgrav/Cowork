@@ -156,14 +156,46 @@ export async function fetchCertificates(
 ): Promise<Record<string, string>> {
   if (cache && cache.expiresAtMs > nowMs) return cache.keys;
 
-  const response = await fetchImpl(CERT_URL, { cache: "no-store" });
+  /**
+   * **A THROWN fetch is the same outage as a failed one — and used to log
+   * everybody out.**
+   *
+   * The bad-status branch below already serves stale keys rather than locking
+   * people out over one failed fetch. A rejected fetch — a network blip, a DNS
+   * hiccup, a timeout — never reached it: the rejection escaped this function,
+   * `readSessionState` in `proxy.ts` caught it, answered `"none"`, and the
+   * proxy redirected a perfectly valid session to the sign-in form. Random,
+   * unexplained sign-outs, with a good key cache sitting unused two lines away.
+   *
+   * Google's keys rotate on the order of days and the cached copy carries its
+   * own expiry, so serving it through a momentary outage verifies signatures
+   * against exactly the keys that were valid a moment ago. Nothing is accepted
+   * unsigned: with no cache at all there is no way to verify anything, and the
+   * throw below is then the honest answer.
+   */
+  let response: Response;
+  try {
+    response = await fetchImpl(CERT_URL, { cache: "no-store" });
+  } catch (error) {
+    if (cache) return cache.keys;
+    throw error;
+  }
+
   if (!response.ok) {
     /* Serve stale rather than locking everybody out over one failed fetch. */
     if (cache) return cache.keys;
     throw new Error(`Could not fetch Google's signing keys (${response.status}).`);
   }
 
-  const keys = (await response.json()) as Record<string, string>;
+  let keys: Record<string, string>;
+  try {
+    keys = (await response.json()) as Record<string, string>;
+  } catch (error) {
+    /* A truncated or non-JSON body is an outage wearing a 200. Same policy. */
+    if (cache) return cache.keys;
+    throw error;
+  }
+
   cache = { keys, expiresAtMs: nowMs + maxAgeMs(response.headers.get("cache-control")) };
   return keys;
 }

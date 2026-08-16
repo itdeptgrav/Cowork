@@ -75,21 +75,27 @@ test("a team lead's task is reviewed by that lead alone", () => {
   assert.deepEqual(stagesOf("tl_final"), ["creator"]);
 });
 
-test("a forwarded or nested CEO task goes to the lead first, then the CEO", () => {
-  /* `:1144` — the `!parentTaskId && !forwardedBy` condition is what separates
-     one stage from two. */
+test("two stages are never DERIVED — the assigner's approval is final", () => {
+  /**
+   * **REVERSED — OWNER DECISION, 16 Aug 2026.**
+   *
+   * These cases used to resolve to `tl_then_ceo`: an assigner whose role
+   * string read "employee" got a two-stage chain, so their approval credited
+   * nothing while a "tl" assigner's identical approval completed the task.
+   * Reported as "point not credited on a completed task" — T053, approved by
+   * its assigner at 15:13 and scored null, because the assigner's stored role
+   * was "employee". Role strings no longer decide anything here.
+   */
   assert.equal(
     readReviewFlow({ rootCreatedByRole: "ceo", parentTaskId: "t-1" }),
-    "tl_then_ceo",
+    "tl_final",
   );
   assert.equal(
     readReviewFlow({ rootCreatedByRole: "ceo", forwardedBy: "GR0045" }),
-    "tl_then_ceo",
+    "tl_final",
   );
-  assert.deepEqual(stagesOf("tl_then_ceo"), [
-    "assignee_manager",
-    "chief_executive",
-  ]);
+  assert.equal(readReviewFlow({}), "tl_final");
+  assert.equal(readReviewFlow({ rootCreatedByRole: "employee" }), "tl_final");
 });
 
 test("assignedByRole stands in when rootCreatedByRole is absent", () => {
@@ -97,20 +103,28 @@ test("assignedByRole stands in when rootCreatedByRole is absent", () => {
 });
 
 test("the older boolean flags are still honoured", () => {
-  /* Tasks created before `rootCreatedByRole` existed carry these instead. */
+  /* Tasks created before `rootCreatedByRole` existed carry these instead —
+     and the forwarded-CEO case now lands one stage like everything else. */
   assert.equal(readReviewFlow({ createdByTl: true }), "tl_final");
   assert.equal(readReviewFlow({ createdByCeo: true }), "ceo_direct");
   assert.equal(
     readReviewFlow({ createdByCeo: true, forwardedBy: "x" }),
-    "tl_then_ceo",
+    "tl_final",
   );
 });
 
-test("an unknown shape falls back to the two-stage flow, not to one", () => {
-  /* Legacy calls this its "safe default". Two stages asks for more scrutiny
-     than one, so guessing withholds an approval rather than granting one. */
-  assert.equal(readReviewFlow({}), "tl_then_ceo");
-  assert.equal(readReviewFlow({ rootCreatedByRole: "employee" }), "tl_then_ceo");
+test("a submission stamped under the old rule still renders its two stages", () => {
+  /* The STORED value wins, and that is what keeps history honest: a July task
+     really did go lead-then-CEO, and its review record must keep saying so.
+     Only the derivation stopped producing it. */
+  assert.equal(
+    readReviewFlow({ reviewFlow: "tl_then_ceo", rootCreatedByRole: "employee" }),
+    "tl_then_ceo",
+  );
+  assert.deepEqual(stagesOf("tl_then_ceo"), [
+    "assignee_manager",
+    "chief_executive",
+  ]);
 });
 
 /* ── Stage progression ────────────────────────────────────────────────────── */

@@ -28,6 +28,27 @@ import type { TaskView } from "@/lib/repositories";
 import type { ReviewDecision } from "@/lib/domain";
 
 /**
+ * **Rejection is not offered — OWNER DECISION, 16 Aug 2026.**
+ *
+ * A hidden button, deliberately, and NOT a removed capability. Everything
+ * behind it is untouched and still works: `reviewSubmission` accepts
+ * `"rejected"`, the repository writes it, the engine records it, the
+ * `decision === "rejected"` branch below still renders its provisional-deduction
+ * note, and `Rejection` records already on tasks still read back. The only
+ * change is that this panel stops offering the choice.
+ *
+ * Kept as a flag rather than deleted code because the owner asked for the
+ * button to be hidden, not for the decision to be abolished — and a rule that
+ * exists in the engine but nowhere in the source of the screen is one nobody
+ * can find again. Flip this to `true` to restore it; nothing else needs
+ * touching, including the column count below.
+ *
+ * `decision` initialises to `"approved"`, so hiding this strands no state: the
+ * panel can never sit on a decision it offers no way to reach.
+ */
+const OFFER_REJECTION = false;
+
+/**
  * Review: approve, rework or reject.
  *
  * The score consequence of each choice is stated before the reviewer commits,
@@ -195,7 +216,63 @@ export function ReviewPanel({
         <Panel>
           <h2 className="text-sm font-medium text-ink">Your decision</h2>
 
-          <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          {/**
+           * **What approving this closes on the project.**
+           *
+           * A subtask exists to answer one or more of its parent's
+           * requirements, and the reviewer could not see which. The panel showed
+           * only the task's OWN requirements — the tickable ones under "Which
+           * requirements need changes?" — so somebody approving a subtask was
+           * closing work on a project the screen never mentioned.
+           *
+           * This block states the CONSEQUENCE of approving. It carries no
+           * checkboxes because approving is not a correction — but the same
+           * requirements ARE tickable under "Which requirements need changes?"
+           * when the decision is rework, since "you have not satisfied 44" is a
+           * legitimate reason to send work back. Owner decision, 16 Aug 2026.
+           *
+           * The assignee's own view says the same thing in
+           * `ResponsibilityPanel`; this is the reviewer's half of it.
+           */}
+          {view.parent && view.parent.claimedRequirements.length > 0 && (
+            <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3.5 py-3">
+              <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+                Part of {view.parent.title}
+              </p>
+              <p className="mt-1 text-sm text-ink">
+                Approving this satisfies{" "}
+                <span data-figure>
+                  {view.parent.claimedRequirements.length}
+                </span>{" "}
+                {view.parent.claimedRequirements.length === 1
+                  ? "requirement"
+                  : "requirements"}{" "}
+                on the project:
+              </p>
+              <ul className="mt-1.5 space-y-1">
+                {view.parent.claimedRequirements.map((r) => (
+                  <li key={r.id} className="text-[13px] text-ink-muted">
+                    · {r.text}
+                    {/* Whether this task alone answers it. A requirement shared
+                        with other subtasks does NOT close on this approval, and
+                        a reviewer who assumed it did would think the project
+                        further along than it is. */}
+                    {!r.isSoleClaimant && (
+                      <span className="text-ink-faint">
+                        {" "}
+                        — shared with other subtasks, so it closes only when all
+                        of them do
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div
+            className={`mt-3 grid gap-2 ${OFFER_REJECTION ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
+          >
             <Choice
               id="approved"
               active={decision === "approved"}
@@ -205,28 +282,41 @@ export function ReviewPanel({
               impact="No deduction"
               tone="positive"
             />
+            {/* `body` changed with the rule on 16 Aug 2026 — see
+                `reworkDeadline`. It still read "Time left at submission is
+                re-granted", which is the rule that was replaced: copy restating
+                a rule is a second place that rule lives, and this one was
+                telling reviewers they handed back the leftover while the engine
+                granted a fresh hour. */}
             <Choice
               id="rework"
               active={decision === "rework"}
               onClick={() => setDecision("rework")}
               title="Rework"
-              body="Back to in progress. Time left at submission is re-granted."
+              body="Back to in progress. Gets back the time it had left at submission, if it was handed in on time."
               impact={`−${REWORK_DEDUCTION} per occurrence`}
               tone="rework"
               confirmed
             />
-            <Choice
-              id="rejected"
-              active={decision === "rejected"}
-              onClick={() => setDecision("rejected")}
-              title="Reject"
-              body="Records an adverse review. Resubmission stays possible."
-              impact={`−${rejectionRule.value} placeholder`}
-              tone="overdue"
-            />
+            {OFFER_REJECTION && (
+              <Choice
+                id="rejected"
+                active={decision === "rejected"}
+                onClick={() => setDecision("rejected")}
+                title="Reject"
+                body="Records an adverse review. Resubmission stays possible."
+                impact={`−${rejectionRule.value} placeholder`}
+                tone="overdue"
+              />
+            )}
           </div>
 
-          {decision === "rework" && requirements.length > 0 && (
+          {/* Either kind of requirement makes this worth showing. Gating on the
+              task's OWN alone hid the whole panel from a subtask that has none
+              of its own but answers several of its project's. */}
+          {decision === "rework" &&
+            (requirements.length > 0 ||
+              (view.parent?.claimedRequirements.length ?? 0) > 0) && (
             <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3.5 py-3">
               {/* The task's OWN acceptance criteria, not a second checklist.
                   They were agreed at creation, so pointing at them is more
@@ -260,6 +350,59 @@ export function ReviewPanel({
                   </label>
                 ))}
               </div>
+
+              {/**
+               * **The PROJECT requirements, tickable too.**
+               * OWNER DECISION, 16 Aug 2026.
+               *
+               * They were read-only, on the reasoning that a project
+               * requirement is satisfied by the subtask completing rather than
+               * corrected. The owner's point is better: a subtask exists to
+               * answer them, so "you have not satisfied 44" is exactly the
+               * feedback a reviewer needs — and it was the one thing they could
+               * not say.
+               *
+               * Grouped and labelled rather than merged into the list above,
+               * because the two are not the same kind of thing: one is this
+               * task's own criteria, the other is what the project is waiting
+               * on. Both are legitimate reasons to send work back.
+               *
+               * The engine accepts these as of the same date — see
+               * `claimedParentRequirementTexts`, which resolves the texts from
+               * the PARENT document by the ids this subtask claims. Before that
+               * they were silently dropped from the request, and ticking only
+               * project requirements produced "select at least one" over a
+               * screen where two were plainly selected.
+               */}
+              {view.parent && view.parent.claimedRequirements.length > 0 && (
+                <div className="mt-3 border-t border-hairline pt-2.5">
+                  <p className="text-xs text-ink-faint">
+                    From the project — {view.parent.title}
+                  </p>
+                  <div className="mt-1.5 space-y-1.5">
+                    {view.parent.claimedRequirements.map((r) => (
+                      <label
+                        key={r.id}
+                        className="flex items-start gap-2 text-sm text-ink-muted"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={failed.includes(r.text)}
+                          onChange={(e) =>
+                            setFailed((prev) =>
+                              e.target.checked
+                                ? [...prev, r.text]
+                                : prev.filter((t) => t !== r.text),
+                            )
+                          }
+                          className="mt-0.5 h-3.5 w-3.5 accent-[var(--color-ink)]"
+                        />
+                        <span>{r.text}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              )}
               {failed.length === 0 && (
                 <p className="mt-2 text-xs text-[var(--danger,#c4553d)]">
                   Select at least one completion requirement that needs
@@ -354,8 +497,13 @@ export function ReviewPanel({
               disabled={
                 state.isPending ||
                 !reason.trim() ||
+                /* Widened with the checklist: a subtask with no criteria of its
+                   own but several of its project's now has something to pick,
+                   and the engine requires it. Leaving this on the task's own
+                   count alone would offer a button the engine then refuses. */
                 (decision === "rework" &&
-                  requirements.length > 0 &&
+                  (requirements.length > 0 ||
+                    (view.parent?.claimedRequirements.length ?? 0) > 0) &&
                   failed.length === 0)
               }
               onClick={async () => {

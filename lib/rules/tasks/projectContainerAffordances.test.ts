@@ -45,7 +45,21 @@ function textBeforeTag(source: string, component: string, window = 400): string 
   return source.slice(Math.max(0, at - window), at);
 }
 
-test("every negotiation and acceptance card in the overview tab is gated on !isContainer", () => {
+/**
+ * **REVERSED — OWNER DECISION, 16 Aug 2026.**
+ *
+ * These three tests asserted the opposite: that a container loses its
+ * negotiation cards, its next action, its deadline and its facts. The owner's
+ * model is that a parent is real work that was DIVIDED, not an empty folder —
+ * it keeps the deadline it was given, and that deadline is the cap every
+ * subtask sits under, so it must be visible and negotiable.
+ *
+ * **Exactly one thing is still withheld: the Play/Pause timer.** That one is
+ * unchanged and load-bearing — a Start button on a parent would bank time
+ * against work somebody else is doing on a subtask, counting it twice.
+ */
+
+test("a project keeps every negotiation and acceptance card", () => {
   for (const component of [
     "AssignmentConfirmationCard",
     "ExtensionDecisionCard",
@@ -60,43 +74,85 @@ test("every negotiation and acceptance card in the overview tab is gated on !isC
     "RelationshipNote",
   ]) {
     const before = textBeforeTag(detail, component);
-    assert.ok(
+    assert.equal(
       before.includes("!isContainer"),
-      `<${component}> is rendered without \`!isContainer\` guarding it nearby — a project would offer this action again`,
+      false,
+      `<${component}> is gated on !isContainer again — a project must keep its extension and approval flow`,
     );
   }
 });
 
-test("NextActionCard is gated on !isContainer, not only on whose turn it is", () => {
+test("NextActionCard fires on a project too", () => {
   const before = textBeforeTag(detail, "NextActionCard", 700);
-  assert.ok(
+  assert.equal(
     before.includes("!isContainer"),
-    "NextActionCard must not fire for a container — action.actor alone does not know about projects",
+    false,
+    "NextActionCard is gated on !isContainer again — a project's own move would be hidden",
   );
 });
 
-test("FactsRail receives isContainer and gates Priority, Expected completion, Scored against and Time budget on it", () => {
+test("the timer is the ONE thing a project still loses", () => {
+  /* The whole of the reversal, stated as one assertion: Play/Pause stays
+     gated, and nothing else in the overview is. */
+  assert.match(
+    detail,
+    /\{tab === "overview" && !isContainer && <TimePanel view=\{v\} \/>\}/,
+    "the Play/Pause timer is no longer withheld from a project — time would be banked twice",
+  );
+});
+
+test("a project shows its deadline and still withholds its time budget", () => {
+  /**
+   * The deadline is the cap its subtasks sit under, so it has to be on the
+   * parent's own page — a cap nobody can see is a cap nobody can plan against.
+   *
+   * The time budget stays hidden, per the owner: the figure matters while the
+   * task is ordinary work, and once the work is divided the parent does not
+   * need it. Nothing can be spent against it anyway, because there is no timer.
+   */
   assert.match(
     detail,
     /<FactsRail[\s\S]{0,120}isContainer=\{isContainer\}/,
-    "FactsRail must be told the task is a container — it cannot infer it from `view` alone",
+    "FactsRail must still be told — the time budget and priority gates read it",
   );
   const railStart = detail.indexOf("function FactsRail(");
   assert.ok(railStart > 0, "FactsRail is missing");
-  const railEnd = detail.indexOf("function Fact(", railStart);
-  const rail = detail.slice(railStart, railEnd);
-  for (const label of [
-    '"Priority"',
-    '"Expected completion"',
-    '"Scored against"',
-    '"Time budget"',
-  ]) {
+  const rail = detail.slice(railStart, detail.indexOf("function Fact(", railStart));
+
+  const deadlineAt = rail.indexOf('<Fact label="Deadline"');
+  assert.ok(deadlineAt > 0, "the Deadline fact is missing");
+  assert.equal(
+    rail.slice(Math.max(0, deadlineAt - 400), deadlineAt).includes("!isContainer"),
+    false,
+    "the deadline is hidden on a project again — its subtasks are capped by a date nobody can see",
+  );
+
+  for (const label of ['"Priority"', '"Time budget"']) {
     const at = rail.indexOf(`<Fact label=${label}`);
     assert.ok(at > 0, `Fact label=${label} is missing from FactsRail`);
-    const before = rail.slice(Math.max(0, at - 400), at);
     assert.ok(
-      before.includes("!isContainer") || before.includes("isContainer &&"),
-      `Fact label=${label} is not gated on isContainer — a project's facts rail would show a stale figure`,
+      rail.slice(Math.max(0, at - 400), at).includes("!isContainer"),
+      `Fact label=${label} is no longer withheld from a project`,
+    );
+  }
+});
+
+test("a project keeps Deadline, Submission and Review tabs, but not Reports", () => {
+  /* Reports is the exception: a daily report is written against time a timer
+     measured, and a project has no timer. Its days belong to the subtasks. */
+  const at = detail.indexOf("id: \"reports\"");
+  assert.ok(at > 0, "the Reports tab is gone entirely");
+  assert.ok(
+    detail.slice(Math.max(0, at - 300), at).includes("isContainer"),
+    "Reports is offered on a project — there is no timer behind it to report on",
+  );
+  for (const id of ['id: "deadline"', 'id: "submission"', 'id: "review"']) {
+    const tabAt = detail.indexOf(id);
+    assert.ok(tabAt > 0, `${id} tab is missing`);
+    assert.equal(
+      detail.slice(Math.max(0, tabAt - 200), tabAt).includes("isContainer\n      ? []"),
+      false,
+      `${id} is withheld from a project again`,
     );
   }
 });

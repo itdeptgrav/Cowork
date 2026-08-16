@@ -361,19 +361,29 @@ export function sharedWindow(
 }
 
 /**
- * The stretch an ORDINARY meeting is running: the counterparty's presence.
+ * The stretch an ORDINARY meeting is running: **both sides in the room
+ * together** — OWNER DECISION, 15 Aug 2026.
  *
- * The same shape as `sharedWindow`, one condition weaker. That is the only
- * difference between the two rules — who has to be in the room for the clock to
- * run — and expressing it as a window rather than as two settlements is what
- * lets both credit everybody the same way.
+ * This was the counterparty's presence ALONE, which left the anti-cheat
+ * one-sided: an assignee sitting by themselves earned nothing, but the
+ * assigner sitting by themselves credited their own minutes to their own
+ * tasks. Two sides of one rule, and only one of them closed.
  *
- * The anti-cheat is this function. A room the assignee sits in alone produces
- * an empty window and is worth nothing to anybody, however many other people
- * are in it.
+ * So the window is now the intersection — the same arithmetic `sharedWindow`
+ * states, which is why this delegates to it rather than repeating it. Neither
+ * person can mint time alone, and the cost is the honest one: a sender who
+ * joins early and waits for the receiver earns nothing for the waiting, which
+ * is exactly how the receiver was already treated.
+ *
+ * **Cross-department work is untouched** and keeps `conversationWindow` — any
+ * two people. There the sender of record is often a department head who was
+ * never in the call, and requiring them would empty the window on genuine
+ * meetings; that reasoning is unchanged by this.
  */
-export function ordinaryWindow(session: MeetingSession): Span[] {
-  return presenceOf(session, session.counterpartyId);
+export function ordinaryWindow(
+  session: MeetingSession & { receiverId: string },
+): Span[] {
+  return sharedWindow(session);
 }
 
 /** How long both sides were in the room together. */
@@ -475,7 +485,7 @@ export interface LiveMeetingFigures {
 }
 
 export function liveMeetingFigures(
-  session: MeetingSession & { startedAtMs: number },
+  session: MeetingSession & { startedAtMs: number; receiverId: string },
   nowMs: number,
 ): LiveMeetingFigures {
   /* A clock that has not reached the start yet reads zero rather than negative:
@@ -484,9 +494,17 @@ export function liveMeetingFigures(
   return {
     elapsedSecs: Math.floor(elapsedMs / 1000),
     /* `now` stands in for the close. Anybody still in the room is credited up
-       to this instant, which is precisely what they would get if it ended now. */
-    creditedSecs: creditableSecs({ ...session, endedAtMs: nowMs }),
-    counting: isPresent(session, session.counterpartyId, nowMs),
+       to this instant, which is precisely what they would get if it ended now.
+
+       The BOTH-SIDES window, matching what the settlement will actually pay —
+       a live figure computed from a wider rule than the close would use is a
+       promise the settlement then breaks. */
+    creditedSecs: secsOf(
+      ordinaryWindow({ ...session, endedAtMs: nowMs }),
+    ),
+    counting:
+      isPresent(session, session.counterpartyId, nowMs) &&
+      isPresent(session, session.receiverId, nowMs),
   };
 }
 
@@ -823,15 +841,26 @@ export function settleSession(input: {
   tasksByEmployee: ReadonlyMap<string, readonly SettlementTask[]>;
   alreadyCredited?: readonly string[];
 }): Settlement {
+  /* Both sides in the room together — computed once, because the session's
+     worth and what each person earns must be measured against the SAME
+     stretch. Two readings of "the window" is how a panel comes to print more
+     than anybody was credited. */
+  const window = ordinaryWindow({
+    ...input.session,
+    receiverId: input.receiverId,
+  });
   return {
-    /* The session's own worth stays the WINDOW — the time the counterparty was
-       in the room — not the sum of what everybody earned. Three people in a
-       thirty-minute meeting cost thirty minutes of wall clock, not ninety, and
-       this is the figure the panel prints and the session record keeps. */
-    creditedSecs: creditableSecs(input.session),
+    /* The session's own worth is the WINDOW, not the sum of what everybody
+       earned. Three people in a thirty-minute meeting cost thirty minutes of
+       wall clock, not ninety, and this is the figure the panel prints and the
+       session record keeps. It follows the window rather than the
+       counterparty's presence alone: under the both-sides rule an assigner
+       waiting by themselves earns nothing, so a session cannot be worth
+       minutes that reached nobody. */
+    creditedSecs: secsOf(window),
     updates: settleEveryone({
       session: input.session,
-      window: ordinaryWindow(input.session),
+      window,
       onTaskId: input.onTaskId,
       recordForEmployeeId: input.receiverId,
       tasksByEmployee: input.tasksByEmployee,

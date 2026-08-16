@@ -65,9 +65,13 @@ export interface ChannelPresentation {
 export function pointsReconcile(channel: {
   earnedPoints: number;
   possiblePoints: number;
-  percentage: number;
+  percentage: number | null;
 }): boolean {
   if (!(channel.possiblePoints > 0)) return false;
+  /* No reported figure means nothing to reconcile AGAINST — not a match, and
+     not a mismatch either. False keeps the points off the header, where they
+     would otherwise sit beside a dash inviting the reader to divide. */
+  if (channel.percentage === null) return false;
   const derived = (channel.earnedPoints / channel.possiblePoints) * 100;
   return Math.abs(derived - channel.percentage) <= RECONCILE_TOLERANCE;
 }
@@ -116,10 +120,12 @@ export function presentChannel(
   channel: ChannelBreakdown,
 ): ChannelPresentation {
   const measuredCount = channel.unitCount;
+  /* Null percentage contributes nothing here: `null !== 0` is true, and
+     counting it would mark a genuinely empty channel as scored. */
   const scored =
     channel.possiblePoints > 0 ||
     channel.earnedPoints !== 0 ||
-    channel.percentage !== 0 ||
+    (channel.percentage ?? 0) !== 0 ||
     (measuredCount ?? 0) > 0;
 
   if (!scored) {
@@ -213,7 +219,7 @@ export function hasDataOn(channel: ChannelBreakdown): boolean {
   return (
     channel.possiblePoints > 0 ||
     channel.earnedPoints !== 0 ||
-    channel.percentage !== 0 ||
+    (channel.percentage ?? 0) !== 0 ||
     (channel.unitCount ?? 0) > 0
   );
 }

@@ -303,9 +303,48 @@ export function displayPriority(input: {
        person holding the work, which is the bug this whole area exists to have
        fixed, arrived at from a new direction. */
     if (usable !== null) {
+      /**
+       * **Which sequence this number came from — the holder's own case.**
+       *
+       * This branch could only ever say `stored_rank` or `queue_position`;
+       * `provisional_position` was returned nowhere but the NON-holder branch
+       * below. So the one person it matters to — the assignee, looking at their
+       * own dashboard — had a provisional position labelled as a live queue
+       * position, and `formatRankDisplay` therefore rendered a bare `P1` where
+       * it should have rendered `P1 to accept`.
+       *
+       * Reported as "two tasks both show P1": an accepted task at active
+       * position 1 beside a not-yet-accepted one at provisional position 1.
+       * They are two different sequences and both are genuinely first in their
+       * own — the display was the only thing that could tell them apart, and it
+       * was the display that had lost the distinction. The comment on
+       * `formatRankDisplay` describes this exact report as already fixed; it was
+       * fixed for everyone except the holder.
+       *
+       * `myRank` arrives already resolved by `getPersonPriority` and carries no
+       * scale, so the answer is recovered by asking which of the viewer's own
+       * two positions it actually equals. Provisional is tested FIRST: a task
+       * sits in exactly one of the two sequences — `calculateProvisionalOrder`
+       * enforces the split — so a match there is decisive, and a stored rank
+       * that happens to share the number cannot mislabel it.
+       */
+      const mine = holders.find((h) => h.employeeId === viewerId);
+      const fromQueue =
+        mine?.queuePosition != null && mine.queuePosition === usable;
+      const fromProvisional =
+        !fromQueue &&
+        mine?.provisionalPosition != null &&
+        mine.provisionalPosition === usable;
+
       return {
         rank: usable,
-        scale: historic || usable === myStored ? "stored_rank" : "queue_position",
+        scale: historic
+          ? "stored_rank"
+          : fromProvisional
+            ? "provisional_position"
+            : fromQueue
+              ? "queue_position"
+              : "stored_rank",
         subjectId: viewerId,
         isMine: true,
         isHistoric: historic,

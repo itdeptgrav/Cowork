@@ -394,6 +394,30 @@ export interface TaskView {
       downloadUrl: string;
     }[];
     requestedAt: string | null;
+    /**
+     * Why this rework did NOT reset the deadline, or null when it did.
+     *
+     * Rework normally grants a fresh working hour from the send-back — see
+     * `reworkDeadline`. It does not when the submission missed its deadline,
+     * and that case must be said out loud: the task returns still overdue, an
+     * overdue task refuses to start its timer, and the person is otherwise left
+     * looking at a dead Play button on work they were just asked to redo.
+     *
+     * Null on every entry written before 16 Aug 2026, which is the honest
+     * reading — nothing was withheld from those, because the rule did not exist.
+     */
+    deadlineHeldReason: string | null;
+    /**
+     * The deadline either side of this rework.
+     *
+     * The task page names the deadline nowhere — the facts panel shows Expected
+     * completion, a projection, and withholds the date on purpose. So a rework
+     * that moved the deadline by an hour was invisible, and read as the rule
+     * having failed when the engine had written it correctly. These two are
+     * what let the rework panel say what it did.
+     */
+    previousDeadline: string | null;
+    newDeadline: string | null;
   }[];
   latestSubmission: TaskSubmission | null;
   openProposal: DeadlineProposal | null;
@@ -483,6 +507,31 @@ export interface ProjectView {
   progress: ProjectProgress;
   milestones: ProjectMilestone[];
   taskLinks: ProjectTaskLink[];
+  /**
+   * Container requirements no live subtask has taken.
+   *
+   * A project here IS a broken-down task, so its requirements are the contract
+   * its subtasks were created against — and one nobody claimed is a piece of
+   * the project nobody is doing. That does not show up in any figure beside it:
+   * `progressPercent` counts tasks, and a gap in the breakdown means the task
+   * was never created, so completion can read 100% with work still missing.
+   *
+   * Empty on a healthy project, which is why the card can render it only when
+   * there is something to say. Carried on the view rather than recomputed by
+   * the card, because the card holds no subtasks to compute it from.
+   */
+  unassignedRequirements: { id: string; text: string }[];
+  /**
+   * How many of the project's requirements a subtask has taken, and how many
+   * there are in total.
+   *
+   * Carried beside the unclaimed list because the list alone answers half the
+   * question. "3 requirements have no subtask yet" does not say whether that is
+   * three out of four or three out of thirty, and the reader's next question is
+   * always how much of the job IS covered.
+   */
+  requirementsAssigned: number;
+  requirementsTotal: number;
 }
 
 /* ── Results ──────────────────────────────────────────────────────────────── */
@@ -926,6 +975,15 @@ export interface CoworkRepository {
     decision: "approved" | "rejected",
     waivePenalty: boolean,
     reason?: string,
+    /**
+     * Grant it AND move the project out by the same amount.
+     *
+     * A subtask may not be due after its project. Where a grant would breach
+     * that, the engine refuses with `AFTER_PARENT_DEADLINE` and names this as
+     * the way to take it anyway — so the approver makes ONE decision instead of
+     * being sent to a second task they may not think to open.
+     */
+    raiseParent?: boolean,
   ): Promise<ActionResult<DeadlineExtension | null>>;
   listProposals(taskId: TaskId): Promise<DeadlineProposal[]>;
 
@@ -2785,6 +2843,20 @@ export interface CreateSubtaskInput {
   assigneeIds: EmployeeId[];
   /** At least one, and every id must belong to the parent. */
   satisfiesRequirementIds: string[];
+  /**
+   * The subtask's OWN completion requirements — its acceptance criteria.
+   *
+   * **Not the same thing as `satisfiesRequirementIds`**, and the difference is
+   * the whole reason both exist. Those name the PARENT's requirements this
+   * child closes; these are what has to be true before this child itself is
+   * done, and they belong to whoever is doing it.
+   *
+   * `createSubtask` did not accept them at all, so criteria typed into the
+   * subtask form were silently dropped while the same field on an ordinary task
+   * saved correctly. The form offered them, the engine stored them, and only
+   * this contract did not carry them.
+   */
+  requirements?: string[];
   estimatedEffortSecs?: number | null;
   fixedDueAt?: string | null;
   senderWindowSecs?: number | null;

@@ -2,6 +2,11 @@
 
 import { useState } from "react";
 import { formatStamp } from "@/lib/utils/format";
+import {
+  reworkDeadlineMessage,
+  reworkGrantNote,
+  type ReworkDeadlineHeld,
+} from "@/lib/rules/tasks/reworkDeadline";
 import type { TaskView } from "@/lib/repositories";
 import { EntityAttachments } from "@/components/features/attachments/Attachments";
 
@@ -94,6 +99,71 @@ export function ReworkPanel({ view }: { view: TaskView }) {
               </li>
             ))}
           </ul>
+
+          {/**
+           * **What the rework did to the deadline.**
+           *
+           * Ordinarily nothing is said: the clock was reset to a fresh working
+           * hour and the new date is already on the task, where deadlines
+           * belong.
+           *
+           * The exception is the one that generates the support question. A
+           * submission handed in AFTER its deadline does not earn the reset, so
+           * the task comes back still overdue — and an overdue task refuses to
+           * start its timer. Without this the person is asked to redo the work
+           * and finds the Play button dead, with nothing on screen joining the
+           * two facts. The message names the rule and the way out.
+           */}
+          {latest?.deadlineHeldReason ? (
+            <div className="mt-3 border-t border-[var(--hairline)] pt-3">
+              <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+                Deadline
+              </p>
+              <p className="mt-1 text-[13px] leading-relaxed text-ink-muted">
+                {reworkDeadlineMessage({
+                  moved: false,
+                  reason: latest.deadlineHeldReason as ReworkDeadlineHeld,
+                })}
+              </p>
+            </div>
+          ) : (
+            /**
+             * **The new deadline, named.**
+             *
+             * The facts panel shows Expected completion — a projection of when
+             * the work will finish — and withholds the deadline itself by an
+             * earlier decision, so nowhere on the task said what the date now
+             * was. A rework moved the deadline by a full hour and the screen
+             * looked identical, which was reported as the rule not working when
+             * the engine had written it correctly.
+             *
+             * Both dates, because one alone cannot show that anything changed —
+             * and the change is the whole question a person has when their work
+             * comes back.
+             */
+            latest?.newDeadline &&
+            latest.newDeadline !== latest.previousDeadline && (
+              <div className="mt-3 border-t border-[var(--hairline)] pt-3">
+                <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+                  New deadline
+                </p>
+                <p className="mt-1 text-[13px] leading-relaxed text-ink">
+                  <span data-figure>{formatStamp(latest.newDeadline)}</span>
+                </p>
+                {latest.previousDeadline && (
+                  <p className="mt-0.5 text-[12px] text-ink-faint">
+                    Was <span data-figure>{formatStamp(latest.previousDeadline)}</span>.{" "}
+                    {/* No figure. The window is `previousDeadline − submittedAt`
+                        and this entry does not carry the submission time, so
+                        any number derived here would be a guess — and a wrong
+                        number beside a correct date is worse than no number.
+                        The two dates above already show what changed. */}
+                    {reworkGrantNote(null)}
+                  </p>
+                )}
+              </div>
+            )
+          )}
 
           {latest?.note && (
             <div className="mt-3 border-t border-[var(--hairline)] pt-3">

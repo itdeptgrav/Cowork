@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { checkClaims, decode, maxAgeMs } from "./firebaseToken.ts";
+import {
+  checkClaims,
+  decode,
+  fetchCertificates,
+  maxAgeMs,
+  resetCertificateCache,
+} from "./firebaseToken.ts";
 import { LEGACY_LANDING, archetypeForLegacyRole } from "./roleMap.ts";
 import { FIREBASE_COOKIE_MAX_AGE, readFirebaseCookie } from "./firebaseCookie.ts";
 
@@ -175,4 +181,62 @@ test("the mirror outlives the token it mirrors", () => {
    * `sessionPersists.test.ts`.
    */
   assert.ok(FIREBASE_COOKIE_MAX_AGE > 3600);
+});
+
+/* ── An outage must not sign everybody out ────────────────────────────────── */
+
+test("a THROWN fetch serves the cached keys instead of logging everyone out", async () => {
+  /**
+   * The reported fault: random, unexplained sign-outs. The bad-status branch
+   * already served stale keys, but a REJECTED fetch — network blip, DNS
+   * hiccup, timeout — escaped `fetchCertificates` entirely. `readSessionState`
+   * in `proxy.ts` caught it, answered "none", and redirected a valid session
+   * to the sign-in form with a good key cache sitting unused.
+   */
+  resetCertificateCache();
+  const keys = { kid1: "-----BEGIN CERTIFICATE-----\nAAA\n-----END CERTIFICATE-----\n" };
+  const ok = (async () =>
+    new Response(JSON.stringify(keys), {
+      status: 200,
+      headers: { "cache-control": "max-age=3600" },
+    })) as unknown as typeof fetch;
+
+  /* Warm the cache, then make every later fetch reject. */
+  assert.deepEqual(await fetchCertificates(0, ok), keys);
+  const dead = (async () => {
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof fetch;
+
+  /* Past the cache's own expiry, so it MUST attempt the network and fall back. */
+  assert.deepEqual(
+    await fetchCertificates(99_999_999, dead),
+    keys,
+    "an outage threw instead of serving the cached keys — that is the sign-out",
+  );
+});
+
+test("a 200 with an unreadable body is an outage too", async () => {
+  resetCertificateCache();
+  const keys = { kid1: "cert" };
+  const ok = (async () =>
+    new Response(JSON.stringify(keys), {
+      status: 200,
+      headers: { "cache-control": "max-age=3600" },
+    })) as unknown as typeof fetch;
+  await fetchCertificates(0, ok);
+
+  const truncated = (async () =>
+    new Response("{ not json", { status: 200 })) as unknown as typeof fetch;
+  assert.deepEqual(await fetchCertificates(99_999_999, truncated), keys);
+});
+
+test("with NO cache an outage still refuses — nothing is accepted unsigned", async () => {
+  /* The fallback is "the keys that were valid a moment ago", not "skip the
+     check". With nothing cached there is no way to verify anything, and
+     refusing is the honest answer. */
+  resetCertificateCache();
+  const dead = (async () => {
+    throw new TypeError("fetch failed");
+  }) as unknown as typeof fetch;
+  await assert.rejects(() => fetchCertificates(0, dead));
 });

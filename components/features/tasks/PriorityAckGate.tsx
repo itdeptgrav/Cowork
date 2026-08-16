@@ -42,13 +42,49 @@ export function PriorityAckGate() {
 
   useEffect(() => {
     let cancelled = false;
+    /* Whether the current run of failures has already been reported. Logging
+       every tick would bury the first, real one under a hundred copies of
+       itself; logging none at all hides an engine that has been unreachable
+       for an hour. So: once when it breaks, once more when it breaks again
+       after recovering. */
+    let reported = false;
     // Every state write happens in an async callback, never synchronously in
     // the effect body.
     async function poll() {
-      const list = await getRepository().listPendingAcknowledgements(
-        (await getRepository().getViewer()).employeeId,
-      );
-      if (!cancelled) setPending(list[0] ?? null);
+      /**
+       * **A failed poll must not become an unhandled rejection.**
+       *
+       * `getViewer()` throws when the directory cannot be read — an engine
+       * restart is enough, and that is exactly when this fires. Nothing here
+       * caught it: neither `void poll()` nor the `setInterval` above has a
+       * rejection handler, so every tick threw into the void. The reported
+       * symptom was the same stack printed over and over as
+       * `unhandledRejection`, on a timer, drowning whatever else the console
+       * had to say — including the first occurrence, which is the one that
+       * explains the cause.
+       *
+       * Swallowed rather than surfaced because of what this poll IS: a
+       * background check for a banner that may not even be due. It authorises
+       * nothing and blocks nothing. The acknowledgement write itself is a
+       * separate action with its own error handling and is untouched, and the
+       * next tick retries — so a transient outage costs a late banner rather
+       * than a dead one.
+       */
+      try {
+        const list = await getRepository().listPendingAcknowledgements(
+          (await getRepository().getViewer()).employeeId,
+        );
+        if (!cancelled) setPending(list[0] ?? null);
+        reported = false;
+      } catch (error) {
+        if (!reported) {
+          reported = true;
+          console.warn(
+            "[priority] pending acknowledgements could not be read; still trying.",
+            error,
+          );
+        }
+      }
     }
     // The prototype has no socket; a short interval stands in for the push
     // that would deliver this in production.

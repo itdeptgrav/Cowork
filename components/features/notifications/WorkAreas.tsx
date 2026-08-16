@@ -315,7 +315,11 @@ export function AttendancePage({ history = false }: { history?: boolean }) {
         <div className="grid grid-cols-2 divide-x divide-y divide-hairline sm:grid-cols-4 sm:divide-y-0">
           <Cell
             label="C4 score"
-            value={c4 ? `${Math.round(c4.percentage)}%` : "—"}
+            value={
+              c4 && c4.percentage !== null
+                ? `${Math.round(c4.percentage)}%`
+                : "—"
+            }
             note={
               c4
                 ? `${formatPoints(c4.earnedPoints)} of ${formatPoints(c4.possiblePoints)} pts`

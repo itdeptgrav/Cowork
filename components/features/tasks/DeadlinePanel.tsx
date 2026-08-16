@@ -19,6 +19,10 @@ import { BudgetConfirmationCard } from "./BudgetConfirmationCard";
 import { extensionFromAddition, extensionOf } from "@/lib/rules/tasks/deadlineExtension";
 import { hasLiveBudgetExtension } from "@/lib/rules/tasks/extensionAuthority";
 import {
+  extensionHistoryLine,
+  extensionProgress,
+} from "@/lib/rules/tasks/extensionProgress";
+import {
   deriveDueAt,
   describeWindow,
 } from "@/lib/rules/tasks/workingWindow";
@@ -760,15 +764,96 @@ function ExtensionForm({
   );
   const floor = Number(PROVISIONAL_RULES.extensionRequestFloorPercent.value);
 
+  /**
+   * **What was asked, when, and what happened last time.**
+   *
+   * This panel was one sentence — "you've already asked for more time and it's
+   * with your manager" — which answers the one question nobody asks and none of
+   * the ones they do. Every figure below was ALREADY fetched: `inflight.data`
+   * is the full record list, read to decide whether to show the panel at all
+   * and then discarded.
+   */
+  const progress = extensionProgress(inflight.data ?? []);
+  const historyLine = extensionHistoryLine(progress);
+
   if (extensionInFlight) {
     return (
       <Panel>
         <h2 className="text-sm font-medium text-ink">Extension in progress</h2>
-        <p className="mt-1 text-xs text-ink-faint">
-          You&rsquo;ve already asked for more time and it&rsquo;s with your
-          manager. Wait for them to answer — or respond to their offer — before
-          requesting a different amount.
+        {progress.live && (
+          <p className="mt-1.5 text-sm text-ink">
+            You asked for{" "}
+            <span data-figure>
+              {formatDurationTimer(progress.live.askedSecs)}
+            </span>{" "}
+            more
+            {progress.live.round > 1 && (
+              <>
+                {" "}
+                — round <span data-figure>{progress.live.round}</span>
+              </>
+            )}
+            {progress.live.askedAt && (
+              <span className="text-ink-faint">
+                {" · "}
+                {formatDateTime(progress.live.askedAt)}
+              </span>
+            )}
+          </p>
+        )}
+        {/* What the manager offered back, where they offered something else.
+            Without it the assignee is told to "respond to their offer" without
+            being shown the offer. */}
+        {progress.live?.counterSecs != null && (
+          <p className="mt-1 text-sm text-ink">
+            Your manager offered{" "}
+            <span data-figure>
+              {formatDurationTimer(progress.live.counterSecs)}
+            </span>{" "}
+            instead.
+          </p>
+        )}
+        {progress.live?.reason && (
+          <p className="mt-1 text-xs leading-relaxed text-ink-muted">
+            Your reason: {progress.live.reason}
+          </p>
+        )}
+        <p className="mt-1.5 text-xs text-ink-faint">
+          {progress.live?.waitingOn === "you"
+            ? "It is with you — accept what was offered, or say what you need, before requesting a different amount."
+            : "It is with your manager. Wait for them to answer — or respond to their offer — before requesting a different amount."}
         </p>
+        {/* Whether this has happened before, and how it went. */}
+        {historyLine && (
+          <div className="mt-3 border-t border-hairline pt-2.5">
+            <p className="text-[11px] text-ink-faint">{historyLine}</p>
+            <ul className="mt-1.5 space-y-1">
+              {progress.settled.map((r) => (
+                <li key={r.id} className="text-[11px] text-ink-muted">
+                  Round <span data-figure>{r.round}</span> ·{" "}
+                  <span data-figure>{formatDurationTimer(r.askedSecs)}</span>{" "}
+                  asked ·{" "}
+                  {r.grantedSecs === null ? (
+                    <span className="text-[var(--state-rework-ink)]">refused</span>
+                  ) : (
+                    <span className="text-[var(--state-positive-ink)]">
+                      <span data-figure>
+                        {formatDurationTimer(r.grantedSecs)}
+                      </span>{" "}
+                      granted
+                    </span>
+                  )}
+                  {r.at && (
+                    <span className="text-ink-faint">
+                      {" · "}
+                      {formatDateTime(r.at)}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </Panel>
     );
   }

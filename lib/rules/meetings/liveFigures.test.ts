@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   creditableSecs,
+  ordinaryWindow,
+  secsOf,
   isPresent,
   liveMeetingFigures,
 } from "./meetingCredit.ts";
@@ -12,7 +14,7 @@ import {
  *
  * A panel that counts up to 05:00 and then settles at 02:54 would teach people
  * the total is unreliable, and they would be right. So every case below checks
- * the live figure against `creditableSecs` for the same instant rather than
+ * the live figure against the settlement's own window for the same instant
  * against a hand-written expectation.
  */
 
@@ -25,6 +27,9 @@ const RECEIVER = "pramod";
 function session(attendance: Array<[string, number, number | null]>) {
   return {
     counterpartyId: CREATOR,
+    /* Since 15 Aug an ordinary meeting counts only while BOTH sides are in the
+       room, so the live figures need to know who the receiver is. */
+    receiverId: RECEIVER,
     startedAtMs: T0,
     endedAtMs: T0,
     attendance: attendance.map(([employeeId, joined, left]) => ({
@@ -105,7 +110,11 @@ test("the running figure equals what ending it now would credit", () => {
       const now = T0 + min(at);
       assert.equal(
         liveMeetingFigures(s, now).creditedSecs,
-        creditableSecs({ ...s, endedAtMs: now }),
+        /* The SETTLEMENT's own measure, which since 15 Aug is the both-sides
+           window. `creditableSecs` is the counterparty's presence alone and
+           still serves the cross-department path, so comparing against it here
+           would pin the live figure to a rule this one no longer uses. */
+        secsOf(ordinaryWindow({ ...s, endedAtMs: now })),
         `live and settled disagree at +${at}m`,
       );
     }
@@ -113,7 +122,11 @@ test("the running figure equals what ending it now would credit", () => {
 });
 
 test("an overlapping rejoin is not paid twice while it runs either", () => {
+  /* The receiver is in for the whole stretch so a window exists at all — the
+     subject here is the CREATOR's overlapping rejoin being merged, not the
+     both-sides rule. */
   const s = session([
+    [RECEIVER, 0, null],
     [CREATOR, 0, 20],
     [CREATOR, 10, null],
   ]);
@@ -151,8 +164,12 @@ test("a session with no attendance at all is quiet, not counting", () => {
 });
 
 test("a SELF task counts, because the creator IS the person in the room", () => {
+  /* Both ids are the same person here, which is the whole point of the case:
+     the two sides of the work coincide, so their presence alone IS the window
+     and the both-sides rule costs a self task nothing. */
   const s = {
     counterpartyId: RECEIVER,
+    receiverId: RECEIVER,
     startedAtMs: T0,
     endedAtMs: T0,
     attendance: [

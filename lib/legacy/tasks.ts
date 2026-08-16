@@ -157,6 +157,14 @@ export interface LegacyTaskDoc {
   fixedDeadline?: string | number | null;
   deadline?: string | number | null;
   dueDate?: string | number | null;
+  /**
+   * The instant the deadline was counted from, and which rule chose it.
+   *
+   * Written by `resolveAcceptanceAnchor` in the engine and never recomputed.
+   * Absent on every task written before it existed.
+   */
+  clockStartsAtMs?: string | number | null;
+  clockStartsAtSource?: string | null;
   senderTimerWindowSecs?: number;
   /**
    * The agreed working window. Written when a proposal is approved, or when
@@ -337,6 +345,33 @@ export interface LegacyTask {
       downloadUrl: string;
     }[];
     requestedAt: string | null;
+    /**
+     * What the rework did to the deadline.
+     *
+     * Null when the clock was reset — the ordinary case, where the new date
+     * speaks for itself. A string names why it was NOT reset, and that is the
+     * one the assignee has to be told: a task that comes back with an
+     * already-passed deadline has a blocked timer, and without this the two
+     * facts sit on screen with nothing joining them.
+     *
+     * Written by `reworkTask` in the engine. Absent on every entry written
+     * before 16 Aug 2026, which reads as null — those predate the rule.
+     */
+    deadlineHeldReason: string | null;
+    /**
+     * The deadline before and after this rework, as the engine recorded them.
+     *
+     * **Carried because the task page never names the deadline anywhere.** The
+     * facts panel shows Expected completion — a projection of when the work
+     * will finish — and deliberately withholds the date itself, so a rework
+     * that moved the deadline by an hour changed nothing a reader could see.
+     * Reported as "the feature did not work" when the engine had in fact
+     * written the new date correctly.
+     *
+     * Both null on entries written before the engine recorded them.
+     */
+    previousDeadline: string | null;
+    newDeadline: string | null;
   }[];
   /**
    * Creation time, epoch ms.
@@ -422,6 +457,10 @@ export interface LegacyTask {
   hasTimer: boolean;
   /** Milliseconds since epoch, or null. See `readInstant`. */
   dueAtMs: number | null;
+  /** The instant `dueAtMs` was counted from — see `TaskDeadline.clockStartsAt`. */
+  clockStartsAtMs: number | null;
+  /** `hours_granted` | `first_online` | `acceptance`, or null. */
+  clockStartsAtSource: string | null;
   isGoldTask: boolean;
   isDeleted: boolean;
 }
@@ -547,6 +586,21 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
             : typeof r.requestedAt === "string"
               ? r.requestedAt
               : null,
+        /* Absent on entries written before the rule existed, which is null —
+           the same as "the clock was reset", and the honest reading: nothing
+           was withheld from those, because nothing could have been. */
+        deadlineHeldReason:
+          typeof r.deadlineHeldReason === "string" && r.deadlineHeldReason
+            ? r.deadlineHeldReason
+            : null,
+        previousDeadline:
+          typeof r.previousDeadline === "string" && r.previousDeadline
+            ? r.previousDeadline
+            : null,
+        newDeadline:
+          typeof r.newDeadline === "string" && r.newDeadline
+            ? r.newDeadline
+            : null,
       })),
     budgetNegotiation: (() => {
       const raw = doc.budgetNegotiation as Record<string, unknown> | undefined;
@@ -746,6 +800,15 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     visibleTo: Array.isArray(doc.visibleTo) ? doc.visibleTo.filter(Boolean) : [],
     hasTimer: doc.hasTimer === true,
     dueAtMs: readDueAtMs(doc),
+    /* The instant the deadline was counted FROM, and which rule chose it.
+       Stamped once by the engine and never recomputed — see
+       `TaskDeadline.clockStartsAt`. Absent on tasks written before it existed,
+       which reads as null rather than as a guess. */
+    clockStartsAtMs: readInstant(doc.clockStartsAtMs),
+    clockStartsAtSource:
+      typeof doc.clockStartsAtSource === "string" && doc.clockStartsAtSource
+        ? doc.clockStartsAtSource
+        : null,
     isGoldTask: doc.isGoldTask === true,
     isDeleted: readInstant(doc.deletedAt) !== null,
   };

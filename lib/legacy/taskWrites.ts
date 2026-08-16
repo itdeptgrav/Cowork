@@ -447,6 +447,8 @@ export async function createSubtask(input: {
   assigneeIds: string[];
   description?: string;
   satisfiesRequirementIds?: string[];
+  /** The child's own acceptance criteria. Separate from the claims above. */
+  requirements?: string[];
   /** `false` puts the child on a fixed date instead of a working-time budget. */
   hasTimer?: boolean;
   /** The budget, in seconds. Read only when `hasTimer` is not false. */
@@ -463,6 +465,7 @@ export async function createSubtask(input: {
       assigneeIds: input.assigneeIds,
       description: input.description ?? "",
       satisfiesRequirementIds: input.satisfiesRequirementIds ?? [],
+      requirements: input.requirements ?? [],
       hasTimer: onTimer,
       senderTimerWindowSecs: onTimer ? (input.senderTimerWindowSecs ?? 0) : 0,
       fixedDeadline: onTimer ? null : (input.fixedDeadline ?? null),
@@ -776,6 +779,16 @@ export async function reviewDeadlineExtension(input: {
   taskId: string;
   action: "approve" | "reject" | "counter";
   newDate?: string;
+  /**
+   * Grant it AND move the project's deadline out by the same amount.
+   *
+   * A subtask may not be due after the project it belongs to, so the engine
+   * answers 409 `AFTER_PARENT_DEADLINE` when a grant would breach that — and
+   * names this flag as the way to take it anyway. Sent only when the approver
+   * has chosen the raise, never by default: moving a project's deadline is a
+   * decision about the whole job, not a detail of one subtask's extension.
+   */
+  raiseParent?: boolean;
 }): Promise<LegacyResult<unknown>> {
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/review-deadline-extension`,
@@ -783,6 +796,7 @@ export async function reviewDeadlineExtension(input: {
     body: {
       action: input.action,
       ...(input.newDate ? { newDate: input.newDate } : {}),
+      ...(input.raiseParent ? { raiseParent: true } : {}),
     },
     token: input.token,
   });
