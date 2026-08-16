@@ -77,6 +77,7 @@
   --color-state-extension: var(--state-extension);
   --color-state-blocked: var(--state-blocked);
   --color-state-overdue: var(--state-overdue);
+  --color-state-warn: var(--state-warn);
   --color-state-positive: var(--state-positive);
 
   --shadow-deck-seat: var(--deck-seat);
@@ -137,6 +138,10 @@
   --state-blocked-ink: #532f2d;
   --state-overdue: #a35f5f;
   --state-overdue-ink: #5a2626;
+  /* Over the time budget — a caution amber, the one warm accent in an
+     otherwise muted state palette, reserved for "time limit breached". */
+  --state-warn: #b5822a;
+  --state-warn-ink: #6e4d12;
   --state-positive: #5f8a72;
   --state-positive-ink: #24422f;
 
@@ -292,6 +297,8 @@
   --state-blocked-ink: #f7dedc;
   --state-overdue: #c47575;
   --state-overdue-ink: #fbdcdc;
+  --state-warn: #e0b866;
+  --state-warn-ink: #f0cd82;
   --state-positive: #74a88a;
   --state-positive-ink: #d8f0e2;
 
@@ -749,6 +756,14 @@
   );
 }
 
+/* The full-bleed work surface (the spreadsheet) scrolls inside its own grid and
+   must reach the bottom of the viewport. The reading-page padding and the
+   music-bar clearance would leave a dead band under the sheet, so drop both
+   here — the higher specificity of the attribute selector wins over `#main`. */
+#main[data-fullbleed] {
+  padding-bottom: 0;
+}
+
 /* Content is visible by default; motion is the enhancement. */
 @media (prefers-reduced-motion: reduce) {
   *,
@@ -1173,4 +1188,74 @@
    and cleared by the hook; this is only how long it takes. */
 .flip-row {
   transition: transform 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* ── The spreadsheet renders light ──────────────────────────────────────────
+   A spreadsheet is a document surface, not a panel: every spreadsheet people
+   know is dark ink on a white grid, and the formatting they apply (fill
+   colours, conditional-format highlights, cell text colours) is chosen against
+   a white background. Inheriting a dark app theme would invert that ground and
+   leave those user-chosen colours reading against the wrong surface.
+
+   So the sheet declares its own LIGHT palette and keeps it whatever the rest of
+   the application is set to. The values are the app's own light theme, with one
+   deliberate change: the surfaces are OPAQUE rather than the theme's translucent
+   `rgba(255,255,255,0.5)`, which is designed to sit on the light field and would
+   otherwise let a dark backdrop show through the grid.
+
+   Both token families are redeclared on purpose. `--color-*` is defined once at
+   `:root` as `var(--ink)`, and custom properties substitute at computed-value
+   time — so a descendant that overrides only `--ink` would inherit a
+   `--color-ink` that was already resolved against the root theme. Overriding
+   just one family silently half-works; this overrides both. */
+.sheet-light {
+  --ink: #0a0a0a;
+  --ink-muted: #565656;
+  --ink-faint: #5f5f5f;
+  --hairline: rgba(10, 10, 10, 0.14);
+  --surface-raised: #ffffff;
+  --surface-sunken: rgba(10, 10, 10, 0.04);
+  --control: rgba(10, 10, 10, 0.06);
+  --control-hover: rgba(10, 10, 10, 0.1);
+  --control-active: rgba(10, 10, 10, 0.14);
+  --body-bg: #ffffff;
+  --accent: #1a73e8;
+
+  --color-ink: #0a0a0a;
+  --color-ink-muted: #565656;
+  --color-ink-faint: #5f5f5f;
+  --color-hairline: rgba(10, 10, 10, 0.14);
+  --color-surface-raised: #ffffff;
+
+  color: var(--ink);
+  /* The chrome around the grid is a shade off-white, the way a spreadsheet's
+     toolbars sit slightly back from the white sheet itself. */
+  background: #f6f7f9;
+  color-scheme: light;
+}
+
+/* Form controls inside the sheet are light too — a native select or colour
+   input would otherwise be painted by the OS from the page's colour-scheme and
+   come out dark on the white grid. */
+.sheet-light select,
+.sheet-light input,
+.sheet-light textarea {
+  color-scheme: light;
+}
+
+/* ── The spreadsheet route runs full-bleed ──────────────────────────────────
+   The width and height come from the SHELL, which drops its centred column and
+   its padding for this route (`FULL_BLEED_ROUTES` in ShellFrame) and makes the
+   frame exactly one viewport tall. All this class does is pass that height down
+   the flex chain — `min-height: 0` so the grid's own scroller, not the page,
+   takes the overflow.
+
+   Doing it this way rather than with negative `50% - 50vw` margins is
+   deliberate: `vw` counts the scrollbar and percentage margins do not, so the
+   break-out version sat a few pixels off centre and overflowed sideways. */
+.sheet-fullbleed {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
 }

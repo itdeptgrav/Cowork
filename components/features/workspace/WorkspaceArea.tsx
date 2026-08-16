@@ -6,6 +6,7 @@ import { WorkspaceHead } from "@/components/ui/Workspace";
 import { Segmented } from "@/components/ui/Primitives";
 import { DocumentsArea } from "./DocumentsArea";
 import { MindMapsArea } from "./MindMapsArea";
+import { SheetsArea } from "@/components/features/spreadsheet/SheetsArea";
 
 /**
  * Workspace — mindmaps, documents and sheets.
@@ -77,7 +78,14 @@ export function WorkspaceArea() {
       />
 
       {mode === "sheets" ? (
-        <DocumentsArea kind="sheet" mode={mode} onMode={setMode} />
+        /* The spreadsheet engine (`lib/spreadsheet` + `components/features/
+           spreadsheet`), which replaced the old document-backed sheet grid. It
+           keeps its own workbook store, so it is mounted directly rather than
+           through `DocumentsArea` — that browser lists workspace DOCUMENTS, and
+           a workbook is no longer one. */
+        <div className="flex h-[calc(100dvh-260px)] min-h-[460px] flex-col">
+          <SheetsArea />
+        </div>
       ) : mode === "docs" ? (
         <DocumentsArea
           kind="doc"

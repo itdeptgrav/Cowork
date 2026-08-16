@@ -129,10 +129,18 @@ export function TimerControl({
   view,
   size = "row",
   onChange,
+  tone = "default",
 }: {
   view: TaskView;
-  size?: "row" | "detail";
+  /** `bar` is `row` at a larger scale — same compact control, bigger clock. */
+  size?: "row" | "detail" | "bar";
   onChange?: () => void;
+  /**
+   * Presentational only. `warn` recolours the row clock amber for a caller that
+   * has decided the work is over its time budget — the timer itself decides
+   * nothing about that. Default leaves every colour exactly as it was.
+   */
+  tone?: "default" | "warn";
 }) {
   const taskId = view.task.id;
   const me = useQuery((r) => r.getCurrentEmployee(), []);
@@ -624,12 +632,23 @@ export function TimerControl({
      `page.js:7824` returns null, `:6601` disables — and the detail view says
      why. A running session is still shown: the time is real and was worked,
      and hiding it would read as the product having lost it. */
+  /* Row and the larger `bar` share one compact shape — only the dimensions and
+     the glyph scale differ. `detail` is the separate two-line block further
+     down and is unaffected. */
+  const isBar = size === "bar";
+  const compact = size === "row" || isBar;
+  const figSize = isBar
+    ? "h-9 min-w-[108px] gap-1.5 px-3.5 text-[15px]"
+    : "h-6 w-[74px] gap-1 text-[11px]";
+  const glyphSize = isBar ? "h-4 w-4" : "h-3 w-3";
   if (blocked && startable) {
-    if (size === "row") {
+    if (compact) {
       return (
         <span
           data-figure
-          className="inline-flex h-6 w-[74px] shrink-0 items-center justify-center text-[11px] text-ink-faint"
+          className={`inline-flex shrink-0 items-center justify-center ${figSize} ${
+            tone === "warn" ? "text-[var(--state-warn-ink)]" : "text-ink-faint"
+          }`}
           title={blocked.message}
         >
           {elapsed > 0 ? formatTimer(elapsed) : "—"}
@@ -669,11 +688,11 @@ export function TimerControl({
    * exactly what it needs.
    */
   if (state === "stale") {
-    if (size === "row") {
+    if (compact) {
       return (
         <span
           data-figure
-          className="inline-flex h-6 w-[74px] shrink-0 items-center justify-center text-[11px] text-ink-faint"
+          className={`inline-flex shrink-0 items-center justify-center ${figSize} text-ink-faint`}
           title="This timer was left running and needs attention"
         >
           {formatTimer(elapsed)}
@@ -710,11 +729,11 @@ export function TimerControl({
   /* Not actionable — never offer a control that would fail. The row keeps its
      width so the column stays aligned; elapsed time still shows if any exists. */
   if (!isMine || !startable) {
-    if (size !== "row") return null;
+    if (size === "detail") return null;
     return (
       <span
         data-figure
-        className="inline-flex h-6 w-[74px] shrink-0 items-center justify-center text-[11px] text-ink-faint"
+        className={`inline-flex shrink-0 items-center justify-center ${figSize} text-ink-faint`}
         title={isMine ? "Not startable in this state" : "Not assigned to you"}
       >
         {elapsed > 0 ? formatTimer(elapsed) : "—"}
@@ -722,7 +741,7 @@ export function TimerControl({
     );
   }
 
-  if (size === "row") {
+  if (compact) {
     return (
       <button
         type="button"
@@ -743,16 +762,20 @@ export function TimerControl({
               ? `Resume timer on ${view.task.title}`
               : `Start timer on ${view.task.title}`
         }
-        className={`inline-flex h-6 w-[74px] shrink-0 items-center justify-center gap-1 rounded-full text-[11px] font-medium transition-colors disabled:opacity-50 ${
+        className={`inline-flex shrink-0 items-center justify-center rounded-full font-medium transition-colors disabled:opacity-50 ${figSize} ${
           running
-            ? "bg-ink text-[var(--body-bg)]"
+            ? tone === "warn"
+              ? /* Over budget: an amber chip. `#1c1405` is a fixed dark ink for
+                   text ON the amber fill — readable in both themes. */
+                "bg-[var(--state-warn)] text-[#1c1405]"
+              : "bg-ink text-[var(--body-bg)]"
             : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
         }`}
       >
         {running ? (
-          <Icon.pause className="h-3 w-3" />
+          <Icon.pause className={glyphSize} />
         ) : (
-          <Icon.play className="h-3 w-3" />
+          <Icon.play className={glyphSize} />
         )}
         <span data-figure>{running ? formatTimer(elapsed) : "Start"}</span>
       </button>

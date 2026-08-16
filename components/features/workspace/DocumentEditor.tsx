@@ -113,6 +113,10 @@ import type { DocumentPageSetup, DocumentSummary, TaskId } from "@/lib/domain";
  */
 
 const SAVE_DEBOUNCE_MS = 1200;
+/* How long the room is watched for content before a blank document is treated
+   as a genuine phase-1 doc that needs its stored html migrated in. Long enough
+   for a persisted room's state to arrive after `sync` fires. */
+const SEED_SETTLE_MS = 1200;
 
 export function DocumentEditor({
   documentId,
@@ -122,6 +126,7 @@ export function DocumentEditor({
   onClose,
   onChanged,
   creating = false,
+  isNewDraft = false,
   reportTaskId = null,
   reportTaskTitle = null,
   reportProgress = null,
@@ -135,6 +140,12 @@ export function DocumentEditor({
   /** The list needs re-reading — a rename, a copy or a delete happened. */
   onChanged?: () => void;
   creating?: boolean;
+  /**
+   * This document was JUST created in this session — a blank "Untitled". Closing
+   * it while it is still empty and unsaved removes it, rather than leaving an
+   * empty draft behind. An existing document is never removed this way.
+   */
+  isNewDraft?: boolean;
   /**
    * Set when this document was opened as the long form of a specific task's
    * daily report — see `ReportComposer.tsx`'s "Write a doc" link. Renders a
@@ -230,6 +241,14 @@ export function DocumentEditor({
   const dirty = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestHtml = useRef("");
+  /* Whether the last edit left the document blank, whether the person has
+     explicitly saved it, and whether this document ever held content at all.
+     Together they decide whether an empty document is written, and whether a new
+     blank draft is kept when it closes — a draft that ever showed content is
+     never deleted, however it is left. */
+  const latestEmpty = useRef(true);
+  const manualSaved = useRef(false);
+  const everHadContent = useRef(false);
 
   const readOnly = !mayEdit || mode === "viewing";
 
@@ -305,6 +324,8 @@ export function DocumentEditor({
       },
       onUpdate: ({ editor: e }) => {
         latestHtml.current = e.getHTML();
+        latestEmpty.current = e.isEmpty;
+        if (!e.isEmpty) everHadContent.current = true;
         dirty.current = true;
         setStatus("saving");
         if (timer.current) clearTimeout(timer.current);
@@ -505,17 +526,33 @@ export function DocumentEditor({
       editor.commands.setContent(html, { emitUpdate: false });
       latestHtml.current = html;
     }
+    /* Loaded content counts as content: a document opened with a body already in
+       it must never be judged an empty draft and deleted on close. */
+    latestEmpty.current = editor.isEmpty;
+    if (!editor.isEmpty) everHadContent.current = true;
   }, [editor, body.data?.html, body.isLoading, collab.session]);
 
   /**
-   * Carry a phase-1 document into the CRDT.
+   * Carry a phase-1 document into the CRDT — ONCE, ever, across every open.
    *
    * Documents written before collaboration have `html` and no `ydocState`, so
    * the server seeds their room with nothing and they open blank. This inserts
-   * the stored prose once — but ONLY after the provider reports `synced`, so it
-   * is acting on the server's real state rather than on an empty document it
-   * has not finished loading, and ONLY when the shared document is genuinely
-   * empty, so the second person to open it does not append a second copy.
+   * the stored prose once, after the provider reports `synced` so it acts on the
+   * server's real state rather than a document it has not finished loading.
+   *
+   * ## Why the emptiness check has to WAIT
+   *
+   * The guard used to decide the instant `sync` fired. That is too early: the
+   * provider can report `synced` before the room's persisted state has actually
+   * been applied to the local document, so the fragment looks empty, the html is
+   * migrated into it, and then the real content lands on top — two copies. Every
+   * reopen repeated it, and because the room persists, the text compounded.
+   *
+   * Neither a ref, `editor.isEmpty`, nor a fragment-length read taken AT `sync`
+   * escapes that gap, and `ydocState` was not always present to short-circuit
+   * it. So instead of judging emptiness at one instant, the seed WATCHES: it lets
+   * the room settle, and any content that arrives cancels the migration. Only a
+   * document that stays genuinely empty is a phase-1 doc that opened blank.
    */
   const seeded = useRef(false);
   useEffect(() => {
@@ -524,22 +561,83 @@ export function DocumentEditor({
     const html = body.data?.html;
     if (!html) return;
 
+    /* **The document already lives in the CRDT — do not migrate its html.**
+     *
+     * This is the guard the timing-based ones could not be. Once a document has
+     * been edited collaboratively the server persists its `ydocState`, and from
+     * then on the room is seeded from THAT on every connect. Its `html` is only
+     * a projection of the same text, saved alongside so the list and exports can
+     * read it — it is not a second copy to insert. Re-inserting it on top of the
+     * synced state is precisely what doubled the prose on every reopen, and it
+     * did so whether or not the emptiness checks below happened to race.
+     *
+     * So a document that has ever been in the room is never seeded again. Only a
+     * genuine phase-1 document — html, and no `ydocState` ever written — is
+     * migrated, exactly once, by the block below.
+     */
+    if (body.data?.ydocState) return;
+
+    /* Tiptap's Collaboration binds to the `default` XML fragment; its length is
+       the room's real content, which the editor projects a beat later. */
+    const fragment = session.doc.getXmlFragment("default");
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    const cancelIfContent = () => {
+      if (fragment.length > 0) cancelled = true;
+    };
+
     const trySeed = () => {
       if (seeded.current) return;
       seeded.current = true;
       if (editor.isDestroyed) return;
-      /* `isEmpty` is ProseMirror's own view of the shared document after the
-         server's state has been applied. Anything already there wins. */
-      if (!editor.isEmpty) return;
-      editor.commands.setContent(html, { emitUpdate: true });
+
+      /* Content is already here — this document is in the room. Never migrate
+         its html projection on top of it. */
+      if (fragment.length > 0 || !editor.isEmpty) return;
+
+      /* Empty for NOW, but `sync` can fire before the room's persisted state has
+         actually been applied — and seeding into that gap, then having the real
+         content land on top, is what doubled the prose on every open. So watch
+         the shared document: if any content arrives, the migration is cancelled.
+         Only a room that is STILL empty once it has had time to settle is a
+         genuine phase-1 document that opened blank and needs its stored html. */
+      fragment.observeDeep(cancelIfContent);
+      timer = setTimeout(() => {
+        fragment.unobserveDeep(cancelIfContent);
+        timer = null;
+        if (cancelled || editor.isDestroyed) return;
+        if (fragment.length > 0 || !editor.isEmpty) return;
+        editor.commands.setContent(html, { emitUpdate: true });
+      }, SEED_SETTLE_MS);
     };
 
     if (session.provider.synced) trySeed();
     else session.provider.once("sync", trySeed);
-  }, [editor, collab.session, body.data?.html]);
+    /* Tear everything down if the document closes mid-settle — a leftover timer
+       or observer would fire against a destroyed editor. */
+    return () => {
+      session.provider.off("sync", trySeed);
+      if (timer) clearTimeout(timer);
+      try {
+        fragment.unobserveDeep(cancelIfContent);
+      } catch {
+        /* Already detached. */
+      }
+    };
+  }, [editor, collab.session, body.data?.html, body.data?.ydocState]);
 
   const flush = useCallback(async () => {
     if (!dirty.current) return;
+    /* **An empty document is not written on its own.** Only an explicit save
+       keeps a blank one — otherwise a just-opened "Untitled" autosaves the
+       moment it appears, and emptying a document quietly persists the blank over
+       what was there. The document still exists; it is simply not re-saved
+       empty until somebody asks. */
+    if (latestEmpty.current && !manualSaved.current) {
+      dirty.current = false;
+      setStatus("idle");
+      return;
+    }
     dirty.current = false;
     try {
       const result = await getRepository().saveDocumentBody(documentId, {
@@ -573,9 +671,32 @@ export function DocumentEditor({
     return () => {
       document.removeEventListener("visibilitychange", onHide);
       if (timer.current) clearTimeout(timer.current);
-      void flush();
+      /* **A blank draft nobody wrote in and nobody saved is abandoned.** Closing
+         it removes the empty "Untitled" rather than leaving it in the list.
+         Only a document created THIS session is a candidate — an existing
+         document is never deleted just for being closed empty. */
+      if (
+        isNewDraft &&
+        latestEmpty.current &&
+        !manualSaved.current &&
+        !everHadContent.current
+      ) {
+        void getRepository()
+          .deleteDocument(documentId)
+          .then((r) => {
+            if (r.ok) {
+              notifyRepositoryChanged();
+              onChanged?.();
+            }
+          })
+          .catch(() => {
+            /* A failed cleanup is not worth surfacing on a screen that is gone. */
+          });
+      } else {
+        void flush();
+      }
     };
-  }, [flush]);
+  }, [flush, isNewDraft, documentId, onChanged]);
 
   /* Follows the browser rather than assuming. Pressing Escape leaves native
      fullscreen without going through the button, and the state must not be
@@ -788,8 +909,12 @@ export function DocumentEditor({
         setDialog("word-count");
       } else if (e.key === "s") {
         /* Saving is continuous, but Ctrl-S is muscle memory and the browser's
-           own "save this page" dialog is a confusing answer to it. */
+           own "save this page" dialog is a confusing answer to it. It is also
+           the EXPLICIT save: it keeps the document even when it is empty, and
+           marks it so closing an empty draft does not delete it. */
         e.preventDefault();
+        manualSaved.current = true;
+        dirty.current = true;
         void flush();
       }
     };

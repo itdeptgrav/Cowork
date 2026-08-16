@@ -16,7 +16,10 @@ export interface NavItem {
 export const navItems: NavItem[] = [
   { label: "Home", href: "/", match: ["/", "/home"] },
   { label: "Tasks", href: "/tasks", match: ["/tasks"] },
-  { label: "Score", href: "/score", match: ["/score"] },
+  /* Score is deliberately ABSENT here: it is rendered as the ambient score
+     button in the top bar (`ScorePill`), which both names the section and shows
+     the live percentage — "Score (100%)". A plain tab beside it was a second
+     control leading to the same `/score` overview. */
   { label: "Team", href: "/team", match: ["/team", "/people"] },
   { label: "Goals", href: "/goals", match: ["/goals"] },
   { label: "Mail", href: "/mail", match: ["/mail"] },

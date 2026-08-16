@@ -63,12 +63,17 @@ test("every type belongs to at most one section", () => {
 
 test("every section is a real nav destination", () => {
   /* A badge on an href the bar never renders is a count nobody can reach, and
-     therefore one nobody can clear. */
+     therefore one nobody can clear. Most sections are nav-rail items; Score is
+     the exception — it is the ambient Score button in the top bar rather than a
+     tab, so it counts as reachable when the bar renders a link to it. */
   const nav = readFileSync("lib/utils/nav.ts", "utf8");
+  const bar = readFileSync("components/layout/shell/TopBar.tsx", "utf8");
   for (const href of Object.keys(SECTION_TYPES)) {
+    const reachable =
+      nav.includes(`href: "${href}"`) || bar.includes(`href="${href}"`);
     assert.ok(
-      nav.includes(`href: "${href}"`),
-      `${href} carries a badge but is not a nav item`,
+      reachable,
+      `${href} carries a badge but is not reachable in the bar`,
     );
   }
 });

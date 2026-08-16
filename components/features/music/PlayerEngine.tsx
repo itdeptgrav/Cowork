@@ -37,7 +37,13 @@ import { publishCommands, publishSnapshot } from "@/lib/music/playerBus";
  * ───────────────────────────────────────────────────────────────────────────── */
 const AUDIO_ONLY_WHEN_OFF_VIDEO_ROUTE = true;
 
-export function PlayerEngine() {
+/**
+ * `showBar` gates only the visible audio-only bar, not the engine. Full-bleed
+ * work surfaces (the spreadsheet) hide the bar so nothing floats over the grid,
+ * but the player stays mounted here so audio keeps running across the visit —
+ * unmounting it to hide the bar would stop playback the moment you open the sheet.
+ */
+export function PlayerEngine({ showBar = true }: { showBar?: boolean }) {
   const music = useMusic();
   const [frame, setFrame] = useState<HTMLDivElement | null>(null);
 
@@ -95,7 +101,8 @@ export function PlayerEngine() {
   /* The bar reserves no layout space, so the bottom of a page has to be able to
      scroll clear of it. A fixed figure rather than a measured one: the bar has
      one height, and a ResizeObserver does not deliver while a tab is hidden. */
-  const barVisible = music.enabled && current !== null && music.stage === null;
+  const barVisible =
+    showBar && music.enabled && current !== null && music.stage === null;
   useEffect(() => {
     const root = document.documentElement;
     if (!barVisible) {
@@ -141,7 +148,7 @@ export function PlayerEngine() {
         <div ref={setFrame} className="h-full w-full" />
       </div>
 
-      {!onVideoRoute && <MusicBar />}
+      {!onVideoRoute && showBar && <MusicBar />}
 
       <p aria-live="polite" className="sr-only">
         {announce}

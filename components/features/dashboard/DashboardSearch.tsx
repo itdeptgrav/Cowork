@@ -19,6 +19,9 @@ interface SearchResult {
  * Clicking activates the input in-place — no modal, no overlay.
  * As you type (≥2 chars) results appear in a dropdown below the bar.
  * Esc or click-outside deactivates and clears.
+ *
+ * It fills its container and owns no outer margin — the caller places it (on the
+ * dashboard it shares the active-work bar's row, in the right column).
  */
 export function DashboardSearch() {
   const [active, setActive] = useState(false);
@@ -149,7 +152,7 @@ export function DashboardSearch() {
     active && query.trim().length >= 2 && (searching || results.length > 0);
 
   return (
-    <div ref={containerRef} className="relative mb-6 w-full">
+    <div ref={containerRef} className="relative w-full">
       {/* Search bar */}
       <div
         role="button"

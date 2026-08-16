@@ -11,6 +11,7 @@ import {
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import { RecordTable, type RecordItem } from "./RecordTable";
 import { formatStamp } from "@/lib/utils/format";
 import {
   CommandPalette,
@@ -75,6 +76,11 @@ export function DocumentsArea({
      returns the whole record, so the editor is opened from that and the refetch
      only has to catch the list up afterwards. */
   const [justCreated, setJustCreated] = useState<DocumentSummary | null>(null);
+  /* The ids created in THIS session. A document opened straight from "New" and
+     closed while still blank is an abandoned draft the editor deletes on close;
+     one opened from the list never is. State rather than a ref because it is
+     read while rendering, to hand the flag to the editor. */
+  const [createdIds, setCreatedIds] = useState<Set<string>>(() => new Set());
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draftTitle, setDraftTitle] = useState("");
 
@@ -86,6 +92,10 @@ export function DocumentsArea({
   );
   const [remove, removeState] = useAction((r, id: string) =>
     r.deleteDocument(id),
+  );
+  const [setMember] = useAction(
+    (r, id: string, employeeId: string, role: "viewer" | "editor" | null) =>
+      r.setDocumentMember(id, employeeId, role),
   );
 
   const list = docs.data ?? [];
@@ -101,6 +111,7 @@ export function DocumentsArea({
     /* Opened straight away: a new document's first need is to be written in,
        and its name is easier to choose once there is something in it. The
        record is stood up locally first so this does not race the refetch. */
+    setCreatedIds((prev) => new Set(prev).add(r.data.id));
     setJustCreated({ ...r.data, preview: "" });
     setOpenId(r.data.id);
     docs.refetch();
@@ -165,6 +176,7 @@ export function DocumentsArea({
             onClose={() => setOpenId(null)}
             onChanged={docs.refetch}
             creating={createState.isPending}
+            isNewDraft={createdIds.has(open.id)}
             reportTaskId={open.id === initialOpenId ? reportTaskId : null}
             reportTaskTitle={open.id === initialOpenId ? reportTaskTitle : null}
             reportProgress={open.id === initialOpenId ? reportProgress : null}
@@ -321,37 +333,59 @@ export function DocumentsArea({
 
     return (
       <>
-        {/* Column headers in Label type. This is the one place the system
-            spends tracked uppercase outside wayfinding, because a dense
-            table's headers are read as part of the figures under them. */}
-        <div className="flex items-center gap-4 border-b border-hairline px-4 py-1.5 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-          <span className="h-7 w-7 shrink-0" aria-hidden="true" />
-          <span className="w-[30%] shrink-0">Name</span>
-          <span className="min-w-0 flex-1">Contents</span>
-          <span className="hidden w-[96px] shrink-0 text-right sm:block">Updated</span>
-          <span className="w-[56px] shrink-0" aria-hidden="true" />
-        </div>
-        <ul className="divide-y divide-hairline">{list.map(row)}</ul>
+        {/* The old Name/Contents/Updated header is gone: `RecordTable` carries
+            its own, and two stacked header rows is what made this surface look
+            unlike the others. */}
+        <RecordTable
+          noun={kind === "sheet" ? "Sheet" : "Document"}
+          /* Documents and mindmaps store only owner/editor/viewer — there is no
+             "commenter" role to grant, so the panel must not offer one. */
+          roles={["viewer", "editor"]}
+          items={list.map(toRecord)}
+          onOpen={(id) => setOpenId(id)}
+          onRename={(id, title) => void rename(id, title)}
+          /* No `onDuplicate` is passed: the repository has no copy operation
+             for a document, so that button is absent rather than inert. */
+          onDelete={(id) => void remove(id)}
+          onSetMembers={async (id, members) => {
+            /* The repository sets ONE member at a time, so the whole-list
+               contract is diffed here: write what changed, null out what went.
+               Sequential rather than parallel — each call returns the updated
+               record, and concurrent writes to the same document would race. */
+            const before = list.find((d) => d.id === id)?.members ?? [];
+            const wanted = new Map(members.map((m) => [m.id, m.role]));
+            for (const [employeeId, role] of wanted) {
+              const had = before.find((m) => m.employeeId === employeeId);
+              /* `commenter` is unreachable here — the panel is given only
+                 viewer/editor for this surface — so anything that is not
+                 `viewer` is an editor. Narrowed explicitly rather than cast,
+                 so adding a role to the panel fails here instead of silently
+                 storing the wrong one. */
+              const stored = role === "viewer" ? "viewer" : "editor";
+              if (had?.role !== stored) await setMember(id, employeeId, stored);
+            }
+            for (const m of before) {
+              if (m.role !== "owner" && !wanted.has(m.employeeId)) {
+                await setMember(id, m.employeeId, null);
+              }
+            }
+            await docs.refetch?.();
+            return members;
+          }}
+        />
       </>
     );
   };
 
   return (
-    <Panel
-      padded={false}
-      label={plural}
-      className="flex min-h-[clamp(420px,64vh,760px)] flex-col"
-    >
-      <div className="flex items-center gap-2 border-b border-hairline px-4 py-2.5">
-        {/* Title, not a tracked eyebrow: an uppercase kicker over a list is a
-            defect in this system — the one kicker per view is spent on
-            wayfinding, and on the column headings below. */}
-        <h2 className="truncate text-[15px] leading-none font-medium tracking-[-0.012em] text-ink">
-          {plural}
-        </h2>
+    /* The same plain shell the Sheets surface uses — a count, the actions, then
+       the table. The Panel card and its bordered title bar are what made this
+       read as a different page from Sheets. */
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex shrink-0 items-center gap-2">
         {list.length > 0 && (
-          <span className="text-[11px] text-ink-faint tabular-nums" data-figure>
-            {list.length}
+          <span className="text-[13px] text-ink-muted">
+            {list.length} {list.length === 1 ? noun : `${noun}s`}
           </span>
         )}
         <span className="flex-1" />
@@ -386,7 +420,7 @@ export function DocumentsArea({
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto scroll-slim">{body()}</div>
-    </Panel>
+    </div>
   );
 }
 
@@ -410,4 +444,36 @@ function RowAction({
       {children}
     </button>
   );
+}
+
+/**
+ * A stored document as the shared workspace table wants it.
+ *
+ * `isMine` is true for everything listed: the repository only returns documents
+ * the viewer is a member of, and this component has never had the viewer's own
+ * employee id to compare against the owner. Gating rename and delete on real
+ * ownership needs that id threaded in — until then the row keeps exactly the
+ * capabilities it had before this table replaced it.
+ */
+function toRecord(d: {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  createdById: string;
+  members: { employeeId: string; role: string }[];
+}): RecordItem {
+  return {
+    id: d.id,
+    title: d.title,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
+    createdBy: d.createdById,
+    isMine: true,
+    /* The owner is shown in "Created by", so listing them again as a
+       collaborator would be the same person twice. */
+    members: d.members
+      .filter((m) => m.role !== "owner")
+      .map((m) => ({ id: m.employeeId, role: m.role === "viewer" ? "viewer" as const : "editor" as const })),
+  };
 }

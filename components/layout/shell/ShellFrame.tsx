@@ -127,9 +127,24 @@ export function ShellFrame({ children }: { children: ReactNode }) {
  * revoked, expired between the two checks, or the account suspended. A hard
  * navigation clears the module singletons on the way out.
  */
+/**
+ * Routes that fill the window rather than sitting in the reading column.
+ *
+ * The shell centres pages in a 1360px column with its own padding, which is
+ * right for reading-width pages and wrong for a work surface: every column a
+ * spreadsheet cannot show is one you have to scroll to. Opting the route out
+ * HERE — rather than having the page fight back with negative viewport-unit
+ * margins — is what keeps it exact: `vw` counts the scrollbar and percentage
+ * margins do not, so the break-out trick lands a few pixels off and overflows
+ * sideways. The shell simply not adding the column has no such seam.
+ */
+const FULL_BLEED_ROUTES = new Set(["/sheets"]);
+
 function WorkspaceShell({ children }: { children: ReactNode }) {
   const session = useSession();
   const anonymous = session.status === "anonymous";
+  const pathname = usePathname();
+  const fullBleed = FULL_BLEED_ROUTES.has(pathname);
 
   /* In an effect, not in the render body: navigating IS a side effect, and one
      performed during render runs twice under StrictMode and races the commit. */
@@ -221,13 +236,25 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
 
   return (
     <>
-      <div className="flex min-h-dvh flex-col">
+      {/* Full-bleed pins the frame to exactly one viewport so the grid's own
+          scroller takes the overflow instead of the page. Deliberately NOT
+          `overflow-hidden`: the top bar's menus are positioned against this
+          frame, and clipping them to it would cut them off. */}
+      <div className={fullBleed ? "flex h-dvh flex-col" : "flex min-h-dvh flex-col"}>
         <TopBar />
         <main
           id="main"
-          className="flex-1 px-[clamp(12px,3vw,32px)] pt-[clamp(14px,2vw,22px)] pb-[clamp(32px,5vw,64px)]"
+          /* Full-bleed marks itself so globals.css can drop the reading-page
+             bottom padding + music-bar clearance — the work surface scrolls
+             internally and must reach the bottom edge. */
+          data-fullbleed={fullBleed ? "" : undefined}
+          className={
+            fullBleed
+              ? "flex min-h-0 flex-1 flex-col"
+              : "flex-1 px-[clamp(12px,3vw,32px)] pt-[clamp(14px,2vw,22px)] pb-[clamp(32px,5vw,64px)]"
+          }
         >
-          <div className="mx-auto max-w-[1360px]">
+          <div className={fullBleed ? "flex min-h-0 flex-1 flex-col" : "mx-auto max-w-[1360px]"}>
             {/* Asked once, on whichever page they happen to be on, and never
                 again once answered. In the shell rather than on one route
                 because the first visit is not reliably to /notifications —
@@ -236,14 +263,17 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
             {children}
           </div>
         </main>
-        <DemoBar />
+        {/* The prototype bar and the music bar float over the bottom edge, which
+            is dead space over a full-bleed work surface — hide both on the sheet
+            so the workbook owns the whole viewport. */}
+        {!fullBleed && <DemoBar />}
       </div>
       {/* The player lives HERE, in the shell, not in a route — which is
         what lets audio keep playing across navigations. It reserves no
         space and shrinks no page: on `/yt` it is drawn into that page's
         video slot, and everywhere else it runs audio-only behind a quiet
         bar. See `PlayerEngine` for what that costs. */}
-      <PlayerEngine />
+      <PlayerEngine showBar={!fullBleed} />
       {/* **No presence room here any more, and that is the point.** Sharing a
         screen used to need a Grav Stream iframe mounted beside the shell,
         because the capture prompt can only be opened from inside the frame

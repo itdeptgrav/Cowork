@@ -18,6 +18,7 @@ import {
   type LocalMindMap,
 } from "@/lib/rules/mindmap/importLocal";
 import { formatStamp } from "@/lib/utils/format";
+import { RecordTable, type RecordItem } from "./RecordTable";
 import {
   CommandPalette,
   navigationCommands,
@@ -77,6 +78,10 @@ export function MindMapsArea({
     r.renameMindMap(id, title),
   );
   const [remove] = useAction((r, id: string) => r.deleteMindMap(id));
+  const [setMember] = useAction(
+    (r, id: string, employeeId: string, role: "viewer" | "editor" | null) =>
+      r.setMindMapMember(id, employeeId, role),
+  );
 
   const list = maps.data ?? [];
   /* The listed copy wins once it arrives; the just-created one only stands in
@@ -335,39 +340,52 @@ export function MindMapsArea({
 
     return (
       <>
-        {/* Column headers in Label type. This is the one place the system
-            spends tracked uppercase outside wayfinding, because a dense
-            table's headers are read as part of the figures under them. */}
-        <div className="flex items-center gap-4 border-b border-hairline px-4 py-1.5 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-          <span className="h-7 w-7 shrink-0" aria-hidden="true" />
-          <span className="w-[30%] shrink-0">Name</span>
-          <span className="min-w-0 flex-1">Size</span>
-          <span className="hidden w-[96px] shrink-0 text-right sm:block">
-            Updated
-          </span>
-          <span className="w-[56px] shrink-0" aria-hidden="true" />
-        </div>
-        <ul className="divide-y divide-hairline">{list.map(row)}</ul>
+        <RecordTable
+          noun="Mindmap"
+          /* The one thing a mindmap adds over a document or a sheet. */
+          showBranches
+          /* Mindmaps store owner/editor/viewer only — no "commenter" to grant. */
+          roles={["viewer", "editor"]}
+          items={list.map(toRecord)}
+          onOpen={(id) => setOpenId(id)}
+          onRename={(id, title) => void rename(id, title)}
+          /* No `onDuplicate`: the repository has no copy operation for a
+             mindmap, so that button is absent rather than inert. */
+          onDelete={(id) => void remove(id)}
+          onSetMembers={async (id, members) => {
+            /* `setMindMapMember` writes ONE member at a time, so the whole-list
+               contract is diffed here — sequentially, since concurrent writes to
+               one map would race. */
+            const before = list.find((m) => m.id === id)?.members ?? [];
+            const wanted = new Map(members.map((m) => [m.id, m.role]));
+            for (const [employeeId, role] of wanted) {
+              const stored = role === "viewer" ? "viewer" : "editor";
+              if (before.find((m) => m.employeeId === employeeId)?.role !== stored) {
+                await setMember(id, employeeId, stored);
+              }
+            }
+            for (const m of before) {
+              if (m.role !== "owner" && !wanted.has(m.employeeId)) {
+                await setMember(id, m.employeeId, null);
+              }
+            }
+            await maps.refetch?.();
+            return members;
+          }}
+        />
       </>
     );
   };
 
   return (
-    <Panel
-      padded={false}
-      label="Mindmaps"
-      className="flex min-h-[clamp(420px,64vh,760px)] flex-col"
-    >
-      <div className="flex items-center gap-2 border-b border-hairline px-4 py-2.5">
-        {/* Title, not a tracked eyebrow: an uppercase kicker over a list is a
-            defect in this system — the one kicker per view is spent on
-            wayfinding, and on the column headings below. */}
-        <h2 className="truncate text-[15px] leading-none font-medium tracking-[-0.012em] text-ink">
-          Mindmaps
-        </h2>
+    /* The same plain shell the Sheets surface uses — a count, the actions, then
+       the table. The Panel card and its bordered title bar are what made this
+       read as a different page from Sheets. */
+    <div className="flex min-h-0 flex-1 flex-col gap-3">
+      <div className="flex shrink-0 items-center gap-2">
         {list.length > 0 && (
-          <span className="text-[11px] text-ink-faint tabular-nums" data-figure>
-            {list.length}
+          <span className="text-[13px] text-ink-muted">
+            {list.length} {list.length === 1 ? "mindmap" : "mindmaps"}
           </span>
         )}
         <span className="flex-1" />
@@ -416,7 +434,7 @@ export function MindMapsArea({
       )}
 
       <div className="min-h-0 flex-1 overflow-y-auto scroll-slim">{body()}</div>
-    </Panel>
+    </div>
   );
 }
 
@@ -440,4 +458,40 @@ function RowAction({
       {children}
     </button>
   );
+}
+
+/**
+ * A stored mindmap as the shared workspace table wants it.
+ *
+ * `delta` is null for everyone: nothing records what branch count a given
+ * viewer last saw, so the column shows the count and a dash. Giving it a real
+ * value needs a per-viewer `lastSeenNodeCount`, written when a map is opened.
+ *
+ * `isMine` is true for everything listed, matching Documents: the repository
+ * returns only maps the viewer belongs to, and this component has never had the
+ * viewer's own employee id to compare against the owner.
+ */
+function toRecord(m: {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  createdById: string;
+  nodeCount: number;
+  members: { employeeId: string; role: string }[];
+}): RecordItem {
+  return {
+    id: m.id,
+    title: m.title,
+    createdAt: m.createdAt,
+    updatedAt: m.updatedAt,
+    createdBy: m.createdById,
+    isMine: true,
+    branches: { count: m.nodeCount, delta: null },
+    /* The owner shows in "Created by", so listing them again as a collaborator
+       would be the same person twice. */
+    members: m.members
+      .filter((x) => x.role !== "owner")
+      .map((x) => ({ id: x.employeeId, role: x.role === "viewer" ? ("viewer" as const) : ("editor" as const) })),
+  };
 }

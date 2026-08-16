@@ -6,8 +6,6 @@ import { usePathname } from "next/navigation";
 import { Mark } from "./Mark";
 import { useLens } from "./LensContext";
 import { ThemeToggle } from "./ThemeToggle";
-import { Avatar } from "@/components/ui/Avatar";
-import { ActiveWorkPill } from "@/components/features/tasks/TimerControl";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { getRepository } from "@/lib/repositories";
 import { useWheelPan } from "@/lib/hooks/useWheelPan";
@@ -26,7 +24,7 @@ import { useSession } from "@/components/features/auth/SessionProvider";
 import { canAccessAdminConsole } from "@/lib/rules/admin/access";
 import { useMusic } from "@/components/features/music/MusicContext";
 import { StatusButton } from "@/components/features/status/StatusButton";
-import { SignOutButton } from "@/components/features/auth/SignOutButton";
+import { ProfileMenu } from "@/components/features/auth/ProfileMenu";
 import type { Lens } from "@/lib/utils/types";
 
 /**
@@ -38,25 +36,6 @@ import type { Lens } from "@/lib/utils/types";
  * the work. The pill, the centred links and the filled active state are the
  * reference's own grammar and Cowork's, so they stay.
  */
-
-function InboxIcon() {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      className="h-[18px] w-[18px]"
-      fill="none"
-      aria-hidden="true"
-    >
-      <path
-        d="M2.5 11.5h3.2l1.1 2h6.4l1.1-2h3.2M2.5 11.5 4.4 4.2A1.6 1.6 0 0 1 6 3h8a1.6 1.6 0 0 1 1.6 1.2l1.9 7.3v3.9A1.6 1.6 0 0 1 15.9 17H4.1a1.6 1.6 0 0 1-1.6-1.6z"
-        stroke="currentColor"
-        strokeWidth="1.4"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
 
 function BellIcon() {
   return (
@@ -100,41 +79,72 @@ function MenuIcon({ open }: { open: boolean }) {
  * — an employee sees it and its trajectory *as they work*, rather than visiting
  * a separate destination. So it lives in the shell, on every route, and links
  * to the decomposition rather than replacing it.
+ *
+ * It is ALSO the score section's navigation entry — "Score (100%)" — which is
+ * why there is no separate Score tab in `navItems`: one button named the section
+ * and one showed the number, both going to `/score`. Styled as a nav tab, with
+ * the same active fill, so it reads as one of the sections it replaces.
  */
-function ScorePill() {
+function ScorePill({
+  notifications,
+  onVisit,
+}: {
+  /** So the merged Score button carries the score-section badge the old Score
+      tab did, and clears it on visit — otherwise a deduction or recheck would
+      count against a section nothing on the bar could show or dismiss. */
+  notifications: readonly { type: string; read: boolean }[];
+  onVisit: (href: string) => void;
+}) {
   const me = useViewerId();
+  const pathname = usePathname();
+  const active = pathname === "/score" || pathname.startsWith("/score/");
   const { data } = useQuery(
     (r) => (me ? r.getScoreOverview(me) : Promise.resolve(null)),
     [me],
   );
 
-  if (!data) {
-    return (
-      <span className="block h-8 w-[84px] rounded-full bg-[var(--surface-sunken)]" />
-    );
-  }
+  const pct = data ? Math.round(data.overallPercentage) : null;
+  const rising = data ? data.delta >= 0 : true;
 
-  const rising = data.delta >= 0;
   return (
     <Link
       href="/score"
-      className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-3 py-1.5 transition-colors duration-[180ms] hover:bg-[var(--control-hover)]"
+      onClick={() => onVisit("/score")}
+      aria-current={active ? "page" : undefined}
       title="Your performance score. Visible only to you and your reporting chain."
+      className={`inline-flex items-center gap-1 rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
+        active
+          ? "bg-ink text-[var(--body-bg)]"
+          : "text-ink-muted hover:bg-[var(--surface-sunken)] hover:text-ink"
+      }`}
     >
-      <span
-        data-figure
-        className="text-sm leading-none tracking-[-0.02em] text-ink"
-      >
-        {Math.round(data.overallPercentage)}%
-      </span>
-      <span
-        data-figure
-        className="text-xs leading-none text-ink-muted"
-        aria-label={`${rising ? "up" : "down"} ${Math.abs(data.delta)} points since the previous period`}
-      >
-        {rising ? "↑" : "↓"}
-        {Math.abs(Math.round(data.delta))}
-      </span>
+      <span>Score</span>
+      {pct === null ? (
+        /* The label is present and clickable while the number loads, rather than
+           a bare skeleton that is neither. `bg-current` tints to whichever state
+           the tab is in. */
+        <span
+          aria-hidden="true"
+          className="ml-0.5 inline-block h-3 w-9 animate-pulse rounded-full bg-current opacity-20"
+        />
+      ) : (
+        <span data-figure className="tabular-nums">
+          ({pct}%)
+        </span>
+      )}
+      {data && (
+        <span
+          data-figure
+          className={`text-xs ${active ? "opacity-70" : "text-ink-faint"}`}
+          aria-label={`${rising ? "up" : "down"} ${Math.abs(Math.round(data.delta))} points since the previous period`}
+        >
+          {rising ? "↑" : "↓"}
+          {Math.abs(Math.round(data.delta))}
+        </span>
+      )}
+      {/* The score section's unread badge — deductions, rechecks — cleared by
+          this same visit. */}
+      <NavCount href="/score" notifications={notifications} onDark={active} />
     </Link>
   );
 }
@@ -268,38 +278,6 @@ function NavCount({
     >
       {label}
     </span>
-  );
-}
-
-/**
- * Messages, with the unread-direct-message count the old app shows.
- *
- * `unreadDm` has been computed by the hook since it was ported and read by
- * nothing, so a direct message arriving raised the BELL badge and left the
- * Messages icon beside it unchanged — the notification pointing at a
- * conversation and the icon that opens conversations disagreeing about whether
- * anything had happened.
- *
- * The hook is mounted a second time here rather than lifted into context: it
- * subscribes through the same `onSnapshot` and Firestore de-duplicates
- * identical listeners, so this costs a second callback and no second read.
- * Lifting it would mean a provider around the whole shell for two numbers.
- */
-function MessagesLink({ unreadDm }: { unreadDm: number }) {
-
-  return (
-    <Link
-      href="/messages"
-      aria-label={
-        unreadDm ? `Messages, ${unreadDm} unread` : "Messages"
-      }
-      className="relative hidden h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink sm:grid"
-    >
-      <InboxIcon />
-      {unreadDm > 0 && (
-        <span className="absolute top-1 right-1 h-1.5 w-1.5 rounded-full bg-[var(--state-overdue)]" />
-      )}
-    </Link>
   );
 }
 
@@ -493,39 +471,21 @@ export function TopBar() {
                   on a task page, and going online should not require finding a
                   particular screen first. The manager side is untouched. */}
               <StatusButton />
-              {/* Present only while a session is running, so "what am I working
-                  on" is answerable from any route without a dead slot when the
-                  answer is nothing. */}
-              <span className="hidden deck:block">
-                <ActiveWorkPill />
-              </span>
-              <ScorePill />
+              {/* The active-work timer moved out of the top bar and into the
+                  Overview's active-work bar (`ActiveTimerBar`). */}
+              <ScorePill notifications={notifications} onVisit={visitSection} />
               <div className="hidden sm:block">
                 <LensToggle />
               </div>
-              <div className="hidden lg:block">
-                <ThemeToggle />
-              </div>
-
-              <MessagesLink unreadDm={messageUnread} />
 
               <NotificationBell unread={unread} />
 
+              {/* Avatar, and everything that used to sit loose beside it —
+                  Profile, Settings, Sign out — now revealed on hover under the
+                  one button. */}
               <span className="ml-0.5 hidden sm:block">
-                {me && (
-                  <Link href="/profile">
-                    <Avatar
-                      initials={me.initials}
-                      hue={me.hue}
-                      src={me.profilePictureUrl}
-                      name={me.displayName}
-                      size="md"
-                    />
-                  </Link>
-                )}
+                {me && <ProfileMenu me={me} />}
               </span>
-
-              <SignOutButton />
 
               <button
                 ref={menuBtnRef}

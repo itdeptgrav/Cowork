@@ -43,11 +43,11 @@
  * ───────────────────────────────────────────────────────────────────────────── */
 
 import { DashboardChrome } from "@/components/features/dashboard/Chrome";
+import { ActiveTimerBar } from "@/components/features/dashboard/ActiveTimerBar";
 import { DashboardSearch } from "@/components/features/dashboard/DashboardSearch";
 import { SignatureGraph } from "@/components/features/dashboard/SignatureGraph";
 import { ScoreStat, LoadStat } from "@/components/features/dashboard/Stats";
 import { AttentionCard } from "@/components/features/dashboard/AttentionCard";
-import { NowCard } from "@/components/features/dashboard/NowCard";
 import { TeamLoadCard } from "@/components/features/dashboard/TeamLoadCard";
 import { WorkMix } from "@/components/features/dashboard/WorkMix";
 import { NextCard } from "@/components/features/dashboard/NextCard";
@@ -62,7 +62,18 @@ export function Home() {
     <>
       <DashboardChrome />
 
-      <DashboardSearch />
+      {/* The active-work bar and the search share one row, split on the same
+          8 / 4 grid as the content below: the bar runs the width of the left
+          region (ending where the graph does), and the search fills the right
+          column, sitting above "Needs you". */}
+      <div className="mb-4 grid grid-cols-1 items-center gap-4 deck:grid-cols-12">
+        <div className="min-w-0 deck:col-span-8">
+          <ActiveTimerBar />
+        </div>
+        <div className="min-w-0 deck:col-span-4">
+          <DashboardSearch />
+        </div>
+      </div>
 
       {/* Two regions, not one grid of cells.
           A twelve-column grid with a row-spanning cell stretches its other rows
@@ -85,15 +96,24 @@ export function Home() {
             </div>
           </div>
 
-          {/* Row 2 — the two halves: now/start card and the work mix ring. */}
-          <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
-            <div className="min-w-0">
-              {team ? <TeamLoadCard /> : <NowCard />}
+          {/* Row 2 — the work mix ring. In the team lens it keeps its companion
+              (team load); the personal "now" surface has moved up into the
+              active-work bar, so the private lens gives the ring the full width
+              rather than leaving a hole where the card was. */}
+          {team ? (
+            <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
+              <div className="min-w-0">
+                <TeamLoadCard />
+              </div>
+              <div className="min-w-0">
+                <WorkMix />
+              </div>
             </div>
+          ) : (
             <div className="min-w-0">
               <WorkMix />
             </div>
-          </div>
+          )}
         </div>
 
         {/* The right-hand stack — list, gradient card, action card — running

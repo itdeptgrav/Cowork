@@ -238,6 +238,14 @@ export const config = {
    * authenticated; running the gate over them would make signing in require
    * being signed in. Other `/api` routes are NOT excluded — they carry data and
    * are gated like any page.
+   *
+   * `api/spreadsheet` is the deliberate exception among data routes: it does its
+   * OWN authorization in every handler (`workbookPrincipal`, which verifies the
+   * same Firebase signature the proxy checks, or the server session, and then
+   * ownership), and it must answer a caller in JSON — a real `401`/`404`/`409`
+   * the client repository reacts to — not a `307` to an HTML sign-in page, which
+   * `fetch` would follow into an unparseable body. Gating it here would break
+   * that contract without adding a check the route does not already make.
    */
   /**
    * The push and install assets are excluded, and they have to be.
@@ -261,6 +269,6 @@ export const config = {
    * device's token.
    */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/auth|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|icon-maskable-512.png|apple-icon.png).*)",
+    "/((?!_next/static|_next/image|favicon.ico|api/auth|api/spreadsheet|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|icon-maskable-512.png|apple-icon.png).*)",
   ],
 };
