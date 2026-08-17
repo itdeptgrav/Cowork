@@ -815,6 +815,33 @@ export function TimerControl({
         </span>
       );
     }
+    /**
+     * On the BAR, a blocked clock is still a clock.
+     *
+     * It used to be swapped for a word — an amber "Blocked" pill in place of
+     * the figure — and the row then had a slot that sometimes held a time and
+     * sometimes held a label, so the one thing the bar exists to show could
+     * disappear at the moment it mattered most. The figure stays and the fill
+     * turns amber; WHY it is amber, and the way out, are in the panel that
+     * opens on hover. It is not pressable, because the engine would refuse the
+     * write — see `blockedMessage` and the note at the top of `deadlineBlock`.
+     *
+     * The time shown is the banked total, and it does not move. Nothing accrues
+     * past a missed deadline; that is the owner decision this whole module
+     * exists to enforce, and a figure that kept climbing would say otherwise.
+     */
+    if (isBar) {
+      return (
+        <span
+          data-figure
+          title={blockedMessage(block)}
+          className={`inline-flex shrink-0 items-center justify-center rounded-full bg-[var(--state-warn)] font-medium text-[#1c1405] ${figSize}`}
+        >
+          <Icon.blocked className={glyphSize} />
+          {formatTimer(elapsed)}
+        </span>
+      );
+    }
     return (
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
         <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-3 py-1.5 text-[13px] text-[var(--state-overdue-ink)]">
@@ -981,7 +1008,22 @@ export function TimerControl({
         ) : (
           <Icon.play className={glyphSize} />
         )}
-        <span data-figure>{running ? formatTimer(elapsed) : "Start"}</span>
+        {/* **On the bar it is always a figure, never a word.**
+            The clock read "Start" at rest, so the one element the active-work
+            bar is built around showed a verb until you pressed it and a time
+            afterwards — the row changed shape on its own first action, and
+            "how long have I got" had no answer until work was already running.
+            It now reads 00:00:00 before the first press and the elapsed after,
+            so the same slot means the same thing at every point. The play
+            triangle beside it is what says it can be started; the label does
+            not have to do that job as well.
+
+            The dense task LIST keeps the word. There the clock is one cell
+            among many in a scannable column, a zeroed figure on every unstarted
+            row is noise, and the verb is the affordance. */}
+        <span data-figure>
+          {isBar || running ? formatTimer(elapsed) : "Start"}
+        </span>
       </button>
     );
   }

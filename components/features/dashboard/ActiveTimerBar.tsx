@@ -160,24 +160,6 @@ function Terms({
   const canCounter = budgetStage || (acceptStage && actions.canRefuseTerms);
   const reasonRequired = acceptStage && changed;
 
-  /* The committed date where one exists, else the DERIVED completion date — the
-     same pair every other surface reads, and the figure the task page labels
-     "Expected completion". A budget-only task never gets a committed deadline,
-     so falling back is what stops this reading "Not set" on the majority of
-     work.
-
-     **With the clock on it, not just the day.** A deadline is an instant, and
-     "17 Aug" is a whole working day of ambiguity about an instant — the reader
-     has to guess whether it means first thing, close of play, or the moment
-     their hours happen to run out. `formatDateTime` is the product's existing
-     way of saying a date with its time and carries the zone, which the bar
-     needs more than most surfaces: the clock in the page header is IST too, and
-     two times on one screen meaning different zones is the kind of thing nobody
-     catches until they miss something. */
-  const eta = formatDateTime(
-    view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
-  );
-
   /* The two stages' writes return different payloads and the bar wants none of
      them — it re-reads through the invalidated queries either way. */
   /**
@@ -234,21 +216,7 @@ function Terms({
         <span aria-hidden className="ml-auto" />
       )}
 
-      {/* 3′ · The date the budget beside it produces.
-            A number of hours only means something against a day: "four hours"
-            and "four hours, due Tuesday" are different offers, and the second
-            is the one being agreed. It sits in the reserved gap rather than in
-            a column of its own, so the two fixed slots to its right stay where
-            they are on every row and in every state. */}
-      <div className="shrink-0 text-right whitespace-nowrap">
-        <p className="text-[11px] leading-4 text-ink-faint">Task deadline</p>
-        <p
-          data-figure
-          className="mt-0.5 text-[13px] leading-4 tabular-nums text-ink"
-        >
-          {eta}
-        </p>
-      </div>
+      <DeadlineCell view={view} />
 
       {/* 4′ · TIME. The budget, adjustable — not a countdown. "N left" against a
             clock that has not started reads as time already draining away;
@@ -380,6 +348,47 @@ function Terms({
 }
 
 /**
+ * When the work is due — on EVERY state of the bar, not only while the terms
+ * are being agreed.
+ *
+ * It arrived beside the budget stepper, where it answers "four hours by when?",
+ * and stopped the moment the task was accepted — so the deadline was on screen
+ * while it was still a proposal and gone once it was a commitment, which is the
+ * wrong way round. It is the same figure either way and it sits in the same
+ * place, so accepting a task no longer changes what the row is telling you.
+ *
+ * The committed date where one exists, else the DERIVED completion date — the
+ * same pair every other surface reads, and the figure the task page labels
+ * "Expected completion". A budget-only task never gets a committed deadline, so
+ * falling back is what stops this reading "Not set" on the majority of work.
+ *
+ * **With the clock on it, not just the day.** A deadline is an instant, and
+ * "17 Aug" is a whole working day of ambiguity about an instant — the reader has
+ * to guess whether it means first thing, close of play, or the moment their
+ * hours happen to run out. `formatDateTime` is the product's existing way of
+ * saying a date with its time and carries the zone, which the bar needs more
+ * than most surfaces: the clock in the page header is IST too, and two times on
+ * one screen meaning different zones is the kind of thing nobody catches until
+ * they miss something.
+ */
+function DeadlineCell({ view }: { view: TaskView }) {
+  const eta = formatDateTime(
+    view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
+  );
+  return (
+    <div className="shrink-0 text-right whitespace-nowrap">
+      <p className="text-[11px] leading-4 text-ink-faint">Task deadline</p>
+      <p
+        data-figure
+        className="mt-0.5 text-[13px] leading-4 tabular-nums text-ink"
+      >
+        {eta}
+      </p>
+    </div>
+  );
+}
+
+/**
  * The clock, and what it does not have room to say.
  *
  * Dropping the row's captions took the remaining-budget figure off the bar. It
@@ -388,8 +397,13 @@ function Terms({
  * the way to ask for more, right beside it. Reaching that used to mean opening
  * the task and finding the deadline tab.
  *
- * The request itself is NOT made here. Asking for more time takes a reason, and
- * the deadline page is where that is captured; this is the door, not the form.
+ * **The request is made HERE**, in the same shape the terms were agreed in: a
+ * stepper for how much, a box for why, and one button that sends it. It used to
+ * be a link onto the task's deadline page — a different screen, a different
+ * form and a different set of words for the identical negotiation the reader
+ * had already been through once on this very row. `requestTimeBudgetExtension`
+ * is the write, so the figure still goes to the manager and still comes back
+ * for confirmation exactly as it does from the task page.
  */
 function TimerCell({
   view,
@@ -405,6 +419,14 @@ function TimerCell({
   timeLeft: string | null;
 }) {
   const { open, show, hide } = useHoverPanel();
+  /* The form is CLICK-opened, not hover-opened. A panel you have to keep the
+     pointer inside is fine for a sentence and impossible for a text box —
+     reaching the keyboard is leaving the trigger. The hover panel is suppressed
+     while it is up so the two never stack. */
+  const [asking, setAsking] = useState(false);
+  const askRef = useRef<HTMLDivElement | null>(null);
+  const askBtnRef = useRef<HTMLButtonElement | null>(null);
+  useDismiss(asking, () => setAsking(false), [askRef, askBtnRef]);
 
   return (
     <div
@@ -415,27 +437,19 @@ function TimerCell({
       <div
         className={`[&_button]:w-full [&_button]:justify-center ${running ? "" : FORCE_WHITE}`}
       >
-        {blocked ? (
-          /* **The blocked clock does not go in this slot.** `TimerControl`'s
-             blocked branch renders the figure, how long ago the deadline went
-             AND the two-sentence explanation — a block written for the task
-             panel, which has room for it. Dropped into a 132px column it
-             wrapped and took the whole bar from 66px to 247px. The bar shows
-             the state and the way out; the explanation is one click away. */
-          <Link href={`/tasks/${view.task.id}/deadline`} className={PILL_WARN}>
-            Blocked
-          </Link>
-        ) : (
-          <TimerControl
-            key={view.task.id}
-            view={view}
-            size="bar"
-            tone={breached ? "warn" : "default"}
-          />
-        )}
+        {/* Blocked is not a different control — `TimerControl`'s own bar branch
+            keeps the figure and turns it amber. The bar used to swap in a
+            "Blocked" pill here instead, which took the time off the row at the
+            moment somebody most wanted to see it. */}
+        <TimerControl
+          key={view.task.id}
+          view={view}
+          size="bar"
+          tone={breached || blocked ? "warn" : "default"}
+        />
       </div>
 
-      {open && (
+      {open && !asking && (
         /* Right-aligned: this is the last column on the row, so a panel opening
            leftward from its left edge would hang off the page. */
         <div className={`${HOVER_BRIDGE} right-0`}>
@@ -461,15 +475,133 @@ function TimerCell({
                   ? "The clock is past its budget. More time has to be agreed before this counts as on schedule."
                   : "Against the time agreed for this task."}
             </p>
-            <Link
-              href={`/tasks/${view.task.id}/deadline`}
+            <button
+              type="button"
+              ref={askBtnRef}
+              aria-haspopup="dialog"
+              onClick={() => setAsking(true)}
               className={`${PILL_GREY} mt-3`}
             >
               Request more time
-            </Link>
+            </button>
           </div>
         </div>
       )}
+
+      {asking && (
+        <MoreTime
+          view={view}
+          panelRef={askRef}
+          onClose={() => setAsking(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Asking for more hours, in the shape the first negotiation used.
+ *
+ * The same three parts in the same order as the terms panel — a stepper, a
+ * reason, one button that sends — because it is the same conversation held
+ * later. Somebody who agreed four hours on this row already knows how this
+ * works; making them learn a second form on a second screen to say "make it
+ * five" is the friction that had people quietly running over instead.
+ *
+ * It asks for an ADDITION, not a new total. `requestTimeBudgetExtension` takes
+ * `requestedAdditionalSecs`, and the two readings of "5h" — five more, or five
+ * altogether — differ by the whole budget already spent. The stepper starts at
+ * one hour, states the total it would make, and the write is unambiguous.
+ */
+function MoreTime({
+  view,
+  panelRef,
+  onClose,
+}: {
+  view: TaskView;
+  panelRef: React.RefObject<HTMLDivElement | null>;
+  onClose: () => void;
+}) {
+  const [extraSecs, setExtraSecs] = useState(3600);
+  const [reason, setReason] = useState("");
+  const current = view.task.estimatedEffortSecs ?? 0;
+
+  const [send, sendState] = useAction(async (r) => {
+    const result = discard(
+      await r.requestTimeBudgetExtension({
+        taskId: view.task.id,
+        requestedAdditionalSecs: extraSecs,
+        reason: reason.trim() || undefined,
+      }),
+    );
+    /* Closed on success only — a refused request keeps the panel and the words
+       that were typed into it. */
+    if (result.ok) onClose();
+    return result;
+  });
+
+  return (
+    <div className={`${HOVER_BRIDGE} right-0`} ref={panelRef}>
+      <div
+        role="dialog"
+        aria-label="Request more time"
+        className="frost-bar w-[300px] rounded-panel border border-hairline p-3.5 shadow-[var(--deck-seat)]"
+      >
+        <p className="text-[13px] font-medium text-ink">Ask for more time</p>
+        <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
+          How much on top of the {hoursMinutes(current)} already agreed. Your
+          manager answers, and you confirm whatever they grant.
+        </p>
+
+        <div className="mt-2.5">
+          <DurationField
+            compact
+            secs={extraSecs}
+            onChange={setExtraSecs}
+            minSecs={300}
+            aria-label="Extra time"
+          />
+        </div>
+        <p className="mt-1.5 text-[11px] text-ink-faint">
+          Would make <span data-figure>{hoursMinutes(current + extraSecs)}</span>{" "}
+          in total.
+        </p>
+
+        <textarea
+          value={reason}
+          autoFocus
+          rows={3}
+          onChange={(e) => setReason(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") onClose();
+          }}
+          placeholder="Why the work needs longer"
+          aria-label="Why the work needs longer"
+          className="mt-2.5 w-full resize-none rounded-panel bg-[var(--surface-sunken)] px-3 py-2 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink-muted)]"
+        />
+        {sendState.error && (
+          <p
+            role="alert"
+            className="mt-2 text-[11px] leading-relaxed text-[var(--state-overdue-ink)]"
+          >
+            {sendState.error}
+          </p>
+        )}
+
+        <div className="mt-2.5 flex gap-2">
+          <button type="button" onClick={onClose} className={PILL_GREY}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            disabled={sendState.isPending}
+            onClick={() => void send()}
+            className={PILL}
+          >
+            {sendState.isPending ? "Sending…" : "Send"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -661,16 +793,9 @@ const BOX =
 const PILL = `${BOX} justify-center bg-ink font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90 disabled:opacity-50`;
 /** The grey pill — a real action, but the secondary one on the row. */
 const PILL_GREY = `${BOX} justify-center bg-[var(--control)] font-medium text-ink hover:bg-[var(--control-hover)]`;
-/**
- * The amber pill — the blocked clock, and only that.
- *
- * Built from `BOX` rather than by overriding `PILL`: two `bg-*` utilities on one
- * element have equal specificity, so which wins is decided by their order in
- * Tailwind's output, not by the order they were written. Appending the amber to
- * `PILL` silently lost to its `bg-ink` and the blocked state rendered white —
- * exactly the same as a healthy one.
- */
-const PILL_WARN = `${BOX} justify-center bg-[var(--state-warn)] font-medium text-[#1c1405] hover:opacity-90`;
+/* The amber pill that used to stand in for a blocked clock is gone with it —
+   `TimerControl`'s own bar branch keeps the figure and turns it amber, so there
+   is one blocked appearance rather than two that have to be kept in step. */
 
 /**
  * Force the timer white while it is IDLE.
@@ -1013,6 +1138,11 @@ function Bar({
           {/* The same reserved gap the terms state leaves, so nothing to its
               right moves when a task is accepted. */}
           <span aria-hidden className="ml-auto" />
+
+          {/* And the same deadline, in the same place. Accepting a task changes
+              what the two right-hand slots DO; it must not change what the row
+              tells you about when the work is due. */}
+          <DeadlineCell view={displayed} />
 
           {/* 3 · Submit, GREY and on the left. It is a real move but the
                 secondary one while work is running — the clock is what the row
