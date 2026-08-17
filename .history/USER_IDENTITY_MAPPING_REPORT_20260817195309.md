@@ -5,7 +5,7 @@ Verify: **exit 0, 723 tests** (718 before).
 > The screenshot did not come through, so this traces the flow from the code and
 > from production data rather than from what was on screen.
 
-## Root cause: one endpoint, gated to the wrong audienceee
+## Root cause: one endpoint, gated to the wrong audience
 
 `LegacyRepository.#employeesById()` fetched the directory with
 `GET /cowork/employee/list`. The engine gates that route **`verifyCeoOrTL`**
