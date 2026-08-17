@@ -55,6 +55,8 @@ import {
 } from "../../rules/tasks/deadlineFeasibility.ts";
 import {
   acceptBudget as acceptBudgetRequest,
+  fetchTaskTabActivity,
+  markTaskTabSeen as markTaskTabSeenRequest,
   declineAssignment as declineAssignmentRequest,
   setActiveTaskBudget,
   setPriorityOrder,
@@ -340,7 +342,7 @@ import { readTimerFigures } from "../../rules/tasks/timerSession.ts";
 import {
   type Attendance as MeetingAttendance,
   creditsIn,
-  creditsInWindow,
+  crossDeptWindow,
   ordinaryWindow,
   roomEmptiedAtMs,
   roomIsEmpty,
@@ -3421,6 +3423,59 @@ export class LegacyRepository {
         applied.error.message ??
         "The agreed budget could not be applied to the task.",
     };
+  }
+
+  /**
+   * What is new on each tab, and when this viewer last looked.
+   *
+   * Both halves in ONE read: a message arriving between two requests would
+   * count as unread against a mark written after it, so the badge would never
+   * clear. The engine keys both maps by tab id and this method never names
+   * one — a tab added later is carried through untouched.
+   */
+  async readTaskTabActivity(taskId: TaskId): Promise<{
+    activity: Record<string, { lastAt: string | null; items?: { at: string; by?: string | null }[] }>;
+    seen: Record<string, string | null>;
+  }> {
+    const empty = { activity: {}, seen: {} };
+    try {
+      const token = await this.#token();
+      const r = await fetchTaskTabActivity({ token, taskId: String(taskId) });
+      if (!r.ok) return empty;
+      const body = (r.data ?? {}) as Record<string, unknown>;
+      return {
+        activity:
+          body.activity && typeof body.activity === "object"
+            ? (body.activity as never)
+            : {},
+        seen:
+          body.seen && typeof body.seen === "object" ? (body.seen as never) : {},
+      };
+    } catch {
+      /* A badge is an affordance, never the page. An unreachable engine costs
+         the dots and nothing else. */
+      return empty;
+    }
+  }
+
+  async markTaskTabSeen(
+    taskId: TaskId,
+    tabId: string,
+  ): Promise<ActionResult<null>> {
+    try {
+      const token = await this.#token();
+      const r = await markTaskTabSeenRequest({
+        token,
+        taskId: String(taskId),
+        tabId,
+      });
+      if (!r.ok) {
+        return { ok: false, code: "offline", message: "Could not mark the tab as read." };
+      }
+      return { ok: true, data: null };
+    } catch {
+      return { ok: false, code: "offline", message: "Could not mark the tab as read." };
+    }
   }
 
   async listTimeBudgetExtensions(
@@ -8562,8 +8617,17 @@ export class LegacyRepository {
          rules need this now: an ordinary meeting credits everybody in the room
          against their own queue, exactly as a cross-department one does, and
          only the window they are measured against differs. */
+      /* **Both rules now measure the same window** — OWNER DECISION, 17 Aug
+         2026. Cross-department used `creditsInWindow`, whose window is any two
+         people, so a room holding Rishee and Rakesh credited time on a task
+         Umung had not joined. Both branches are kept rather than collapsed:
+         they take the window from their own named rule, so changing one back
+         does not silently change the other. */
       const earners = hostTask.isCrossDepartment
-        ? creditsInWindow(meetingSession)
+        ? creditsIn(
+            meetingSession,
+            crossDeptWindow({ ...meetingSession, receiverId: assigneeId }),
+          )
         : creditsIn(
             meetingSession,
             /* Both sides, so neither can mint time alone — see ordinaryWindow. */

@@ -11,6 +11,7 @@ import {
 import { deadlineExtension } from "@/lib/rules/tasks/extensionRecords";
 import { routeExtensionRequest, type ExtensionRoute } from "@/lib/rules/tasks/extensionRouting";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
+import { DurationField } from "./DurationField";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -46,6 +47,34 @@ export function ExtensionDecisionCard({
   const [route, setRoute] = useState<ExtensionRoute | null>(null);
   const [failed, setFailed] = useState(false);
   const [reason, setReason] = useState("");
+  /**
+   * **The second choice, which this card never had.** OWNER DECISION, 17 Aug
+   * 2026.
+   *
+   * The escalation branch offered one button — "Approve X and move the
+   * deadline" — which granted the hours, filed a revised-date request and
+   * approved it in a single press. The filed request rendered as
+   * `DeadlineRevisionCard` for the instant before its own approval landed,
+   * which is the card flashing on screen and vanishing that was reported.
+   *
+   * That card offers "Approve" AND "Propose another date"; this one offered
+   * only the first, so a manager could accept the computed date and nothing
+   * else. Granting LESS than was asked was unreachable from here — and the
+   * message telling an assignee "granted +30m, not the +1h you asked for"
+   * already exists in `BudgetConfirmationCard` and could therefore never
+   * appear. The same two choices now live here, so the one-button step is
+   * gone rather than followed by a second card.
+   */
+  const [countering, setCountering] = useState(false);
+  /**
+   * The addition the manager is granting, in seconds.
+   *
+   * **Hours AND minutes, not minutes alone.** A plain minutes box asks
+   * somebody granting two hours to type 120, which is the same arithmetic the
+   * rest of the product refuses to make people do — `DurationField` is the
+   * control every other budget on this screen already uses.
+   */
+  const [grantSecs, setGrantSecs] = useState(0);
 
   /* The pending HOURS request, from its own store. `openProposal` is the
      deadline negotiation and is a different conversation. */
@@ -184,14 +213,49 @@ export function ExtensionDecisionCard({
     r.decideDeadlineExtension(recordId, "approved"),
   );
 
+  /**
+   * **Grant a different amount of time.**
+   *
+   * The first attempt at this filed a deadline record and then countered it,
+   * which was wrong twice over: one press wrote two things, so the manager was
+   * left facing a "revised deadline requested" card AND a "deadline revised"
+   * card, both reading the same date on both sides — 15:00 → 15:00, a request
+   * and its answer that differed in nothing.
+   *
+   * This card is about HOURS. Answering it with fewer hours is a decision on
+   * the request in front of it, not a new conversation about dates: legacy
+   * already carries the manager's own figure as `approvedSecs`, and the
+   * assignee's confirmation card already reads it — "granted +30m, not the +1h
+   * you asked for". That message existed and was unreachable, because this
+   * card had no way to name a smaller figure. It has one now, and no record is
+   * created to carry it.
+   *
+   * The deadline follows the budget, so a smaller grant produces an earlier
+   * date without anybody proposing one.
+   */
+  const [grantLess, grantLessState] = useAction((r, grantedTotalSecs: number) =>
+    r.decideTimeBudgetExtension(record!.id, "approved", {
+      reason: reason || undefined,
+      grantedSecs: grantedTotalSecs,
+    }),
+  );
+
   if (!record || addedSecs <= 0 || !subject) return null;
 
   const needsEscalation = needsDeadlineEscalation({
     kind,
     feasible: route?.outcome === "approve_budget",
   });
-  const busy = decideState.isPending || escalateState.isPending || applyDateState.isPending;
-  const error = decideState.error ?? escalateState.error ?? applyDateState.error;
+  const busy =
+    decideState.isPending ||
+    escalateState.isPending ||
+    applyDateState.isPending ||
+    grantLessState.isPending;
+  const error =
+    decideState.error ??
+    escalateState.error ??
+    applyDateState.error ??
+    grantLessState.error;
 
   return (
     <Panel data-help="extension-decision">
@@ -331,35 +395,113 @@ export function ExtensionDecisionCard({
              * can actually deliver.
              */
             <div className="mt-3">
-              <Button
-                tone="primary"
-                size="sm"
-                disabled={busy}
-                data-help="extension-grant-both"
-                onClick={async () => {
-                  const granted = await decide("approved");
-                  if (!granted.ok) return;
-                  /* File AND answer in one press — the caption's promise. A
-                     failure part-way leaves the pending card as the fallback,
-                     which is the old behaviour, never something worse. */
-                  const filed = await escalate(Date.now());
-                  if (filed.ok && filed.data?.id) {
-                    await applyDate(filed.data.id);
-                  }
-                  onChange();
-                }}
-              >
-                Approve {formatDurationTimer(requestedTotal)} and move the
-                deadline
-              </Button>
-              <p className="mt-1.5 text-[11px] text-ink-faint">
-                You set the hours and you own the deadline on this task, so both
-                are yours to decide. The new date is{" "}
-                {route.proposedDeadline
-                  ? formatStamp(route.proposedDeadline)
-                  : "the earliest the queue can deliver"}
-                .
-              </p>
+              {countering ? (
+                <>
+                  <Field
+                    label="Time to add instead"
+                    required
+                    hint={`They asked for ${formatDurationTimer(addedSecs)}. Anything less is shown to them as less than they asked for.`}
+                  >
+                    {/* The same hours-and-minutes control every other budget on
+                        this screen uses. A minutes-only box asked somebody
+                        granting two hours to type 120. */}
+                    <DurationField
+                      secs={grantSecs}
+                      onChange={setGrantSecs}
+                      aria-label="Time to add instead"
+                    />
+                  </Field>
+                  <Field
+                    label="Why?"
+                    className="mt-3"
+                    hint="Optional, and they see it."
+                  >
+                    <Textarea
+                      rows={2}
+                      value={reason}
+                      onChange={(e) => setReason(e.target.value)}
+                    />
+                  </Field>
+                  <div className="mt-2.5 flex flex-wrap gap-2">
+                    <Button
+                      tone="primary"
+                      size="sm"
+                      disabled={busy || grantSecs <= 0}
+                      data-help="extension-grant-less"
+                      onClick={async () => {
+                        /* A TOTAL, which is what the record stores — the field
+                           asks for the addition because that is what was asked
+                           for, and showing totals where somebody typed an
+                           addition is the confusion this whole area exists to
+                           have fixed. */
+                        const r = await grantLess(previousSecs + grantSecs);
+                        if (r.ok) {
+                          setCountering(false);
+                          onChange();
+                        }
+                      }}
+                    >
+                      Grant{" "}
+                      {grantSecs > 0 ? formatDurationTimer(grantSecs) : "this"}{" "}
+                      instead
+                    </Button>
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      onClick={() => setCountering(false)}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      tone="primary"
+                      size="sm"
+                      disabled={busy}
+                      data-help="extension-grant-both"
+                      onClick={async () => {
+                        const granted = await decide("approved");
+                        if (!granted.ok) return;
+                        /* File AND answer in one press — the caption's promise.
+                           A failure part-way leaves the pending card as the
+                           fallback, which is the old behaviour, never
+                           something worse. */
+                        const filed = await escalate(Date.now());
+                        if (filed.ok && filed.data?.id) {
+                          await applyDate(filed.data.id);
+                        }
+                        onChange();
+                      }}
+                    >
+                      Approve {formatDurationTimer(requestedTotal)} and move the
+                      deadline
+                    </Button>
+                    {/* The choice this card was missing. Without it a manager
+                        could only accept the computed date, so granting less
+                        than was asked had no surface at all. */}
+                    <Button
+                      size="sm"
+                      disabled={busy}
+                      data-help="extension-grant-different"
+                      onClick={() => setCountering(true)}
+                    >
+                      Grant a different amount
+                    </Button>
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-ink-faint">
+                    You set the hours and you own the deadline on this task, so
+                    both are yours to decide. Approving makes it{" "}
+                    {route.proposedDeadline
+                      ? formatStamp(route.proposedDeadline)
+                      : "the earliest the queue can deliver"}
+                    . Granting a different amount gives them less than they asked
+                    for, and they are told so in those words.
+                  </p>
+                </>
+              )}
             </div>
           ) : route.outcome === "escalate_deadline" ? (
             <div className="mt-3">

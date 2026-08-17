@@ -22,6 +22,7 @@ import {
   extensionHistoryLine,
   extensionProgress,
 } from "@/lib/rules/tasks/extensionProgress";
+import { negotiationHistory } from "@/lib/rules/tasks/negotiationHistory";
 import {
   deriveDueAt,
   describeWindow,
@@ -33,6 +34,7 @@ import {
   formatDateTime,
   formatDurationTimer,
   formatPercent,
+  formatStamp,
 } from "@/lib/utils/format";
 import { PROVISIONAL_RULES } from "@/lib/config/provisional";
 import type { TaskView } from "@/lib/repositories";
@@ -63,6 +65,32 @@ export function DeadlinePanel({
     id;
   const proposals = useQuery((r) => r.listProposals(taskId), [taskId]);
   const extensions = useQuery((r) => r.listExtensions(taskId), [taskId]);
+  /**
+   * **The two collections the current flows actually write.**
+   *
+   * Reported 17 Aug 2026: "Negotiation history — No proposals yet." on a task
+   * carrying six real rounds. `listProposals` reads `cowork_task_proposals`,
+   * which had zero records, while hours requests were landing in
+   * `cowork_task_budget_extensions` (4) and date escalations in
+   * `cowork_task_deadline_extensions` (2). The audit trail said nothing had
+   * been asked on a task renegotiated four times.
+   *
+   * The old query stays: tasks negotiated before the typed collections existed
+   * still have their history there, and dropping it would trade one silent
+   * gap for another.
+   */
+  const budgetRounds = useQuery(
+    (r) => r.listTimeBudgetExtensions(taskId),
+    [taskId],
+  );
+  const deadlineRounds = useQuery(
+    (r) => r.listDeadlineExtensionRecords(taskId),
+    [taskId],
+  );
+  const rounds = negotiationHistory({
+    budget: budgetRounds.data ?? [],
+    deadline: deadlineRounds.data ?? [],
+  });
   /* The ACTING viewer. This panel had the seeded id written into it three
      times, so it answered "am I the assignee" for one person no matter who was
      signed in — the receiver never saw their own actions, which is precisely
@@ -220,13 +248,110 @@ export function DeadlinePanel({
         <div className="border-b border-hairline px-5 py-3">
           <h2 className="text-sm font-medium text-ink">Negotiation history</h2>
         </div>
-        {proposals.isLoading ? (
+        {proposals.isLoading || budgetRounds.isLoading || deadlineRounds.isLoading ? (
           <div className="px-5 py-3">
             <SkeletonRows rows={3} />
           </div>
-        ) : !proposals.data?.length ? (
-          <p className="px-5 py-4 text-sm text-ink-faint">No proposals yet.</p>
         ) : (
+          <>
+            {/* Every round of the time conversation, hours and dates together
+                and each saying which it is. See `negotiationHistory`. */}
+            {rounds.length > 0 && (
+              <div className="divide-y divide-hairline">
+                {rounds.map((row) => (
+                  <div key={row.id} className="px-5 py-2.5">
+                    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                      <Chip
+                        tone={
+                          row.status === "accepted" || row.status === "approved"
+                            ? "positive"
+                            : row.status === "rejected"
+                              ? "overdue"
+                              : row.status === "pending" ||
+                                  row.status === "counter_proposed"
+                                ? "extension"
+                                : "neutral"
+                        }
+                      >
+                        {row.status === "counter_proposed"
+                          ? "countered"
+                          : row.status}
+                      </Chip>
+                      <span className="text-sm text-ink">
+                        {row.kind === "hours" ? (
+                          <>
+                            Extra time ·{" "}
+                            <span data-figure>
+                              {formatDurationTimer(row.asked.previousSecs ?? 0)}{" "}
+                              + {formatDurationTimer(row.asked.addedSecs ?? 0)}
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            Deadline ·{" "}
+                            <span data-figure>
+                              {row.asked.deadline
+                                ? formatStamp(row.asked.deadline)
+                                : "—"}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    </div>
+
+                    {/* What was actually granted, where it differed from what
+                        was asked. OWNER REQUIREMENT, 17 Aug 2026: somebody who
+                        asked for an hour and was given thirty minutes has to
+                        see BOTH figures, never the smaller one on its own. */}
+                    {row.granted !== null && (
+                      <p className="mt-0.5 text-[12px] text-ink-muted">
+                        Granted{" "}
+                        <span data-figure className="text-ink">
+                          {row.kind === "hours"
+                            ? formatDurationTimer(
+                                Math.max(
+                                  0,
+                                  (row.granted.totalSecs ?? 0) -
+                                    (row.asked.previousSecs ?? 0),
+                                ),
+                              )
+                            : row.granted.deadline
+                              ? formatStamp(row.granted.deadline)
+                              : "—"}
+                        </span>
+                        {", not the "}
+                        <span data-figure>
+                          {row.kind === "hours"
+                            ? formatDurationTimer(row.asked.addedSecs ?? 0)
+                            : row.asked.deadline
+                              ? formatStamp(row.asked.deadline)
+                              : "—"}
+                        </span>{" "}
+                        that was asked for.
+                      </p>
+                    )}
+
+                    {row.reason && (
+                      <p className="mt-0.5 text-[12px] text-ink-faint">
+                        “{row.reason}”
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Nothing at all — from EITHER source. Saying "no proposals" while
+                six rounds sat in a collection this panel did not read is the
+                fault being fixed, so the empty state has to mean empty. */}
+            {rounds.length === 0 && !proposals.data?.length && (
+              <p className="px-5 py-4 text-sm text-ink-faint">
+                Nothing has been asked for on this task yet.
+              </p>
+            )}
+          </>
+        )}
+        {!proposals.isLoading && !!proposals.data?.length && (
           <div className="divide-y divide-hairline">
             {proposals.data.map((p) => (
               <div

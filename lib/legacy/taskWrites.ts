@@ -814,3 +814,41 @@ export async function acceptBudget(input: {
     token: input.token,
   });
 }
+
+/**
+ * What is new on each tab of a task, and when this person last looked.
+ *
+ * Both halves in one read: the badge needs the activity and the mark together,
+ * and two requests could disagree — a message arriving between them would
+ * count as unread against a mark written after it.
+ */
+export async function fetchTaskTabActivity(input: {
+  token: string;
+  taskId: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/tab-activity`,
+    method: "GET",
+    token: input.token,
+  });
+}
+
+/**
+ * Mark one tab read, for this person, now.
+ *
+ * Server-side deliberately — see `readTaskTabActivity` on the repository. A
+ * mark kept in one browser would leave the same message unread on every other
+ * device somebody signs in on.
+ */
+export async function markTaskTabSeen(input: {
+  token: string;
+  taskId: string;
+  tabId: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/tab-seen`,
+    method: "POST",
+    body: { tabId: input.tabId },
+    token: input.token,
+  });
+}

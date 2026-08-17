@@ -124,7 +124,21 @@ test("accepting the lead task moves it to the active queue and closes the provis
 
 /* ── Through the display layer ─────────────────────────────────────────── */
 
-test("getPersonPriority reports the provisional position, not the raw stored gap", () => {
+test("getPersonPriority reports the manager's stored rank on pending work", () => {
+  /**
+   * **REVERSED — OWNER DECISION, 17 Aug 2026.** This used to assert `rank` was
+   * 2, the pending pile renumbered to close container gaps.
+   *
+   * Reported: a task stored at rank 2 displayed "P1 to accept" beside an
+   * accepted task at "P1", and no other screen — the priority editor, the
+   * record — ever said 1. Gap-closing is what makes the ACTIVE queue read as a
+   * contiguous "what is next"; work nobody has committed to has no schedule to
+   * be contiguous with, and renumbering it produced a figure tracing to no
+   * decision anyone made.
+   *
+   * The provisional position still decides the SCALE — that is what earns the
+   * "to accept" suffix, marking the row as outside the live queue.
+   */
   const positions = provisionalQueuePositions(screenshotEntries());
   const result = getPersonPriority({
     task: { status: "assigned", priority: 3 },
@@ -133,12 +147,31 @@ test("getPersonPriority reports the provisional position, not the raw stored gap
     provisionalPosition: positions.get("T711") ?? null,
     viewerId: "me",
   });
-  assert.equal(result.rank, 2, "T711 is the second real subtask, not P3");
+  assert.equal(result.rank, 3, "the rank a manager actually chose");
   assert.equal(result.scale, "provisional_position");
   assert.equal(result.isHistoric, false);
 });
 
-test("displayPriority prefers a holder's provisional position over their raw stored rank", () => {
+test("pending work with no stored rank shows nothing, not an invented one", () => {
+  /* Nobody chose a number, so there is no number to show. Before the reversal
+     the pile position filled the gap and read as a real priority. */
+  const positions = provisionalQueuePositions(screenshotEntries());
+  const result = getPersonPriority({
+    task: { status: "assigned", priority: null },
+    subjectId: "me",
+    queuePosition: null,
+    provisionalPosition: positions.get("T711") ?? null,
+    viewerId: "me",
+  });
+  assert.equal(result.rank, null);
+  assert.equal(result.scale, "none");
+});
+
+test("a manager reads the same figure off pending work as its assignee", () => {
+  /* Reversed with the rest, 17 Aug 2026 — and this direction matters most:
+     a manager seeing the pile position while the assignee saw the stored rank
+     would be two scales on one task, the exact split this file exists to have
+     ended. */
   const result = displayPriority({
     status: "assigned",
     viewerId: "manager",
@@ -146,7 +179,7 @@ test("displayPriority prefers a holder's provisional position over their raw sto
       { employeeId: "report", rank: 3, queuePosition: null, provisionalPosition: 2 },
     ],
   });
-  assert.equal(result.rank, 2);
+  assert.equal(result.rank, 3);
   assert.equal(result.scale, "provisional_position");
   assert.equal(result.subjectId, "report");
   assert.equal(result.isMine, false);

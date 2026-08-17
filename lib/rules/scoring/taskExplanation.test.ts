@@ -16,6 +16,10 @@ import type { ScoreUnit } from "../../domain/index.ts";
 const clean = {
   taskScore: 1, deadlinesMissed: 0, extensionsFiled: 0,
   reworksReceived: 0, isRejected: false, c1Status: "completed",
+  /* The engine's per-event costs, empty on a clean task. Added 17 Aug 2026 so
+     each reason can name what it cost instead of leaving the row's total as
+     the only figure on screen. */
+  deductions: [], baseScore: 1,
 };
 
 test("a clean task reads as three things done well", () => {
@@ -122,4 +126,90 @@ test("this module computes no score", () => {
   }
   /* And it must not reach into the engine for one either. */
   assert.equal(/from "\.\/engine/.test(code), false);
+});
+
+/* ── What each event cost ─────────────────────────────────────────────────── */
+
+test("a charged reason carries the engine's figure", () => {
+  /**
+   * Reported 17 Aug 2026: "std task 1" showed `+0.80 pts` with the reasons
+   * "Approved on the first submission" and "Missed the deadline" — and no way
+   * to tell that the deadline was what took 0.20 of it.
+   */
+  const reasons = reasonsFor({
+    ...clean,
+    taskScore: 0.8,
+    deadlinesMissed: 1,
+    deductions: [{ event: "deadline", count: 1, points: -0.2 }],
+  });
+  const missed = reasons.find((r) => r.text === "Missed the deadline");
+  assert.equal(missed?.points, -0.2);
+  /* And a positive reason is not a charge, so it shows no figure at all. */
+  const good = reasons.find((r) => r.text === "Approved on the first submission");
+  assert.equal(good?.points, null);
+});
+
+test("a record with no breakdown shows no figure, never a zero", () => {
+  /* Rows scored before the engine sent `scoreBreakdown` report nothing. "Cost
+     nothing" and "not reported" are different claims and only one is true. */
+  const reasons = reasonsFor({ ...clean, deadlinesMissed: 1, deductions: [] });
+  assert.equal(reasons.find((r) => r.text === "Missed the deadline")?.points, null);
+});
+
+test("an extension shows the zero the engine actually charged", () => {
+  /**
+   * **The trap this whole path exists to avoid.** `c1ExtensionDeduction` is
+   * configured at 0.3 and `calculateTaskScore` multiplies extensions by a
+   * literal `0`. Anything deriving the figure from config would print −0.30
+   * against a score nothing was taken from. The engine reports the zero and
+   * the page shows the zero.
+   */
+  const reasons = reasonsFor({
+    ...clean,
+    extensionsFiled: 1,
+    deductions: [{ event: "extension", count: 1, points: 0 }],
+  });
+  const ext = reasons.find((r) => r.text === "An extension was requested");
+  assert.equal(ext?.points, 0, "a REPORTED zero is a figure and must show");
+  assert.notEqual(ext?.points, null);
+});
+
+test("the page never computes a deduction of its own", () => {
+  /* The rule this file opens with. A second opinion computed here would
+     eventually disagree with the score it is explaining — and, today, would
+     disagree immediately about extensions. */
+  /* Comments stripped first — the documentation NAMES these settings in order
+     to explain why it must not read them, which is the opposite of the fault
+     being guarded against. */
+  const code = readFileSync("lib/rules/scoring/taskExplanation.ts", "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+  assert.equal(
+    /c1DeadlineDeduction|c1ReworkDeduction|c1ExtensionDeduction|c1BaseScore/.test(code),
+    false,
+    "the explanation is reading scoring config — it must carry the engine's figures, not re-derive them",
+  );
+  assert.match(code, /facts\.deductions\.find/);
+});
+
+test("factsOf keeps only well-formed breakdown entries", () => {
+  const facts = factsOf({
+    earnedPoints: 0.8,
+    deadlinesMissed: 1,
+    scoreBreakdown: [
+      { event: "deadline", count: 1, points: -0.2 },
+      { event: "rework" },                      // no figure
+      { count: 2, points: -0.4 },               // no event
+      null,
+    ],
+    baseScore: 1,
+  } as unknown as Parameters<typeof factsOf>[0]);
+  assert.equal(facts.deductions.length, 1);
+  assert.equal(facts.deductions[0].event, "deadline");
+  assert.equal(facts.baseScore, 1);
+  /* And a response without one leaves the sum unstated rather than wrong. */
+  assert.equal(
+    factsOf({ earnedPoints: 1 } as unknown as Parameters<typeof factsOf>[0]).baseScore,
+    null,
+  );
 });
