@@ -171,16 +171,65 @@ export function HelpAssistant() {
       {tour && <GuidedTour guide={tour} onClose={() => setTour(null)} />}
       <div
         ref={rootRef}
-        /* Bottom RIGHT: the music bar occupies bottom-left and the prototype bar
-         bottom-centre. Reserves no space and shrinks no page. */
-        className="pointer-events-none fixed right-[clamp(12px,3vw,32px)] bottom-[clamp(12px,3vw,28px)] z-40 flex flex-col items-end gap-2"
+        /*
+         * Top RIGHT, on the top bar's own centre line where there is room beside
+         * it, and tucked under the bar where there is not.
+         *
+         * All three numbers come from the header's real geometry rather than
+         * being guessed. The bar sits at `pt-[clamp(10px,1.6vw,16px)]` and its
+         * pill is 52px tall, so its centre is that padding + 26; a 31px control
+         * centres on it at padding + 10.5.
+         *
+         * HORIZONTAL is the part that is easy to get wrong. The pill is
+         * `mx-auto max-w-[1360px]`, so it only stops short of the gutter once
+         * the content column is wider than 1360 — below that it runs the full
+         * width and anything in the gutter lands on top of the avatar. `right`
+         * therefore takes whichever is further in: the page gutter, or 8px
+         * outside the pill's right edge (`50% - 680 - 8 - 31`).
+         *
+         * Under 1520px even that has nowhere to go, so the control drops back
+         * below the bar. The arithmetic says 1502 (= 2 × (719 + 32)); the
+         * breakpoint is 1520 because `50%` resolves against the layout viewport
+         * while the media query does not, so a classic scrollbar eats ~15px of
+         * the margin and the gap closed to 1px at exactly 1502. Measured, not
+         * guessed.
+         *
+         * It moved up from the bottom, where three floating things were
+         * competing for one edge — the music bar at bottom-left, the prototype
+         * bar at bottom-centre and this at bottom-right.
+         */
+        className="pointer-events-none fixed top-[calc(clamp(10px,1.6vw,16px)+60px)] right-[max(clamp(12px,3vw,32px),calc(50%-719px))] z-40 flex flex-col items-end gap-2 min-[1520px]:top-[calc(clamp(10px,1.6vw,16px)+10.5px)]"
       >
+        {/* The trigger comes FIRST now, in the DOM as well as on screen. The
+            panel used to sit above it and open upward; opening downward from the
+            top means the trigger has to precede it, or tabbing off the trigger
+            would jump past the panel it just opened. */}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-haspopup="dialog"
+          aria-expanded={open}
+          aria-controls={open ? panelId : undefined}
+          aria-label={open ? "Close help" : "Open help"}
+          /* 31px — the 44px control at 70%. Below this the glyph stops being
+             comfortably clickable, and the hit area is already under the 44px
+             touch target, which is why it keeps its own gutter of clear space. */
+          className="frost-bar pointer-events-auto grid h-[31px] w-[31px] place-items-center rounded-full border border-hairline text-[13px] font-medium text-ink shadow-[var(--deck-seat)] transition-colors hover:bg-[var(--control)]"
+        >
+          {open ? "✕" : "?"}
+        </button>
+
         {open && (
           <div
             id={panelId}
             role="dialog"
             aria-label="Cowork help"
-            className="frost-bar pointer-events-auto flex h-[min(560px,70vh)] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-panel border border-hairline shadow-[var(--deck-seat)]"
+            /* The extra 10px only in centred mode: there the trigger straddles
+               the bar's own y-range, so 8px below the BUTTON is still 2px above
+               the bar's bottom edge, and the panel's top corner slid under it.
+               This gives the panel the same 8px clearance from the bar that the
+               button has from the pill's side. */
+            className="frost-bar pointer-events-auto flex h-[min(560px,70vh)] w-[min(380px,calc(100vw-24px))] flex-col overflow-hidden rounded-panel border border-hairline shadow-[var(--deck-seat)] min-[1520px]:mt-2.5"
           >
             <div className="flex items-center gap-2 border-b border-hairline px-4 py-3">
               <h2 className="text-sm font-medium text-ink">Help</h2>
@@ -296,17 +345,6 @@ export function HelpAssistant() {
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={() => setOpen((v) => !v)}
-          aria-haspopup="dialog"
-          aria-expanded={open}
-          aria-controls={open ? panelId : undefined}
-          aria-label={open ? "Close help" : "Open help"}
-          className="frost-bar pointer-events-auto grid h-11 w-11 place-items-center rounded-full border border-hairline text-sm font-medium text-ink shadow-[var(--deck-seat)] transition-colors hover:bg-[var(--control)]"
-        >
-          {open ? "✕" : "?"}
-        </button>
       </div>
     </>
   );

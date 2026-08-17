@@ -114,6 +114,39 @@ export function useWorkbookPersistence(
      render) so its save closure can read the id/revision refs. */
   const autosaverRef = useRef<Autosaver<SerializedWorkbook> | null>(null);
 
+  /* The name a draft will be created under.
+     A draft has nothing to rename yet, so a name typed before the record exists
+     has to be held somewhere until there is one. It used to be dropped on the
+     floor: `rename` returned early without an id, so the typed name never
+     reached `createWorkbook`, and a sheet somebody had deliberately named was
+     stored as "Untitled sheet". */
+  const pendingTitle = useRef(draftTitle);
+
+  /**
+   * Give this draft a stored record, now.
+   *
+   * The one creation path, whether the trigger is the first cell typed or a
+   * deliberate Save. It is guarded twice — an id already exists, or a creation
+   * is in flight — so two triggers arriving together still make one workbook.
+   */
+  async function ensureRecord(): Promise<void> {
+    if (meta.current.id || creatingRef.current) return;
+    creatingRef.current = true;
+    try {
+      const data = controllerRef.current.serialize();
+      const made = await createWorkbook(pendingTitle.current, data);
+      autosaverRef.current?.setBaseline(data);
+      meta.current = { id: made.id, revision: made.revision, ready: true };
+      setLoadedId(made.id);
+      setTitle(made.title);
+      setState("saved");
+      onCreated?.(made.id);
+    } catch (e) {
+      creatingRef.current = false;
+      handleError(e);
+    }
+  }
+
   /* Build the autosaver and load the CHOSEN workbook. Re-runs when the choice
      changes, so opening another workbook tears the old autosaver down (its
      pending save is cancelled) before the new one is wired up. */
@@ -191,24 +224,8 @@ export function useWorkbookPersistence(
        filled the list with empty "Untitled sheet" rows: every glance at New
        sheet left a permanent record behind, whether or not anything was typed. */
     if (draft && !meta.current.id) {
-      if (creatingRef.current) return;
       if (!hasContent(controllerRef.current.workbook)) return;
-      creatingRef.current = true;
-      (async () => {
-        try {
-          const data = controllerRef.current.serialize();
-          const made = await createWorkbook(draftTitle, data);
-          auto.setBaseline(data);
-          meta.current = { id: made.id, revision: made.revision, ready: true };
-          setLoadedId(made.id);
-          setTitle(made.title);
-          setState("saved");
-          onCreated?.(made.id);
-        } catch (e) {
-          creatingRef.current = false;
-          handleError(e);
-        }
-      })();
+      void ensureRecord();
       return;
     }
 
@@ -216,14 +233,50 @@ export function useWorkbookPersistence(
     if (auto.pushLazy(() => controllerRef.current.serialize())) setState("saving");
   }, [wb]);
 
+  /**
+   * Name it — before or after it has a record.
+   *
+   * On a draft this used to return without doing anything at all: no stored
+   * name, and not even the typed one on screen. The title box reverted to
+   * "Untitled sheet" under the reader's hands and the name was gone for good,
+   * because the eventual `createWorkbook` used the default rather than what had
+   * been typed.
+   *
+   * Naming a draft still does not CREATE it. A name is not content, and
+   * creating on a name would put the empty rows back that the draft rule exists
+   * to keep out of the list — somebody who names a sheet, thinks better of it
+   * and leaves should not find it there. The name is held, and whatever creates
+   * the record — the first cell, or Save — creates it under that name.
+   */
   function rename(next: string): void {
     const name = next.trim();
-    if (!name || !meta.current.id) return;
+    if (!name) return;
     setTitle(name); // optimistic
+    if (!meta.current.id) {
+      pendingTitle.current = name;
+      return;
+    }
     renameWorkbook(meta.current.id, name).catch(handleError);
   }
 
+  /**
+   * **Save means save, including the first time.**
+   *
+   * This flushed the autosaver, whose save is a no-op without an id — so on a
+   * draft that had not yet earned a record, File ▸ Save wrote nothing, created
+   * nothing, and said "Saved." A sheet somebody made, named and saved was
+   * simply not in the list afterwards, with no error to explain it.
+   *
+   * Autosave declines to keep a blank workbook, and should: opening New sheet
+   * and looking at it is not a decision. Pressing Save is. It is the same line
+   * the document editor already draws — an explicit save keeps an empty
+   * document — and sheets only had half of it.
+   */
   function saveNow(): void {
+    if (!meta.current.id) {
+      void ensureRecord();
+      return;
+    }
     void autosaverRef.current?.flush();
   }
 

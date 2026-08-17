@@ -31,6 +31,16 @@ interface Slice {
   tone: string;
   href: string;
   match: (v: TaskView) => boolean;
+  /**
+   * Shown even at zero.
+   *
+   * The three problem states only. "Overdue 0" is worth a row — it is the
+   * reassurance the header pills used to give, and their absence is what a
+   * reader would otherwise have to notice and interpret. The ordinary states
+   * appear when they have something in them, as before: a row of six with four
+   * zeros in it is a worse read than a row of two.
+   */
+  always?: boolean;
 }
 
 const SLICES: Slice[] = [
@@ -40,6 +50,7 @@ const SLICES: Slice[] = [
     tone: "var(--state-overdue)",
     href: "/tasks?view=tasks",
     match: (v) => v.isOverdue,
+    always: true,
   },
   {
     id: "blocked",
@@ -47,6 +58,7 @@ const SLICES: Slice[] = [
     tone: "var(--state-blocked)",
     href: "/tasks?view=tasks",
     match: (v) => !v.isOverdue && v.task.isBlocked,
+    always: true,
   },
   {
     id: "review",
@@ -55,6 +67,7 @@ const SLICES: Slice[] = [
     href: "/tasks?view=approvals",
     match: (v) =>
       !v.isOverdue && !v.task.isBlocked && v.task.status === "in_review",
+    always: true,
   },
   {
     id: "progress",
@@ -109,6 +122,19 @@ export function WorkMix({ className = "" }: { className?: string }) {
     count: open.filter(s.match).length,
   }));
   const total = parts.reduce((n, p) => n + p.count, 0);
+
+  /* Which rows appear: everything with something in it, plus the three problem
+     states whether or not they do. */
+  const shown = parts.filter((p) => p.count > 0 || p.always);
+  /* The filled row is whichever of the problem states is actually a problem
+     today — the treatment the header pills carried, kept because it is the one
+     thing on this card that survives a glance. Nothing is filled when nothing
+     is wrong; a permanently highlighted row stops meaning anything. */
+  const leadId =
+    shown.find((p) => p.id === "overdue" && p.count > 0)?.id ??
+    shown.find((p) => p.id === "blocked" && p.count > 0)?.id ??
+    shown.find((p) => p.id === "review" && p.count > 0)?.id ??
+    null;
 
   /* Each arc starts where the previous one ended. Reduced rather than
      accumulated through a mutable cursor, which React's rules forbid during
@@ -209,35 +235,45 @@ export function WorkMix({ className = "" }: { className?: string }) {
             </span>
           </div>
 
-          {/* The legend, two columns, as the reference lays it out. */}
-          <ul className="grid min-w-0 flex-1 grid-cols-2 gap-x-4 gap-y-2.5">
-            {parts
-              .filter((p) => p.count > 0)
-              .map((p) => (
+          {/* The legend IS the filter row.
+              These used to be two things: a plain two-column legend here, and a
+              pill row of Overdue / In review / Blocked / All open beside the
+              page title. They were the same counts over the same query — the
+              header's set was a strict subset of this one, with the ring's
+              centre figure standing in for "All open" — so a reader comparing
+              them was checking whether two readouts of one fact agreed. One
+              row, carrying both jobs: it names the parts of the ring AND jumps
+              into that slice of the list. The dot keeps each row tied to its
+              arc, which a bare pill would have thrown away. */}
+          <ul className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            {shown.map((p) => {
+              const lead = p.id === leadId;
+              return (
                 <li key={p.id} className="min-w-0">
                   <Link
                     href={p.href}
-                    className="group block min-w-0 rounded-inset"
+                    className={`inline-flex items-center gap-2 rounded-full py-1.5 pr-3 pl-2.5 text-xs font-medium transition-colors ${
+                      lead
+                        ? "bg-ink text-[var(--body-bg)]"
+                        : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
+                    }`}
                   >
-                    <span className="flex min-w-0 items-center gap-1.5">
-                      <span
-                        aria-hidden="true"
-                        className="h-2.5 w-[3px] shrink-0 rounded-full"
-                        style={{ backgroundColor: p.tone }}
-                      />
-                      <span className="min-w-0 truncate text-[11px] text-ink-faint group-hover:text-ink-muted">
-                        {p.label}
-                      </span>
-                    </span>
+                    <span
+                      aria-hidden="true"
+                      className="h-2.5 w-[3px] shrink-0 rounded-full"
+                      style={{ backgroundColor: p.tone }}
+                    />
+                    <span className="min-w-0 truncate">{p.label}</span>
                     <span
                       data-figure
-                      className="mt-0.5 block text-sm text-ink group-hover:underline group-hover:underline-offset-2"
+                      className={lead ? "opacity-80" : "text-ink-faint"}
                     >
                       {p.count}
                     </span>
                   </Link>
                 </li>
-              ))}
+              );
+            })}
           </ul>
         </div>
       )}

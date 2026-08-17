@@ -269,6 +269,14 @@ export const config = {
    * device's token.
    */
   matcher: [
-    "/((?!_next/static|_next/image|favicon.ico|api/auth|api/spreadsheet|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|icon-maskable-512.png|apple-icon.png).*)",
+    /* `icon.svg` belongs on this list for the same reason every other icon does,
+       and its absence was a real fault rather than an oversight with no effect:
+       it is the app-router favicon (`app/icon.svg`), so an unauthenticated fetch
+       — which is most favicon fetches, since browsers request them early and
+       outside the page's own session state — was answered with a 302 to
+       `/signin` and a page of HTML. A browser handed HTML where it asked for an
+       image keeps whatever icon it had, which is why replacing the artwork did
+       not change the tab. */
+    "/((?!_next/static|_next/image|favicon.ico|icon.svg|api/auth|api/spreadsheet|uireferences|firebase-messaging-sw.js|manifest.json|icon-192.png|icon-512.png|icon-maskable-512.png|apple-icon.png|badge-96.png).*)",
   ],
 };

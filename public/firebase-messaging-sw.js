@@ -42,7 +42,14 @@
 // activate handler below deletes every `cowork-*` cache that is not in `keep`,
 // so installing this version is what evicts the poisoned copies. Without the
 // bump the fix would ship and the bad bytes would stay.
-const SW_VERSION = "1.2.0";
+/* 1.3.0 — the brand icons were replaced with the real artwork, and the old
+   white-backed ones were sitting in this worker's precache. `activate` deletes
+   every `cowork-*` cache that is not in the current keep set, so the version
+   bump is what evicts them; without it a notification keeps showing the icon
+   that was cached the day the worker installed, however many times the file on
+   the server changes. A new asset is not a new URL here — the names are stable
+   by design, so the cache has to be told. */
+const SW_VERSION = "1.3.0";
 const STATIC_CACHE = `cowork-static-v${SW_VERSION}`;
 const ASSET_CACHE = `cowork-assets-v${SW_VERSION}`;
 const OFFLINE_URL = "/offline";
@@ -55,6 +62,10 @@ const PRECACHE = [
   "/icon-192.png",
   "/icon-512.png",
   "/icon-maskable-512.png",
+  /* Precached with the rest: a notification that arrives while the network is
+     unreachable is exactly when a push is most worth showing, and a badge that
+     404s at that moment leaves the platform to draw its own. */
+  "/badge-96.png",
   "/manifest.json",
 ];
 
@@ -391,7 +402,13 @@ self.addEventListener('push', (event) => {
         self.registration.showNotification(title, {
             body,
             icon: '/icon-192.png',
-            badge: '/icon-192.png',
+            /* The badge is NOT the icon at a smaller size. Android and Windows
+               draw it as a mask — alpha kept, colour discarded and repainted
+               flat — so the full-colour logo that used to be here rendered as
+               one solid blob with no shape in it. `/badge-96.png` is the folder
+               silhouette with the check punched out as real transparency, which
+               is what survives that treatment. */
+            badge: '/badge-96.png',
             tag: 'cowork-' + (data.type || 'notif'),
             renotify: true,
             data,

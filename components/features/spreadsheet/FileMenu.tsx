@@ -345,7 +345,12 @@ export function FileMenu({
               Import…
             </button>
             <div className="my-1 h-px bg-[var(--color-hairline)]" />
-            <button type="button" className={item} onClick={choose(() => { persistence.saveNow(); setStatus("Saved."); })}>
+            {/* "Saving…", not "Saved." — the write has been ASKED for here, not
+                finished. Announcing the finish on the click was how a save that
+                created nothing still reported success; the save chip beside the
+                title is what reports the outcome, and it reads from the same
+                state this does. */}
+            <button type="button" className={item} onClick={choose(() => { persistence.saveNow(); setStatus("Saving…"); })}>
               Save <span className="text-ink-faint">{persistence.state === "saved" ? "Up to date" : ""}</span>
             </button>
             <button

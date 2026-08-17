@@ -74,7 +74,7 @@ import {
   type CellMatch,
   type SearchOptions,
 } from "@/lib/spreadsheet/search";
-import { detectUrl, linkAt, setLink } from "@/lib/spreadsheet/hyperlink";
+import { detectUrl, linkAt, normalizeUrl, setLink } from "@/lib/spreadsheet/hyperlink";
 import {
   addComment as addCommentOp,
   editComment as editCommentOp,
@@ -120,7 +120,15 @@ import {
   setColsHidden,
   setRowHeight,
   setRowsHidden,
+  shiftCells as shiftCellsOp,
 } from "@/lib/spreadsheet/structure";
+import {
+  buildTable,
+  fitsOnSheet,
+  regionIsEmpty,
+  tableFootprint,
+  templateById,
+} from "@/lib/spreadsheet/templates";
 import {
   addSheet as addSheetOp,
   createSheet as createSheetOp,
@@ -205,6 +213,14 @@ export interface SpreadsheetController {
   selectRow: (row: number, shiftKey: boolean) => void;
 
   beginEdit: (opts?: BeginEditOptions) => void;
+  /** Open the active cell's editor pre-filled with `=NAME(`, caret at the end —
+      what Insert ▸ Function does. The reader types the arguments; the in-editor
+      helper takes over from there. */
+  insertFunction: (name: string) => void;
+  /** Append text to the active cell — Insert ▸ Emoji. Appends to the OPEN
+      editor when there is one, so it lands where the reader is already typing
+      rather than replacing what they have written. */
+  appendToCell: (text: string) => void;
   changeEdit: (value: string) => void;
   commitEdit: (thenMove?: Direction) => void;
   cancelEdit: () => void;
@@ -236,6 +252,24 @@ export interface SpreadsheetController {
   autoFitRow: (row: number) => void;
   insertCols: (where: "left" | "right") => void;
   deleteCols: () => void;
+  /** Insert a block of blank cells the size of the selection, pushing the cells
+      in its own band down or right. Unlike a row/column insert, nothing outside
+      the band moves. */
+  insertCells: (direction: "down" | "right") => void;
+  /** Delete the selected block, closing the gap from below or from the right. */
+  deleteCells: (direction: "up" | "left") => void;
+  /**
+   * Drop a pre-built table at the active cell — headers, widths, banding,
+   * per-column rules, a filter and (at the top of the sheet) a frozen header, in
+   * ONE undoable step.
+   *
+   * Refuses rather than overwrites: `blocked` says why, so the caller can tell
+   * the reader instead of silently eating their data.
+   */
+  insertTable: (templateId: string) => { ok: boolean; blocked?: "occupied" | "no-room" };
+  /** Whether a template would land cleanly at the active cell right now — for
+      showing the warning before the click rather than after it. */
+  tableFits: (templateId: string) => { ok: boolean; blocked?: "occupied" | "no-room" };
   hideCols: () => void;
   unhideCols: () => void;
   resizeCol: (col: number, width: number) => void;
@@ -719,7 +753,18 @@ export function useSpreadsheet(): SpreadsheetController {
   /** Set or remove the active cell's explicit link. */
   function setCellLink(url: string | null): void {
     const ref = cellRef(selection.active.row, selection.active.col);
-    const links = setLink(worksheet.links, ref, url);
+    /* Normalised HERE rather than trusting the caller.
+       `LinkEditor` normalises before it calls this, so Ctrl+K was always safe —
+       but the ribbon's Insert ▸ Link panel is a second caller, and passing its
+       raw field through stored `example.com` as a RELATIVE href (which resolves
+       inside the app) and skipped `normalizeUrl`'s refusal of `javascript:` and
+       `data:`. A safety rule that every caller has to remember is a rule that
+       gets forgotten; this is the one place every link goes through.
+       Normalising an already-safe URL is a no-op, so the existing caller is
+       unaffected. */
+    const safe = url === null ? null : normalizeUrl(url);
+    if (url !== null && safe === null) return;
+    const links = setLink(worksheet.links, ref, safe);
     if (links === worksheet.links) return;
     applyStructural(url === null ? "Remove link" : "Set link", { ...worksheet, links }, false);
   }
@@ -1337,6 +1382,64 @@ export function useSpreadsheet(): SpreadsheetController {
     applyStructural("Auto-fit column", setColWidth(worksheet, col, width), false);
   }
 
+  function insertCells(direction: "down" | "right"): void {
+    applyStructural(
+      "Insert cells",
+      shiftCellsOp(worksheet, selection.range, direction),
+    );
+  }
+  function deleteCells(direction: "up" | "left"): void {
+    applyStructural(
+      "Delete cells",
+      shiftCellsOp(worksheet, selection.range, direction),
+    );
+  }
+
+  /**
+   * Would this template land cleanly at the active cell?
+   *
+   * Split out from `insertTable` so the menu can warn BEFORE the click. Both go
+   * through the same two checks, so what the menu says and what the action does
+   * cannot disagree.
+   */
+  function tableFits(templateId: string): { ok: boolean; blocked?: "occupied" | "no-room" } {
+    const template = templateById(templateId);
+    if (!template) return { ok: false, blocked: "no-room" };
+    const at = selection.active;
+    if (!fitsOnSheet(worksheet, template, at)) return { ok: false, blocked: "no-room" };
+    if (!regionIsEmpty(worksheet, tableFootprint(template, at)))
+      return { ok: false, blocked: "occupied" };
+    return { ok: true };
+  }
+
+  function insertTable(templateId: string): { ok: boolean; blocked?: "occupied" | "no-room" } {
+    const verdict = tableFits(templateId);
+    if (!verdict.ok) return verdict;
+    const template = templateById(templateId)!;
+    /* One snapshot command: values, styles, widths, validations, the filter and
+       the freeze all land together, so one Ctrl+Z takes the whole table back
+       out. Building it as seven separate edits would need seven undos, and a
+       half-undone table is a worse state than either end. */
+    applyStructural(
+      `Insert ${template.name.toLowerCase()}`,
+      buildTable(worksheet, styleRegistry, template, selection.active),
+    );
+    return { ok: true };
+  }
+
+  function insertFunction(name: string): void {
+    beginEdit({ initial: `=${name}(` });
+  }
+
+  function appendToCell(text: string): void {
+    if (editing) {
+      changeEdit(editing.draft + text);
+      return;
+    }
+    const { active } = selection;
+    commitValue(active.row, active.col, rawValue(active.row, active.col) + text);
+  }
+
   function freezeRows(n: number): void {
     applyStructural(n > 0 ? "Freeze rows" : "Unfreeze rows", freezeRowsOp(worksheet, n), false);
   }
@@ -1428,6 +1531,8 @@ export function useSpreadsheet(): SpreadsheetController {
     selectColumn,
     selectRow,
     beginEdit,
+    insertFunction,
+    appendToCell,
     changeEdit,
     commitEdit,
     cancelEdit,
@@ -1450,6 +1555,10 @@ export function useSpreadsheet(): SpreadsheetController {
     autoFitRow,
     insertCols,
     deleteCols,
+    insertCells,
+    deleteCells,
+    insertTable,
+    tableFits,
     hideCols,
     unhideCols,
     resizeCol,

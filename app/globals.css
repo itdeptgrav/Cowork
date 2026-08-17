@@ -326,6 +326,38 @@
 }
 
 @layer base {
+  /* ── The shell's own geometry ──────────────────────────────────────────────
+     What sits above and around a page, as values rather than as arithmetic
+     somebody redoes from memory. A full-height surface — the messages panes,
+     the sheet — has to subtract the chrome to fill the window exactly, and
+     doing that with a hand-totalled magic number is how one ends up 44px short
+     the next time the bar changes height.
+
+     `--shell-top` is the header: its own top padding plus the 52px pill.
+     `--shell-gap` is the space between the header and the page, which is also
+     the space a full-height page should leave BELOW itself — a surface with 22
+     above it and 64 below reads as having slipped up the screen.
+     `--shell-bottom` is what the page frame actually pads by, kept here so a
+     surface that wants the symmetrical gap can cancel the difference rather
+     than guess at it.
+
+     **It is the `#main` rule's value, not the Tailwind class on that element.**
+     `ShellFrame` writes `pb-[clamp(32px,5vw,64px)]`, but the `#main` selector
+     further down this file has an id's specificity and wins — and it adds the
+     music bar's measured height on top, so the real padding grows while a track
+     is playing. A surface cancelling only the clamp would sit correctly with
+     the player hidden and 60-odd pixels short with it showing.
+
+     `--shell-top` and `--shell-gap` mirror `TopBar` and `ShellFrame`; change
+     them together. */
+  :root {
+    --shell-top: calc(clamp(10px, 1.6vw, 16px) + 52px);
+    --shell-gap: clamp(14px, 2vw, 22px);
+    --shell-bottom: calc(
+      clamp(32px, 5vw, 64px) + var(--music-bar-clearance, 0px)
+    );
+  }
+
   html {
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -396,6 +428,37 @@
 }
 
 @layer components {
+  /**
+   * A number field whose figure sits in the MIDDLE of its box.
+   *
+   * `text-align: center` is not enough on its own. Chrome's spin button is in
+   * the inline flow and reserves about 15px at the right edge whether or not
+   * its arrows are being painted — and at rest they are not — so a "centred"
+   * figure centres in a content box that is 15px short on one side and lands
+   * visibly left of the middle. In a 56px pill that is a quarter of the box.
+   *
+   * Taking the button out of flow is the whole fix: the arrows are still there
+   * and still work, they simply stop voting on where the number goes. Kept as
+   * a class rather than applied to every `input[type=number]`, because a field
+   * ranged left in a form column has no such problem and does not want its
+   * spinner overlapping its text.
+   *
+   * Firefox lays the spinner out the same way and takes the same treatment; it
+   * ignores the `-webkit-` pseudo-elements, so the rule is simply inert there
+   * and the figure is a couple of pixels off. That is the right failure: the
+   * number is readable and the control works.
+   */
+  .num-centred {
+    position: relative;
+  }
+  .num-centred::-webkit-inner-spin-button,
+  .num-centred::-webkit-outer-spin-button {
+    position: absolute;
+    top: 0;
+    right: 1px;
+    height: 100%;
+  }
+
   /* ── The frosted deck ─────────────────────────────────────── */
 
   .frost-bar {

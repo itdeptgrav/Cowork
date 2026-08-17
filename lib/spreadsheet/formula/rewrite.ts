@@ -109,6 +109,63 @@ function mapRange(a: ParsedRef, b: ParsedRef, op: StructuralOp): [ParsedRef, Par
   ];
 }
 
+/* ── Region shifts (Insert ▸ Cells) ───────────────────────────────────────── */
+
+/**
+ * A block of cells inserted or removed, with only the cells in its own band
+ * moving — Excel's "shift cells right / down / left / up".
+ *
+ * The difference from `StructuralOp` is the BAND. A row insertion moves every
+ * column; a cell insertion moves only the columns the block spans, so a
+ * reference is rewritten only when it lies inside that band. `axis` names the
+ * direction of travel: `row` shifts vertically (down on insert, up on delete),
+ * `col` shifts horizontally (right, left).
+ */
+export interface RegionShiftOp {
+  rect: { top: number; left: number; bottom: number; right: number };
+  axis: StructuralAxis;
+  mode: StructuralMode;
+}
+
+/** The equivalent whole-axis op, once a reference is known to be in the band. */
+function lineOp(op: RegionShiftOp): StructuralOp {
+  const vertical = op.axis === "row";
+  return {
+    axis: op.axis,
+    at: vertical ? op.rect.top : op.rect.left,
+    count: vertical
+      ? op.rect.bottom - op.rect.top + 1
+      : op.rect.right - op.rect.left + 1,
+    mode: op.mode,
+  };
+}
+
+/** Is a single reference inside the shifted band, across the other axis? */
+function inBand(r: ParsedRef, op: RegionShiftOp): boolean {
+  return op.axis === "row"
+    ? r.col >= op.rect.left && r.col <= op.rect.right
+    : r.row >= op.rect.top && r.row <= op.rect.bottom;
+}
+
+/**
+ * Both endpoints in the band, AND the range's whole cross-axis extent inside it.
+ *
+ * A range straddling the band's edge covers cells that move and cells that do
+ * not, so no rectangle describes where it ends up. Excel leaves such a range
+ * alone rather than guessing, and so does this: a wrong reference that looks
+ * right is worse than one the reader can see did not move.
+ */
+function rangeInBand(a: ParsedRef, b: ParsedRef, op: RegionShiftOp): boolean {
+  if (op.axis === "row") {
+    const lo = Math.min(a.col, b.col);
+    const hi = Math.max(a.col, b.col);
+    return lo >= op.rect.left && hi <= op.rect.right;
+  }
+  const lo = Math.min(a.row, b.row);
+  const hi = Math.max(a.row, b.row);
+  return lo >= op.rect.top && hi <= op.rect.bottom;
+}
+
 /** Re-emit a non-reference token exactly (re-quoting strings). */
 function renderToken(token: Token): string {
   if (token.type === "string") return `"${token.value.replace(/"/g, '""')}"`;
@@ -116,10 +173,23 @@ function renderToken(token: Token): string {
 }
 
 /**
- * Rewrite a raw formula's references for a row/column insertion or deletion.
- * A non-formula or an untokenizable string is returned untouched.
+ * How one transform answers for a reference. `null` means the target is gone
+ * (`#REF!`); `undefined` means "leave this reference exactly as written".
  */
-export function transformStructural(raw: string, op: StructuralOp): string {
+interface RefHandlers {
+  single: (r: ParsedRef) => ParsedRef | null | undefined;
+  range: (a: ParsedRef, b: ParsedRef) => [ParsedRef, ParsedRef] | null | undefined;
+}
+
+/**
+ * Walk a formula's tokens and rewrite only its references.
+ *
+ * Shared by both transforms below so they cannot drift on the things that are
+ * easy to get subtly different: cross-sheet qualifiers pass through untouched,
+ * a range is consumed as one unit rather than two endpoints, an unparseable
+ * reference is emitted verbatim, and every other token is re-emitted exactly.
+ */
+function transformRefs(raw: string, h: RefHandlers): string {
   if (!raw.startsWith("=")) return raw;
   let tokens: Token[];
   try {
@@ -132,9 +202,9 @@ export function transformStructural(raw: string, op: StructuralOp): string {
   while (i < tokens.length) {
     const t = tokens[i];
     if (t.type === "sheet") {
-      /* A cross-sheet reference belongs to another sheet — a structural edit on
-         THIS sheet leaves it untouched. Emit the qualifier and the ref (or
-         range) that follows it verbatim. */
+      /* A cross-sheet reference belongs to another sheet — an edit on THIS sheet
+         leaves it untouched. Emit the qualifier and the ref (or range) that
+         follows it verbatim. */
       out += renderSheetPrefix(t.value);
       i += 1;
       if (tokens[i]?.type === "ref") {
@@ -152,21 +222,17 @@ export function transformStructural(raw: string, op: StructuralOp): string {
       const a = parseRef(t.value);
       if (isRange) {
         const b = parseRef(tokens[i + 2].value);
-        if (a && b) {
-          const mapped = mapRange(a, b, op);
-          out += mapped ? `${refText(mapped[0])}:${refText(mapped[1])}` : "#REF!";
-        } else {
-          out += `${t.value}:${tokens[i + 2].value}`;
-        }
+        const mapped = a && b ? h.range(a, b) : undefined;
+        if (mapped === undefined) out += `${t.value}:${tokens[i + 2].value}`;
+        else if (mapped === null) out += "#REF!";
+        else out += `${refText(mapped[0])}:${refText(mapped[1])}`;
         i += 3;
         continue;
       }
-      if (a) {
-        const mapped = mapSingle(a, op);
-        out += mapped ? refText(mapped) : "#REF!";
-      } else {
-        out += t.value;
-      }
+      const mapped = a ? h.single(a) : undefined;
+      if (mapped === undefined) out += t.value;
+      else if (mapped === null) out += "#REF!";
+      else out += refText(mapped);
       i += 1;
       continue;
     }
@@ -174,4 +240,29 @@ export function transformStructural(raw: string, op: StructuralOp): string {
     i += 1;
   }
   return out;
+}
+
+/**
+ * Rewrite a raw formula's references for a row/column insertion or deletion.
+ * A non-formula or an untokenizable string is returned untouched.
+ */
+export function transformStructural(raw: string, op: StructuralOp): string {
+  return transformRefs(raw, {
+    single: (r) => mapSingle(r, op),
+    range: (a, b) => mapRange(a, b, op),
+  });
+}
+
+/**
+ * Rewrite a raw formula's references for a cell-block shift.
+ *
+ * Only references inside the shifted band move; everything else — including a
+ * range that straddles the band's edge — is left exactly as written.
+ */
+export function transformRegionShift(raw: string, op: RegionShiftOp): string {
+  const line = lineOp(op);
+  return transformRefs(raw, {
+    single: (r) => (inBand(r, op) ? mapSingle(r, line) : undefined),
+    range: (a, b) => (rangeInBand(a, b, op) ? mapRange(a, b, line) : undefined),
+  });
 }

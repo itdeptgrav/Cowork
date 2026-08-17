@@ -1,12 +1,10 @@
 "use client";
 
-import Link from "next/link";
 import { useViewerId } from "@/lib/hooks/usePermissions";
-import { Icon } from "@/components/ui/Icons";
 import { useLens } from "@/components/layout/shell/LensContext";
 import { useQuery } from "@/lib/hooks/useRepository";
+import { useNow } from "@/lib/hooks/useNow";
 import { attentionSignals, interventionSignals, isOpen } from "./signals";
-import { ScopePills } from "./ScopePills";
 
 /**
  * The title row, from the `dashboard` reference.
@@ -30,6 +28,9 @@ export function DashboardChrome() {
   const team = lens === "team";
 
   const viewerId = useViewerId();
+  /* Ticks once a minute, from the shared clock — never `Date.now()` in render,
+     which is impure and makes the first paint disagree with the server's. */
+  const now = useNow();
   const me = useQuery((r) => r.getCurrentEmployee(), []);
   const viewer = useQuery((r) => r.getViewer(), []);
   const people = useQuery((r) => r.listEmployees(), []);
@@ -104,39 +105,72 @@ export function DashboardChrome() {
   });
 
   return (
-    /* The reference's header: a display title with the date directly beneath
-       it on the left, and a row of pills on the right. Cowork adds one line —
-       the brief — because a command centre that states the situation in words
-       is read faster than one that makes you assemble it from four counts. */
-    <div className="mb-5 flex flex-wrap items-end gap-x-6 gap-y-4">
-      <div className="min-w-0">
-        <h1 className="text-[clamp(1.75rem,3.4vw,2.75rem)] leading-none font-light tracking-[-0.035em] text-ink">
-          {team ? "Your team" : "Overview"}
-        </h1>
-        <p className="mt-2 text-sm text-ink-muted">
-          {date}
-          {!team && me.data ? ` · ${me.data.displayName}` : ""}
-          {team
-            ? ` · ${reports.length} ${reports.length === 1 ? "report" : "reports"}`
-            : ""}
-        </p>
-        <p className="mt-1.5 max-w-[62ch] text-sm leading-relaxed text-ink-muted">
-          {brief}
-        </p>
-      </div>
+    /* A GRID, not two stacks side by side.
+       Two stacks each lay out from their own top, so the time landed level with
+       the brief and the date level with the title — near-misses that read as
+       sloppiness rather than as a decision. Sharing rows is what puts the clock
+       on the title's line and the date on the name's, and `items-baseline`
+       aligns them on the letters rather than on the boxes, which is what the eye
+       reads when two type sizes sit side by side.
 
-      <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-        <ScopePills />
-        <Link
-          href="/tasks/new"
-          className="inline-flex items-center gap-1.5 rounded-full bg-ink px-3.5 py-2 text-xs font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90"
-        >
-          <Icon.plus className="h-3.5 w-3.5" />
-          New task
-        </Link>
-      </div>
+       The corner used to hold a pill row — Overdue / In review / Blocked / All
+       open — over the same counts "Where your work sits" was already breaking
+       down further down the page. Those moved into that card; the clock is what
+       the corner says now, and nothing else on the page says it. */
+    <div className="mb-5 grid grid-cols-[minmax(0,1fr)_auto] items-baseline gap-x-8">
+      {/* Row 1 — the situation, across the full width. It leads because it is
+          the five-second answer; the title says where you are, which you knew,
+          having navigated here. */}
+      <p className="col-span-2 max-w-[62ch] text-sm leading-relaxed text-ink-muted">
+        {brief}
+      </p>
+
+      {/* Row 2 — the page, and the time. Time outranks the date in size because
+          it is the one of the two that changes while you are looking at it.
+          Tabular, like every figure in the product: a clock on proportional
+          digits jogs sideways every minute. */}
+      <h1 className="mt-1.5 text-[clamp(1.75rem,3.4vw,2.75rem)] leading-none font-light tracking-[-0.035em] text-ink">
+        {team ? "Your team" : "Overview"}
+      </h1>
+      <p
+        data-figure
+        className="mt-1.5 text-right text-[22px] leading-none tracking-[-0.025em] text-ink"
+      >
+        {/* Resolved after mount, so the server's clock and the reader's never
+            disagree on first paint. */}
+        {now ? clockOf(now) : " "}
+      </p>
+
+      {/* Row 3 — who is reading it, and the date. Tight to the title above: a
+          name is a caption on it, not a separate line of information. */}
+      <p className="mt-1 text-sm text-ink-muted">
+        {team
+          ? `${reports.length} ${reports.length === 1 ? "report" : "reports"}`
+          : (me.data?.displayName ?? "")}
+      </p>
+      <p className="mt-1 text-right text-sm text-ink-muted">{date}</p>
     </div>
   );
+}
+
+/**
+ * The wall clock, twelve-hour with a lower-case meridiem.
+ *
+ * `hour12` is set explicitly rather than left to the locale: `en-GB` is a
+ * 24-hour locale, so the surrounding `en-GB` formatting used elsewhere in this
+ * file would render 14:47 and the flag is what makes it 2:47 pm. The zone is
+ * the organisation's, matching the date beside it — a local time over an IST
+ * date would be two different days' worth of confusion in one corner.
+ */
+function clockOf(now: Date): string {
+  return now
+    .toLocaleTimeString("en-GB", {
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+      timeZone: "Asia/Kolkata",
+    })
+    .toLowerCase();
 }
 
 /**
