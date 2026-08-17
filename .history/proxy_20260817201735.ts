@@ -1,6 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
 
-// Testing if working
 
 import {
   EXPIRY_GRACE_SECONDS,
