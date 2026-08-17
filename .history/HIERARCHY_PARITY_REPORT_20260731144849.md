@@ -6,7 +6,7 @@ Verify: **exit 0, 695 tests** (683 before).
 
 **Old Cowork has no employee hierarchy tree.** No org chart, no nesting, no
 expand/collapse, no depth. Searching the old frontend for "hierarchy" returns
-*task* hierarchy — parent tasks and subtasks — in everyy case but one.
+*task* hierarchy — parent tasks and subtasks — in every case but one.
 
 The single employee-relationship surface is
 `GET /cowork/employee/my-managers/:employeeId`, called by `CoworkingShell.js:2264`
