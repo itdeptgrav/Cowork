@@ -140,3 +140,36 @@ test("the line carries the instant alone — no rule name, no arithmetic", () =>
   }
   assert.match(history, /formatDateTime\(origin\.startedAt\)/);
 });
+
+test("a deadline pushed by the queue says so", () => {
+  /**
+   * OWNER DECISION, 17 Aug 2026: a task cannot start before the work queued
+   * above it finishes. T059 (P2) was due 14:07 — its own 12:57 anchor plus its
+   * own budget — while T057 (P1) ran until 13:23. It is now anchored at 13:23
+   * and due 14:33, and the line has to explain the later start or the date
+   * looks arbitrary.
+   */
+  assert.equal(
+    clockStartReason("after_priority_work"),
+    "when the higher-priority work above it finishes",
+  );
+  const o = deadlineOrigin({
+    clockStartsAt: "2026-08-17T07:53:42.433Z",
+    clockStartsAtSource: "after_priority_work",
+    windowSecs: 4200,
+  });
+  assert.equal(o?.reason, "when the higher-priority work above it finishes");
+  assert.equal(o?.windowSecs, 4200);
+});
+
+test("an unknown source still shows the date, without a reason", () => {
+  /* The engine may grow another anchor rule before this file hears about it.
+     A missing sentence costs an explanation; a wrong one costs trust. */
+  const o = deadlineOrigin({
+    clockStartsAt: "2026-08-17T07:53:42.433Z",
+    clockStartsAtSource: "some_future_rule",
+    windowSecs: 3600,
+  });
+  assert.equal(o?.reason, null);
+  assert.equal(o?.startedAt, "2026-08-17T07:53:42.433Z");
+});

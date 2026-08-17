@@ -22,13 +22,56 @@ export interface TaskFacts {
   reworksReceived: number;
   isRejected: boolean;
   c1Status: string;
+  /** The engine's per-event costs. Empty on a clean task or an older record. */
+  deductions: ScoreDeduction[];
+  /** What the deductions came off — the engine's `c1BaseScore`. */
+  baseScore: number | null;
 }
 
 export type ReasonTone = "positive" | "negative" | "neutral";
 
+/**
+ * One event's cost, exactly as the ENGINE charged it.
+ *
+ * `services/c1Service.js` sends this per task as `scoreBreakdown`, computed
+ * beside the scorer itself. It is carried, never derived: the configured
+ * extension deduction is 0.3 and the scorer multiplies extensions by zero, so
+ * anything reading the config would print a deduction nobody was charged.
+ */
+export interface ScoreDeduction {
+  /** `deadline` | `rework` | `extension` | `rejected` — the engine's words. */
+  event: string;
+  count: number;
+  /** Signed, and already negative where something was taken. */
+  points: number;
+}
+
 export interface Reason {
   text: string;
   tone: ReasonTone;
+  /**
+   * What this cost, or null where the engine reported no figure.
+   *
+   * Null covers two different cases and neither may show a number: a positive
+   * reason ("approved on the first submission") was never a charge, and an
+   * older record predates the breakdown. Reported 17 Aug 2026 — the reasons
+   * named what happened without ever saying how much it cost, so the only
+   * figure on the row was the total.
+   */
+  points: number | null;
+}
+
+/**
+ * What the engine charged for one event, or null if it said nothing.
+ *
+ * Null, never 0, for an absent entry: "cost nothing" and "not reported" are
+ * different claims, and an older record predating `scoreBreakdown` must not be
+ * made to assert the first. A REPORTED zero — which is what an extension is
+ * today — does show as 0.
+ */
+function costOf(facts: TaskFacts, event: string): number | null {
+  const hit = facts.deductions.find((d) => d.event === event);
+  return hit && Number.isFinite(hit.points) ? hit.points : null;
 }
 
 /**
@@ -48,19 +91,19 @@ export function reasonsFor(facts: TaskFacts): Reason[] {
        entirely, so the counters beneath it describe work that no longer
        counts, and listing them would imply otherwise. */
     return [
-      { text: "Submission was rejected", tone: "negative" },
-      { text: "Not counted toward this quarter", tone: "neutral" },
+      { text: "Submission was rejected", tone: "negative", points: costOf(facts, "rejected") },
+      { text: "Not counted toward this quarter", tone: "neutral", points: null },
     ];
   }
 
   if (facts.deadlinesMissed === 0) {
-    out.push({ text: "Completed before the deadline", tone: "positive" });
+    out.push({ text: "Completed before the deadline", tone: "positive", points: null });
   }
   if (facts.reworksReceived === 0) {
-    out.push({ text: "Approved on the first submission", tone: "positive" });
+    out.push({ text: "Approved on the first submission", tone: "positive", points: null });
   }
   if (facts.extensionsFiled === 0 && facts.deadlinesMissed === 0) {
-    out.push({ text: "Finished without asking for more time", tone: "positive" });
+    out.push({ text: "Finished without asking for more time", tone: "positive", points: null });
   }
 
   if (facts.deadlinesMissed > 0) {
@@ -70,6 +113,7 @@ export function reasonsFor(facts: TaskFacts): Reason[] {
           ? "Missed the deadline"
           : `Missed the deadline ${facts.deadlinesMissed} times`,
       tone: "negative",
+      points: costOf(facts, "deadline"),
     });
   }
   if (facts.reworksReceived > 0) {
@@ -79,6 +123,7 @@ export function reasonsFor(facts: TaskFacts): Reason[] {
           ? "Sent back once for rework"
           : `Sent back ${facts.reworksReceived} times for rework`,
       tone: "negative",
+      points: costOf(facts, "rework"),
     });
   }
   if (facts.extensionsFiled > 0) {
@@ -88,13 +133,14 @@ export function reasonsFor(facts: TaskFacts): Reason[] {
           ? "An extension was requested"
           : `${facts.extensionsFiled} extensions were requested`,
       tone: "negative",
+      points: costOf(facts, "extension"),
     });
   }
 
   /* A task the engine has not finished scoring has no story yet. Saying so
      beats an empty block, which reads as "nothing happened". */
   if (out.length === 0) {
-    out.push({ text: "No scoring events recorded yet", tone: "neutral" });
+    out.push({ text: "No scoring events recorded yet", tone: "neutral", points: null });
   }
   return out;
 }
@@ -130,7 +176,8 @@ export function outcomeOf(facts: TaskFacts): {
  * same response. Kept as one reader so a component never picks at raw fields.
  */
 export function factsOf(
-  unit: ScoreUnit & Partial<TaskFacts>,
+  unit: ScoreUnit &
+    Partial<TaskFacts> & { scoreBreakdown?: unknown; baseScore?: unknown },
 ): TaskFacts {
   return {
     taskScore: unit.earnedPoints ?? null,
@@ -139,5 +186,16 @@ export function factsOf(
     reworksReceived: Number(unit.reworksReceived) || 0,
     isRejected: unit.isExcluded === true || unit.isRejected === true,
     c1Status: typeof unit.c1Status === "string" ? unit.c1Status : "",
+    deductions: Array.isArray(unit.scoreBreakdown)
+      ? (unit.scoreBreakdown as unknown[]).filter(
+          (d): d is ScoreDeduction =>
+            !!d &&
+            typeof (d as ScoreDeduction).event === "string" &&
+            Number.isFinite((d as ScoreDeduction).points),
+        )
+      : [],
+    baseScore: Number.isFinite(unit.baseScore as number)
+      ? (unit.baseScore as number)
+      : null,
   };
 }

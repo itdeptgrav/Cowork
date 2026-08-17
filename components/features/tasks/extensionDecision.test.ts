@@ -94,3 +94,85 @@ test("the assignee is never offered a date negotiation", () => {
   assert.match(rule, /DIRECT_DEADLINE_REFUSAL/);
   assert.match(rule, /Ask your manager for the time you need/);
 });
+
+/* ── Both choices, on the first card ──────────────────────────────────────── */
+
+test("the escalation branch offers a smaller grant, not just the computed one", () => {
+  /**
+   * **Reported 17 Aug 2026, three times.** The branch had ONE button —
+   * "Approve X and move the deadline" — which granted the hours, filed a
+   * revised-date request and approved it in a single press. The filed request
+   * rendered as `DeadlineRevisionCard` for the instant before its own approval
+   * landed: the card that appeared and vanished on its own.
+   *
+   * The first fix gave it a date field, which was wrong: one press then wrote
+   * a request AND its counter, leaving two cards reading 15:00 → 15:00 — a
+   * question and an answer that differed in nothing.
+   *
+   * This card is about HOURS. Answering with fewer hours is a decision on the
+   * request in front of it, and legacy already carries the manager's figure as
+   * `approvedSecs`. No record is created to carry a smaller grant.
+   */
+  const src = readFileSync(
+    "components/features/tasks/ExtensionDecisionCard.tsx",
+    "utf8",
+  );
+  assert.match(src, /data-help="extension-grant-different"/);
+  assert.match(src, /Grant a different amount/);
+  assert.match(src, /data-help="extension-grant-less"/);
+  /* The approve path is untouched — one press still grants and moves. */
+  assert.match(src, /data-help="extension-grant-both"/);
+});
+
+test("a smaller grant writes no deadline record", () => {
+  /**
+   * The regression that produced three stacked cards. Filing a record here
+   * puts the same press into `DeadlineRevisionCard` AND the assignee's
+   * "deadline revised" card, both describing a date nobody proposed.
+   *
+   * The smaller grant goes through `decideTimeBudgetExtension` with
+   * `grantedSecs` — the existing partial-grant path — and the deadline
+   * follows the budget on the next read.
+   */
+  const src = readFileSync(
+    "components/features/tasks/ExtensionDecisionCard.tsx",
+    "utf8",
+  );
+  assert.match(src, /decideTimeBudgetExtension\([\s\S]{0,80}grantedSecs/);
+  /* The grant-less action must not reach for the deadline record at all. */
+  const at = src.indexOf("const [grantLess");
+  assert.ok(at > 0, "the smaller-grant action is gone");
+  const body = src.slice(at, at + 400);
+  assert.equal(
+    /requestDeadlineExtensionRecord|counter_proposed/.test(body),
+    false,
+    "granting fewer hours is filing a deadline record again — that is what stacked three cards on one screen",
+  );
+});
+
+test("the field asks for the ADDITION, and sends a total", () => {
+  /* Showing a total where somebody typed an addition is the confusion this
+     whole area exists to have fixed — a request to add ten minutes read as a
+     grant of forty. The record stores totals, so the conversion is explicit. */
+  const src = readFileSync(
+    "components/features/tasks/ExtensionDecisionCard.tsx",
+    "utf8",
+  );
+  assert.match(src, /Time to add instead/);
+  /* Hours AND minutes: a minutes-only box asked somebody granting two hours
+     to type 120, which is arithmetic the rest of the product refuses to make
+     people do. */
+  assert.match(src, /<DurationField/);
+  assert.match(src, /previousSecs \+ grantSecs/);
+});
+
+test("the reduced-grant message the assignee reads still exists", () => {
+  /* The other half, and the reason the button matters: this message could
+     never appear while the card had no way to grant less. */
+  const confirm = readFileSync(
+    "components/features/tasks/BudgetConfirmationCard.tsx",
+    "utf8",
+  );
+  assert.match(confirm, /const wasReduced = record\.approvedSecs !== null;/);
+  assert.match(confirm, /you\s*asked for/);
+});

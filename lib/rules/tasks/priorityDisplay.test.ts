@@ -246,6 +246,12 @@ test("a holder's not-yet-accepted task is labelled 'to accept', not a bare P1", 
    * the one person it matters to — the assignee looking at their own dashboard
    * — got `queue_position` and therefore a bare `P1`. Fixed for everyone
    * except the holder.
+   *
+   * **Then reported again, 17 Aug 2026, from the other side:** the suffix was
+   * there, but the NUMBER was still the pile's derived position. A task stored
+   * at rank 2 read "P1 to accept" while the database, the priority editor and
+   * every other screen said 2. Pending work now carries the rank a manager
+   * chose — the suffix alone marks the sequence.
    */
   const mine = displayPriority({
     status: "assigned",
@@ -272,7 +278,7 @@ test("a holder's not-yet-accepted task is labelled 'to accept', not a bare P1", 
       isHistoric: mine.isHistoric,
       isProvisional: mine.scale === "provisional_position",
     }),
-    "P1 to accept",
+    "P2 to accept",
   );
 });
 

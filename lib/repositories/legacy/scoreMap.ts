@@ -59,6 +59,10 @@ export interface LegacyC1Response {
     reworksReceived?: number;
     c1Status?: string;
     isRejected?: boolean;
+    /** Per-event costs, from the engine's own scorer. */
+    scoreBreakdown?: { event?: string; count?: number; points?: number }[];
+    /** The figure those costs came off. */
+    baseScore?: number;
   }[];
 }
 
@@ -124,6 +128,30 @@ export function toC1Units(body: LegacyC1Response): ScoreUnit[] {
     reworksReceived: Number(t.reworksReceived) || 0,
     isRejected: t.isRejected === true,
     c1Status: t.c1Status ?? "",
+    /* **What each event cost**, computed beside the engine's scorer and
+       carried, never re-derived. Without it the page named what happened —
+       "Missed the deadline" — with no figure, so the row's total was the only
+       number and nobody could tell which event took what.
+
+       Deriving it here from the C1 config would be wrong rather than merely
+       duplicated: `c1ExtensionDeduction` is set to 0.3 and the scorer
+       multiplies extensions by zero, so a config-reading page would report a
+       deduction that was never taken. */
+    scoreBreakdown: Array.isArray(t.scoreBreakdown)
+      ? t.scoreBreakdown
+          .filter(
+            (d) =>
+              !!d && typeof d.event === "string" && Number.isFinite(d.points),
+          )
+          .map((d) => ({
+            event: d.event as string,
+            count: Number(d.count) || 0,
+            points: Number(d.points),
+          }))
+      : [],
+    /* Null, not 0, on a response predating the breakdown — the page states the
+       sum only where it can do so truthfully. */
+    baseScore: Number.isFinite(t.baseScore) ? Number(t.baseScore) : null,
   }));
 }
 

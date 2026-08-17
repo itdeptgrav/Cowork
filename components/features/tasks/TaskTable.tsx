@@ -68,9 +68,12 @@ type Sort = "rank" | "due" | "updated" | "title";
  */
 /* The priority column is 92px, not the 38px a bare "P1" needs. Two of the four
    things it renders are longer than the chip: "Was P3" on a closed task, and
-   "P1 to accept" on work whose hours are not agreed. Both are deliberate — a
-   position from a different sequence must not wear the live queue's chip — and
-   at 38px both overflowed into the title beside them. */
+   "P2 to accept" on work whose hours are not agreed. Both are deliberate — a
+   number from a different sequence must not wear the live queue's chip — and
+   at 38px both overflowed into the title beside them.
+
+   The number in "P2 to accept" is the rank whoever assigned it CHOSE, not a
+   derived position: the suffix alone marks the sequence. See `priority.ts`. */
 const COLS =
   "grid-cols-[28px_92px_minmax(0,1fr)_78px_146px_86px_74px_62px_78px_76px_30px]";
 

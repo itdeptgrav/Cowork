@@ -176,15 +176,36 @@ export function getPersonPriority(input: {
     };
   }
 
-  /* Not yet accepted or settled, but real — and gap-free among its own kind
-     rather than the raw stored figure. This is the tier that used to be
-     missing entirely: a task fell straight from "queue position" to "whatever
-     number the document happens to hold", and a container sitting between two
-     pending siblings showed up as a missing number rather than as nothing. */
+  /**
+   * Not yet accepted or settled — **the number is the one a manager chose.**
+   *
+   * OWNER DECISION, 17 Aug 2026. This used to return `provisionalPosition`,
+   * the pending pile renumbered 1..N to close gaps. Reported: "task 2" stored
+   * at rank 2 displayed "P1 to accept" beside an accepted task at "P1", and no
+   * screen anywhere else — the priority editor, the record — said 1.
+   *
+   * The gap-closing exists so the ACTIVE queue reads as a contiguous "what is
+   * next"; work you have not committed to has no schedule to be contiguous
+   * with. Renumbering it cost more than it bought:
+   *
+   *  - the figure traced to no decision anybody made;
+   *  - it collided with the live queue's numbering, which is what made two
+   *    rows read "P1" and look like a defect;
+   *  - it flattened distance — pending tasks stored at 2 and 7 displayed as 1
+   *    and 2, making low-priority work look second-most-urgent.
+   *
+   * Ordering is unaffected: `calculateProvisionalOrder` still sorts the pile,
+   * and sorting by stored rank yields that same sequence. Only the label
+   * changed, from a derived position to the assignor's own rank.
+   *
+   * `provisionalPosition` is still accepted and still decides the SCALE, which
+   * is what earns the "to accept" suffix in `formatRankDisplay` — the marker
+   * that this row is not part of the live queue.
+   */
   if (input.provisionalPosition != null && input.provisionalPosition > 0) {
     return {
-      rank: input.provisionalPosition,
-      scale: "provisional_position",
+      rank: storedRank,
+      scale: storedRank === null ? "none" : "provisional_position",
       subjectId: input.subjectId,
       isMine,
       isHistoric: false,
@@ -336,12 +357,22 @@ export function displayPriority(input: {
         mine?.provisionalPosition != null &&
         mine.provisionalPosition === usable;
 
+      /* Awaiting acceptance shows the rank a manager CHOSE, not the pending
+         pile's derived position — see the `provisionalPosition` branch above
+         for why. Without this the assignee, the one person the number is
+         actually for, kept seeing the invented figure on their own dashboard:
+         the same asymmetry that made the earlier fix miss the holder. With no
+         stored rank there is nothing anybody chose, so it shows nothing. */
+      const provisionalRank = fromProvisional ? myStored : usable;
+
       return {
-        rank: usable,
+        rank: provisionalRank,
         scale: historic
           ? "stored_rank"
           : fromProvisional
-            ? "provisional_position"
+            ? myStored === null
+              ? "none"
+              : "provisional_position"
             : fromQueue
               ? "queue_position"
               : "stored_rank",
@@ -372,11 +403,12 @@ export function displayPriority(input: {
     };
   }
 
-  /* The same preference, one tier down: nobody's live position was read, but
-     somebody's PROVISIONAL one was — a holder whose queue was fetched while
-     still awaiting acceptance or a settled budget. Gap-free among its own
-     kind rather than the raw stored figure, for the reason `getPersonPriority`
-     documents. */
+  /* One tier down: nobody's live position was read, but somebody's PROVISIONAL
+     one was — a holder awaiting acceptance or a settled budget. The number
+     shown is that holder's STORED rank, for the reason `getPersonPriority`
+     documents; the provisional position earns the "to accept" suffix and
+     nothing else. A manager and the assignee must read the same figure off the
+     same task, which is the whole point of this file. */
   const withProvisional = historic
     ? undefined
     : holders.find(
@@ -384,15 +416,16 @@ export function displayPriority(input: {
       );
 
   if (withProvisional) {
+    const stored = isRealRank(withProvisional.rank)
+      ? withProvisional.rank
+      : null;
     return {
-      rank: withProvisional.provisionalPosition as number,
-      scale: "provisional_position",
+      rank: stored,
+      scale: stored === null ? "none" : "provisional_position",
       subjectId: withProvisional.employeeId,
       isMine: false,
       isHistoric: false,
-      storedRank: isRealRank(withProvisional.rank)
-        ? withProvisional.rank
-        : null,
+      storedRank: stored,
     };
   }
 

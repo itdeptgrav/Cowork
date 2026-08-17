@@ -17,11 +17,21 @@
  */
 
 /** The engine's own words for which rule chose the anchor. */
-export type ClockStartSource = "hours_granted" | "first_online" | "acceptance";
+export type ClockStartSource =
+  | "hours_granted"
+  | "first_online"
+  | "acceptance"
+  | "after_priority_work";
 
 /** Why the count began then, in the fewest words that are still true. */
 export function clockStartReason(source: string | null): string | null {
   switch (source) {
+    case "after_priority_work":
+      /* One person works one task at a time, so this one could not begin
+         until the higher-priority work above it was due to finish — see
+         `resolveAcceptanceAnchor`. The task it waits for is named separately,
+         where the view carries it. */
+      return "when the higher-priority work above it finishes";
     case "hours_granted":
       /* Cross-department: nothing could begin before the receiving manager
          granted the hours, so that grant is the earliest honest start. */

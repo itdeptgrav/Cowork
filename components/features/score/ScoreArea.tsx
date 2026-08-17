@@ -469,17 +469,61 @@ export function ChannelPage({ channel }: { channel: ChannelId }) {
                                 }`}
                               />
                               <span
-                                className={
+                                className={`min-w-0 flex-1 ${
                                   r.tone === "negative"
                                     ? "text-ink-muted"
                                     : "text-ink-faint"
-                                }
+                                }`}
                               >
                                 {r.text}
                               </span>
+                              {/* What it COST, where the engine said so.
+                                  Reported 17 Aug 2026: the reasons named what
+                                  happened and never how much, so the only
+                                  figure on the row was the total and a person
+                                  could not tell which event took what.
+
+                                  Null is not zero — a positive reason was
+                                  never a charge, and a record predating the
+                                  breakdown reported nothing. Both show no
+                                  figure rather than a fabricated 0. */}
+                              {r.points !== null && (
+                                <span
+                                  data-figure
+                                  className={`shrink-0 tabular-nums ${
+                                    r.points < 0
+                                      ? "text-[var(--state-rework-ink)]"
+                                      : "text-ink-faint"
+                                  }`}
+                                >
+                                  {r.points > 0 ? "+" : ""}
+                                  {formatPoints(r.points)} pts
+                                </span>
+                              )}
                             </li>
                           ))}
                         </ul>
+
+                        {/* The sum, where anything was taken. A list of
+                            negatives beside a total leaves the reader doing
+                            the arithmetic to check it; this states it. */}
+                        {facts.baseScore !== null &&
+                          reasons.some((r) => (r.points ?? 0) < 0) &&
+                          u.earnedPoints !== null && (
+                            <p className="mt-2 text-[11px] text-ink-faint">
+                              {formatPoints(facts.baseScore)} base
+                              {reasons
+                                .filter((r) => (r.points ?? 0) < 0)
+                                .map(
+                                  (r) => ` − ${formatPoints(Math.abs(r.points as number))}`,
+                                )
+                                .join("")}
+                              {" = "}
+                              <span className="text-ink-muted">
+                                {formatPoints(u.earnedPoints)} pts
+                              </span>
+                            </p>
+                          )}
                       </article>
                     );
                   })}
