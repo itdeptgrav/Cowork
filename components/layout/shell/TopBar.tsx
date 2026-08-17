@@ -153,35 +153,56 @@ function ScorePill({
  * Private / Team. A radiogroup, not a checkbox: the two lenses are named
  * alternatives and the control must announce which is active. It always carries
  * visible labels — an icon toggle would hide a privacy boundary behind a glyph.
+ *
+ * **Administrators only.**
+ *
+ * It used to be offered to anybody who managed somebody. The lens is not a view
+ * preference — it is the boundary between "your own score" and "these people's
+ * scores, next to each other" — and putting a comparison of named colleagues one
+ * click away on every manager's top bar makes it an ambient feature of the
+ * product rather than a deliberate act. It is now where the other administrative
+ * views are, behind the one definition of administrator this codebase has.
+ *
+ * That is a real loss for managers, and it is the point of the change rather
+ * than a side effect: a manager reads their reports' work through the team
+ * pages, which are unchanged. What they no longer have is the ranked side-by-
+ * side.
  */
 function LensToggle() {
   const { lens, setLens } = useLens();
-  const viewer = useQuery((r) => r.getViewer(), []);
-  const manages = managesAnyone(viewer.data ?? null);
+  const session = useSession();
+  /* The archetype the session resolved — the same question `/admin`'s route
+     guard asks, through the same predicate, so the bar cannot offer a boundary
+     the rest of the product does not recognise. Nothing here infers an
+     administrator from a role string or a reporting line; that is the whole
+     reason `canAccessAdminConsole` exists. */
+  const isAdmin = canAccessAdminConsole(session);
+  /* `loading` and `stalled` are not "not an admin" — they are "not known yet".
+     Clamping on either would drop a real administrator back to Private on every
+     refresh and silently discard the lens they had chosen. */
+  const resolved = session.status === "authenticated" || session.status === "anonymous";
 
   /**
-   * Nothing at all for somebody who manages nobody.
+   * And put anybody else back on Private.
    *
-   * A two-option switch where one option shows the same thing as the other is
-   * worse than no switch: it invites people to keep pressing Team wondering
-   * why nothing changes. They already only have a private view, so the control
-   * has nothing to choose between.
+   * Hiding the control is not the boundary — the lens persists in
+   * `localStorage` and in `?lens=team`, so a manager who held Team before this
+   * change, or anybody who types the query string, would keep the team view
+   * with no way to see or leave it. The control is the door; this is the lock.
    */
   useEffect(() => {
-    if (!viewer.data || manages || lens === "private") return;
-    /* Somebody whose reports were removed can be left holding a stored Team
-       lens. Put them back rather than leaving a lens nothing can now change. */
+    if (!resolved || isAdmin || lens === "private") return;
     setLens("private");
-  }, [viewer.data, manages, lens, setLens]);
+  }, [resolved, isAdmin, lens, setLens]);
 
   const options: { id: Lens; label: string; hint: string }[] = [
     { id: "private", label: "Private", hint: "Only your own score" },
-    { id: "team", label: "Team", hint: "Scores of people reporting to you" },
+    { id: "team", label: "Team", hint: "Scores across the people you administer" },
   ];
 
-  /* Hidden while the viewer resolves too — least privilege, and it avoids the
+  /* Hidden while the session resolves too — least privilege, and it avoids the
      control appearing and then vanishing. */
-  if (!viewer.data || !manages) return null;
+  if (!resolved || !isAdmin) return null;
 
   function onKeyDown(e: React.KeyboardEvent) {
     const forward = e.key === "ArrowRight" || e.key === "ArrowDown";

@@ -37,6 +37,26 @@ import { SessionProvider, useSession } from "@/components/features/auth/SessionP
  * that cannot succeed — and sit on "Signing you in…" forever, which is the one
  * thing an offline page must never do.
  */
+/**
+ * Whether the prototype control bar is shown. Off unless asked for.
+ *
+ * `DemoBar` is a development tool — it forces the offline, error and
+ * permission-denied states, counts unresolved provisional rules, and resets the
+ * sample data. It used to render for everybody on every page, which put a
+ * **Reset data** button and a fake-denial switch in front of real users.
+ *
+ * Opt-in rather than a `NODE_ENV` check, because the two questions are
+ * different: "is this a development build" is not the same as "do I want the
+ * prototype controls on screen right now", and the bar was in the way even in
+ * development. Set `NEXT_PUBLIC_SHOW_PROTOTYPE_BAR=1` in `.env.local` to bring
+ * it back — the component is untouched and nothing else has to change.
+ *
+ * Resolved once at module scope, so the answer is fixed for the life of the
+ * page and nothing at runtime can turn the bar on — `process` is not even
+ * reachable from the browser console.
+ */
+const SHOW_PROTOTYPE_BAR = process.env.NEXT_PUBLIC_SHOW_PROTOTYPE_BAR === "1";
+
 const AUTH_ROUTES = new Set([
   "/signin",
   "/signup",
@@ -266,7 +286,7 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
         {/* The prototype bar and the music bar float over the bottom edge, which
             is dead space over a full-bleed work surface — hide both on the sheet
             so the workbook owns the whole viewport. */}
-        {!fullBleed && <DemoBar />}
+        {SHOW_PROTOTYPE_BAR && !fullBleed && <DemoBar />}
       </div>
       {/* The player lives HERE, in the shell, not in a route — which is
         what lets audio keep playing across navigations. It reserves no

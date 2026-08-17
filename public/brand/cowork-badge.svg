@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 984.894 1000">
+  <!-- A notification BADGE is drawn as a mask: the platform keeps the alpha
+       channel and paints it one flat colour, so any colour in the source is
+       discarded. This is therefore a silhouette — the folder, with the check
+       punched out as real transparency so it survives that treatment. The
+       full-colour logo used here before arrived as a solid blob. -->
+  <mask id="b">
+    <rect width="984.894" height="1000" fill="#000"/>
+    <path fill="#fff" d="M554.794,149.435H.009v-56.738C.009,41.497,41.505,0,92.706,0h289.583c87.845,0,160.479,64.954,172.505,149.435Z"/>
+    <path fill="#fff" d="M754.783,1000H230.111C103.024,1000,0,896.976,0,769.889V191.568h754.783c127.087,0,230.111,103.024,230.111,230.111v348.21c0,127.087-103.024,230.111-230.111,230.111Z"/>
+    <path fill="#000" d="M253.955,900.92l-126.475-126.473c-10.464-10.462-10.464-27.428,0-37.89,10.462-10.459,27.425-10.459,37.887,0l88.587,88.589,182.829-182.832c10.462-10.459,27.425-10.459,37.887,0,10.464,10.462,10.464,27.428,0,37.89l-220.716,220.716Z"/>
+  </mask>
+  <rect width="984.894" height="1000" fill="#fff" mask="url(#b)"/>
+</svg>

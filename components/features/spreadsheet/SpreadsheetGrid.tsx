@@ -699,6 +699,13 @@ export function SpreadsheetGrid({
         claim(e);
         controller.beginEdit();
         return;
+      case "F11":
+        /* Shift+F11 adds a sheet, as in Sheets and Excel. Plain F11 is the
+           browser's full-screen and stays the browser's. */
+        if (!e.shiftKey) return;
+        claim(e);
+        controller.createSheet();
+        return;
       default:
         if (ctrl) {
           const key = e.key.toLowerCase();
@@ -734,6 +741,15 @@ export function SpreadsheetGrid({
               claim(e);
               const a = selection.active;
               setLinkEditor({ row: a.row, col: a.col, ...cellAnchorXY(a.row, a.col) });
+              return;
+            }
+            case "m": {
+              /* Ctrl+Alt+M — comment on the active cell, as in Sheets. Plain
+                 Ctrl+M is not ours, so it falls through untouched. */
+              if (!e.altKey) return;
+              claim(e);
+              const a = selection.active;
+              setCommentAt({ row: a.row, col: a.col, ...cellAnchorXY(a.row, a.col) });
               return;
             }
             case "s":

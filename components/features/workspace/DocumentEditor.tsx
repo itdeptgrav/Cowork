@@ -118,6 +118,66 @@ const SAVE_DEBOUNCE_MS = 1200;
    for a persisted room's state to arrive after `sync` fires. */
 const SEED_SETTLE_MS = 1200;
 
+/**
+ * Deleting an abandoned blank draft, deferred by one beat so a REMOUNT can take
+ * it back.
+ *
+ * An effect cleanup does not mean "the reader closed this document". It means
+ * "this effect instance is ending", and React ends them for its own reasons: a
+ * dependency changes, a parent re-keys, a Suspense boundary replays a subtree —
+ * and in development StrictMode deliberately mounts, tears down and remounts
+ * every component to flush out exactly this confusion.
+ *
+ * Reading the two as the same thing deleted every new document the instant it
+ * was created. StrictMode's teardown ran while the draft was — necessarily —
+ * still blank and unsaved, so the abandoned-draft rule fired, `deleteDocument`
+ * soft-deleted it, and the editor that remounted a tick later asked for a
+ * document that no longer existed. What the reader got, having done nothing but
+ * press New, was "This document is not available. It may have been deleted, or
+ * you may not be in it." Which was true, and was the least useful true sentence
+ * available.
+ *
+ * A real close and a teardown-then-remount are indistinguishable at the moment
+ * of teardown, and distinguishable one beat later: after a real close nothing
+ * comes back. So the teardown SCHEDULES the delete and the next setup for the
+ * same document CANCELS it. StrictMode's remount is synchronous within the same
+ * commit, so it always wins the race; the delay is generous because nobody is
+ * waiting on a blank document disappearing.
+ *
+ * Keyed by document id at module scope rather than held in a ref, because the
+ * two sides are different component instances — the ref the teardown could
+ * write is not the ref the remount would read.
+ */
+const pendingAbandon = new Map<string, ReturnType<typeof setTimeout>>();
+
+function cancelAbandon(documentId: string): void {
+  const scheduled = pendingAbandon.get(documentId);
+  if (scheduled === undefined) return;
+  clearTimeout(scheduled);
+  pendingAbandon.delete(documentId);
+}
+
+function abandonDraft(documentId: string, onDeleted: () => void): void {
+  cancelAbandon(documentId);
+  pendingAbandon.set(
+    documentId,
+    setTimeout(() => {
+      pendingAbandon.delete(documentId);
+      void getRepository()
+        .deleteDocument(documentId)
+        .then((r) => {
+          if (r.ok) onDeleted();
+        })
+        .catch(() => {
+          /* A failed cleanup is not worth surfacing on a screen that is gone. */
+        });
+    }, ABANDON_DELAY_MS),
+  );
+}
+
+/** Long enough to outlast a remount, short enough that the list catches up. */
+const ABANDON_DELAY_MS = 250;
+
 export function DocumentEditor({
   documentId,
   documents = [],
@@ -664,6 +724,10 @@ export function DocumentEditor({
   /* The two paths a debounce alone loses: leaving the page, and the tab being
      hidden — on a phone that is often the last event before the process dies. */
   useEffect(() => {
+    /* Whatever the last teardown scheduled for this document, this setup is the
+       proof it was not a close. See `abandonDraft`. */
+    cancelAbandon(documentId);
+
     const onHide = () => {
       if (document.visibilityState === "hidden") void flush();
     };
@@ -681,17 +745,10 @@ export function DocumentEditor({
         !manualSaved.current &&
         !everHadContent.current
       ) {
-        void getRepository()
-          .deleteDocument(documentId)
-          .then((r) => {
-            if (r.ok) {
-              notifyRepositoryChanged();
-              onChanged?.();
-            }
-          })
-          .catch(() => {
-            /* A failed cleanup is not worth surfacing on a screen that is gone. */
-          });
+        abandonDraft(documentId, () => {
+          notifyRepositoryChanged();
+          onChanged?.();
+        });
       } else {
         void flush();
       }

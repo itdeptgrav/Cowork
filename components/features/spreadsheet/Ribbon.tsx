@@ -23,6 +23,7 @@ import { useState } from "react";
 import { FileMenu } from "./FileMenu";
 import { SheetIcon } from "./SheetIcons";
 import { HomeTab } from "./HomeTab";
+import { InsertTab } from "./InsertTab";
 import { DataTab } from "./DataTab";
 import type { SpreadsheetController } from "./useSpreadsheet";
 import type { WorkbookPersistence } from "./useWorkbookPersistence";
@@ -96,52 +97,7 @@ export function Ribbon({
       <div className="flex flex-wrap items-stretch gap-1 px-1.5 py-1.5">
         {tab === "home" && <HomeTab controller={controller} onSearchOpen={onSearchOpen} />}
 
-        {tab === "insert" && (
-          <>
-            <Group label="Rows">
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.insertRows("above")}>
-                Insert above
-              </button>
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.insertRows("below")}>
-                Insert below
-              </button>
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.deleteRows()}>
-                Delete
-              </button>
-            </Group>
-            <Group label="Columns">
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.insertCols("left")}>
-                Insert left
-              </button>
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.insertCols("right")}>
-                Insert right
-              </button>
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.deleteCols()}>
-                Delete
-              </button>
-            </Group>
-            <Group label="Cells">
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.mergeCells("all")}>
-                <SheetIcon.merge />
-                Merge
-              </button>
-              <button
-                type="button"
-                className={cmd}
-                onMouseDown={keepFocus}
-                disabled={!controller.hasMergeInSelection}
-                onClick={() => controller.unmergeCells()}
-              >
-                Unmerge
-              </button>
-            </Group>
-            <Group label="Sheet">
-              <button type="button" className={cmd} onMouseDown={keepFocus} onClick={() => controller.createSheet()}>
-                New sheet
-              </button>
-            </Group>
-          </>
-        )}
+        {tab === "insert" && <InsertTab controller={controller} />}
 
         {tab === "data" && <DataTab controller={controller} />}
 

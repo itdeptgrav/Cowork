@@ -38,13 +38,21 @@ export function QuickAssign() {
     <Card
       title="Hand work over"
       headerRight={
+        /* Labelled, not a bare `+`.
+           Filled, inherited from the header button this replaced: it is now the
+           only way to start a task from the dashboard, so it is the page's
+           primary action. A lone plus in a card headed "Hand work over" reads
+           as "add a person" at least as easily as "create a task" — and it was
+           the one control on the page that could not be understood without
+           hovering it. The word is what makes it self-evident; the glyph now
+           only decorates it. */
         <Link
           href="/tasks/new"
-          aria-label="New task"
-          title="New task"
-          className="grid h-7 w-7 place-items-center rounded-full bg-[var(--control)] text-ink transition-colors hover:bg-[var(--control-hover)]"
+          title="Create a task"
+          className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-full bg-ink pr-3 pl-2.5 text-[12px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90"
         >
-          <Icon.plus className="h-3.5 w-3.5" />
+          <Icon.plus className="h-3.5 w-3.5 shrink-0" />
+          Create task
         </Link>
       }
       className="min-w-0"

@@ -211,9 +211,36 @@ export function useQuery<T>(
     fetcher.toString().match(/=>\s*[\w$]+\.([\w]+)\s*\(/)?.[1] ?? "";
   const effectiveStaleTime = staleTime || METHOD_STALE_DEFAULTS[methodName] || 0;
   const [settled, setSettled] = useState<Settled<T> | null>(null);
+  /**
+   * The nonce this hook last actually fetched at.
+   *
+   * `refetch()` bumps `nonce`, and this is how the effect below tells that
+   * bump apart from a version bump or a deps change — which is what decides
+   * whether the TTL cache may answer.
+   *
+   * Written in the effect, never in render: a render can be discarded or
+   * replayed, and a ref written during one is a side effect on a pass that may
+   * never commit.
+   */
+  const fetchedNonce = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    /* **An explicit `refetch()` is never answered from the TTL cache.**
+       `staleTime` exists so an unrelated mutation — a timer tick, a task write —
+       does not re-run an expensive read that cannot have changed. It was also
+       swallowing the one call that means "I know something changed, go and
+       look": `refetch` bumps the nonce, which changes `key` and re-runs this
+       effect, but the TTL entry is keyed WITHOUT the nonce, so the effect served
+       the same stale answer straight back.
+
+       On the documents list — `staleTime` 30s — that meant creating a document
+       and returning to the list showed "No documents yet" for half a minute,
+       over a document that existed. The reader has just watched themselves make
+       the thing the screen says does not exist, and reloading is the only way to
+       be believed. */
+    const forced = fetchedNonce.current !== nonce;
+    fetchedNonce.current = nonce;
 
     /* Two-level caching strategy:
        1. `staleTime` TTL cache — for expensive queries (e.g. workload graphs)
@@ -246,8 +273,9 @@ export function useQuery<T>(
     }
 
     // TTL check: if a recent resolved result exists for this fetcher+deps,
-    // serve it immediately and skip the network round-trip.
-    if (effectiveStaleTime > 0) {
+    // serve it immediately and skip the network round-trip. Skipped entirely
+    // when `refetch()` asked for this pass — see `forced` above.
+    if (effectiveStaleTime > 0 && !forced) {
       const stale = staleResultCache.get(fetcherKey);
       if (stale && Date.now() - stale.resolvedAt < effectiveStaleTime) {
         if (stale.error === undefined) {

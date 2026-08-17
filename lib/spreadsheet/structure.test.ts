@@ -17,6 +17,7 @@ import {
   freezeRows,
   insertCols,
   insertRows,
+  shiftCells,
   setColsHidden,
   setRowHeight,
   setRowsHidden,
@@ -130,4 +131,74 @@ test("inserting within the frozen band grows the freeze; deleting shrinks it", (
   assert.equal(insertRows(ws, 0, 1).frozenRows, 3); // inserted within → grows
   assert.equal(insertRows(ws, 5, 1).frozenRows, 2); // inserted below → unchanged
   assert.equal(deleteRows(ws, 0, 1).frozenRows, 1); // deleted one frozen row → shrinks
+});
+
+/* ── Cell-block shifts (Insert ▸ Cells) ───────────────────────────────────── */
+
+test("inserting cells with a downward shift moves only the block's own columns", () => {
+  const ws = sheet({ A1: "keep", B1: "b1", B2: "b2", C1: "c1" });
+  // Insert one cell at B1, pushing column B down. A and C must not move.
+  const next = shiftCells(ws, { top: 0, left: 1, bottom: 0, right: 1 }, "down");
+  assert.equal(getCellValue(next, 0, 0), "keep", "column A is outside the band");
+  assert.equal(getCellValue(next, 0, 2), "c1", "column C is outside the band");
+  assert.equal(getCellValue(next, 0, 1), "", "B1 is now empty");
+  assert.equal(getCellValue(next, 1, 1), "b1", "B1 moved to B2");
+  assert.equal(getCellValue(next, 2, 1), "b2", "B2 moved to B3");
+});
+
+test("deleting cells with an upward shift drops the block and closes the gap", () => {
+  const ws = sheet({ A1: "a1", B1: "b1", B2: "b2", B3: "b3" });
+  const next = shiftCells(ws, { top: 0, left: 1, bottom: 0, right: 1 }, "up");
+  assert.equal(getCellValue(next, 0, 0), "a1", "column A untouched");
+  assert.equal(getCellValue(next, 0, 1), "b2", "B2 moved up into B1");
+  assert.equal(getCellValue(next, 1, 1), "b3", "B3 moved up into B2");
+  assert.equal(getCellValue(next, 2, 1), "", "the tail is now empty");
+});
+
+test("a rightward shift moves only the block's own rows", () => {
+  const ws = sheet({ A1: "a1", B1: "b1", A2: "a2", B2: "b2" });
+  const next = shiftCells(ws, { top: 0, left: 0, bottom: 0, right: 0 }, "right");
+  assert.equal(getCellValue(next, 0, 1), "a1", "A1 moved right into B1");
+  assert.equal(getCellValue(next, 0, 2), "b1", "B1 moved right into C1");
+  assert.equal(getCellValue(next, 1, 0), "a2", "row 2 is outside the band");
+  assert.equal(getCellValue(next, 1, 1), "b2", "row 2 is outside the band");
+});
+
+test("styles travel with the cells they belong to", () => {
+  let ws = sheet({ B1: "b1" });
+  ws = setCellStyleId(ws, 0, 1, 7);
+  ws = setCellStyleId(ws, 0, 0, 3);
+  const next = shiftCells(ws, { top: 0, left: 1, bottom: 0, right: 1 }, "down");
+  assert.equal(getCellStyleId(next, 1, 1), 7, "B1's style moved with it to B2");
+  assert.equal(getCellStyleId(next, 0, 0), 3, "A1's style did not move");
+});
+
+test("a formula inside the band follows its data; one outside it does not", () => {
+  const ws = sheet({ B1: "10", B5: "=B1", A5: "=B1" });
+  const next = shiftCells(ws, { top: 0, left: 1, bottom: 0, right: 1 }, "down");
+  // B5 itself moved to B6, and its reference followed B1 down to B2.
+  assert.equal(getCellValue(next, 5, 1), "=B2", "the in-band formula moved and re-pointed");
+  // A5 did not move — but it still points at data that did.
+  assert.equal(getCellValue(next, 4, 0), "=B2", "the out-of-band formula re-pointed too");
+});
+
+test("a range straddling the band's edge is left exactly as written", () => {
+  const ws = sheet({ D1: "=SUM(A1:C1)", E1: "=SUM(B1:B4)" });
+  const next = shiftCells(ws, { top: 0, left: 1, bottom: 0, right: 1 }, "down");
+  assert.equal(
+    getCellValue(next, 0, 3),
+    "=SUM(A1:C1)",
+    "A1:C1 spans columns that move and columns that do not — no rectangle describes the result",
+  );
+  assert.equal(
+    getCellValue(next, 0, 4),
+    "=SUM(B2:B5)",
+    "B1:B4 lies wholly inside the band, so it follows",
+  );
+});
+
+test("a reference into deleted cells becomes #REF!", () => {
+  const ws = sheet({ B1: "10", D1: "=B1" });
+  const next = shiftCells(ws, { top: 0, left: 1, bottom: 0, right: 1 }, "up");
+  assert.equal(getCellValue(next, 0, 3), "=#REF!");
 });

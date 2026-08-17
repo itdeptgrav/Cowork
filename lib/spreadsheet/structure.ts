@@ -15,7 +15,12 @@
  */
 
 import { cellRef, parseCellRef } from "./coordinates";
-import { transformStructural, type StructuralOp } from "./formula/rewrite";
+import {
+  transformRegionShift,
+  transformStructural,
+  type RegionShiftOp,
+  type StructuralOp,
+} from "./formula/rewrite";
 import { isFormula } from "./values";
 import type { Cell, Worksheet } from "./model";
 
@@ -115,6 +120,93 @@ export function insertCols(ws: Worksheet, at: number, count = 1): Worksheet {
 }
 export function deleteCols(ws: Worksheet, at: number, count = 1): Worksheet {
   return structuralOp(ws, { axis: "col", at, count, mode: "delete" });
+}
+
+/* ── Cell-block shifts ────────────────────────────────────────────────────── */
+
+/** Where a block of cells is inserted, or which way the gap it leaves closes. */
+export type ShiftDirection = "down" | "right" | "up" | "left";
+
+const SHIFTS: Record<ShiftDirection, { axis: "row" | "col"; mode: "insert" | "delete" }> = {
+  down: { axis: "row", mode: "insert" },
+  right: { axis: "col", mode: "insert" },
+  up: { axis: "row", mode: "delete" },
+  left: { axis: "col", mode: "delete" },
+};
+
+/**
+ * Insert or delete a BLOCK of cells, moving only the cells in its own band.
+ *
+ * This is the operation behind Insert ▸ Cells. Unlike a row or column edit it
+ * does not move the whole sheet: inserting at `B2:C3` with a downward shift
+ * pushes only columns B and C down by two, and column A does not move at all.
+ * Every formula on the sheet is still rewritten, because a formula anywhere may
+ * point INTO the band — but a reference outside it, or a range straddling its
+ * edge, is deliberately left alone (see `transformRegionShift`).
+ *
+ * The row and column counts are fixed, as they are for a row/column edit: an
+ * insert pushes cells off the band's far end, a delete opens blank ones at it.
+ *
+ * **Merges, validations, conditional formats, comments and links are not
+ * reference-tracked through this**, exactly as they are not through
+ * `structuralOp`. Same known gap, deliberately not widened here.
+ */
+export function shiftCells(
+  ws: Worksheet,
+  rect: { top: number; left: number; bottom: number; right: number },
+  direction: ShiftDirection,
+): Worksheet {
+  const { axis, mode } = SHIFTS[direction];
+  const op: RegionShiftOp = { rect, axis, mode };
+  const vertical = axis === "row";
+  const at = vertical ? rect.top : rect.left;
+  const count = vertical ? rect.bottom - rect.top + 1 : rect.right - rect.left + 1;
+  const maxLine = vertical ? ws.rowCount : ws.colCount;
+  const lineOp: StructuralOp = { axis, at, count, mode };
+
+  /** Is this cell in the moving band, across the other axis? */
+  const banded = (row: number, col: number) =>
+    vertical
+      ? col >= rect.left && col <= rect.right
+      : row >= rect.top && row <= rect.bottom;
+
+  const cells: Record<string, Cell> = {};
+  const cellStyles: Record<string, number> = {};
+
+  for (const ref of Object.keys(ws.cells)) {
+    const pos = parseCellRef(ref);
+    if (!pos) continue;
+    const cell = ws.cells[ref];
+    /* Every formula is rewritten wherever it lives — the data it points at may
+       have moved even when the formula did not. */
+    const value = isFormula(cell.value) ? transformRegionShift(cell.value, op) : cell.value;
+    const next = value === cell.value ? cell : { ...cell, value };
+
+    if (!banded(pos.row, pos.col)) {
+      cells[ref] = next;
+      continue;
+    }
+    const line = mapLine(vertical ? pos.row : pos.col, lineOp);
+    if (line === null || line >= maxLine) continue;
+    cells[cellRef(vertical ? line : pos.row, vertical ? pos.col : line)] = next;
+  }
+
+  for (const ref of Object.keys(ws.cellStyles)) {
+    const pos = parseCellRef(ref);
+    if (!pos) continue;
+    if (!banded(pos.row, pos.col)) {
+      cellStyles[ref] = ws.cellStyles[ref];
+      continue;
+    }
+    const line = mapLine(vertical ? pos.row : pos.col, lineOp);
+    if (line === null || line >= maxLine) continue;
+    cellStyles[cellRef(vertical ? line : pos.row, vertical ? pos.col : line)] =
+      ws.cellStyles[ref];
+  }
+
+  /* Row heights, column widths, hidden sets and freezes belong to a whole line.
+     A block shift moves part of a line, so none of them moves with it. */
+  return { ...ws, cells, cellStyles };
 }
 
 /** Resize a row; setting it back to the default height drops the override. */

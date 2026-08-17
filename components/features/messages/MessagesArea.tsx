@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarStack } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
-import { WorkspaceHead } from "@/components/ui/Workspace";
 import {
   Button,
   InlineError,
@@ -111,31 +110,22 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
   }
 
   return (
+    /*
+     * No page header.
+     *
+     * Messages is the one workspace whose two panes ARE the page: the left pane
+     * already names itself with a search box over a list of conversations, and
+     * the right one carries the other person's name and avatar. A title bar
+     * saying "Messages" over that repeated the navigation tab that got you here
+     * and spent ~44px of a view whose whole job is fitting a thread and its
+     * composer on one screen without a second scrollbar.
+     *
+     * The "New message" button went with it. It and the + beside the search were
+     * the same action twice, and the + is the one that sits where the list it
+     * adds to lives — so the + inherits the filled treatment the button had.
+     * The conversation count moved into the list, beside the thing it counts.
+     */
     <>
-      <WorkspaceHead
-        title="Messages"
-        count={
-          conversations.data ? (
-            <>
-              <span data-figure>{all.length}</span>
-              {all.length === 1 ? " conversation" : " conversations"}
-              {unreadTotal > 0 && (
-                <>
-                  {" · "}
-                  <span data-figure>{unreadTotal}</span> unread
-                </>
-              )}
-            </>
-          ) : undefined
-        }
-        action={
-          <Button tone="primary" size="sm" onClick={() => setNewChat("direct")}>
-            <Icon.plus className="h-3.5 w-3.5" />
-            New message
-          </Button>
-        }
-      />
-
       {conversations.error ? (
         <QueryError
           queries={[conversations]}
@@ -144,14 +134,30 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
       ) : (
         /* One fixed-height region rather than two independently growing panels:
            a thread scrolls inside itself, so the composer stays on screen and
-           the page itself never grows a second scrollbar. */
-        <div className="grid grid-cols-1 gap-4 deck:h-[calc(100vh-232px)] deck:min-h-[520px] deck:grid-cols-12">
+           the page itself never grows a second scrollbar.
+
+           **The height is the window minus the chrome, not a magic number.** It
+           was `100vh - 188px`, totalled by hand, and it left ~80px of dead space
+           under the panes: the page frame pads the bottom by up to 64px while
+           the gap above the panes is at most 22px, so the surface sat high in a
+           window it was supposed to fill. Now it takes the header and ONE gap
+           off each end, so the space below the panes matches the space between
+           them and the bar.
+
+           The negative margin is what makes that possible. The frame's own
+           `pb` is larger than the gap we want, and a page cannot shrink its
+           parent's padding — so the difference is pulled back here. Without it
+           the region would fit the window and then push a scrollbar's worth of
+           padding past the bottom of it. */
+        <div className="grid grid-cols-1 gap-4 deck:mb-[calc(var(--shell-gap)-var(--shell-bottom))] deck:h-[calc(100vh-var(--shell-top)-2*var(--shell-gap))] deck:min-h-[520px] deck:grid-cols-12">
           <div
             className={`min-h-0 deck:col-span-4 ${conversationId ? "hidden deck:block" : ""}`}
           >
             <ConversationList
               conversations={filtered}
               total={all.length}
+              unread={unreadTotal}
+              ready={conversations.data !== null && conversations.data !== undefined}
               loading={conversations.isLoading}
               activeId={active}
               viewerId={viewerId}
@@ -200,6 +206,8 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
 function ConversationList({
   conversations,
   total,
+  unread,
+  ready,
   loading,
   activeId,
   viewerId,
@@ -209,6 +217,11 @@ function ConversationList({
 }: {
   conversations: ConversationView[];
   total: number;
+  /** Unread across every conversation, not just the ones matching the search. */
+  unread: number;
+  /** Whether the count is real yet — a bare "0 conversations" while the first
+      read is still in flight reads as "you have none", which is a lie. */
+  ready: boolean;
   loading: boolean;
   activeId?: string;
   viewerId: string | null;
@@ -232,16 +245,37 @@ function ConversationList({
             className="h-9 w-full rounded-full bg-[var(--surface-sunken)] pr-3 pl-9 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
           />
         </div>
+        {/* The filled treatment, inherited from the "New message" button this
+            replaced: it is the only way to start a conversation now, so it is
+            the primary action on the page and reads as one. `bg-ink` is deck ink
+            against the body background, which resolves to a white pill on the
+            dark theme and a black one on the light — the same pair the primary
+            Button and the selected lens segment already use. */}
         <button
           type="button"
           onClick={onNew}
           aria-label="New message"
           title="New message"
-          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-[var(--control)] text-ink transition-colors duration-[180ms] ease-[var(--ease-deck)] hover:bg-[var(--control-hover)]"
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-ink text-[var(--body-bg)] transition-opacity duration-[180ms] ease-[var(--ease-deck)] hover:opacity-90"
         >
           <Icon.plus className="h-4 w-4" />
         </button>
       </div>
+
+      {/* The census the page header used to carry, moved beside the list it
+          counts. One line at caption size instead of a title block. */}
+      {ready && (
+        <p className="shrink-0 px-3 pb-2 text-[11px] text-ink-faint">
+          <span data-figure>{total}</span>
+          {total === 1 ? " conversation" : " conversations"}
+          {unread > 0 && (
+            <>
+              {" · "}
+              <span data-figure>{unread}</span> unread
+            </>
+          )}
+        </p>
+      )}
 
       <div className="min-h-0 flex-1 overflow-y-auto px-1.5 pb-2 scroll-slim">
         {loading ? (

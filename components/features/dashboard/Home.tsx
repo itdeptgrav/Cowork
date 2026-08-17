@@ -116,12 +116,18 @@ export function Home() {
           )}
         </div>
 
-        {/* The right-hand stack — list, gradient card, action card — running
-            the height of both rows and overhanging the first, as measured. */}
+        {/* The right-hand stack — action card, list, gradient card — running
+            the height of both rows and overhanging the first, as measured.
+
+            **QuickAssign leads it.** It carries the only "new task" control on
+            the page now that the header's duplicate is gone, so it sits where
+            that button was: top of the right column, under the search. Buried
+            at the foot of a three-card stack it was the least findable thing on
+            the dashboard while being the one thing people arrive wanting to do. */}
         <div className="flex min-w-0 flex-col gap-4 deck:col-span-4">
+          <QuickAssign />
           <AttentionCard />
           <NextCard />
-          <QuickAssign />
         </div>
       </div>
     </>

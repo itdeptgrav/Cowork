@@ -35,8 +35,23 @@ export const metadata: Metadata = {
     title: "Cowork",
     statusBarStyle: "black-translucent",
   },
+  /**
+   * The SVG leads.
+   *
+   * This declared only `/icon-192.png`, which meant `app/icon.svg` — the actual
+   * artwork, at any size, with real transparency — was never linked at all: an
+   * explicit `icons` entry replaces the file-convention icon rather than adding
+   * to it. Every tab was therefore showing a 192px raster squeezed into 16px.
+   *
+   * Order matters: browsers take the LAST icon they understand, so the SVG is
+   * declared after the PNG and wins wherever SVG favicons are supported, with
+   * the PNG left in front of it as the fallback for anything that does not.
+   */
   icons: {
-    icon: "/icon-192.png",
+    icon: [
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon.svg", type: "image/svg+xml" },
+    ],
     apple: "/apple-icon.png",
   },
 };
