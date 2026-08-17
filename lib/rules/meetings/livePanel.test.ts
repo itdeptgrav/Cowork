@@ -90,16 +90,25 @@ test("the header states the rule that actually applies to this task", () => {
   const from = src.indexOf("Every task has its own room");
   assert.ok(from > 0, "the introduction was rewritten");
   const para = src.slice(from, from + 800);
-  assert.match(para, /crossDept/, "the introduction ignores which rule applies");
+  /* **One rule now, so the paragraph no longer branches** — OWNER DECISION,
+     17 Aug 2026, when cross-department stopped counting any two people. The
+     old wording said the clock ran "whenever two people are in the room
+     together — it does not matter which two", which is now false. */
+  assert.match(
+    para,
+    /are both in the room/,
+    "the introduction no longer states the rule that applies",
+  );
+  assert.equal(
+    /it does not matter which two/.test(para),
+    false,
+    "the any-two-people wording is back, and it no longer matches the rule",
+  );
   /* "two people in the room together", not "both sides". The cross-department
      window stopped naming anybody: the clock runs whenever any two people are
      in the room, because the sender of record is often the head who forwarded
      the task and never joins the call. */
-  assert.match(
-    para,
-    /two people are in the room together/,
-    "the cross-department wording is missing",
-  );
+
 });
 
 /* ── The suggestion under "Your move" ─────────────────────────────────────── */
@@ -141,13 +150,28 @@ test("the totals are read from the sessions, not from a copy that can go missing
      above, by construction. */
   const from = src.indexOf("const summary =");
   assert.ok(from > 0, "the derived summary is gone");
-  const body = src.slice(from, from + 900);
+  /* Widened from 900: the total now carries the note explaining why it sums
+     per-task credit rather than each session's own figure. */
+  const body = src.slice(from, from + 1800);
 
+  /* **The invariant is unchanged; the expression moved.** 17 Aug 2026: the
+     column now shows what each session gave THIS task, not the session's own
+     `creditedSecs`, because those differ — T067 listed 00:07:05 of "counted"
+     time against a budget that had grown by 00:01:57, the other two sessions
+     having been credited to their attendees' own tasks. Summing
+     `creditedSecs` would now contradict the very rows this guard exists to
+     keep it agreeing with. */
   assert.match(
     body,
-    /settled\.reduce\(\(n, s\) => n \+ s\.creditedSecs, 0\)/,
+    /settled\.reduce\(\(n, s\) => n \+ creditedHere\(s\), 0\)/,
     "the total is not summed from the sessions, so it can disagree with the " +
       "rows printed underneath it",
+  );
+  /* And the discarded form must not come back. */
+  assert.equal(
+    /settled\.reduce\(\(n, s\) => n \+ s\.creditedSecs, 0\)/.test(body),
+    false,
+    "the total sums every session again, including ones credited elsewhere",
   );
 
   /* And the figures render from that, never straight from the task. */
@@ -179,4 +203,39 @@ test("a session that has not settled is left out of the total", () => {
     src.slice(from, from + 120),
     /list\.filter\(\(s\) => s\.endedAt !== null\)/,
   );
+});
+
+test("leaving takes the room off the screen before it waits on the network", () => {
+  /**
+   * **Reported 17 Aug 2026: "when I click leave two/three times, then it
+   * leaves — not straight after the click."**
+   *
+   * `setJoined(null)` sat at the END of `depart`, after two round trips. So
+   * pressing Leave disconnected LiveKit but left `<LiveKitRoom>` mounted, with
+   * its control bar still on screen, until both calls returned — and somebody
+   * watching a room that had not gone pressed Leave again. Those presses did
+   * nothing, because the re-entry guard was working; the room appeared to
+   * close on the third click when it was really the first call returning.
+   *
+   * Same shape as the timer's held press: answer the person first, finish the
+   * write behind them.
+   */
+  const from = src.indexOf("const depart = async (sessionId: string)");
+  assert.ok(from > 0, "the departure handler was restructured");
+  const body = src.slice(from, from + 1800);
+
+  const cleared = body.indexOf("setJoined(null)");
+  const awaited = body.indexOf("await leave(sessionId)");
+  assert.ok(cleared > 0 && awaited > 0, "the departure no longer clears or leaves");
+  assert.ok(
+    cleared < awaited,
+    "the room is unmounted only after the network calls, so Leave looks dead " +
+      "until they return and the press has to be repeated",
+  );
+
+  /* The re-entry guard stays: without it the button press AND the resulting
+     disconnection both run the settlement, closing the session twice. */
+  assert.match(body, /if \(departingRef\.current === sessionId\) return;/);
+  /* And the settlement still runs — clearing early must not skip the credit. */
+  assert.match(body, /await end\(sessionId\)/);
 });

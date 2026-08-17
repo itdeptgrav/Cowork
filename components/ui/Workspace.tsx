@@ -108,6 +108,15 @@ export function IconTabs({
     href: string;
     icon: IconName;
     count?: number;
+    /**
+     * Something is new here but cannot be counted.
+     *
+     * A dot, not a number. The engine itemises some kinds of activity and only
+     * timestamps others, and rendering "1" for the second kind would be a
+     * figure nobody could check. Ignored when `count` is set — a number says
+     * everything a dot would.
+     */
+    dot?: boolean;
   }[];
   active: string;
 }) {
@@ -134,17 +143,26 @@ export function IconTabs({
           >
             <Ico className={on ? "" : "opacity-70"} />
             {t.label}
-            {t.count !== undefined && t.count > 0 && (
+            {t.count !== undefined && t.count > 0 ? (
               <span
                 data-figure
+                aria-label={`${t.count} new`}
                 className={`rounded-full px-1.5 text-[11px] ${
                   on
                     ? "bg-[var(--control-active)]"
-                    : "bg-[var(--control)] text-ink-faint"
+                    : "bg-[var(--state-extension)] text-[var(--state-extension-ink)]"
                 }`}
               >
                 {t.count}
               </span>
+            ) : (
+              t.dot && (
+                /* Something changed and there is no honest number for it. */
+                <span
+                  aria-label="new"
+                  className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--state-extension)]"
+                />
+              )
             )}
           </Link>
         );

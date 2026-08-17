@@ -278,7 +278,7 @@ import {
 import {
   type Attendance as MeetingAttendance,
   creditsIn,
-  creditsInWindow,
+  crossDeptWindow,
   ordinaryWindow,
   roomEmptiedAtMs,
   roomIsEmpty,
@@ -3400,6 +3400,23 @@ export class MockRepository implements CoworkRepository {
     rec.confirmedBy = actingId();
     tick();
     return { ok: true, data: rec };
+  }
+
+  /**
+   * The prototype has no engine, so nothing is ever new.
+   *
+   * Empty rather than invented: a badge in the prototype that no action could
+   * clear would read as a bug in the real product.
+   */
+  async readTaskTabActivity(): Promise<{
+    activity: Record<string, { lastAt: string | null; items?: { at: string; by?: string | null }[] }>;
+    seen: Record<string, string | null>;
+  }> {
+    return { activity: {}, seen: {} };
+  }
+
+  async markTaskTabSeen(): Promise<ActionResult<null>> {
+    return { ok: true, data: null };
   }
 
   async listTimeBudgetExtensions(
@@ -8879,11 +8896,17 @@ export class MockRepository implements CoworkRepository {
       ? settleCrossDeptSession({
           session: { ...meetingSession, receiverId: assigneeId },
           onTaskId: String(session.taskId),
-          /* The conversation window asks only how many people were in the room
-             together, so it needs no `receiverId` — which is the point of the
-             change: a cross-department meeting the named sender never joined is
-             still a meeting, and the people in it are still credited. */
-          tasksByEmployee: queuesFor(creditsInWindow(meetingSession)),
+          /* **The two sides of the work, in the room together** — OWNER
+             DECISION, 17 Aug 2026. This used `creditsInWindow`, whose window
+             is any two people, so a room holding two colleagues credited time
+             on a task the assignee had never joined. Same window as the
+             ordinary rule now; see `crossDeptWindow`. */
+          tasksByEmployee: queuesFor(
+            creditsIn(
+              meetingSession,
+              crossDeptWindow({ ...meetingSession, receiverId: assigneeId }),
+            ),
+          ),
           alreadyCredited,
         })
       : settleSession({

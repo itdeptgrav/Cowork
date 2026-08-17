@@ -8,7 +8,7 @@ import {
   deadlineOrigin,
   formatWindow,
 } from "@/lib/rules/tasks/deadlineOrigin";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
 import { meetingFirstHint } from "@/lib/rules/meetings/meetingFirst";
@@ -66,8 +66,9 @@ import {
   Select,
   SkeletonRows,
 } from "@/components/ui/Primitives";
-import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions } from "@/lib/hooks/usePermissions";
+import { tabBadges } from "@/lib/rules/tasks/tabBadges";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { useMyDutyMode } from "@/lib/hooks/useDutyMode";
@@ -116,6 +117,32 @@ export function TaskDetail({
     [taskId],
   );
   const subtasks = useQuery((r) => r.getSubtasks(taskId), [taskId]);
+  const repo = useRepo();
+  /**
+   * What is new on each tab, and when this viewer last looked.
+   *
+   * **Above the early returns, with the other hooks.** Placing it below them
+   * makes it a conditional hook call: the loading and error paths return
+   * first, so React sees a different number of hooks between renders and
+   * throws the moment a task fails to load.
+   *
+   * One read, not two — a message arriving between separate requests would
+   * count as unread against a mark written after it, so the badge would never
+   * clear.
+   */
+  const tabActivity = useQuery((r) => r.readTaskTabActivity(taskId), [taskId]);
+
+  /* Opening a tab reads it. Written on the SERVER so the badge clears on every
+     device this person signs in on, and keyed on task+tab so a re-render does
+     not re-write it. A failure is swallowed: an unmarked tab shows its badge
+     again, which is a smaller fault than an error over a page that loaded. */
+  const markedRef = useRef<string | null>(null);
+  useEffect(() => {
+    const key = `${taskId}:${tab}`;
+    if (markedRef.current === key) return;
+    markedRef.current = key;
+    void repo.markTaskTabSeen(taskId, tab).catch(() => {});
+  }, [repo, taskId, tab]);
   const [priorityOpen, setPriorityOpen] = useState(false);
   /* Whether there is anybody's priority this viewer may change on this task.
      Priority is now set by whoever manages you, so for most people on most
@@ -271,6 +298,32 @@ export function TaskDetail({
     },
   ];
 
+  /**
+   * **What is new on each tab since this person last looked.**
+   * OWNER DECISION, 17 Aug 2026.
+   *
+   * A message arrived, work was submitted, a reviewer sent it back — and the
+   * only way to find out was to open every tab and read it. The tab bar had a
+   * `count` slot the whole time; the legacy mapper hardcoded it to `0`, so the
+   * affordance existed and had never shown anything.
+   *
+   * Keyed by tab id end to end, so a tab added later gets a badge from the
+   * engine reporting activity for it and nothing here changes.
+   */
+  const badges = tabBadges({
+    activity: tabActivity.data?.activity,
+    seen: tabActivity.data?.seen,
+    viewerId: me,
+  });
+  const badgedTabs = tabs.map((t) => {
+    /* Never on the tab you are looking at: it is being read right now, and a
+       badge there would sit under your eyes until you navigated away. */
+    if (t.id === tab) return t;
+    const b = badges[t.id];
+    if (!b) return t;
+    return { ...t, count: b.count > 0 ? b.count : undefined, dot: b.dot };
+  });
+
   return (
     <>
       <div className="mb-4">
@@ -358,7 +411,10 @@ export function TaskDetail({
         </div>
 
         <div className="mt-3 border-b border-hairline pb-2">
-          <IconTabs items={tabs} active={tab} />
+          {/* Badges are attached HERE rather than built into `tabs` above, so
+              the tab list stays a description of the task's shape and knows
+              nothing about who has read what. */}
+          <IconTabs items={badgedTabs} active={tab} />
         </div>
       </div>
 

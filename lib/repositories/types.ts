@@ -1030,6 +1030,23 @@ export interface CoworkRepository {
   listTimeBudgetExtensions(
     taskId: TaskId,
   ): Promise<TimeBudgetExtensionRecord[]>;
+  /**
+   * What is new on each tab of a task, and when the viewer last looked.
+   *
+   * Keyed by tab id both ways, and the engine decides the keys — a tab added
+   * later gets a badge without a change here or in `tabBadges`.
+   */
+  readTaskTabActivity(taskId: TaskId): Promise<{
+    activity: Record<string, { lastAt: string | null; items?: { at: string; by?: string | null }[] }>;
+    seen: Record<string, string | null>;
+  }>;
+  /**
+   * Mark one tab read, for this viewer, now.
+   *
+   * Server-side deliberately: reading a tab on a laptop has to clear its badge
+   * on a phone, which a mark kept in one browser cannot do.
+   */
+  markTaskTabSeen(taskId: TaskId, tabId: string): Promise<ActionResult<null>>;
   /** The DATE conversation, in the typed shape. Dates only. */
   listDeadlineExtensionRecords(
     taskId: TaskId,

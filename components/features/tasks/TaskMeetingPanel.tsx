@@ -11,6 +11,7 @@ import {
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
 import "@livekit/components-styles";
+import { creditedToTask } from "@/lib/rules/meetings/creditedToTask";
 import { Icon } from "@/components/ui/Icons";
 import {
   Button,
@@ -163,13 +164,34 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
     if (departingRef.current === sessionId) return;
     departingRef.current = sessionId;
 
+    /**
+     * **The room goes at once, and the writes finish behind it.**
+     * Reported 17 Aug 2026: "when I click leave two/three times, then it
+     * leaves — not straight after the click."
+     *
+     * `setJoined(null)` used to sit at the END, after both network calls. So
+     * pressing Leave disconnected LiveKit but left `<LiveKitRoom>` mounted
+     * with its control bar still on screen until two round trips completed —
+     * and a person watching a room that had not gone pressed Leave again.
+     * Those presses did nothing (the ref above is doing its job), so the
+     * meeting appeared to close on the third click when it was really the
+     * first call finally returning.
+     *
+     * Clearing first costs nothing: `sessionId` is a parameter, so neither
+     * call depends on the state being cleared, and the settlement below is
+     * what credits the time either way.
+     */
+    setJoined(null);
+
     await leave(sessionId);
     /* Closing is what CREDITS it. Leaving alone would keep the session open for
        whoever is still inside — which is correct when somebody else remains,
        and is why the two are separate calls rather than one. */
     const r = await end(sessionId);
+    /* Reported after the room has already gone, which is the right order: the
+       departure succeeded, and this says the settlement did not. An abandoned
+       session settles itself from the attendance beats regardless. */
     if (!r.ok) setError(r.message);
-    setJoined(null);
     sessions.refetch();
   };
 
@@ -188,6 +210,11 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * still found and joined.
    */
   const list = realMeetingsOnly(sessions.data ?? []);
+  /* What each session gave THIS task. `creditedSecs` is the session's own
+     figure, credited to whoever attended on THEIR tasks — printing it here
+     claimed seven minutes for a task whose deadline had moved by two. */
+  const creditedHere = (s: { creditedSecs: number; creditedTaskIds: string[] }) =>
+    creditedToTask(s, taskId);
 
   /* Names for the attendance line. Attendees are usually the assignee and the
      assigner, both of which `view` already carries, but a third person joining
@@ -384,7 +411,13 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
               !latest || (s.endedAt ?? "") > latest ? s.endedAt : latest,
             null,
           ),
-          totalSecs: settled.reduce((n, s) => n + s.creditedSecs, 0),
+          /* **What THIS task gained**, which is what the column beneath now
+             shows. Summing `creditedSecs` reported 00:07:05 on a task whose
+             budget had grown by 00:01:57 — the other two sessions were
+             credited to their attendees' own tasks. The comment above already
+             required the total to be the sum of the column; this makes it
+             true. */
+          totalSecs: settled.reduce((n, s) => n + creditedHere(s), 0),
         }
       : meetings;
 
@@ -397,15 +430,16 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   /* Why the clock is or is not running, in the terms of whichever rule applies.
      One sentence rather than a shared vague one: "nothing is being added" with
      no reason is the message that sent people to argue with a correct system. */
+  /* **One sentence for both rules** — OWNER DECISION, 17 Aug 2026, when
+     cross-department stopped counting any two people and started requiring the
+     two sides like every other task. The cross-department wording said "you
+     are in the room with somebody else", which is now false: Rishee and Rakesh
+     in the room without Umung count for nothing. */
   const liveNote = !live
     ? ""
-    : crossDept
-      ? live.counting
-        ? "There is more than one of you in the room, so this is being added to your deadlines."
-        : "Nothing is being added to yours — it counts only while you are in the room with somebody else."
-      : live.counting
-        ? `${counterpartyName} and ${receiverName} are both in the room, so this is being added to your deadlines.`
-        : `Nothing is being added — it counts only while ${counterpartyName} and ${receiverName} are both in the room.`;
+    : live.counting
+      ? `${counterpartyName} and ${receiverName} are both in the room, so this is being added to your deadlines.`
+      : `Nothing is being added — it counts only while ${counterpartyName} and ${receiverName} are both in the room.`;
 
   return (
     <Panel label="Meetings">
@@ -422,9 +456,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                 that used to name only the receiver's deadline now says so.
                 What still differs between the two rules is the window — who has
                 to be present for the clock to run at all. */}
-            {crossDept
-              ? "This work came from another department, so the clock runs whenever two people are in the room together — it does not matter which two."
-              : `The clock runs only while ${counterpartyName} and ${receiverName} are both in the room — neither side earns time alone.`}{" "}
+            {`The clock runs only while ${counterpartyName} and ${receiverName} are both in the room — neither side earns time alone.`}{" "}
             Everyone in the room is credited their own time in it, on their own
             tasks.
           </p>
@@ -678,9 +710,16 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                 {/* Said in words, not only as a tooltip. A zero next to "3
                     people" is the one figure on this panel somebody will argue
                     about, and a hover they never perform cannot answer them. */}
-                {s.endedAt !== null && s.creditedSecs === 0 && (
+                {s.endedAt !== null && creditedHere(s) === 0 && (
                   <span className="shrink-0 text-[10.5px] text-ink-faint">
-                    Both sides were not in the room together
+                    {s.creditedSecs > 0
+                      ? /* It counted — for the people in it, on THEIR tasks.
+                           Saying "both sides were not in the room" of a
+                           session two people plainly attended reads as a
+                           fault; what is true is that it did not reach THIS
+                           task. */
+                        "Counted on the attendees’ own tasks, not this one"
+                      : "Both sides were not in the room together"}
                   </span>
                 )}
                 {/* **Who was in the room, by name.**
@@ -703,15 +742,18 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                   data-figure
                   className="w-[72px] shrink-0 text-right text-[12px] tabular-nums"
                   style={{
-                    color: s.creditedSecs === 0 ? "var(--ink-faint)" : "var(--ink)",
+                    color:
+                      creditedHere(s) === 0 ? "var(--ink-faint)" : "var(--ink)",
                   }}
                   title={
-                    s.creditedSecs === 0
-                      ? "Nothing was credited — the two sides of this work were not in the room at the same time."
-                      : "Credited to your deadlines."
+                    creditedHere(s) > 0
+                      ? "Credited to this task's deadline."
+                      : s.creditedSecs > 0
+                        ? "This session was credited to the people who attended it, on their own tasks. Nothing reached this one."
+                        : "Nothing was credited — the two sides of this work were not in the room at the same time."
                   }
                 >
-                  {formatTimer(s.creditedSecs)}
+                  {formatTimer(creditedHere(s))}
                 </span>
               </li>
             ))}

@@ -543,17 +543,50 @@ test("LIVE: each person watching sees their OWN number, not the meeting's", () =
   assert.equal(sunil.counting, false, "he has left the room");
 });
 
-test("LIVE: two people in the room count, whoever they are", () => {
-  /* The sender is absent and it counts anyway. The panel used to read "nothing
-     is being added" through a conversation that was in fact being added to
-     both of them — it required the two NAMED sides, and on cross-department
-     work the named sender is often somebody who never joins. */
+test("LIVE: two people are not enough — it needs the two SIDES", () => {
+  /**
+   * **REVERSED — OWNER DECISION, 17 Aug 2026.** This asserted the opposite:
+   * any two people in the room counted, whoever they were.
+   *
+   * Reported on a real task Pramod assigned to Umung — "now Rishee or Rakesh
+   * join meeting, Umung join not yet, still counting increases". The owner's
+   * rule, in their words: *if Pramod and Umung are in the room the counter
+   * starts, otherwise not; if Umung and Rishee are in the meeting, no
+   * counter.*
+   *
+   * The any-two exception existed because the sender of record on
+   * cross-department work is often a department head who never joins. The
+   * owner has confirmed that case is handled on their side.
+   */
   const s = session([[RECEIVER, 0, null], [SUNIL, 0, null]], 30);
   for (const who of [RECEIVER, SUNIL]) {
     const f = liveCrossDeptFigures(s, who, at(30));
+    assert.equal(f.creditedSecs, 0, `${who} was credited without the sender`);
+    assert.equal(f.counting, false);
+  }
+  /* And with BOTH sides present it counts, for everybody in the room. */
+  const paired = session(
+    [[RECEIVER, 0, null], [SENDER, 0, null], [SUNIL, 0, null]],
+    30,
+  );
+  for (const who of [RECEIVER, SENDER, SUNIL]) {
+    const f = liveCrossDeptFigures(paired, who, at(30));
     assert.equal(mins(f.creditedSecs), 30, `${who} earned nothing`);
     assert.equal(f.counting, true);
   }
+});
+
+test("LIVE: a third party earns only from the moment the pair is complete", () => {
+  /* Rishee sits with Umung for the first ten minutes and earns nothing;
+     Pramod arrives at ten, and Rishee earns the twenty that follow. The window
+     decides WHEN the clock runs, never who benefits. */
+  const s = session(
+    [[RECEIVER, 0, null], [SUNIL, 0, null], [SENDER, 10, null]],
+    30,
+  );
+  const late = liveCrossDeptFigures(s, SUNIL, at(30));
+  assert.equal(mins(late.creditedSecs), 20, "the waiting was credited");
+  assert.equal(late.counting, true);
 });
 
 test("LIVE: one person alone is not counting, however long they wait", () => {

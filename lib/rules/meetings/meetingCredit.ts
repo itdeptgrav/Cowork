@@ -375,12 +375,40 @@ export function sharedWindow(
  * joins early and waits for the receiver earns nothing for the waiting, which
  * is exactly how the receiver was already treated.
  *
- * **Cross-department work is untouched** and keeps `conversationWindow` — any
- * two people. There the sender of record is often a department head who was
- * never in the call, and requiring them would empty the window on genuine
- * meetings; that reasoning is unchanged by this.
+ * **Cross-department work now uses the same window** — see
+ * `crossDeptWindow` below, which reverses the exception this note used to
+ * describe.
  */
 export function ordinaryWindow(
+  session: MeetingSession & { receiverId: string },
+): Span[] {
+  return sharedWindow(session);
+}
+
+/**
+ * The stretch a CROSS-DEPARTMENT meeting is running: **the two sides of the
+ * work, in the room together** — OWNER DECISION, 17 Aug 2026.
+ *
+ * **This reverses the any-two-people exception.** Reported: on a task Pramod
+ * assigned to Umung, the counter ran while Rishee and Rakesh were in the room
+ * and Umung had not joined at all. The owner's rule, in their words: *if
+ * Pramod and Umung are in the room the counter starts, otherwise not; if Umung
+ * and Rishee are in the meeting, no counter.*
+ *
+ * The exception existed because the sender of record on cross-department work
+ * is often a department head who never joins, and requiring them would empty
+ * the window on genuine meetings. The owner has confirmed that case is handled
+ * on their side and asked for the pair rule regardless.
+ *
+ * **What does NOT change:** everybody in the room still earns their own time
+ * inside the window. Once Pramod and Umung are both present, Rishee joining
+ * earns Rishee his own minutes on his own tasks — the window decides WHEN the
+ * clock runs, never who benefits.
+ *
+ * Delegates to `sharedWindow` rather than repeating the intersection, so the
+ * two rules cannot drift into disagreeing about what "both sides" means.
+ */
+export function crossDeptWindow(
   session: MeetingSession & { receiverId: string },
 ): Span[] {
   return sharedWindow(session);
@@ -530,15 +558,27 @@ export function liveCrossDeptFigures(
   const upToNow = { ...session, endedAtMs: nowMs };
   return {
     elapsedSecs: Math.floor(Math.max(0, nowMs - session.startedAtMs) / 1000),
-    creditedSecs: creditInWindowFor(upToNow, viewerId),
-    /* Counting when the READER is in a room that holds a conversation — two
-       people at once, whoever they are. It used to require the two NAMED sides
-       to be present, which read "nothing is being added" through meetings that
-       were being added to everybody, and was worth nothing on the many
-       cross-department calls the sender of record never joins. */
+    /* The reader's own presence inside the window the pair defines — see
+       `crossDeptWindow`. Measured against that window and not against any-two,
+       so the live figure and the settled one cannot disagree. */
+    creditedSecs: secsOf(
+      intersect(presenceOf(upToNow, viewerId), crossDeptWindow(upToNow)),
+    ),
+    /**
+     * **The two sides of the work, both in the room** — OWNER DECISION,
+     * 17 Aug 2026.
+     *
+     * This was `peopleInRoom >= 2`: any two people, whoever they were. So on
+     * a task Pramod assigned to Umung, the counter ran while Rishee and
+     * Rakesh talked and Umung had not joined at all.
+     *
+     * The reader must also be present — somebody watching from outside the
+     * room earns nothing, whoever else is in it.
+     */
     counting:
       isPresent(upToNow, viewerId, nowMs) &&
-      peopleInRoom(upToNow, nowMs) >= 2,
+      isPresent(upToNow, session.counterpartyId, nowMs) &&
+      isPresent(upToNow, session.receiverId, nowMs),
   };
 }
 
