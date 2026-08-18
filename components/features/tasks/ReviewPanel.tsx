@@ -19,6 +19,7 @@ import {
   FileUploader,
 } from "@/components/features/attachments/Attachments";
 import { SubmittedFiles } from "./SubmittedFiles";
+import { ReworkQueuePicker } from "./ReworkQueuePicker";
 import type { AttachmentMeta } from "@/lib/legacy/attachments";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { formatDateTime } from "@/lib/utils/format";
@@ -90,6 +91,10 @@ export function ReviewPanel({
      product already uses. Not a second checklist. */
   const requirements = view.completion.requirements;
 
+  /* Where the returned work lands in the assignee's queue. Null means the
+     reviewer did not choose, which leaves the rank exactly as it was. */
+  const [reworkRank, setReworkRank] = useState<number | null>(null);
+
   const me = useViewerId();
   const submissions = useQuery(
     (r) => r.listSubmissions(taskId),
@@ -108,6 +113,7 @@ export function ReviewPanel({
       reworkRequirements: decision === "rework" ? failed : [],
       reworkNote: decision === "rework" ? correction : "",
       reworkAttachmentIds: decision === "rework" ? files.map((f) => f.id) : [],
+      reworkPriority: decision === "rework" ? reworkRank : null,
       waiveDeduction: waive,
     }),
   );
@@ -435,6 +441,14 @@ export function ReviewPanel({
                 />
               </Field>
             </div>
+          )}
+
+          {decision === "rework" && (
+            <ReworkQueuePicker
+              taskId={taskId}
+              value={reworkRank}
+              onChange={setReworkRank}
+            />
           )}
 
           {decision === "rework" && (

@@ -38,6 +38,7 @@ export interface MenuBarActions {
   onDownloadHtml: () => void;
   onDownloadText: () => void;
   onDownloadPdf: () => void;
+  onDownloadDocx: () => void;
   onPrint: () => void;
   onPageSetup: () => void;
   onVersionHistory: () => void;
@@ -46,6 +47,7 @@ export interface MenuBarActions {
 
   onFind: () => void;
   onInsertLink: () => void;
+  onSpecialCharacters: () => void;
   onInsertImage: () => void;
   onWordCount: () => void;
   onShortcuts: () => void;
@@ -175,6 +177,7 @@ export function DocsMenuBar({
                     <MenuItem label="Web page (.html)" onSelect={actions.onDownloadHtml} />
                     <MenuItem label="Plain text (.txt)" onSelect={actions.onDownloadText} />
                     <MenuItem label="PDF document (.pdf)" onSelect={actions.onDownloadPdf} />
+                    <MenuItem label="Microsoft Word (.docx)" onSelect={actions.onDownloadDocx} />
                   </SubMenu>
                   <MenuItem label="Print" shortcut="Ctrl P" onSelect={actions.onPrint} />
                   <MenuItem label="Version history" onSelect={actions.onVersionHistory} />
@@ -306,6 +309,12 @@ export function DocsMenuBar({
                     shortcut="Ctrl Enter"
                     disabled={!can}
                     onSelect={run((e) => e.chain().focus().setPageBreak().run())}
+                  />
+                  <MenuSeparator />
+                  <MenuItem
+                    label="Special characters…"
+                    disabled={!can}
+                    onSelect={actions.onSpecialCharacters}
                   />
                   <MenuSeparator />
                   <MenuItem

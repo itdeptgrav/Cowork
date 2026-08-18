@@ -1515,6 +1515,19 @@ export interface CoworkRepository {
   ): Promise<ActionResult<TaskSubmission>>;
   listSubmissions(taskId: TaskId): Promise<TaskSubmission[]>;
   reviewSubmission(input: ReviewInput): Promise<ActionResult<TaskReview>>;
+  /**
+   * What sending this task back at a given priority would do to that person's
+   * other work. Read-only — asked again on every change of the picker, so it
+   * must never write.
+   *
+   * Optional on the interface: a store with no queue engine behind it has no
+   * honest answer, and the screen shows the picker without a preview rather
+   * than inventing one.
+   */
+  reworkQueuePreview?(
+    taskId: TaskId,
+    priority: number | null,
+  ): Promise<ReworkQueuePreview | null>;
   listReviews(taskId: TaskId): Promise<TaskReview[]>;
   listReworkRequests(taskId: TaskId): Promise<ReworkRequest[]>;
   listRejections(taskId: TaskId): Promise<Rejection[]>;
@@ -2723,6 +2736,55 @@ export interface ReviewInput {
    * with none of those checks.
    */
   reworkAttachmentIds?: string[];
+  /**
+   * Rework only. Where the returned work sits in the assignee's queue.
+   *
+   * **The reviewer's call, because only they can make it.** Sending work back
+   * puts it on somebody who has already moved on to the next thing, and
+   * whether the rework outranks what they are doing now is a judgement about
+   * the work, not something the engine can derive. Everything below the chosen
+   * rank re-chains behind it.
+   *
+   * Optional, and absent means "leave the rank as it was". A rejection must
+   * never fail because a priority could not be chosen — a queue in a slightly
+   * wrong order is recoverable, a review that did not save is not.
+   */
+  reworkPriority?: number | null;
+}
+
+/**
+ * What sending work back would do to the rest of that person's queue.
+ *
+ * Answered by the engine running its real queue walk in simulation, rather
+ * than by the screen doing its own arithmetic — a preview that predicts
+ * something the commit does not do is worse than showing nothing.
+ */
+export interface ReworkQueuePreview {
+  /**
+   * The time the rework will be given, in seconds — the time that was NEVER
+   * USED, not what was left when the reviewer got to it. Due 6:00, handed in
+   * at 5:00, reviewed at 5:45: a full hour, not fifteen minutes.
+   *
+   * Null when the task carries no deadline or was never submitted.
+   */
+  leftoverSecs: number | null;
+  /** The rank the task carries today — the default, so most reviewers change nothing. */
+  currentRank: number | null;
+  /** The rank this preview was computed for. */
+  rank: number | null;
+  rows: ReworkQueueRow[];
+}
+
+export interface ReworkQueueRow {
+  taskId: TaskId;
+  title: string;
+  rank: number;
+  /** True for the task being sent back. */
+  isRework: boolean;
+  /** Its deadline today. Null for the rework, which has none until it lands. */
+  from: string | null;
+  /** Its deadline if the reviewer commits this priority. */
+  to: string;
 }
 
 

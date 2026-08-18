@@ -82,7 +82,14 @@ export default function RootLayout({
             precisely what the mode exists to avoid. */}
         <script dangerouslySetInnerHTML={{ __html: DEVICE_MODE_BOOT_SCRIPT }} />
       </head>
-      <body className="min-h-full antialiased">
+      {/* And here for a different reason: browser extensions stamp their own
+          attributes onto <body> before React hydrates — a password manager, a
+          grammar checker, an ad blocker. `__processed_<guid>__="true"` is one
+          such. Nothing we render produces them, they are absent from the
+          server HTML, and React cannot patch them up, so without this every
+          reader with an extension installed gets a hydration error in the
+          console for a page that is working correctly. */}
+      <body className="min-h-full antialiased" suppressHydrationWarning>
         <a
           href="#main"
           className="sr-only focus:not-sr-only focus:absolute focus:top-3 focus:left-3 focus:z-[200] focus:rounded-full focus:bg-ink focus:px-4 focus:py-2 focus:text-[15px] focus:text-[var(--body-bg)]"

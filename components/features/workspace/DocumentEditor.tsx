@@ -43,6 +43,11 @@ import {
 } from "@/lib/rules/documents/pageSetup";
 import { readingMinutes, wordCount } from "@/lib/rules/documents/textStats";
 import {
+  imageFilesFrom,
+  pasteIsImage,
+} from "@/lib/rules/media/clipboardImages";
+import { driveImageSrc } from "@/lib/rules/media/driveUrls";
+import {
   isPaintable,
   paintableFormat,
   type PaintedFormat,
@@ -65,9 +70,12 @@ import { DocsSidebar } from "./docs/DocsSidebar";
 import { DocsFindReplace } from "./docs/DocsFindReplace";
 import { DocsSelectionToolbar } from "./docs/DocsSelectionToolbar";
 import { DocsImageToolbar } from "./docs/DocsImageToolbar";
+import { DocsLinkBubble } from "./docs/DocsLinkBubble";
+import { DocsSpecialChars } from "./docs/DocsSpecialChars";
 import { DocsComments } from "./docs/DocsComments";
 import { DocsVersionHistory } from "./docs/DocsVersionHistory";
 import { exportDocumentPdf } from "@/lib/documents/pdfExport";
+import { exportDocumentDocx } from "@/lib/documents/docxExport";
 import { ContinueSuggestion } from "./ai/ContinueSuggestion";
 import { requestAssist } from "@/lib/workspace/ai/client";
 import { buildDocsContext } from "@/lib/rules/documents/aiContext";
@@ -285,6 +293,77 @@ export function DocumentEditor({
 
   const [status, setStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [error, setError] = useState<string | null>(null);
+  /* A pasted image is uploaded before it is inserted, so the editor can say
+     so rather than appearing to have ignored the paste. */
+  const [pasting, setPasting] = useState(false);
+  /* The special-character panel, and the in-flight replace of one image. */
+  const [showSpecialChars, setShowSpecialChars] = useState(false);
+  const [replacingImage, setReplacingImage] = useState(false);
+  /* The editor, reachable from a callback defined BEFORE it exists — the
+     paste handler is passed into `useEditor` itself, so it cannot close over
+     the value that call returns. */
+  const editorRef = useRef<ReturnType<typeof useEditor> | null>(null);
+
+  /**
+   * Upload pasted images, then insert them where the paste happened.
+   *
+   * **Uploaded first, inserted second.** The obvious alternative — insert a
+   * `data:` URL immediately so the picture appears at once, swap it for the
+   * hosted one later — puts the whole screenshot, base64-encoded, into the
+   * collaborative room and into every save, export and print between the paste
+   * and the swap. On a shared document that is other people's bandwidth, and a
+   * failed upload leaves it there permanently.
+   *
+   * The insert position is the paste point, clamped: the document is live and
+   * a collaborator may have shortened it while the upload was in flight, and a
+   * stale position would throw rather than land at the end.
+   *
+   * Failures are reported through the same banner the rest of the editor uses
+   * and cost only the image — nothing is inserted, and the document is
+   * untouched.
+   */
+  const pasteImages = useCallback(
+    async (files: File[], at: number) => {
+      const repo = getRepository();
+      if (typeof repo.uploadDriveFile !== "function") {
+        setError("This workspace cannot store pasted images yet.");
+        return;
+      }
+      setPasting(true);
+      try {
+        for (const file of files) {
+          const r = await repo.uploadDriveFile(file);
+          if (!r.ok) {
+            setError(r.message);
+            continue;
+          }
+          /* The CDN address, exactly as the insert dialog uses — Drive's own
+             URL cannot be drawn in an <img>. `renderableImageSrc` at render
+             repairs anything older, but writing it correctly here means the
+             saved markup is right for readers outside this editor too. */
+          const src = r.data.fileId
+            ? driveImageSrc(r.data.fileId)
+            : r.data.url;
+          const view = editorRef.current?.view;
+          if (!view) return;
+          const pos = Math.min(at, view.state.doc.content.size);
+          editorRef.current
+            ?.chain()
+            .focus()
+            .insertContentAt(pos, { type: "image", attrs: { src } })
+            .run();
+        }
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : "That image could not be pasted.",
+        );
+      } finally {
+        setPasting(false);
+      }
+    },
+    [],
+  );
+
   const [savedAt, setSavedAt] = useState<string | null>(null);
 
   /** The "submit this as report" banner, present only when `reportTaskId` is set. */
@@ -419,13 +498,34 @@ export function DocumentEditor({
           },
         },
         handlePaste: (view, event) => {
-          if (!plainPasteRef.current) return false;
-          plainPasteRef.current = false;
-          const text = event.clipboardData?.getData("text/plain") ?? "";
-          if (!text) return false;
-          view.dispatch(
-            view.state.tr.insertText(text).scrollIntoView(),
-          );
+          /* Ctrl+Shift+V first: an explicit "no formatting" wins over every
+             other reading of the clipboard, including an image. */
+          if (plainPasteRef.current) {
+            plainPasteRef.current = false;
+            const text = event.clipboardData?.getData("text/plain") ?? "";
+            if (!text) return false;
+            view.dispatch(view.state.tr.insertText(text).scrollIntoView());
+            return true;
+          }
+
+          /**
+           * **A pasted image is uploaded and inserted.**
+           *
+           * Only when the paste is ABOUT an image — `pasteIsImage` lets a
+           * rich passage that merely contains a picture paste as the passage,
+           * so this can never quietly reduce copied text to its first image.
+           *
+           * Uploaded before it is inserted, never embedded as base64: the
+           * document is a shared CRDT and its HTML is saved, printed and
+           * mailed, so a pasted screenshot inlined as data would put
+           * megabytes into the room for every collaborator and into every
+           * export. The wait is a second; the alternative is permanent.
+           */
+          if (!pasteIsImage(event.clipboardData)) return false;
+          const images = imageFilesFrom(event.clipboardData);
+          if (!images.length) return false;
+          event.preventDefault();
+          void pasteImages(images, view.state.selection.from);
           return true;
         },
       },
@@ -441,6 +541,14 @@ export function DocumentEditor({
     },
     [documentId, collab.session, readOnly],
   );
+
+  /* Kept current so `pasteImages` — defined above the editor, because it is
+     passed INTO `useEditor` — can reach it. Assigned in an effect rather than
+     during render: effects run before any paste can happen, and writing a ref
+     while rendering is what makes a component miss its own updates. */
+  useEffect(() => {
+    editorRef.current = editor;
+  }, [editor]);
 
 
   /**
@@ -922,6 +1030,103 @@ export function DocumentEditor({
   };
 
   /**
+   * Word export.
+   *
+   * Reads the live page rather than the stored HTML, for the same reason the
+   * PDF does: an image the writer resized is that size because of a style on
+   * the element, and the page decides how wide the text column is. The zoom
+   * transform comes off first and goes back in `finally` — a zoomed read would
+   * put the on-screen size into the file instead of the true one.
+   *
+   * Pictures are fetched so they can be embedded, and one that cannot be
+   * fetched is skipped rather than failing the whole export; the count is
+   * reported, because a document that quietly lost an image is worse than one
+   * that says it did.
+   */
+  const downloadDocx = async () => {
+    const el = page.current;
+    if (!el || !doc.data) return;
+    const name = doc.data.title.replace(/[^\w\d -]+/g, "").trim() || "document";
+    const { widthIn, heightIn } = pageSizeIn(pageSetup);
+    const previousTransform = el.style.transform;
+    el.style.transform = "none";
+    try {
+      const result = await exportDocumentDocx({
+        page: el,
+        title: doc.data.title,
+        fileName: name,
+        widthIn,
+        heightIn,
+        marginTopIn: pageSetup.margins.top,
+        marginRightIn: pageSetup.margins.right,
+        marginBottomIn: pageSetup.margins.bottom,
+        marginLeftIn: pageSetup.margins.left,
+      });
+      if (!result.ok) setError(result.message);
+      else if (result.skippedImages > 0) {
+        setError(
+          result.skippedImages === 1
+            ? "The document was exported, but one image could not be included."
+            : `The document was exported, but ${result.skippedImages} images could not be included.`,
+        );
+      }
+    } finally {
+      el.style.transform = previousTransform;
+    }
+  };
+
+  /**
+   * Replace the selected picture with a different file.
+   *
+   * Only `src` changes: the size, the alignment and the crop are attributes of
+   * the node, and a swap that reset them would throw away a layout somebody
+   * spent time on. The natural size is cleared with it, because it described
+   * the old picture and a stale one would distort the new one.
+   */
+  const replaceImage = () => {
+    if (!editorRef.current?.isActive("image")) return;
+    const repo = getRepository();
+    if (typeof repo.uploadDriveFile !== "function") {
+      setError("This workspace cannot store images yet.");
+      return;
+    }
+    const upload = repo.uploadDriveFile.bind(repo);
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      setReplacingImage(true);
+      try {
+        const r = await upload(file);
+        if (!r.ok) {
+          setError(r.message);
+          return;
+        }
+        const src = r.data.fileId ? driveImageSrc(r.data.fileId) : r.data.url;
+        editorRef.current
+          ?.chain()
+          .focus()
+          .updateAttributes("image", {
+            src,
+            naturalWidth: null,
+            naturalHeight: null,
+          })
+          .run();
+      } catch (e) {
+        setError(
+          e instanceof Error ? e.message : "That image could not be replaced.",
+        );
+      } finally {
+        setReplacingImage(false);
+      }
+    };
+    input.click();
+  };
+
+
+  /**
    * Print.
    *
    * The page size and margins are injected as an `@page` rule, because CSS
@@ -1136,6 +1341,13 @@ export function DocumentEditor({
                 {myRole === "viewer" ? "View only" : "Editor"}
               </span>
             )}
+            {/* A pasted image is stored before it appears, which takes a moment.
+               Saying so is the difference between a slow paste and an ignored one. */}
+            {pasting && (
+              <span className="shrink-0 text-[11px] text-ink-faint">
+                Adding image…
+              </span>
+            )}
             <SaveState status={status} savedAt={savedAt} />
           </div>
 
@@ -1151,6 +1363,7 @@ export function DocumentEditor({
               onDownloadHtml: () => download("html"),
               onDownloadText: () => download("text"),
               onDownloadPdf: () => void downloadPdf(),
+              onDownloadDocx: () => void downloadDocx(),
               onPrint: print,
               onPageSetup: () => setDialog("page-setup"),
               onVersionHistory: () => setShowVersionHistory(true),
@@ -1158,6 +1371,7 @@ export function DocumentEditor({
               canManage: mayManage,
               onFind: () => setFinding(true),
               onInsertLink: () => setDialog("link"),
+              onSpecialCharacters: () => setShowSpecialChars(true),
               onInsertImage: () => setDialog("image"),
               onWordCount: () => setDialog("word-count"),
               onShortcuts: () => setDialog("shortcuts"),
@@ -1520,7 +1734,12 @@ export function DocumentEditor({
                     tools — bold, headings, links — mean nothing on a picture
                     and several would damage it, so the two never share a
                     condition. */}
-                {!readOnly && <DocsImageToolbar editor={editor} />}
+                {!readOnly && <DocsImageToolbar
+                    editor={editor}
+                    onReplace={replaceImage}
+                    replacing={replacingImage}
+                  />}
+                {!readOnly && <DocsLinkBubble editor={editor} />}
                 {editor && suggestion && suggestEnabled && !readOnly && (
                   <ContinueSuggestion
                     editor={editor}
@@ -1655,6 +1874,14 @@ export function DocumentEditor({
         />
       )}
       {dialog === "shortcuts" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+
+      {/* Stays open after each insert — see DocsSpecialChars: somebody here is
+          usually adding two or three, not one. */}
+      <DocsSpecialChars
+        open={showSpecialChars}
+        onClose={() => setShowSpecialChars(false)}
+        onInsert={(char) => editor?.chain().focus().insertContent(char).run()}
+      />
       {dialog === "link" && editor && (
         <AddressDialog
           kind="link"

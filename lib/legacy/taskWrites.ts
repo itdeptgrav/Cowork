@@ -616,6 +616,14 @@ export async function reworkTask(input: {
   reworkNote?: string;
   /** IDs of already-uploaded attachments. Never bytes. */
   reworkAttachmentIds?: string[];
+  /**
+   * Where the returned work sits in the assignee's queue.
+   *
+   * Omitted means "leave the rank alone" — the engine treats anything that is
+   * not a positive number that way, so a reviewer who does not choose costs
+   * nothing but the reordering.
+   */
+  reworkPriority?: number | null;
 }): Promise<LegacyResult<unknown>> {
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/rework`,
@@ -626,7 +634,33 @@ export async function reworkTask(input: {
       reworkRequirements: input.reworkRequirements ?? [],
       reworkNote: input.reworkNote ?? "",
       reworkAttachmentIds: input.reworkAttachmentIds ?? [],
+      reworkPriority: input.reworkPriority ?? null,
     },
+    token: input.token,
+  });
+}
+
+/**
+ * `GET /cowork/task/:id/rework-preview` — what sending this back would move.
+ *
+ * Read-only, and asked again on every change of the priority picker. The
+ * engine answers by running its real queue walk in simulation rather than a
+ * second copy of the arithmetic, so what the screen promises is what the
+ * commit does.
+ */
+export async function reworkQueuePreview(input: {
+  token: string;
+  taskId: string;
+  priority?: number | null;
+  assigneeId?: string | null;
+}): Promise<LegacyResult<unknown>> {
+  const query = new URLSearchParams();
+  if (input.priority != null) query.set("priority", String(input.priority));
+  if (input.assigneeId) query.set("assigneeId", input.assigneeId);
+  const suffix = query.toString() ? `?${query.toString()}` : "";
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/rework-preview${suffix}`,
+    method: "GET",
     token: input.token,
   });
 }

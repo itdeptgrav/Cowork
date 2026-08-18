@@ -77,7 +77,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
@@ -103,6 +103,7 @@ import {
   resetTaskToDraft,
   reviewCompletion,
   reworkTask,
+  reworkQueuePreview as reworkQueuePreviewCall,
   startTask as startTaskRequest,
   submitCompletion,
   proposeDeadline as proposeDeadlineRequest,
@@ -2352,6 +2353,7 @@ export class LegacyRepository {
     reworkRequirements?: string[];
     reworkNote?: string;
     reworkAttachmentIds?: string[];
+    reworkPriority?: number | null;
   }): Promise<ActionResult<Task>> {
     const taskId = taskIdOf(String(input.submissionId));
 
@@ -2366,6 +2368,7 @@ export class LegacyRepository {
             reworkRequirements: input.reworkRequirements ?? [],
             reworkNote: input.reworkNote ?? "",
             reworkAttachmentIds: input.reworkAttachmentIds ?? [],
+            reworkPriority: input.reworkPriority ?? null,
           }),
         () => taskId,
       );
@@ -6785,6 +6788,42 @@ export class LegacyRepository {
         wasLate: false,
       },
     ];
+  }
+
+  /**
+   * What sending this task back at a given priority would do to that
+   * person's other work.
+   *
+   * The engine answers by running its real queue walk in simulation, so the
+   * figures the reviewer is shown are the ones the commit will produce. A
+   * failure returns null rather than throwing: the picker still works, it
+   * just cannot show consequences, and a rework must never be blocked by a
+   * preview.
+   */
+  async reworkQueuePreview(
+    taskId: TaskId,
+    priority: number | null,
+  ): Promise<ReworkQueuePreview | null> {
+    const token = await this.#token();
+    if (!token) return null;
+    const r = await reworkQueuePreviewCall({ token, taskId: String(taskId), priority });
+    if (!r.ok) return null;
+    const body = r.data as Partial<ReworkQueuePreview> | null;
+    if (!body || !Array.isArray(body.rows)) return null;
+    return {
+      leftoverSecs:
+        typeof body.leftoverSecs === "number" ? body.leftoverSecs : null,
+      currentRank: typeof body.currentRank === "number" ? body.currentRank : null,
+      rank: typeof body.rank === "number" ? body.rank : null,
+      rows: body.rows.map((row) => ({
+        taskId: String(row.taskId) as TaskId,
+        title: String(row.title ?? row.taskId),
+        rank: Number(row.rank) || 0,
+        isRework: row.isRework === true,
+        from: row.from ?? null,
+        to: String(row.to ?? ""),
+      })),
+    };
   }
 
   /**
