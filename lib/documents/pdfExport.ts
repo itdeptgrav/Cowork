@@ -82,6 +82,15 @@ export interface PdfExportInput {
   heightIn: number;
   /** Without the extension — `.pdf` is appended here. */
   fileName: string;
+  /**
+   * Repeated at the top and bottom of every page, from the document's page
+   * setup. The on-screen copies are `position: fixed` for the PRINT path and
+   * mean nothing to a canvas capture, so the export draws its own — real text
+   * through jsPDF, on each page, after the image lands.
+   */
+  header?: string;
+  footer?: string;
+  pageNumbers?: boolean;
 }
 
 export type PdfExportResult = { ok: true } | { ok: false; message: string };
@@ -158,6 +167,29 @@ export async function exportDocumentPdf(input: PdfExportInput): Promise<PdfExpor
       if (i > 0) pdf.addPage([widthIn, heightIn], orientation);
       const sliceHeightIn = (toPx - fromPx) / PX_PER_INCH;
       pdf.addImage(slice.toDataURL("image/png"), "PNG", 0, 0, widthIn, sliceHeightIn);
+
+      /* The page furniture, drawn as real text after the image so it can never
+         be covered by it. Centred header at the top margin's midline, footer at
+         the bottom's; the page number sits at the right edge of the footer
+         line, clear of a centred footer text. */
+      if (input.header || input.footer || input.pageNumbers) {
+        pdf.setFontSize(9);
+        pdf.setTextColor(102);
+        if (input.header) {
+          pdf.text(input.header, widthIn / 2, 0.35, { align: "center" });
+        }
+        if (input.footer) {
+          pdf.text(input.footer, widthIn / 2, heightIn - 0.3, { align: "center" });
+        }
+        if (input.pageNumbers) {
+          pdf.text(
+            `Page ${i + 1} of ${bounds.length - 1}`,
+            widthIn - 0.5,
+            heightIn - 0.3,
+            { align: "right" },
+          );
+        }
+      }
     }
 
     pdf.save(`${fileName}.pdf`);

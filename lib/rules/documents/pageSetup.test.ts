@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   DEFAULT_PAGE_SETUP,
+  MAX_HEADER_FOOTER_CHARS,
   MIN_MEASURE_IN,
   PAPER,
   clampZoom,
@@ -9,6 +10,7 @@ import {
   fitZoom,
   pageSetupRefusal,
   pageSizeIn,
+  readHeaderFooterText,
   readPageSetup,
   stepZoom,
 } from "./pageSetup.ts";
@@ -106,4 +108,42 @@ test("fit-to-width divides the space by the page, not by the measure", () => {
     fitZoom(setup({ margins: { top: 2, bottom: 2, left: 2, right: 2 } }), 408),
     0.5,
   );
+});
+
+/* ── Headers, footers & page numbers — added 18 Aug 2026 ─────────────────── */
+
+test("a document from before headers existed reads as having none", () => {
+  /* The stored setups in every existing document lack the three fields, and
+     they must read as defaults rather than as broken. */
+  const s = readPageSetup({ paper: "a4", orientation: "portrait", margins: {} });
+  assert.equal(s.header, "");
+  assert.equal(s.footer, "");
+  assert.equal(s.pageNumbers, false);
+});
+
+test("header text is one bounded line, whatever was pasted", () => {
+  /* These repeat on every printed page — a newline would push its second line
+     into the text area, and a runaway string repeats with the pages. */
+  assert.equal(readHeaderFooterText("Quarterly report\r\n2026"), "Quarterly report 2026");
+  assert.equal(readHeaderFooterText("  spaced  "), "spaced");
+  assert.equal(readHeaderFooterText("x".repeat(500)).length, MAX_HEADER_FOOTER_CHARS);
+  assert.equal(readHeaderFooterText(42), "");
+  assert.equal(readHeaderFooterText(null), "");
+});
+
+test("page numbers are on only when stored as exactly true", () => {
+  assert.equal(readPageSetup({ pageNumbers: true }).pageNumbers, true);
+  assert.equal(readPageSetup({ pageNumbers: "yes" }).pageNumbers, false);
+  assert.equal(readPageSetup({ pageNumbers: 1 }).pageNumbers, false);
+});
+
+test("the stored fields round-trip through the reader", () => {
+  const s = readPageSetup({
+    header: "Cowork · internal",
+    footer: "Confidential",
+    pageNumbers: true,
+  });
+  assert.equal(s.header, "Cowork · internal");
+  assert.equal(s.footer, "Confidential");
+  assert.equal(s.pageNumbers, true);
 });

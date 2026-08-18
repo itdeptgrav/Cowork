@@ -2,9 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
+import { dropPoint } from "@tiptap/pm/transform";
 import StarterKit from "@tiptap/starter-kit";
 import Highlight from "@tiptap/extension-highlight";
-import Image from "@tiptap/extension-image";
+/* Resizable and alignable — see `ResizableImage`. It EXTENDS the official
+   extension rather than replacing it, so everything else about an image
+   (paste, drag-in, the `setImage` command) is unchanged. */
+import ResizableImage from "./docs/ResizableImage";
 import Placeholder from "@tiptap/extension-placeholder";
 import Subscript from "@tiptap/extension-subscript";
 import Superscript from "@tiptap/extension-superscript";
@@ -38,6 +42,11 @@ import {
   stepZoom,
 } from "@/lib/rules/documents/pageSetup";
 import { readingMinutes, wordCount } from "@/lib/rules/documents/textStats";
+import {
+  isPaintable,
+  paintableFormat,
+  type PaintedFormat,
+} from "@/lib/rules/documents/formatPainter";
 import { BlockStyle } from "@/lib/documents/extensions/blockStyle";
 import { PageBreak } from "@/lib/documents/extensions/pageBreak";
 import { SearchHighlight } from "@/lib/documents/extensions/searchHighlight";
@@ -55,6 +64,7 @@ import { DocsRuler } from "./docs/DocsRuler";
 import { DocsSidebar } from "./docs/DocsSidebar";
 import { DocsFindReplace } from "./docs/DocsFindReplace";
 import { DocsSelectionToolbar } from "./docs/DocsSelectionToolbar";
+import { DocsImageToolbar } from "./docs/DocsImageToolbar";
 import { DocsComments } from "./docs/DocsComments";
 import { DocsVersionHistory } from "./docs/DocsVersionHistory";
 import { exportDocumentPdf } from "@/lib/documents/pdfExport";
@@ -267,6 +277,9 @@ export function DocumentEditor({
     null | "page-setup" | "word-count" | "shortcuts" | "link" | "image"
   >(null);
   const [finding, setFinding] = useState(false);
+
+
+
   const [renaming, setRenaming] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
 
@@ -306,6 +319,8 @@ export function DocumentEditor({
      Together they decide whether an empty document is written, and whether a new
      blank draft is kept when it closes — a draft that ever showed content is
      never deleted, however it is left. */
+  /* Armed by Ctrl+Shift+V; consumed by the very next paste. */
+  const plainPasteRef = useRef(false);
   const latestEmpty = useRef(true);
   const manualSaved = useRef(false);
   const everHadContent = useRef(false);
@@ -331,7 +346,7 @@ export function DocumentEditor({
         Highlight.configure({ multicolor: true }),
         Subscript,
         Superscript,
-        Image,
+        ResizableImage,
         TaskList,
         TaskItem.configure({ nested: true }),
         TableKit.configure({ table: { resizable: true } }),
@@ -381,6 +396,38 @@ export function DocumentEditor({
       editable: !readOnly,
       editorProps: {
         attributes: { class: "prose-cowork focus:outline-none" },
+        /**
+         * **Paste without formatting — Ctrl+Shift+V.**
+         *
+         * The browser fires an ordinary `paste` for the shortcut, so the
+         * keydown only ARMS the next paste and the paste handler does the
+         * work: the clipboard's plain-text form is inserted as text, taking
+         * the document's style at the caret instead of dragging its own
+         * along. One-shot, so an armed flag can never leak into the paste
+         * after next.
+         */
+        handleDOMEvents: {
+          keydown: (_view, event) => {
+            if (
+              (event.ctrlKey || event.metaKey) &&
+              event.shiftKey &&
+              (event.key === "v" || event.key === "V")
+            ) {
+              plainPasteRef.current = true;
+            }
+            return false;
+          },
+        },
+        handlePaste: (view, event) => {
+          if (!plainPasteRef.current) return false;
+          plainPasteRef.current = false;
+          const text = event.clipboardData?.getData("text/plain") ?? "";
+          if (!text) return false;
+          view.dispatch(
+            view.state.tr.insertText(text).scrollIntoView(),
+          );
+          return true;
+        },
       },
       onUpdate: ({ editor: e }) => {
         latestHtml.current = e.getHTML();
@@ -394,6 +441,7 @@ export function DocumentEditor({
     },
     [documentId, collab.session, readOnly],
   );
+
 
   /**
    * The outline and the word count — off the typing path.
@@ -857,7 +905,16 @@ export function DocumentEditor({
     const previousTransform = el.style.transform;
     el.style.transform = "none";
     try {
-      const result = await exportDocumentPdf({ page: el, widthIn, heightIn, fileName: name });
+      const result = await exportDocumentPdf({
+        page: el,
+        widthIn,
+        heightIn,
+        fileName: name,
+        /* The page furniture, so the exported file matches the printed one. */
+        header: pageSetup.header,
+        footer: pageSetup.footer,
+        pageNumbers: pageSetup.pageNumbers,
+      });
       if (!result.ok) setError(result.message);
     } finally {
       el.style.transform = previousTransform;
@@ -1296,10 +1353,84 @@ export function DocumentEditor({
             />
           )}
 
-          {/* The recessed ground the sheet sits on. */}
+          {/* The recessed ground the sheet sits on.
+
+              **Drops on the surround reach the document.** Reported 17 Aug
+              2026: an image dragged onto the dark deck around a short page
+              snapped back to where it came from. ProseMirror only listens on
+              its own element, so a drop past the page's edge — the natural
+              place to aim on a nearly-empty document — was the browser's
+              default no-op.
+
+              Only NODE drags are forwarded (`view.dragging` is set by
+              ProseMirror's own dragstart), so file drops and text drags keep
+              their existing behaviour. Drops INSIDE the editor are left
+              entirely to ProseMirror — forwarding those too would insert the
+              node twice. The coordinates are clamped into the page, so a drop
+              beside a line lands at that line and a drop below the last one
+              lands at the end — what the same gesture does in the editors
+              people already know. */}
           <div
             ref={scroller}
             className="min-h-0 flex-1 overflow-auto bg-[var(--surface-sunken)] px-6 py-6 scroll-slim"
+            onDragOver={(e) => {
+              const view = editor?.view;
+              if (view?.dragging && !view.dom.contains(e.target as Node)) {
+                e.preventDefault();
+              }
+            }}
+            onDrop={(e) => {
+              const view = editor?.view;
+              if (!view?.dragging) return;
+              if (view.dom.contains(e.target as Node)) return;
+              e.preventDefault();
+              /* Not cleared here — the typings hold `dragging` readonly, and
+                 ProseMirror's own dragend handler wipes it the moment the
+                 drag finishes, which is one event after this. */
+              const { slice, move } = view.dragging;
+
+              /* Clamped INTO the page, so `posAtCoords` answers with the
+                 nearest real position instead of null. */
+              const box = view.dom.getBoundingClientRect();
+              const coords = view.posAtCoords({
+                left: Math.min(Math.max(e.clientX, box.left + 2), box.right - 2),
+                top: Math.min(Math.max(e.clientY, box.top + 2), box.bottom - 2),
+              });
+
+              let tr = view.state.tr;
+              /* **The source is deleted by IDENTITY, not by selection.**
+                 Reported 18 Aug 2026 as a drop making a copy: the slice holds
+                 the very node object being dragged, so it is findable in the
+                 document wherever the selection happens to be — a selection
+                 lost between mousedown and drop must not turn a move into a
+                 duplicate. The selection path stays as the fallback for a
+                 slice that is not a single node. */
+              if (move) {
+                const dragged = slice.content.firstChild;
+                let found: { from: number; to: number } | null = null;
+                if (dragged && slice.content.childCount === 1) {
+                  tr.doc.descendants((n, pos) => {
+                    if (n === dragged) {
+                      found = { from: pos, to: pos + n.nodeSize };
+                      return false;
+                    }
+                    return true;
+                  });
+                }
+                tr = found
+                  ? tr.delete(
+                      (found as { from: number; to: number }).from,
+                      (found as { from: number; to: number }).to,
+                    )
+                  : tr.deleteSelection();
+              }
+              const end = tr.doc.content.size;
+              const mapped = coords ? tr.mapping.map(coords.pos) : end;
+              /* The nearest position the schema will actually accept a block
+                 at — the same resolution ProseMirror's own drop uses. */
+              const at = dropPoint(tr.doc, Math.min(mapped, end), slice) ?? end;
+              view.dispatch(tr.insert(at, slice.content).scrollIntoView());
+            }}
           >
             <div
               className="mx-auto"
@@ -1322,6 +1453,47 @@ export function DocumentEditor({
                   transformOrigin: "top left",
                 }}
               >
+                {/* **Header and footer.** On screen the document is one
+                    continuous flow, so they show once — in the top and bottom
+                    margins of the sheet — as a preview. In PRINT they are
+                    `position: fixed`, which repeats an element on every page,
+                    and the page number comes from the `@page` margin box in
+                    the style block below: the one place CSS can count pages. */}
+                {pageSetup.header && (
+                  <span
+                    data-doc-hf
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 top-0 flex items-center justify-center text-[10.5px] text-ink-faint"
+                    style={{ height: `${pageSetup.margins.top}in` }}
+                  >
+                    {pageSetup.header}
+                  </span>
+                )}
+                {(pageSetup.footer || pageSetup.pageNumbers) && (
+                  <span
+                    data-doc-hf
+                    data-doc-footer
+                    aria-hidden="true"
+                    className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center text-[10.5px] text-ink-faint"
+                    style={{ height: `${pageSetup.margins.bottom}in` }}
+                  >
+                    {pageSetup.footer}
+                  </span>
+                )}
+                {(pageSetup.header || pageSetup.footer || pageSetup.pageNumbers) && (
+                  <style>{`
+                    @media print {
+                      [data-doc-hf] { position: fixed; left: 0; right: 0; color: #666; }
+                      [data-doc-hf]:not([data-doc-footer]) { top: 0; }
+                      [data-doc-footer] { bottom: 0; }
+                      ${
+                        pageSetup.pageNumbers
+                          ? `@page { @bottom-right { content: "Page " counter(page); font-size: 9pt; color: #666; } }`
+                          : ""
+                      }
+                    }
+                  `}</style>
+                )}
                 {showPageGuides && (
                   /* Approximate, and the menu says so: the printer decides the
                      real break from content height, and it will not split a
@@ -1344,6 +1516,11 @@ export function DocumentEditor({
                     }
                   />
                 )}
+                {/* A second bar, for a selected image only. The text one's
+                    tools — bold, headings, links — mean nothing on a picture
+                    and several would damage it, so the two never share a
+                    condition. */}
+                {!readOnly && <DocsImageToolbar editor={editor} />}
                 {editor && suggestion && suggestEnabled && !readOnly && (
                   <ContinueSuggestion
                     editor={editor}

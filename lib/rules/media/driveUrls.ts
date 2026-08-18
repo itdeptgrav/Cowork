@@ -157,3 +157,43 @@ export function driveImageSources(input: {
 
   return out;
 }
+
+/**
+ * Any stored image address, turned into one an `<img>` can actually draw.
+ *
+ * **Applied at RENDER, which is the point.** Fixing the address at the moment
+ * of upload only helps images uploaded afterwards — an image already sitting in
+ * a document keeps whatever was written into it and stays broken for ever.
+ * Reported 17 Aug 2026: a document image showed a broken icon, the insert path
+ * was corrected, and the same image was still broken because the correction
+ * could not reach backwards into markup already saved.
+ *
+ * So every render normalises. A `drive.google.com/file/d/<id>/view` written last
+ * month draws today, a document imported from anywhere else draws, and an
+ * address this rule does not recognise — a Cloudinary asset from the old
+ * application, a plain https image, a `data:` URI — is returned untouched
+ * rather than guessed at.
+ *
+ * Idempotent: a CDN address already in the right shape comes back unchanged,
+ * so normalising twice costs nothing and cannot corrupt a good link.
+ */
+export function renderableImageSrc(
+  url: string | null | undefined,
+  width: number = DEFAULT_IMAGE_WIDTH,
+): string {
+  const raw = String(url ?? "");
+  if (!raw) return "";
+
+  /* Already the CDN. Left exactly as it is — re-deriving would drop a size
+     parameter somebody chose deliberately. */
+  if (raw.startsWith(`${DRIVE_IMAGE_CDN}/`)) return raw;
+
+  /* Anything that is not a Drive address is somebody else's URL, and rewriting
+     it would break the one case this rule cannot improve. */
+  if (!/drive\.google\.com/i.test(raw) && !/\/media\/view\//i.test(raw)) {
+    return raw;
+  }
+
+  const fileId = driveFileIdFrom(raw);
+  return fileId ? driveImageSrc(fileId, width) : raw;
+}

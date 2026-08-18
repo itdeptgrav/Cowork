@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { DocIcon } from "./DocsIcons";
 import { MenuHeading, MenuItem, MenuPanel, MenuSeparator, SubMenu } from "./DocsMenu";
+import { CASE_LABELS, CASE_MODES, applyCase } from "@/lib/rules/documents/textCase";
 import { LINE_SPACINGS, PARAGRAPH_STYLES, type HeadingLevel } from "@/lib/documents/typography";
 
 /**
@@ -218,7 +219,9 @@ export function DocsMenuBar({
                       let a page read or write the clipboard from a menu item,
                       so they would be three entries that do nothing — the
                       keyboard shortcuts are the only ones that work, and they
-                      already do. */}
+                      already do. That includes Ctrl+Shift+V, paste without
+                      formatting, which the editor handles itself — listed in
+                      Help → Keyboard shortcuts with the others. */}
                   <MenuItem
                     label="Delete selection"
                     disabled={!can}
@@ -397,6 +400,50 @@ export function DocsMenuBar({
                     <MenuItem label="Bulleted list" disabled={!can} active={editor?.isActive("bulletList")} onSelect={run((e) => e.chain().focus().toggleBulletList().run())} />
                     <MenuItem label="Numbered list" disabled={!can} active={editor?.isActive("orderedList")} onSelect={run((e) => e.chain().focus().toggleOrderedList().run())} />
                     <MenuItem label="Checklist" disabled={!can} active={editor?.isActive("taskList")} onSelect={run((e) => e.chain().focus().toggleTaskList().run())} />
+                  </SubMenu>
+
+                  {/* Docs' Format → Text → Capitalisation. The transform walks
+                      the selection's text nodes and replaces each with the
+                      same marks it had, so bold, links and comments survive —
+                      see `applyCase` for why Title Case has no clever list of
+                      small words. */}
+                  <SubMenu label="Capitalisation">
+                    {CASE_MODES.map((mode) => (
+                      <MenuItem
+                        key={mode}
+                        label={CASE_LABELS[mode]}
+                        disabled={!can}
+                        onSelect={run((e) =>
+                          e
+                            .chain()
+                            .focus()
+                            .command(({ state, tr, dispatch }) => {
+                              const { from, to } = state.selection;
+                              if (from === to) return false;
+                              if (!dispatch) return true;
+                              state.doc.nodesBetween(from, to, (node, pos) => {
+                                if (!node.isText || !node.text) return;
+                                const start = Math.max(from, pos);
+                                const end = Math.min(to, pos + node.nodeSize);
+                                const slice = node.text.slice(
+                                  start - pos,
+                                  end - pos,
+                                );
+                                const next = applyCase(slice, mode);
+                                if (next === slice) return;
+                                tr.replaceWith(
+                                  tr.mapping.map(start),
+                                  tr.mapping.map(end),
+                                  state.schema.text(next, node.marks),
+                                );
+                              });
+                              dispatch(tr);
+                              return true;
+                            })
+                            .run(),
+                        )}
+                      />
+                    ))}
                   </SubMenu>
 
                   <MenuSeparator />

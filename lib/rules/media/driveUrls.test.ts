@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFileSync } from "node:fs";
 
 import {
+  DRIVE_IMAGE_CDN,
   driveFileIdFrom,
   driveImageSources,
   driveImageSrc,
   driveProxySrc,
+  renderableImageSrc,
 } from "./driveUrls.ts";
 
 const ID = "1AbCdEfGhIjKlMnOpQrStUvWxYz0123456";
@@ -117,4 +120,76 @@ test("the stored URL is a last resort, never a duplicate", () => {
 
 test("nothing to draw yields no sources rather than a broken one", () => {
   assert.deepEqual(driveImageSources({ apiBase: API }), []);
+});
+
+/* ── Repairing an address at render time ─────────────────────────────────── */
+
+test("a Drive URL already in a document is repaired when it is drawn", () => {
+  /**
+   * **Reported twice, 17 Aug 2026.** The insert path was corrected to write the
+   * CDN address, and the same image was still broken — because nothing rewrites
+   * markup that is already saved. An image inserted last week keeps whatever
+   * was written into it for ever unless the repair happens at RENDER.
+   */
+  const id = "1AbCdEfGhIjKlMnOpQrStUvWxYz012345";
+  for (const stored of [
+    `https://drive.google.com/file/d/${id}/view?usp=sharing`,
+    `https://drive.google.com/uc?export=view&id=${id}`,
+    `https://drive.google.com/uc?export=download&id=${id}`,
+    `https://drive.google.com/open?id=${id}`,
+    `https://drive.google.com/thumbnail?id=${id}&sz=w1000`,
+  ]) {
+    assert.equal(
+      renderableImageSrc(stored),
+      driveImageSrc(id),
+      `${stored} was not repaired`,
+    );
+  }
+});
+
+test("an address already on the CDN is left exactly alone", () => {
+  /* Idempotent, so normalising twice costs nothing — and re-deriving would
+     drop a size somebody chose deliberately. */
+  const already = `${DRIVE_IMAGE_CDN}/d/1AbCdEfGhIjKlMnOpQrStUvWxYz012345=w800`;
+  assert.equal(renderableImageSrc(already), already);
+  assert.equal(renderableImageSrc(renderableImageSrc(already)), already);
+});
+
+test("somebody else's URL is never rewritten", () => {
+  /* The one case this rule cannot improve, and the one it could break. A
+     Cloudinary asset from the old application is exactly this. */
+  for (const other of [
+    "https://res.cloudinary.com/demo/image/upload/sample.jpg",
+    "https://example.com/photo.png?id=1AbCdEfGhIjKlMnOpQrStUvWxYz012345",
+    "data:image/png;base64,iVBORw0KGgo=",
+    "/local/asset.png",
+  ]) {
+    assert.equal(renderableImageSrc(other), other, `${other} was rewritten`);
+  }
+});
+
+test("an unrecognisable Drive address keeps what was stored", () => {
+  /* Conservative by design: guessing at a substring would produce a
+     plausible-looking CDN link to nothing. */
+  const odd = "https://drive.google.com/drive/my-drive";
+  assert.equal(renderableImageSrc(odd), odd);
+});
+
+test("nothing in, empty string out", () => {
+  assert.equal(renderableImageSrc(null), "");
+  assert.equal(renderableImageSrc(undefined), "");
+  assert.equal(renderableImageSrc(""), "");
+});
+
+test("the document image draws AND saves through the repair", () => {
+  /* Both ends: the node view paints it, and the saved markup carries it, so a
+     document exported or printed shows the image too. */
+  const src = readFileSync(
+    "components/features/workspace/docs/ResizableImage.ts",
+    "utf8",
+  );
+  /* Through the chain now: normalised first, the byte proxy behind it. */
+  assert.match(src, /const first = renderableImageSrc\(src as string\)/);
+  assert.match(src, /const nextSources = imageSources\(n\.attrs\.src\)/);
+  assert.match(src, /src: renderableImageSrc\(HTMLAttributes\.src as string\)/);
 });

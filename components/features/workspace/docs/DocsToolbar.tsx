@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
+import { isPaintable } from "@/lib/rules/documents/formatPainter";
 import { DocIcon } from "./DocsIcons";
 import { MenuItem, MenuSeparator, Popover } from "./DocsMenu";
 import {
@@ -96,8 +97,17 @@ export function DocsToolbar({
       return;
     }
     /* Cleared first, so the target ends up with the copied formatting rather
-       than with the copied formatting ON TOP of whatever it already had. */
-    const chain = editor.chain().focus().unsetAllMarks();
+       than with the copied formatting ON TOP of whatever it already had.
+
+       **One paintable type at a time, never `unsetAllMarks`.** The painter
+       carries how text LOOKS; the wholesale clear also stripped what text IS —
+       a link painted over stopped being a link, and a comment's anchor came
+       off the words its thread was about. `isPaintable` is the boundary, and
+       it fails closed on the identity marks. */
+    let chain = editor.chain().focus();
+    for (const type of Object.keys(editor.schema.marks)) {
+      if (isPaintable(type)) chain = chain.unsetMark(type);
+    }
     for (const mark of painted.marks) chain.setMark(mark);
     if (typeof painted.style.color === "string") chain.setColor(painted.style.color);
     if (typeof painted.style.fontFamily === "string")

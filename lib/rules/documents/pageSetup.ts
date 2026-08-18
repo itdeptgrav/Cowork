@@ -42,7 +42,26 @@ export const DEFAULT_PAGE_SETUP: DocumentPageSetup = {
   paper: "letter",
   orientation: "portrait",
   margins: { top: 1, right: 1, bottom: 1, left: 1 },
+  header: "",
+  footer: "",
+  pageNumbers: false,
 };
+
+/**
+ * A header or footer line the page can hold.
+ *
+ * One line — a newline pasted into the field would push its second line into
+ * the text area on print — and bounded, because these repeat on every page and
+ * a runaway string repeats with them.
+ */
+export const MAX_HEADER_FOOTER_CHARS = 200;
+export function readHeaderFooterText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\r\n]+/g, " ")
+    .slice(0, MAX_HEADER_FOOTER_CHARS)
+    .trim();
+}
 
 /**
  * The narrowest column of text this will allow.
@@ -134,6 +153,9 @@ export function readPageSetup(raw: unknown): DocumentPageSetup {
       bottom: inches(m.bottom, DEFAULT_PAGE_SETUP.margins.bottom),
       left: inches(m.left, DEFAULT_PAGE_SETUP.margins.left),
     },
+    header: readHeaderFooterText(r.header),
+    footer: readHeaderFooterText(r.footer),
+    pageNumbers: r.pageNumbers === true,
   };
   /* A stored combination that leaves no measure is treated as unusable rather
      than rendered. It can only come from a write that predates the refusal. */

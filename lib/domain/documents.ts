@@ -67,6 +67,14 @@ export interface DocumentPageSetup {
   paper: PaperSize;
   orientation: PageOrientation;
   margins: { top: number; right: number; bottom: number; left: number };
+  /**
+   * Text repeated at the top and bottom of every PRINTED page, and whether the
+   * footer carries a page number. Empty means none — the default, and what
+   * every document stored before these fields existed reads as.
+   */
+  header: string;
+  footer: string;
+  pageNumbers: boolean;
 }
 
 export interface CoworkDocument {

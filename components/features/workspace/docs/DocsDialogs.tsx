@@ -3,10 +3,12 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
   DEFAULT_PAGE_SETUP,
+  MAX_HEADER_FOOTER_CHARS,
   MAX_MARGIN_IN,
   PAPER,
   PAPER_ORDER,
   pageSetupRefusal,
+  readHeaderFooterText,
 } from "@/lib/rules/documents/pageSetup";
 import {
   characterCount,
@@ -14,6 +16,7 @@ import {
   readingMinutes,
   wordCount,
 } from "@/lib/rules/documents/textStats";
+import { driveImageSrc } from "@/lib/rules/media/driveUrls";
 import { useRepo } from "@/lib/hooks/useRepository";
 import type { DocumentPageSetup, PaperSize } from "@/lib/domain";
 
@@ -200,6 +203,57 @@ export function PageSetupDialog({
           </div>
         </div>
 
+        {/* Repeated at the top and bottom of every PRINTED page. On screen the
+            document is one continuous flow, so they show once in the sheet's
+            margins as a preview — print and PDF are where they repeat. */}
+        <div>
+          <p className="mb-1.5 text-[11px] text-ink-muted">
+            Header &amp; footer (printed on every page)
+          </p>
+          <div className="grid grid-cols-1 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-ink-muted">Header text</span>
+              <input
+                className="h-8 rounded-inset border border-hairline bg-transparent px-2 text-[12.5px] text-ink outline-none"
+                value={draft.header}
+                maxLength={MAX_HEADER_FOOTER_CHARS}
+                placeholder="None"
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    header: readHeaderFooterText(e.target.value),
+                  }))
+                }
+              />
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-ink-muted">Footer text</span>
+              <input
+                className="h-8 rounded-inset border border-hairline bg-transparent px-2 text-[12.5px] text-ink outline-none"
+                value={draft.footer}
+                maxLength={MAX_HEADER_FOOTER_CHARS}
+                placeholder="None"
+                onChange={(e) =>
+                  setDraft((d) => ({
+                    ...d,
+                    footer: readHeaderFooterText(e.target.value),
+                  }))
+                }
+              />
+            </label>
+            <label className="flex items-center gap-2 text-[12px] text-ink-muted">
+              <input
+                type="checkbox"
+                checked={draft.pageNumbers}
+                onChange={(e) =>
+                  setDraft((d) => ({ ...d, pageNumbers: e.target.checked }))
+                }
+              />
+              Show page numbers in the footer
+            </label>
+          </div>
+        </div>
+
         {refusal ? (
           <p className="text-[11.5px] text-[var(--state-overdue-ink)]">{refusal}</p>
         ) : (
@@ -280,6 +334,7 @@ const SHORTCUTS: { group: string; items: [string, string][] }[] = [
       ["Underline", "Ctrl U"],
       ["Strikethrough", "Ctrl Shift S"],
       ["Link", "Ctrl K"],
+      ["Paste without formatting", "Ctrl Shift V"],
       ["Clear formatting", "Ctrl \\"],
     ],
   },
@@ -406,7 +461,25 @@ export function AddressDialog({
     /* Submits straight away — an uploaded file has nothing left to type, so
        waiting for a second press of Insert would just be one more click
        between choosing the file and seeing it land. */
-    onSubmit(r.data.url);
+    /**
+     * **The CDN address, never `r.data.url`.**
+     *
+     * Reported 17 Aug 2026: uploaded document images rendered as a broken
+     * icon. The upload succeeded and the file was sitting in Drive; what went
+     * into the document was Drive's own URL, and — as `driveUrls.ts` has
+     * documented since it was written — `drive.google.com/uc`,
+     * `/file/d/<id>/view` and `webContentLink` all answer with an HTML page, a
+     * redirect, or a virus-scan interstitial. None of them is image bytes, so
+     * an `<img>` pointed at any of them shows a broken icon.
+     *
+     * `lh3.googleusercontent.com/d/<fileId>` is the one Drive address that
+     * streams bytes with an image content type. Message attachments already
+     * went through it; this dialog did not.
+     *
+     * A store that is not Drive returns a null `fileId` and keeps its own URL,
+     * which is why this is a fallback rather than a replacement.
+     */
+    onSubmit(r.data.fileId ? driveImageSrc(r.data.fileId) : r.data.url);
   }
 
   return (
