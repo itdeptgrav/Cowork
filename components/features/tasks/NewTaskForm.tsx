@@ -289,7 +289,6 @@ export function NewTaskForm({
      unused on an ordinary task; required on a subtask, and the reason the
      parent is read at all. */
   const [claims, setClaims] = useState<string[]>([]);
-  const isSubtask = !!presetParentTaskId;
   const parentView = useQuery(
     (r) =>
       presetParentTaskId
@@ -298,6 +297,23 @@ export function NewTaskForm({
     [presetParentTaskId],
   );
   const parent = parentView.data ?? null;
+  /**
+   * **A task inside a PROJECT is not a subtask.** OWNER DECISION, 18 Aug 2026.
+   *
+   * Both arrive here the same way — a parent id — but they are different
+   * things. Breaking work out of a task delegates one area of it: the parent
+   * stays responsible, the child claims one of its completion requirements,
+   * and its deadline is capped by the parent's. A project is a folder; the
+   * task inside is ordinary work that merely lives there, like a file in a
+   * directory. It claims nothing, caps nothing, and nobody stays responsible
+   * for it on somebody else's behalf.
+   *
+   * Told apart by the parent itself, not by how the form was opened, because
+   * that is where the fact lives. Until the parent has loaded this reads
+   * false — the plain form — so the subtask chrome never flashes up on a
+   * project task and then disappear.
+   */
+  const isSubtask = !!presetParentTaskId && parent?.task.isFolder !== true;
   /**
    * How much of the parent is already somebody's, and what is left.
    *
@@ -614,11 +630,16 @@ export function NewTaskForm({
       <Breadcrumb
         items={[
           { label: "Tasks", href: "/tasks?view=tasks" },
-          ...(isSubtask && parent
+          /* The parent, whichever kind it is — a task you are breaking down,
+             or the project this is being filed under. Both answer the same
+             question: where does this land? */
+          ...(parent
             ? [
                 {
                   label: parent.task.title,
-                  href: `/tasks/${parent.task.id}`,
+                  href: parent.task.isFolder
+                    ? `/tasks/projects/${parent.task.id}`
+                    : `/tasks/${parent.task.id}`,
                 },
               ]
             : []),
