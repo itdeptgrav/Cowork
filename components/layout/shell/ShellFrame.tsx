@@ -3,6 +3,7 @@
 import { useEffect, type ReactNode } from "react";
 import { usePathname } from "next/navigation";
 import { TopBar } from "./TopBar";
+import { NotificationToasts } from "./NotificationToasts";
 import { DemoBar } from "./DemoBar";
 import { PlayerEngine } from "@/components/features/music/PlayerEngine";
 import { DutySync } from "@/components/features/status/DutySync";
@@ -262,6 +263,9 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
           frame, and clipping them to it would cut them off. */}
       <div className={fullBleed ? "flex h-dvh flex-col" : "flex min-h-dvh flex-col"}>
         <TopBar />
+        {/* Mounted once for the whole app: a notification that arrives while
+            somebody is looking at the screen has to appear ON the screen. */}
+        <NotificationToasts />
         <main
           id="main"
           /* Full-bleed marks itself so globals.css can drop the reading-page
