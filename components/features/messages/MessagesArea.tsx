@@ -101,6 +101,15 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
      full list reads as a loading failure. */
   const active = conversationId ?? (all.length ? all[0].id : undefined);
   const activeConversation = all.find((c) => c.id === active) ?? null;
+  /**
+   * Whether the reader ASKED for this thread, or the layout picked it.
+   *
+   * `active` falls back to `all[0]` so the wide layout does not show an empty
+   * right pane. That default is a presentation choice and must not count as
+   * reading — see `Thread`'s `opened` prop, which is the whole of the fix for a
+   * badge that cleared itself.
+   */
+  const openedDeliberately = Boolean(conversationId);
   const unreadTotal = all.reduce((s, c) => s + c.unreadCount, 0);
 
   function openCreated(id: string) {
@@ -148,8 +157,29 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
            `pb` is larger than the gap we want, and a page cannot shrink its
            parent's padding — so the difference is pulled back here. Without it
            the region would fit the window and then push a scrollbar's worth of
-           padding past the bottom of it. */
-        <div className="grid grid-cols-1 gap-4 deck:mb-[calc(var(--shell-gap)-var(--shell-bottom))] deck:h-[calc(100vh-var(--shell-top)-2*var(--shell-gap))] deck:min-h-[520px] deck:grid-cols-12">
+           padding past the bottom of it.
+
+           **At every width, not only on the wide layout.** The height was
+           `deck:` only, so below 1180px — an ordinary laptop window, not just a
+           phone — the region had no definite height at all. `h-full` on the
+           panel then resolved against an auto-sized grid row, `flex-1
+           min-h-0` had nothing to be a fraction OF, and `overflow-y-auto` never
+           engaged: the thread rendered at its full length and the PAGE scrolled
+           instead. The composer went with it, so the box you type in sat below
+           the fold of a conversation you had to scroll to the bottom of to
+           reach — and opening a thread landed you at the top of the page rather
+           than at its newest message, because the element holding the scroll
+           position was not the one scrolling.
+
+           `dvh` rather than `vh` now that this reaches small screens: mobile
+           browsers count `vh` against the viewport with the address bar hidden,
+           so a `vh` box is taller than what you can see and the composer hides
+           under the chrome. They are the same number on a desktop.
+
+           The floor drops to 420px below `deck:` — a landscape phone is
+           genuinely shorter than 520px, and forcing that would reintroduce the
+           page scroll this removes. */
+        <div className="mb-[calc(var(--shell-gap)-var(--shell-bottom))] grid h-[calc(100dvh-var(--shell-top)-2*var(--shell-gap))] min-h-[420px] grid-cols-1 gap-4 deck:min-h-[520px] deck:grid-cols-12">
           <div
             className={`min-h-0 deck:col-span-4 ${conversationId ? "hidden deck:block" : ""}`}
           >
@@ -175,6 +205,7 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
                 key={activeConversation.id}
                 conversation={activeConversation}
                 viewerId={viewerId}
+                opened={openedDeliberately}
                 onRead={() => conversations.refetch()}
                 onSent={() => conversations.refetch()}
               />
@@ -452,11 +483,18 @@ function NoThread({
 function Thread({
   conversation: c,
   viewerId,
+  opened,
   onRead,
   onSent,
 }: {
   conversation: ConversationView;
   viewerId: string | null;
+  /**
+   * The reader navigated to this thread, rather than the layout defaulting to it.
+   *
+   * Only a deliberate open marks the conversation read. See the effect below.
+   */
+  opened: boolean;
   onRead: () => void;
   onSent: () => void;
 }) {
@@ -528,6 +566,17 @@ function Thread({
      scrolled up for history" (hold the reader's place instead). */
   const loadingOlderRef = useRef(false);
   const prevScrollHeightRef = useRef<number | null>(null);
+  /** The element whose height the resize observer watches — the messages
+   *  themselves, not the scroll port, which never changes size. */
+  const contentRef = useRef<HTMLDivElement>(null);
+  /**
+   * Whether the reader is following the conversation rather than reading back.
+   *
+   * True on open and while they sit at the bottom; false the moment they scroll
+   * up. It is the difference between "keep me on the newest message" and "leave
+   * my place alone", and only the reader's own scrolling changes it.
+   */
+  const pinnedRef = useRef(true);
 
   const others = c.participants.filter((p) => p.id !== viewerId);
   const list = messages.data?.messages ?? [];
@@ -542,7 +591,15 @@ function Thread({
      over and over. */
   function onThreadScroll() {
     const el = scrollRef.current;
-    if (!el || loadingOlderRef.current || !hasMoreHistory) return;
+    if (!el) return;
+    /* Following, or reading back? Answered on every tick from where they
+       actually are, so it survives a scroll by any means — wheel, drag,
+       keyboard, or the scroll-to-bottom above. The threshold is about one
+       bubble: a reader a few pixels off the bottom is still following, and
+       demanding an exact zero makes the pin feel like it randomly stops
+       working. */
+    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    if (loadingOlderRef.current || !hasMoreHistory) return;
     if (el.scrollTop > 80) return;
     loadingOlderRef.current = true;
     prevScrollHeightRef.current = el.scrollHeight;
@@ -588,6 +645,32 @@ function Thread({
   useEffect(() => {
     let cancelled = false;
 
+    /**
+     * **A thread the layout chose is not a thread anybody read.**
+     *
+     * `active` falls back to `all[0]` — the most recently active conversation —
+     * so the wide layout never shows an empty right pane. Two consequences, and
+     * between them they are the whole of "the badge clears itself":
+     *
+     *  · On `/messages` with nothing selected, the newest conversation is
+     *    mounted by default. It marked itself read on mount, so a message that
+     *    had just arrived was read before it was looked at.
+     *  · A message arriving from somebody else re-sorts them to the top of the
+     *    list, which changes `all[0]`, which changes this component's `key`.
+     *    The thread REMOUNTS as a different conversation and marks that one
+     *    read too — for nothing more than having received a message while the
+     *    reader had the messages page open.
+     *
+     * On a narrow screen it is worse and completely invisible: the thread pane
+     * is hidden with `display:none` rather than unmounted, so the conversation
+     * being marked read is not on screen at all. `visibilityState` cannot see
+     * that — it answers for the TAB, and the tab is perfectly visible.
+     *
+     * So reading requires an act. The route naming the conversation is that
+     * act: it is set by clicking a row and by nothing else.
+     */
+    if (!opened) return;
+
     const markIfVisible = () => {
       if (cancelled) return;
       if (typeof document !== "undefined" && document.visibilityState !== "visible")
@@ -623,9 +706,14 @@ function Thread({
      *
      * `onRead` and `repo` are omitted for the same reason: including them would
      * re-run this on every parent render and restore the behaviour being fixed.
+     *
+     * `opened` IS a dependency, and safely so: it changes only on navigation —
+     * clicking a row while the same thread was already showing as the layout's
+     * default flips it once, from false to true, and that is exactly the moment
+     * the reader asked for it. No message arriving can move it.
      */
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [c.id]);
+  }, [c.id, opened]);
 
   /* Live: new, edited, or deleted messages in THIS thread stream in without a
      refresh. Optional on the repository, so a backend with no live channel leaves
@@ -672,8 +760,53 @@ function Thread({
       return;
     }
     el.scrollTop = el.scrollHeight;
+    pinnedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.data, c.id]);
+
+  /**
+   * **Stay at the bottom while the content is still settling.**
+   *
+   * The effect above pins once, the moment the messages arrive — and at that
+   * moment the thread is not yet its final height. Attachments have not
+   * loaded, so every image in the last screenful still occupies nothing. Each
+   * one that decodes afterwards inserts its own height ABOVE the point we
+   * scrolled to, and the newest messages walk down off the bottom of the pane.
+   *
+   * The symptom is the reported one: you open a conversation and land somewhere
+   * in the middle of it, looking at older messages, with no way to tell that
+   * anything moved. It is worst on exactly the threads where it matters most —
+   * the ones with photographs in them.
+   *
+   * A `ResizeObserver` on the scrolling content is what closes it: any growth
+   * from any cause — an image, a font swapping in, a bubble rewrapping when the
+   * window narrows — re-pins, for as long as the reader has not deliberately
+   * gone looking at something older.
+   *
+   * `pinnedRef` is what makes that "for as long as". Scrolling up clears it and
+   * the observer stops touching the scroll position; coming back to within a
+   * bubble's height of the bottom sets it again. Without that gate this would
+   * be the bug it exists to fix, inverted — a reader dragged back to the newest
+   * message every time an image somewhere above them finished loading.
+   */
+  useEffect(() => {
+    const el = scrollRef.current;
+    const content = contentRef.current;
+    if (!el || !content || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      /* Never while older history is being spliced in at the top — that pass
+         owns the scroll position and is restoring the reader's place. */
+      if (!pinnedRef.current || loadingOlderRef.current) return;
+      el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(content);
+    return () => observer.disconnect();
+    /* `messages.data` as well as the thread, because on the first render there
+       is no content element to observe — the pane is still showing its
+       skeleton. Without it the observer would attach to nothing on exactly the
+       load it exists for. Re-observing per fetch is one disconnect and one
+       observe; the alternative is a callback ref threaded through a branch. */
+  }, [c.id, messages.data]);
 
   async function submit() {
     if (uploading || state.isPending || editState.isPending) return;
@@ -951,7 +1084,21 @@ function Thread({
       <div
         ref={scrollRef}
         onScroll={onThreadScroll}
-        className="min-h-0 flex-1 overflow-y-auto px-4 py-4 scroll-slim"
+        /**
+         * **`overflow-x-hidden` is not belt-and-braces — without it the
+         * horizontal axis is `auto`, whatever it looks like here.**
+         *
+         * A box with `overflow-y: auto` and no `overflow-x` does NOT get
+         * `visible` on the other axis: the specification computes a `visible`
+         * paired with a non-`visible` value to `auto`. So this container has
+         * always been horizontally scrollable, and every oversized child got a
+         * scrollbar rather than being clipped or being made to wrap.
+         *
+         * A thread has nothing to see sideways — the bubbles wrap, the
+         * attachments are width-capped — so the axis is closed rather than left
+         * to answer for the next child that forgets.
+         */
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 scroll-slim"
       >
         {messages.error ? (
           <QueryError
@@ -975,7 +1122,11 @@ function Thread({
             </div>
           </div>
         ) : (
-          <>
+          /* The observed element. It wraps only this branch — the messages —
+             because the empty state uses `h-full` against the scroll port and
+             would stop centring inside a wrapper, and neither it nor the
+             skeleton has anything that loads late to re-pin for. */
+          <div ref={contentRef}>
             {hasMoreHistory && (
               <div className="pb-3 text-center text-[11px] text-ink-faint">
                 Scroll up for earlier messages
@@ -992,7 +1143,7 @@ function Thread({
               onForward={setForwarding}
               onContextMenu={(m, x, y) => setMenu({ message: m, x, y })}
             />
-          </>
+          </div>
         )}
       </div>
 
@@ -1404,7 +1555,28 @@ function MessageList({
                   )}
                   {m.text && (
                     <span
-                      className={`whitespace-pre-wrap ${deleted ? "italic opacity-60" : ""}`}
+                      /**
+                       * **`overflow-wrap: anywhere`, and it has to be `anywhere`
+                       * rather than `break-word`.**
+                       *
+                       * `whitespace-pre-wrap` keeps the newlines somebody typed
+                       * and wraps at ordinary break opportunities — spaces. A
+                       * pasted API key, a refresh token or a long URL has none,
+                       * so it is one indivisible word: the bubble's min-content
+                       * width becomes the length of that word, `max-w` cannot
+                       * shrink it below its minimum, and the thread grows a
+                       * HORIZONTAL scrollbar. Every message in the conversation
+                       * then sits on a canvas wider than the pane because one of
+                       * them was a credential somebody pasted.
+                       *
+                       * `break-word` is not enough: it breaks the word when it
+                       * would overflow its line box, but leaves min-content
+                       * measured on the unbroken word, so the flex item is still
+                       * sized to it. `anywhere` is the value that also shrinks
+                       * the intrinsic minimum, which is the measurement the
+                       * layout above is actually made from.
+                       */
+                      className={`[overflow-wrap:anywhere] whitespace-pre-wrap ${deleted ? "italic opacity-60" : ""}`}
                     >
                       {deleted
                         ? m.text

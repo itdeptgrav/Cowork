@@ -26,7 +26,9 @@ import { getRepository } from "@/lib/repositories";
 import {
   getRepositoryVersion,
   notifyRepositoryChanged,
+  purgeQueryCaches,
   subscribeToRepository,
+  subscribeToStaleData,
 } from "@/lib/repositories/events";
 import type { ActionResult, CoworkRepository } from "@/lib/repositories";
 
@@ -78,6 +80,18 @@ const staleResultCache = new Map<string, StaleRecord>();
 const preloadCache = new Map<string, StaleRecord>();
 
 /**
+ * Drop every cached answer for the named repository methods.
+ *
+ * Registered once at module load rather than per hook: the caches are module
+ * singletons, so one subscriber clears them for every mounted query at once.
+ * A `useQuery` that is mid-flight is untouched — it is already fetching, and
+ * its result is written under the new version.
+ */
+subscribeToStaleData((methods) =>
+  purgeQueryCaches(methods, staleResultCache, preloadCache),
+);
+
+/**
  * Pre-populate the query cache for a specific repository method call.
  *
  * Call this immediately after a mutation that returns fresh entity data and
@@ -125,6 +139,10 @@ const METHOD_STALE_DEFAULTS: Record<string, number> = {
   listProjects: 20_000,
   listGoals: 30_000,
   listDocuments: 30_000,
+  /* Safe ONLY because every write and live listener that touches a thread now
+     names `listConversations` when it bumps — see `notifyRepositoryChanged`.
+     Without that this TTL is a 30-second freeze on the message previews and the
+     unread badges, which is precisely what it was. */
   listConversations: 30_000,
   listTimers: 10_000,
   getWorkloadFlow: 30_000,   // weekly graph — won't change in 30 s

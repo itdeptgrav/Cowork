@@ -13883,7 +13883,7 @@ export class LegacyRepository {
        * answers 200 before it starts, for the same reason. */
       void this.#announceMessage(conversationId, coll, body, media);
 
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return {
         ok: true,
         data: {
@@ -14062,7 +14062,7 @@ export class LegacyRepository {
         isEdited: true,
         editedAt: serverTimestamp(),
       });
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return {
         ok: true,
         data: readMessageDoc(messageId, conversationId, {
@@ -14113,7 +14113,7 @@ export class LegacyRepository {
         text: "",
         attachments: [],
       });
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return { ok: true, data: undefined };
     } catch (e) {
       console.error("[deleteMessage]", e);
@@ -14168,7 +14168,7 @@ export class LegacyRepository {
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        notifyRepositoryChanged();
+        notifyRepositoryChanged("listConversations");
       }
       /* Deduplicated on the pair: messaging somebody you already have a thread
          with reopens it rather than starting a second one beside it. */
@@ -14238,12 +14238,12 @@ export class LegacyRepository {
         updatedAt: serverTimestamp(),
         lastMessage: null,
       });
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return { ok: true, data: groupConv(ref.id, memberIds) };
     } catch (e) {
       const viaBackend = await this.#createGroupViaBackend(title, others);
       if (viaBackend) {
-        notifyRepositoryChanged();
+        notifyRepositoryChanged("listConversations");
         return { ok: true, data: viaBackend };
       }
       console.error("[createConversation:group]", e);
@@ -14371,7 +14371,7 @@ export class LegacyRepository {
       if (patch.title !== undefined) {
         this.#announce("group_renamed", { groupId });
       }
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return { ok: true, data: undefined };
     } catch (e) {
       console.error("[updateGroup]", e);
@@ -14412,7 +14412,7 @@ export class LegacyRepository {
         groupId,
         targetEmployeeId: String(employeeId),
       });
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return { ok: true, data: undefined };
     } catch (e) {
       console.error("[addGroupMember]", e);
@@ -14455,7 +14455,7 @@ export class LegacyRepository {
         groupId,
         targetEmployeeId: target,
       });
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return { ok: true, data: undefined };
     } catch (e) {
       console.error("[removeGroupMember]", e);
@@ -14521,7 +14521,7 @@ export class LegacyRepository {
         targetEmployeeId: target,
         isAdmin,
       });
-      notifyRepositoryChanged();
+      notifyRepositoryChanged("listConversations");
       return { ok: true, data: undefined };
     } catch (e) {
       console.error("[setGroupAdmin]", e);
@@ -14558,7 +14558,7 @@ export class LegacyRepository {
         const batch = writeBatch(legacyDb());
         unread.forEach((d) => batch.update(d.ref, { readBy: arrayUnion(me) }));
         await batch.commit();
-        notifyRepositoryChanged();
+        notifyRepositoryChanged("listConversations");
       }
       return { ok: true, data: undefined };
     } catch (e) {
@@ -14596,7 +14596,7 @@ export class LegacyRepository {
         );
         const { legacyDb } = await import("../../legacy/firebase.ts");
         if (disposed) return;
-        const bump = debounce(() => notifyRepositoryChanged(), 250);
+        const bump = debounce(() => notifyRepositoryChanged("listConversations"), 250);
         const attach = (name: string, field: string) => {
           let first = true;
           return onSnapshot(
@@ -14645,7 +14645,7 @@ export class LegacyRepository {
         const { legacyDb } = await import("../../legacy/firebase.ts");
         const coll = await this.#conversationCollection(conversationId);
         if (disposed) return;
-        const bump = debounce(() => notifyRepositoryChanged(), 200);
+        const bump = debounce(() => notifyRepositoryChanged("listConversations"), 200);
         let first = true;
         const un = onSnapshot(
           collection(legacyDb(), coll, conversationId, "messages"),

@@ -11,6 +11,10 @@
 
 import { AUDIT_REFUSAL } from "@/lib/rules/settings/access";
 import { ROLE_ADMIN } from "@/lib/auth/systemRoles";
+/* Purge-only, because `useAction` already bumps the version after every
+   mutation here — this repository does not announce its own writes. See
+   `invalidateQueries`. */
+import { invalidateQueries } from "@/lib/repositories/events";
 import type { AuditEntry } from "@/lib/rules/settings/audit";
 import {
   deadlineExtension,
@@ -7119,6 +7123,7 @@ export class MockRepository implements CoworkRepository {
          a broken thread rather than a full one. */
       c.unreadCount = 0;
     }
+    invalidateQueries("listConversations");
     return delay(ok(m));
   }
 
@@ -7156,6 +7161,7 @@ export class MockRepository implements CoworkRepository {
     tick();
     m.text = body;
     m.editedAt = nowIso();
+    invalidateQueries("listConversations");
     return delay(ok(m));
   }
 
@@ -7176,6 +7182,7 @@ export class MockRepository implements CoworkRepository {
     m.isDeleted = true;
     m.text = "";
     m.attachments = [];
+    invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
 
@@ -7255,6 +7262,7 @@ export class MockRepository implements CoworkRepository {
       unreadCount: 0,
     };
     s.conversations.push(c);
+    invalidateQueries("listConversations");
     return delay(ok(c));
   }
 
@@ -7273,6 +7281,7 @@ export class MockRepository implements CoworkRepository {
       if (m.conversationId === conversationId && !m.readBy.includes(actingId()))
         m.readBy.push(actingId());
     }
+    invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
 
@@ -7298,6 +7307,7 @@ export class MockRepository implements CoworkRepository {
       c.title = t;
     }
     tick();
+    invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
 
@@ -7314,6 +7324,7 @@ export class MockRepository implements CoworkRepository {
     if (!c.participantIds.includes(employeeId))
       c.participantIds = [...c.participantIds, employeeId];
     tick();
+    invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
 
@@ -7333,6 +7344,7 @@ export class MockRepository implements CoworkRepository {
     c.participantIds = c.participantIds.filter((x) => x !== employeeId);
     c.adminIds = (c.adminIds ?? []).filter((x) => x !== employeeId);
     tick();
+    invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
 
@@ -7364,6 +7376,7 @@ export class MockRepository implements CoworkRepository {
     }
     c.adminIds = [...admins];
     tick();
+    invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
 

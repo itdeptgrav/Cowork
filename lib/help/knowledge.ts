@@ -2418,9 +2418,11 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I message someone?",
       "How do I start a group chat?",
       "Why did it open an old thread instead of a new one?",
+      "Why did my unread badge disappear on its own?",
+      "Why is a conversation still unread when I can see it?",
     ],
     answer:
-      "Messages, then New message. Direct message reaches one person; Group takes two or more and a name. You can reach anyone in the organisation — there is no permission on messaging and no request to send first, the same principle as assignment, where anyone may raise work for anyone. If you already have a direct thread with somebody, choosing them reopens it rather than starting a second one beside it, because two threads with the same person makes it impossible to tell which one they will read. Opening a conversation clears its unread count, and the count in the list is a number rather than a dot so you can see how much is waiting.",
+      "Messages, then New message. Direct message reaches one person; Group takes two or more and a name. You can reach anyone in the organisation — there is no permission on messaging and no request to send first, the same principle as assignment, where anyone may raise work for anyone. If you already have a direct thread with somebody, choosing them reopens it rather than starting a second one beside it, because two threads with the same person makes it impossible to tell which one they will read. Opening a conversation clears its unread count, and the count in the list is a number rather than a dot so you can see how much is waiting. Opening it means choosing it from the list: on a wide screen the newest conversation is shown beside the list so the right-hand side is never blank, and that one is NOT counted as read — its badge stays until you click it. The count also survives a message arriving in a thread you already have open in a background tab or another window; it clears when you come back to it.",
     related: ["general-group-chat-vs-group", "general-what-is-cowork"],
     source: "createConversation dedupes direct pairs; markConversationRead",
   },
