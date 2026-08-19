@@ -135,6 +135,8 @@ export interface LegacyTaskDoc {
    * before the subtask route began forwarding it, which is why it is read
    * defensively rather than assumed.
    */
+
+  
   satisfiesRequirementIds?: unknown;
   /** Marks a doc as forward-created, so its parent chain can be hidden. */
   isForwardedTask?: boolean;
