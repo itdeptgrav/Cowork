@@ -282,6 +282,21 @@ export interface Task {
   parentTaskId: TaskId | null;
   projectId: string | null;
   groupId: string | null;
+  /**
+   * A container rather than work — what the Projects page lists.
+   *
+   * Carries a title and a description and nothing else: no assignee, no
+   * deadline, no timer, no priority. The engine has always accepted this on
+   * `task/create` and skips its "assigneeIds required" check for it. The work
+   * lives in the tasks parented to it, each fully independent, and the
+   * project's own date is simply the latest of theirs.
+   *
+   * The distinction cannot be read off the shape — a folder holding tasks and
+   * a task that grew subtasks look identical — so this flag is the only thing
+   * separating a project somebody made on purpose from one that appeared
+   * because work got broken down.
+   */
+  isFolder: boolean;
 
   estimatedEffortSecs: number | null;
   deadline: TaskDeadline;

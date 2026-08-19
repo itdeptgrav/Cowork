@@ -64,13 +64,56 @@ test("the task read asks for subtasks", () => {
   );
 });
 
-test("projects are containers only — a childless task is not one", () => {
+test("projects are folders only — an ordinary task is never one", () => {
+  /**
+   * OWNER DECISION, 18 Aug 2026. This used to require "a root task that has
+   * children", so breaking one task into two silently produced a project
+   * nobody asked for — and that container was a real task, with a deadline and
+   * a timer running on it, which is the opposite of a folder.
+   *
+   * A folder made on purpose and a task that grew subtasks are structurally
+   * identical, so the flag is the only thing that can separate them. The root
+   * check stays: a folder nested under something else is not a project.
+   *
+   * An EMPTY folder is deliberately still a project. Somebody made it on
+   * purpose, and hiding it until it had tasks would mean creating one appeared
+   * to do nothing — which is why `childrenOf.has(...)` is gone from the
+   * predicate rather than merely joined to it.
+   */
   const body = slice("async listProjects(", "async getProject(");
   assert.match(
     body,
-    /!v\.task\.parentTaskId && childrenOf\.has\(v\.task\.id\)/,
-    "a project must be a ROOT task that has children; either half alone lists ordinary tasks as projects",
+    /!v\.task\.parentTaskId && v\.task\.isFolder === true/,
+    "a project must be a ROOT task marked as a folder",
   );
+  assert.doesNotMatch(
+    body,
+    /childrenOf\.has\(v\.task\.id\)/,
+    "an empty folder is still a project — creating one must not appear to do nothing",
+  );
+});
+
+test("a project's deadline is the latest of its tasks, and absent when it has none", () => {
+  /**
+   * OWNER DECISION, 18 Aug 2026, in the owner's own example: four tasks due
+   * 10:00, 12:00, 15:00 and 18:00 make the project read 18:00. The container
+   * has no date of its own — it is the last commitment anybody made
+   * underneath — and a project with nothing in it shows no date at all.
+   */
+  /* Sliced here rather than through `slice()`: the first occurrence of the
+     name is the CALL inside `listProjects`, and the declaration comes later,
+     so both ends need `lastIndexOf`-style anchoring from the declaration. */
+  const at = source.lastIndexOf(DECL);
+  assert.ok(at > 0, "#projectFromContainer has moved or been renamed");
+  const body = source.slice(at, at + 4000).replace(/\s+/g, " ");
+  /* Cancelled work is excluded, then the latest of what remains wins, and an
+     empty list falls through to null rather than to a date. */
+  assert.match(
+    body,
+    /const targetDate = live \.map\(\(c\) => c\.task\.deadline\.officialDueAt \?\? c\.task\.deadline\.dueAt\)/,
+  );
+  assert.match(body, /\.sort\(\) \.at\(-1\) \?\? null;/);
+  assert.match(body, /live = children\.filter\(\(c\) => c\.task\.status !== "cancelled"\)/);
 });
 
 test("every documented query filter is applied", () => {
@@ -83,13 +126,30 @@ test("every documented query filter is applied", () => {
   }
 });
 
-test("getProject refuses a task that is not a container", () => {
+test("getProject refuses an ordinary task, and accepts an empty folder", () => {
+  /**
+   * OWNER DECISION, 18 Aug 2026. The guard used to be "no subtasks, no project
+   * page", which was right while a project WAS a broken-down task. Now a
+   * project is a folder made on purpose, and that rule broke the one page you
+   * need in order to put tasks in it: a project created a moment ago has no
+   * tasks yet, and opening it said "Project not found".
+   *
+   * The refusal still has to be there, or an ordinary task would render as a
+   * project — it is just asked of the flag instead of the children.
+   */
   const body = slice("async getProject(", DECL);
   assert.match(
     body,
-    /children\.length === 0[\s\S]*return null/,
-    "a task with no subtasks has no project page; returning one would render an ordinary task as a project",
+    /!container\.task\.isFolder[\s\S]*return null/,
+    "an ordinary task must not render as a project",
   );
+  assert.doesNotMatch(
+    body,
+    /children\.length === 0[\s\S]*return null/,
+    "a newly created project has no tasks yet — refusing it hides the page you add them from",
+  );
+  /* And a folder nested under something else is still not a project. */
+  assert.match(body, /container\.task\.parentTaskId[\s\S]*return null/);
 });
 
 test("project status follows the task's own lifecycle", () => {

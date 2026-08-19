@@ -2791,9 +2791,20 @@ export interface ReworkQueueRow {
 export interface CreateProjectInput {
   name: string;
   description?: string | null;
-  ownerId: EmployeeId;
-  memberIds: EmployeeId[];
-  status: ProjectStatus;
+  /**
+   * Everything below is optional, and the create form no longer asks for any
+   * of it.
+   *
+   * OWNER DECISION, 18 Aug 2026: a project is a folder carrying a name and a
+   * description. It has no dates of its own — the deadlines belong to the
+   * tasks inside it, each with its own budget and timer — and its members are
+   * whoever holds those tasks rather than a set chosen before any exist. A
+   * store that models projects more richly may still accept these; nothing in
+   * the product sends them.
+   */
+  ownerId?: EmployeeId;
+  memberIds?: EmployeeId[];
+  status?: ProjectStatus;
   startDate?: string | null;
   targetDate?: string | null;
   priority?: Project["priority"];

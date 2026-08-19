@@ -413,6 +413,12 @@ export interface LegacyTask {
   pendingAssigneeId: string | null;
   /** Parent in the hierarchy. Null for a root task. */
   parentTaskId: string | null;
+  /**
+   * A container rather than work. The engine accepts this on `task/create` and
+   * skips its "assigneeIds required" check for it. Absent on every task written
+   * before the field existed, which reads as false — those are all work.
+   */
+  isFolder: boolean;
   /** Children, as the engine maintains them via `arrayUnion` on create. */
   subtaskIds: string[];
   /**
@@ -741,6 +747,7 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     startedAtMs: readInstant(doc.startedAt),
     pendingAssigneeId: doc.pendingAssigneeId ?? null,
     parentTaskId: doc.parentTaskId ?? null,
+    isFolder: doc.isFolder === true,
     subtaskIds: Array.isArray(doc.subtaskIds)
       ? doc.subtaskIds.filter(
           (id): id is string => typeof id === "string" && id !== "",

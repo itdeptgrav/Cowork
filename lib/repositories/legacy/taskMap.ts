@@ -210,6 +210,9 @@ export function toTask(legacy: LegacyTask): Task {
     parentTaskId: legacy.parentTaskId,
     projectId: null,
     groupId: null,
+    /* A container rather than work. Absent on every task saved before the
+       field existed, which reads as false — those are all work. */
+    isFolder: legacy.isFolder === true,
     /*
      * The task's time budget, from the task document.
      *

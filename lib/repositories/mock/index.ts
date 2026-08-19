@@ -1262,6 +1262,8 @@ export class MockRepository implements CoworkRepository {
       rootCreatorEmployeeId: input.approverId ?? actingId(),
       departmentId,
       parentTaskId: input.parentTaskId ?? null,
+      /* The prototype has no folders — every task it makes is work. */
+      isFolder: false,
       projectId: input.projectId ?? null,
       groupId: null,
       estimatedEffortSecs: input.estimatedEffortSecs ?? null,
@@ -5789,8 +5791,10 @@ export class MockRepository implements CoworkRepository {
       reference: `PRJ-${id.split("-")[1]}`,
       name: input.name.trim(),
       description: input.description ?? null,
-      ownerId: input.ownerId,
-      status: input.status,
+      /* A project is a folder: whoever makes it owns it, and it starts
+         active. Neither is asked for any more. */
+      ownerId: input.ownerId ?? actingId(),
+      status: input.status ?? "active",
       startDate: input.startDate ?? null,
       targetDate: input.targetDate ?? null,
       completedAt: null,
@@ -5806,12 +5810,12 @@ export class MockRepository implements CoworkRepository {
     s.projectMembers.push({
       id: nextId("pm"),
       projectId: id,
-      employeeId: input.ownerId,
+      employeeId: input.ownerId ?? actingId(),
       role: "owner",
       addedAt: nowIso(),
       addedById: actingId(),
     });
-    for (const m of input.memberIds.filter((x) => x !== input.ownerId)) {
+    for (const m of (input.memberIds ?? []).filter((x) => x !== input.ownerId)) {
       s.projectMembers.push({
         id: nextId("pm"),
         projectId: id,

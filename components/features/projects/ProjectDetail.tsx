@@ -185,9 +185,15 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 </>
               )}
             </Popover>
+            {/* `?parent=`, not `?project=`. A project IS a folder task, and
+                what puts a task inside it is being parented to it — that is
+                the same relationship `listProjectTasks` reads back and the
+                same one the project's deadline is derived from. `?project=`
+                only tagged the task and left it outside the folder, so it
+                never appeared in the project it was created from. */}
             <Button tone="primary" size="sm">
               <Link
-                href={`/tasks/new?project=${p.id}`}
+                href={`/tasks/new?parent=${p.id}`}
                 className="flex items-center gap-1.5"
               >
                 <Icon.plus />
@@ -331,7 +337,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                   action={
                     <div className="flex gap-2">
                       <Button tone="primary">
-                        <Link href={`/tasks/new?project=${p.id}`}>
+                        <Link href={`/tasks/new?parent=${p.id}`}>
                           New task
                         </Link>
                       </Button>

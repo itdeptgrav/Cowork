@@ -117,9 +117,9 @@ export function ProjectsList() {
            the one that actually starts the sequence. */
         action={
           <Button tone="primary" size="sm">
-            <Link href="/tasks/new" className="flex items-center gap-1.5">
+            <Link href="/tasks/projects/new" className="flex items-center gap-1.5">
               <Icon.plus />
-              New task
+              New project
             </Link>
           </Button>
         }
@@ -175,11 +175,11 @@ export function ProjectsList() {
             /* Says how one comes to exist, because there is no button that
                makes one directly. An empty state that only names the thing
                leaves the reader looking for a control that is not there. */
-            body="A project is a task that has been broken down. Give a task its completion requirements, break out a subtask for one of them, and it becomes a project here — with its subtasks as the work, and its members whoever is carrying them."
+            body="A project is a folder for tasks. It carries a name and a description — no deadline, no timer, no priority of its own. Make one, then create tasks inside it: each is an ordinary task with its own assignee, deadline and timer, and they can go to different people. The project shows the latest deadline among them."
             action={
               filter === "active" ? (
                 <Button tone="primary">
-                  <Link href="/tasks?view=tasks">Go to tasks</Link>
+                  <Link href="/tasks/projects/new">Create a project</Link>
                 </Button>
               ) : undefined
             }

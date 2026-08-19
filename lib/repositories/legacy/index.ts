@@ -77,7 +77,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateProjectInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
@@ -9167,8 +9167,23 @@ export class LegacyRepository {
       else childrenOf.set(parentId, [v]);
     }
 
+    /**
+     * **Folders, and only folders.** OWNER DECISION, 18 Aug 2026.
+     *
+     * This used to show any parent task that happened to have children, so
+     * breaking one task into two silently produced a "project" nobody asked
+     * for — and that container was a real task, with a deadline and a timer
+     * running on it, which is the opposite of a folder.
+     *
+     * A folder made on purpose and a task that grew subtasks are structurally
+     * identical, so `isFolder` is the only thing that can tell them apart.
+     *
+     * A folder with nothing in it yet still belongs here — somebody made it
+     * deliberately, and hiding it until it has tasks would mean creating one
+     * appeared to do nothing.
+     */
     let projects = views
-      .filter((v) => !v.task.parentTaskId && childrenOf.has(v.task.id))
+      .filter((v) => !v.task.parentTaskId && v.task.isFolder === true)
       .map((v) => this.#projectFromContainer(v, childrenOf.get(v.task.id) ?? []));
 
     if (q.status?.length) {
@@ -9236,8 +9251,11 @@ export class LegacyRepository {
     const taskId = String(id);
     const container = await this.#readTaskView(taskId);
     if (!container || container.task.parentTaskId) return null;
+    /* A folder is a project the moment it exists. This used to require
+       children, so a project you had just made said "Project not found" — the
+       one page you needed in order to put tasks in it. */
+    if (!container.task.isFolder) return null;
     const children = await this.getSubtasks(taskId);
-    if (children.length === 0) return null;
     return this.#projectFromContainer(container, children);
   }
 
@@ -9431,13 +9449,100 @@ export class LegacyRepository {
     } as unknown as ActionResult<never>;
   }
 
-  async createProject(): Promise<ActionResult<never>> {
+  /**
+   * Make a project.
+   *
+   * **A folder, which the engine has always had and this client never used.**
+   * OWNER DECISION, 18 Aug 2026: a project is a container you make on purpose,
+   * carrying a name and a description and nothing else — no deadline, no
+   * timer, no priority, no assignee. Tasks are created inside it afterwards and
+   * each one is an ordinary task in every respect.
+   *
+   * That is exactly `isFolder` on `task/create`: the route skips its own
+   * "assigneeIds required" check for a folder, never gives it a due date, and
+   * skips the cross-department gate. So this is not a new kind of record — it
+   * is the kind the engine already had, finally reachable.
+   *
+   * Everything else on `CreateProjectInput` is ignored rather than half-stored:
+   * a project has no dates of its own (its date is the latest of its tasks'),
+   * and its members are whoever holds those tasks. Writing those into fields
+   * nothing reads would be a lie the next reader has to discover.
+   */
+  async createProject(input: CreateProjectInput): Promise<ActionResult<Project>> {
+    const name = String(input?.name ?? "").trim();
+    if (!name) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Name the project.",
+        field: "name",
+      } as unknown as ActionResult<Project>;
+    }
+    const description = String(input?.description ?? "").trim();
+
+    const token = await this.#token();
+    if (!token) {
+      return {
+        ok: false,
+        code: "unauthenticated",
+        message: "Sign in again to create a project.",
+      } as unknown as ActionResult<Project>;
+    }
+
+    const r = await createTaskRequest({
+      token,
+      body: {
+        title: name,
+        description,
+        isFolder: true,
+        /* No assignees, and the route allows exactly that for a folder; no
+           deadline either, since it writes null regardless. */
+        assigneeIds: [],
+        hasTimer: false,
+      },
+    });
+    if (!r.ok) {
+      return {
+        ok: false,
+        code: "request_failed",
+        message: r.error.message,
+      } as unknown as ActionResult<Project>;
+    }
+
+    /**
+     * Built from what was sent rather than re-read.
+     *
+     * The engine answers a create with an id, and the caller wants somewhere
+     * to navigate. A second round trip to fetch the record we just wrote would
+     * buy nothing: every field below is either what was sent or fixed by what a
+     * folder IS — no dates, no priority, no tags — and the project page
+     * refetches from the engine anyway.
+     */
+    const id = String(r.data?.taskId ?? "") as ProjectId;
+    const now = new Date().toISOString();
     return {
-      ok: false,
-      code: "invalid_state",
-      message:
-        "Projects are not created directly. Create a task, give it completion requirements, and break out a subtask — the task becomes a project at that moment.",
-    } as unknown as ActionResult<never>;
+      ok: true,
+      data: {
+        organisationId: LEGACY_ORGANISATION_ID,
+        id,
+        reference: id,
+        name,
+        description: description || null,
+        ownerId: "" as EmployeeId,
+        status: "active" as ProjectStatus,
+        startDate: now,
+        /* No tasks yet, so no deadline — the empty case the owner named. */
+        targetDate: null,
+        completedAt: null,
+        tags: [],
+        priority: null,
+        isRestricted: false,
+        createdById: "" as EmployeeId,
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+      },
+    } as unknown as ActionResult<Project>;
   }
 
   async listReviewQueue() { return []; }
