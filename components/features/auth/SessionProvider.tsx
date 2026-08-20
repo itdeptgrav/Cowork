@@ -14,6 +14,7 @@ import { unregisterFCMToken, useFCMToken } from "@/lib/hooks/useFCMToken";
 import { LegacyRepository, toCoworkRepository } from "@/lib/repositories/legacy";
 import { startTaskWatch } from "@/lib/repositories/legacy/taskWatch";
 import { PROFILE_STORAGE_KEY } from "@/lib/config/profileSwitcher";
+import { clearAllDrafts } from "@/components/features/messages/draftStorage";
 import { LENS_STORAGE_KEY } from "@/components/layout/shell/LensContext";
 import { archetypeForLegacyRole, LEGACY_LANDING } from "@/lib/auth/roleMap";
 import { fetchIdentity } from "@/lib/legacy/auth";
@@ -293,6 +294,12 @@ export function SessionProvider({
        */
       if (noteSignedInUid(currentUser()?.uid ?? null)) {
         forgetAccountScopedState([PROFILE_STORAGE_KEY, LENS_STORAGE_KEY]);
+        /* Message drafts go too, and they need their own call rather than
+           another key in that list: there is one key PER CONVERSATION, so the
+           set is unbounded and cannot be cleared by naming its members. Leaving
+           them would drop a colleague's half-written message into the next
+           person's composer — a disclosure rather than an untidiness. */
+        clearAllDrafts();
       }
       /**
        * **Paint from what we already knew, then go and check.**

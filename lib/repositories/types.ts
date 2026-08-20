@@ -2062,6 +2062,27 @@ export interface CoworkRepository {
    */
   markConversationRead(conversationId: string): Promise<ActionResult<void>>;
   /**
+   * Record that this client has RECEIVED the newest messages in these
+   * conversations — the grey double tick, not the blue one.
+   *
+   * Deliberately separate from `markConversationRead`, and the distinction is
+   * the whole point of the feature: receiving is something your client does by
+   * being connected, reading is something you do by opening a thread. Folding
+   * them together would turn every delivered message blue and make the tick say
+   * nothing.
+   *
+   * Called with the conversations that actually need it — see
+   * `conversationsNeedingDelivery`, which narrows to the ones where a message
+   * has arrived since our last stamp. Passing everything would work and would
+   * also loop, because the stamp lives on a document the list is watching.
+   *
+   * Optional: a backend with no delivery concept omits it, and every message
+   * shows a single tick rather than a wrong one.
+   */
+  markConversationsDelivered?(
+    conversationIds: string[],
+  ): Promise<ActionResult<void>>;
+  /**
    * Live updates for the conversation list, where the backend has a live channel.
    *
    * Optional on purpose: a backend without one (the in-memory prototype) simply
@@ -2604,6 +2625,24 @@ export interface CoworkRepository {
   ): void;
   /** The tenant this repository is currently answering for. */
   actingOrganisationId?(): string;
+  /**
+   * Who the repository is acting as, **synchronously**.
+   *
+   * The same string `getViewer()` reports as `employeeId` — that method resolves
+   * it from exactly this value and then spends a round trip on the reporting
+   * tree, which is what it actually needs the network for. Anything that only
+   * wants to know "which of these people am I" was paying for the tree.
+   *
+   * That cost was visible, not theoretical. The conversation list resolves
+   * before the viewer query does, so every direct thread rendered its title
+   * with nobody filtered out and showed BOTH names — the reader's own included
+   * — until the tree came back and it corrected itself. A list that rewrites
+   * itself a second after it appears reads as a fault whatever it settles on.
+   *
+   * Optional, so an implementation without an acting identity omits it and
+   * callers fall back to the asynchronous answer.
+   */
+  actingEmployeeId?(): EmployeeId | null;
   setSimulatedFailure(mode: SimulatedFailure): void;
   getSimulatedFailure(): SimulatedFailure;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "./useRepository";
+import { useQuery, useRepo } from "./useRepository";
 import {
   can,
   scopeFor,
@@ -109,7 +109,24 @@ export function usePermissions(): Permissions {
  * None of that is visible until you can be somebody else, which is exactly what
  * the profile switcher made possible.
  */
+/**
+ * **The synchronous fallback exists because `null` is not "nobody" — it is
+ * "not yet", and callers cannot tell the two apart.**
+ *
+ * `getViewer()` needs the network for the reporting tree, not for the id, so
+ * this returned `null` for however long that took. Every caller treating the
+ * viewer as unknown then rendered as though nobody were signed in, and the
+ * conversation list showed it plainly: `conversationTitle` filters the viewer
+ * out of a thread's participants, so with `null` it filtered nobody out and
+ * every direct conversation was titled with BOTH names — the reader's own
+ * included — until the query landed and the whole list rewrote itself.
+ *
+ * The query still wins once it resolves, so nothing after the first moment
+ * changes. Only the gap is filled, and it is filled with the value
+ * `getViewer()` is about to derive the id from anyway.
+ */
 export function useViewerId(): EmployeeId | null {
   const viewer = useQuery((r) => r.getViewer(), []);
-  return viewer.data?.employeeId ?? null;
+  const repo = useRepo();
+  return viewer.data?.employeeId ?? repo.actingEmployeeId?.() ?? null;
 }

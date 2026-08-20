@@ -79,6 +79,7 @@
   --color-state-overdue: var(--state-overdue);
   --color-state-warn: var(--state-warn);
   --color-state-positive: var(--state-positive);
+  --color-state-read: var(--state-read);
 
   --shadow-deck-seat: var(--deck-seat);
 }
@@ -144,6 +145,16 @@
   --state-warn-ink: #6e4d12;
   --state-positive: #5f8a72;
   --state-positive-ink: #24422f;
+
+  /* The read tick, and the one place a blue is allowed.
+
+     The Four Channels Rule reserves saturated colour for score components, and
+     this deliberately does not borrow one of their hues — it is the blue every
+     messaging product uses for "they have read this", and a reader recognises
+     it before they have read a word of the interface. Muted well below a C1–C4
+     accent so it reads as a status mark rather than as a channel, and used for
+     exactly one mark: nothing else in the product may take it. */
+  --state-read: #3d7fd6;
 
   /* ── The flow graph's environment ──────────────────────────────────────
      The graph is the dashboard's signature, and it is two different materials
@@ -301,6 +312,10 @@
   --state-warn-ink: #f0cd82;
   --state-positive: #74a88a;
   --state-positive-ink: #d8f0e2;
+
+  /* Lifted on the dark deck for the same reason every other state colour is:
+     the light-theme value is a hole rather than a mark against it. */
+  --state-read: #6aa8f0;
 
   /* Shadows do almost nothing on a dark ground — depth comes from the
      lit top edge and the blur instead. Kept shallow so panels do not

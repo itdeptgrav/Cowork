@@ -7285,6 +7285,32 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(undefined));
   }
 
+  /**
+   * Stamp delivery for the acting employee — the grey double tick.
+   *
+   * Kept behaviourally identical to the legacy repository rather than skipped:
+   * the ticks are decided by a pure rule reading `deliveredAt`, so a store that
+   * never writes it would render every prototype message as a single tick and
+   * the UI could not be exercised at all without a real backend.
+   */
+  async markConversationsDelivered(
+    conversationIds: string[],
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const now = nowIso();
+    for (const id of conversationIds) {
+      const c = s.conversations.find((x) => x.id === id);
+      /* Only for conversations the caller is actually in — a client cannot
+         claim delivery on a thread it is not a party to. */
+      if (!c || !c.participantIds.includes(actingId())) continue;
+      c.deliveredAt = { ...(c.deliveredAt ?? {}), [actingId()]: now };
+    }
+    invalidateQueries("listConversations");
+    return delay(ok(undefined));
+  }
+
   #groupConv(id: string) {
     return getStore().conversations.find(
       (c) => c.id === id && c.kind === "group",
@@ -10293,6 +10319,19 @@ export class MockRepository implements CoworkRepository {
   /** The tenant this repository is currently answering for. */
   actingOrganisationId(): string {
     return actingOrganisationId();
+  }
+
+  /**
+   * The acting employee, without a round trip — the same id `getViewer()`
+   * reports.
+   *
+   * Unlike the legacy repository this one CAN be re-pointed, by the dev profile
+   * switcher through `setActingEmployee`. That is fine and is why this reads
+   * `actingId()` live on every call rather than caching: switching profile has
+   * to change the answer immediately, which is the whole point of the switcher.
+   */
+  actingEmployeeId(): EmployeeId | null {
+    return actingId() ?? null;
   }
 
   async resetDemoData(): Promise<void> {

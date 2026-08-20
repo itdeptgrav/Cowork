@@ -195,6 +195,30 @@ export function readReply(v: unknown): MessageReply | null {
   };
 }
 
+/**
+ * Each participant's delivery stamp, as ISO instants.
+ *
+ * Stored as `delivery: { [employeeId]: Timestamp }` on the conversation
+ * document. Read through `instant()` like every other stored time, so a
+ * Firestore `Timestamp`, an ISO string and an epoch number all arrive the same
+ * way — the field is written by clients and there is no single spelling to rely
+ * on.
+ *
+ * Entries that cannot be read are DROPPED rather than defaulted. A delivery
+ * stamp that fell back to "now" would report every message delivered the moment
+ * it was drawn, which is the one wrong answer this whole feature exists to
+ * avoid; absent is honest and shows a single tick.
+ */
+export function readDeliveryMap(v: unknown): Record<string, string> {
+  if (!v || typeof v !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const [id, at] of Object.entries(v as Record<string, unknown>)) {
+    const iso = instant(at);
+    if (iso) out[id] = iso;
+  }
+  return out;
+}
+
 /** A stored direct-message doc → domain `Conversation`, WITHOUT `unreadCount`
  *  (derived from the messages) and WITHOUT participants (resolved against the
  *  directory). Both are filled by the repository. */
@@ -215,6 +239,7 @@ export function readDirectConversationDoc(
     lastMessagePreview:
       last && typeof last.text === "string" ? last.text : null,
     unreadCount: 0,
+    deliveredAt: readDeliveryMap(d.delivery),
   };
 }
 
@@ -251,6 +276,7 @@ export function readGroupConversationDoc(
       instant((last as Record<string, unknown>)?.sentAt),
     lastMessagePreview: preview,
     unreadCount: 0,
+    deliveredAt: readDeliveryMap(d.delivery),
   };
 }
 

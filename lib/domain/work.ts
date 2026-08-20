@@ -203,6 +203,25 @@ export interface Conversation {
   lastMessageAt: string | null;
   lastMessagePreview: string | null;
   unreadCount: number;
+  /**
+   * When each participant's client was last live on this conversation.
+   *
+   * The delivery half of the message ticks: a message counts as delivered to
+   * somebody once their stamp here is at or after the moment it was written.
+   * Each person writes only their own entry, which is what makes it a fact
+   * about them rather than a claim the sender makes on their behalf.
+   *
+   * One stamp per conversation rather than a flag on every message, and the
+   * arithmetic is the reason: a per-message array costs a write per message per
+   * recipient, and only records anything while that person has that exact
+   * thread open — which is not what "delivered" means. See
+   * `lib/rules/messages/messageStatus.ts`.
+   *
+   * Optional because it is additive: threads written before this existed, and
+   * anything the older application writes, simply have no stamps and show a
+   * single tick. Nothing breaks in its absence.
+   */
+  deliveredAt?: Record<EmployeeId, string>;
 }
 
 /**

@@ -32,6 +32,12 @@ import { formatClock, formatDate, formatRelative, istDayKey } from "@/lib/utils/
 import { linkify } from "@/lib/utils/linkify";
 import { useNow } from "@/lib/hooks/useNow";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain";
+import {
+  conversationsNeedingDelivery,
+  messageStatus,
+  type MessageStatus,
+} from "@/lib/rules/messages/messageStatus";
+import { clearDraft, readDraft, saveDraft } from "./draftStorage";
 import type {
   Conversation,
   Employee,
@@ -101,6 +107,34 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
      full list reads as a loading failure. */
   const active = conversationId ?? (all.length ? all[0].id : undefined);
   const activeConversation = all.find((c) => c.id === active) ?? null;
+
+  /**
+   * **Tell the senders their messages arrived — the grey double tick.**
+   *
+   * Delivery is a fact about this CLIENT being connected, not about any thread
+   * being open, so it is stamped for every conversation at once and from the
+   * list rather than from `Thread`. Somebody sitting on the messages page with
+   * chat A open has still received the message that just landed in chat B, and
+   * a stamp that only fired for the open thread would leave the other sender
+   * looking at a single tick indefinitely.
+   *
+   * **It cannot loop, and that is a property of the input rather than a guard
+   * bolted on here.** The stamp lives on the conversation document, which
+   * `watchConversations` is listening to, so writing unconditionally would mean
+   * write → snapshot → refetch → write. `conversationsNeedingDelivery` returns
+   * only the conversations where a message has arrived since our own last
+   * stamp, so the pass that follows a write finds nothing to do and it stops.
+   *
+   * Nothing is awaited into the render and no failure surfaces: a stamp that
+   * does not land costs somebody else's tick a few seconds, and is not worth an
+   * error in front of the person who did nothing wrong.
+   */
+  useEffect(() => {
+    if (!viewerId || !repo.markConversationsDelivered) return;
+    const need = conversationsNeedingDelivery(all, viewerId);
+    if (need.length === 0) return;
+    void repo.markConversationsDelivered(need).catch(() => {});
+  }, [repo, all, viewerId]);
   /**
    * Whether the reader ASKED for this thread, or the layout picked it.
    *
@@ -499,15 +533,40 @@ function Thread({
   onSent: () => void;
 }) {
   const repo = useRepo();
-  const [text, setText] = useState("");
-  const [pending, setPending] = useState<MessageAttachment[]>([]);
+  /**
+   * **The draft is restored in a lazy initialiser, not an effect.**
+   *
+   * `Thread` is mounted with `key={conversation.id}`, so switching threads
+   * remounts it and every `useState` here starts fresh — which is exactly why
+   * an unsent message used to vanish. Reading storage as the initial value puts
+   * it back on the FIRST render, so the composer is never briefly empty and
+   * nothing flashes.
+   *
+   * Safe against hydration despite touching `localStorage` during render:
+   * `Thread` only exists once `conversations.data` has resolved, which cannot
+   * happen on the server, so this component never appears in server HTML for a
+   * client render to disagree with. `readDraft` is defensive anyway and returns
+   * null rather than throwing if that ever stops being true.
+   *
+   * Read once into `restored` rather than three times: `useState` initialisers
+   * run in order, so the two below can close over it.
+   */
+  const [restored] = useState(() => readDraft(c.id));
+  const [text, setText] = useState(restored?.text ?? "");
+  const [pending, setPending] = useState<MessageAttachment[]>(
+    restored?.attachments ?? [],
+  );
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   /** One entry per file in the batch currently uploading — see `handleFiles`. */
   const [uploadProgress, setUploadProgress] = useState<
     { id: string; name: string; sizeBytes: number; fraction: number }[]
   >([]);
-  const [replyingTo, setReplyingTo] = useState<MessageReply | null>(null);
+  /* Part of the draft: a reply restored without the message it answers is a
+     different message from the one somebody started writing. */
+  const [replyingTo, setReplyingTo] = useState<MessageReply | null>(
+    restored?.replyTo ?? null,
+  );
   /** The message a right-click opened a menu on, and where the pointer was. */
   const [menu, setMenu] = useState<{
     message: Message;
@@ -530,6 +589,28 @@ function Thread({
   }, [messageNotice]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = editingId !== null;
+
+  /**
+   * **Persist the draft on every change, with no debounce.**
+   *
+   * The obvious refinement is to wait a moment before writing, and it is wrong
+   * here for two reasons. The cleanup of a debounced effect cancels the pending
+   * write, so the one case that matters most — type something, immediately click
+   * another conversation — would cancel the save on the way out and lose exactly
+   * what this exists to keep. And a page refresh gives no cleanup at all, so
+   * anything still in the timer is gone. Writing a couple of kilobytes
+   * synchronously per keystroke is far cheaper than either.
+   *
+   * **Never while editing.** `startEdit` replaces the composer's contents with
+   * an existing message's text; storing that would restore somebody's edit of an
+   * old message as a new draft the next time they opened the thread. The draft
+   * already on disk is left untouched throughout, so cancelling an edit and
+   * switching away still brings back what they had been writing before.
+   */
+  useEffect(() => {
+    if (editing) return;
+    saveDraft(c.id, { text, attachments: pending, replyTo: replyingTo });
+  }, [c.id, text, pending, replyingTo, editing]);
   const [typingIds, setTypingIds] = useState<string[]>([]);
   const [online, setOnline] = useState<Record<string, boolean>>({});
   const [showGroupSettings, setShowGroupSettings] = useState(false);
@@ -825,6 +906,12 @@ function Thread({
     if (!text.trim() && pending.length === 0) return;
     const r = await send();
     if (r.ok) {
+      /* **Only on success**, and only here. A send that fails leaves the text
+         and the files exactly where they were, on screen and on disk, so the
+         retry is pressing the button again rather than typing it out a second
+         time. Clearing before the result came back would lose a message to a
+         dropped connection. */
+      clearDraft(c.id);
       setText("");
       setPending([]);
       setReplyingTo(null);
@@ -1137,6 +1224,7 @@ function Thread({
               participants={c.participants}
               viewerId={viewerId}
               group={c.kind === "group"}
+              deliveredAt={c.deliveredAt}
               onReply={startReply}
               onEdit={startEdit}
               onDelete={removeMessage}
@@ -1414,11 +1502,56 @@ function Thread({
  * from the message dates rather than from a fixed window, so a quiet week does
  * not produce empty headings.
  */
+/**
+ * How far one of your own messages has got, as one or two ticks.
+ *
+ * Drawn rather than iconified because the whole meaning is in the SHAPE — one
+ * mark or two — and a single glyph scaled to 11px loses that distinction at
+ * exactly the size it is read at. Two overlapping strokes stay legible.
+ *
+ * Only the read state takes colour. A grey double tick against a grey single
+ * tick is a difference of quantity, which the eye counts; adding a second
+ * colour for "delivered" would make the reader learn a palette instead.
+ */
+function MessageTicks({ status }: { status: MessageStatus }) {
+  const read = status === "read";
+  const double = status !== "sent";
+  const label =
+    status === "read" ? "Read" : status === "delivered" ? "Delivered" : "Sent";
+  return (
+    <span
+      role="img"
+      aria-label={label}
+      title={label}
+      className="ms-1 inline-flex shrink-0 align-[-1px]"
+      style={{ color: read ? "var(--state-read)" : undefined }}
+    >
+      <svg
+        width={double ? 15 : 10}
+        height="10"
+        viewBox={double ? "0 0 15 10" : "0 0 10 10"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <path d="M1 5.5 L3.6 8.2 L8.8 1.8" />
+        {/* The second tick, set behind and to the right so the two read as a
+            pair rather than as one thick mark. */}
+        {double && <path d="M6.2 5.5 L8.8 8.2 L14 1.8" />}
+      </svg>
+    </span>
+  );
+}
+
 function MessageList({
   messages,
   participants,
   viewerId,
   group,
+  deliveredAt,
   onReply,
   onEdit,
   onDelete,
@@ -1429,6 +1562,8 @@ function MessageList({
   participants: Employee[];
   viewerId: string | null;
   group: boolean;
+  /** Each participant's delivery stamp, for the ticks. See `messageStatus`. */
+  deliveredAt: Record<string, string> | undefined;
   onReply: (m: Message) => void;
   onEdit: (m: Message) => void;
   onDelete: (m: Message) => void;
@@ -1442,6 +1577,13 @@ function MessageList({
     document
       .getElementById(`msg-${id}`)
       ?.scrollIntoView({ behavior: "smooth", block: "center" });
+
+  /* Everyone a message of mine is FOR — the participants without me. Computed
+     once for the list rather than per bubble: it is the same set for every
+     message in the thread, and `messageStatus` reads it on each one. */
+  const recipientIds = participants
+    .map((p) => p.id)
+    .filter((id) => id !== viewerId);
 
   return (
     <ol className="flex flex-col gap-0.5">
@@ -1642,10 +1784,25 @@ function MessageList({
               {endsRun && (
                 <span
                   data-figure
-                  className={`mt-1 text-[11px] text-ink-faint ${mine ? "pe-9" : "ps-9"}`}
+                  className={`mt-1 flex items-center text-[11px] text-ink-faint ${mine ? "pe-9" : "ps-9"}`}
                 >
                   {clock(m.createdAt)}
                   {m.editedAt ? " · edited" : ""}
+                  {/* Only on your OWN messages, and only where a time is
+                      already shown. Ticks on somebody else's bubble would be
+                      telling them whether THEY have read it, which they
+                      plainly have — and a deleted message has no delivery
+                      worth reporting. */}
+                  {mine && !deleted && (
+                    <MessageTicks
+                      status={messageStatus({
+                        createdAt: m.createdAt,
+                        readBy: m.readBy,
+                        recipientIds,
+                        deliveredAt,
+                      })}
+                    />
+                  )}
                 </span>
               )}
             </div>

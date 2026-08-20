@@ -13181,6 +13181,18 @@ export class LegacyRepository {
        switcher cannot silently act as somebody the token does not authorise. */
   }
 
+  /**
+   * The acting employee, without a round trip.
+   *
+   * Safe to read at any moment precisely BECAUSE of the two methods above: the
+   * identity is fixed when the repository is constructed and nothing can
+   * re-point it, so this can never disagree with the `employeeId` `getViewer()`
+   * reports — that method resolves it from the same field.
+   */
+  actingEmployeeId(): EmployeeId | null {
+    return this.#ctx.employeeId ? (String(this.#ctx.employeeId) as EmployeeId) : null;
+  }
+
   /* ── Mail ────────────────────────────────────────────────────────────────
    *
    * One document per message in `cowork_mails` (the collection legacy already
@@ -14567,6 +14579,60 @@ export class LegacyRepository {
         ok: false,
         code: "offline",
         message: "Could not update the read state.",
+      };
+    }
+  }
+
+  /**
+   * Stamp "my client has these" on each conversation — the grey double tick.
+   *
+   * One field, `delivery.{me}`, on the conversation document itself. Nothing is
+   * written to any message, which is what keeps this affordable: the alternative
+   * costs a write per message per recipient, and a thread in this workspace
+   * already holds 173 of them.
+   *
+   * **`merge: true` on a dotted path, not `update`.** `update` fails outright on
+   * a document that does not exist, and a direct thread's parent is written
+   * lazily by the first `sendMessage` — so a conversation somebody has opened
+   * but never spoken in would throw here. `setDoc(..., { merge: true })` creates
+   * or amends, and touches nothing else in the document either way.
+   *
+   * Fire-and-forget by contract: the caller is a background effect and a failed
+   * stamp costs a tick that stays grey a little longer. It must never surface as
+   * an error, and it must never block a read.
+   */
+  async markConversationsDelivered(
+    conversationIds: string[],
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me || conversationIds.length === 0)
+      return { ok: true, data: undefined };
+    try {
+      const { doc, serverTimestamp, setDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      await Promise.all(
+        conversationIds.map(async (id) => {
+          const coll = await this.#conversationCollection(id);
+          await setDoc(
+            doc(legacyDb(), coll, id),
+            { delivery: { [me]: serverTimestamp() } },
+            { merge: true },
+          );
+        }),
+      );
+      /* Deliberately NOT `notifyRepositoryChanged`. The watcher on these
+         documents will fire by itself, and bumping here as well would refresh
+         the list twice for one stamp — on the exact path that is already
+         careful not to loop. */
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[markConversationsDelivered]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "Could not record delivery.",
       };
     }
   }

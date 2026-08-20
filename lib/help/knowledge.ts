@@ -2427,6 +2427,56 @@ export const HELP_ARTICLES: HelpArticle[] = [
     source: "createConversation dedupes direct pairs; markConversationRead",
   },
   {
+    id: "general-message-drafts",
+    category: "general",
+    title: "Unsent messages are kept per conversation",
+    keywords: [
+      "draft",
+      "drafts",
+      "unsent",
+      "lost message",
+      "typed but not sent",
+      "switch chat",
+      "came back",
+    ],
+    examples: [
+      "Where did my typed message go?",
+      "Does Cowork save drafts?",
+      "I switched chats and lost what I wrote",
+      "Will my draft survive a refresh?",
+    ],
+    answer:
+      "Anything you have typed but not sent stays with the conversation you typed it in. Switch to somebody else's chat and back and it is still there, exactly as you left it — including any files you attached and the message you were replying to. Each conversation keeps its own, so a draft in one never turns up in another. Drafts survive a page refresh too, because they are saved on your own computer rather than sent anywhere: nobody else can see a draft, and it is not on your record until you send it. It is cleared only once the message has actually been sent — if a send fails, your text and files are still sitting in the box so you can press send again rather than writing it out a second time. Two limits worth knowing. A file that was still uploading, or whose upload failed, cannot be kept through a refresh — only files that finished uploading survive one, and you would need to attach it again. And while you are editing a message you have already sent, that is an edit rather than a draft, so it is not saved; cancelling the edit leaves whatever you had been writing before untouched. Signing in as a different person on the same computer clears every draft.",
+    related: ["general-start-conversation", "general-message-ticks"],
+    source: "lib/rules/messages/drafts.ts; components/features/messages/draftStorage.ts",
+  },
+  {
+    id: "general-message-ticks",
+    category: "general",
+    title: "What the ticks on your messages mean",
+    keywords: [
+      "tick",
+      "ticks",
+      "double tick",
+      "blue tick",
+      "read receipt",
+      "delivered",
+      "message status",
+      "seen",
+    ],
+    examples: [
+      "What do the ticks mean?",
+      "Why is my message still one tick?",
+      "How do I know if someone read my message?",
+      "Why has the tick not turned blue?",
+    ],
+    answer:
+      "Ticks appear under your own messages only — you will not see them on messages other people sent you. One tick means the message is saved and on its way. Two grey ticks mean it has reached the other person's Cowork, which happens whenever they have it open somewhere, not only when they are looking at your conversation. Two blue ticks mean they have actually opened the conversation and seen it. In a group, the ticks describe everybody: two grey ticks appear once every member has received it, and they turn blue only once every member has opened it — so one person reading a group message does not turn it blue. A message can sit on one tick for a long time without anything being wrong; it means the person has not had Cowork open since you sent it. Older messages, and messages sent from the previous version of the app, show a single tick because nothing recorded delivery for them at the time — that is not a failure to deliver.",
+    related: ["general-start-conversation", "general-group-chat-vs-group"],
+    source:
+      "lib/rules/messages/messageStatus.ts; markConversationsDelivered; markConversationRead",
+  },
+  {
     id: "general-group-chat-vs-group",
     category: "general",
     title: "Group chats and Groups are different things",
