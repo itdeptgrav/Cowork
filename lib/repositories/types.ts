@@ -261,6 +261,19 @@ export interface TaskQuery {
    * nothing else.
    */
   includeSubtasks?: boolean;
+  /**
+   * Return PROJECT containers alongside tasks. Off by default.
+   *
+   * A folder is stored as a task, so it arrives in the same query — but it is
+   * not work: it has no timer, nothing to submit, and assigning one assigns the
+   * project rather than the tasks under it. Left in, an assigned project shows
+   * in somebody's Tasks as a thing to do and takes a priority rank, pushing
+   * every real task's P-number down.
+   *
+   * `listProjects` is the one caller that wants them, because containers are
+   * exactly what it lists.
+   */
+  includeFolders?: boolean;
   search?: string;
   overdueOnly?: boolean;
   blockedOnly?: boolean;
@@ -1973,18 +1986,36 @@ export interface CoworkRepository {
    * A page of one conversation's messages, newest end first in the window but
    * ASCENDING within it — the order `MessageList` renders in.
    *
-   * `limit` is how many are visible, not how many exist: opening a thread
-   * asks for `MESSAGE_PAGE_SIZE`, and scrolling to the top asks for a bigger
-   * `limit` on the next call rather than a second, separately-merged page.
-   * That is deliberate — this conversation is also re-read on every live
-   * update (`watchConversationMessages`), and a growing single window stays
-   * correct under that refetch for free, where two independently-fetched
-   * pages would have to be reconciled by hand on every one of those refreshes.
-   * `hasMore` says whether an even bigger `limit` would return more.
+   * Always the NEWEST `limit` messages, or the newest `limit` strictly older
+   * than `before`.
+   *
+   * ## Why a cursor, when a growing window was simpler
+   *
+   * This used to page by asking for a bigger `limit` each time — 50, then 100,
+   * then 150 — re-reading everything already on screen to add fifty more. The
+   * reason was real: the thread is re-read on every live update
+   * (`watchConversationMessages`), and one growing window stays correct under
+   * that refetch for free, where separately-fetched pages have to be reconciled.
+   *
+   * The cost is that scrolling back through a long conversation re-reads it
+   * from the start every time, and the reads grow quadratically with how far
+   * somebody looks. So the reconciliation is now written down instead, in
+   * `mergeMessagePages`: the newest page stays live and is refetched, older
+   * pages are fetched once and never again, and the two are merged by message
+   * id so a message appearing in both cannot be drawn twice.
+   *
+   * `before` is an ISO instant and the comparison is INCLUSIVE, which sounds
+   * wrong and is deliberate. Two messages can share a `createdAt`, and an
+   * exclusive cursor would step over the second of them — a message that
+   * silently never appears, which is far worse than a duplicate. The overlap it
+   * produces is removed by the merge, so the failure mode is a wasted row
+   * rather than a lost one.
+   *
+   * `hasMore` says whether anything older than this page exists.
    */
   listMessages(
     conversationId: string,
-    opts?: { limit?: number },
+    opts?: { limit?: number; before?: string },
   ): Promise<{ messages: Message[]; hasMore: boolean }>;
   sendMessage(
     conversationId: string,
@@ -2003,6 +2034,46 @@ export interface CoworkRepository {
   ): Promise<ActionResult<Message>>;
   /** Soft-delete your own message: the slot and a tombstone remain. */
   deleteMessage(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>>;
+  /**
+   * React to a message with an emoji — or take the reaction back.
+   *
+   * One reaction per person per message: picking a second emoji replaces the
+   * first, picking the one you already hold removes it. The rule lives in
+   * `lib/rules/messages/reactions.ts` so both implementations apply the same
+   * one. Optional, like every chat extra: a backend without it simply offers
+   * no reaction bar.
+   */
+  toggleMessageReaction?(
+    conversationId: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<ActionResult<void>>;
+  /**
+   * Star a message for YOURSELF — or unstar it. A star is a personal bookmark:
+   * it lives on the message so it follows you across devices, but nobody else
+   * is shown yours. Any message can be starred, including other people's.
+   */
+  toggleMessageStar?(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>>;
+  /**
+   * Pin a message to the top of the conversation — for EVERYONE in it.
+   *
+   * The quote rides along denormalised (the same shape a reply carries) so the
+   * banner renders without loading the original. Any participant may pin; the
+   * count is capped, and the refusal sentence lives in
+   * `lib/rules/messages/pins.ts` beside the cap itself.
+   */
+  pinMessage?(
+    conversationId: string,
+    message: { messageId: string; senderName: string; text: string },
+  ): Promise<ActionResult<void>>;
+  /** Take a pinned message off the conversation's banner. Any participant may. */
+  unpinMessage?(
     conversationId: string,
     messageId: string,
   ): Promise<ActionResult<void>>;
@@ -2831,21 +2902,30 @@ export interface CreateProjectInput {
   name: string;
   description?: string | null;
   /**
-   * Everything below is optional, and the create form no longer asks for any
-   * of it.
+   * **`ownerId` and `targetDate` are sent by the form; the rest are not.**
    *
-   * OWNER DECISION, 18 Aug 2026: a project is a folder carrying a name and a
-   * description. It has no dates of its own — the deadlines belong to the
-   * tasks inside it, each with its own budget and timer — and its members are
-   * whoever holds those tasks rather than a set chosen before any exist. A
-   * store that models projects more richly may still accept these; nothing in
-   * the product sends them.
+   * OWNER DECISION, 18 Aug 2026 established that a project is a folder carrying
+   * a name and a description, with no dates and no chosen membership. A later
+   * decision reinstated two of these as OPTIONAL fields, and only two:
+   *
+   * · **`targetDate`** — the project's own deadline. Where it is set, no task
+   *   under the project may be due after it (`subtaskDeadlineCap`). Where it is
+   *   absent the project is still judged on the latest commitment its children
+   *   carry, exactly as before, and nothing under it is capped.
+   * · **`ownerId`** — who the project is assigned to, which decides whose
+   *   projects it is listed under. Absent, it belongs to its creator.
+   *
+   * `memberIds`, `status`, `startDate`, `priority`, `tags` and
+   * `initialTaskIds` remain unsent for the original reasons: membership is
+   * whoever holds the tasks inside, status comes from that work, and the rest
+   * fed nothing. A store that models projects more richly may still accept
+   * them.
    */
   ownerId?: EmployeeId;
+  targetDate?: string | null;
   memberIds?: EmployeeId[];
   status?: ProjectStatus;
   startDate?: string | null;
-  targetDate?: string | null;
   priority?: Project["priority"];
   tags?: string[];
   initialTaskIds?: TaskId[];

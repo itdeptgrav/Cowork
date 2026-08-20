@@ -1,4 +1,4 @@
-import type { Employee, Task, TaskStatus, TaskType } from "@/lib/domain";
+import type { Employee, EmployeeId, Project, Task, TaskStatus, TaskType } from "@/lib/domain";
 import { compositeId } from "./compositeId.ts";
 import { instantOrNull } from "./instantOrNull.ts";
 import { completionState } from "../../rules/tasks/completion.ts";
@@ -355,7 +355,24 @@ export function toTask(legacy: LegacyTask): Task {
     isBlocked: false,
     blockedReason: null,
     tags: [],
-    createdAt: "",
+    /**
+     * **Read from the document, for the same reason `updatedAt` below is.**
+     *
+     * This was `""`, and it was missed when its neighbour was fixed — the note
+     * beneath describes exactly this fault and only the second field was
+     * changed. An empty string is not a date: `new Date("")` is `NaN`, so
+     * anything formatting it prints a dash and anything comparing it silently
+     * answers false.
+     *
+     * Where it showed: a project's **Start** date is its container's
+     * `createdAt`, so every project in the product read "Start —" however long
+     * it had existed. `Number.isFinite` rather than `!== null` for the same
+     * reason given below — `new Date(NaN).toISOString()` throws, and would take
+     * the whole task down rather than yield a bad string.
+     */
+    createdAt: Number.isFinite(legacy.createdAtMs as number)
+      ? new Date(legacy.createdAtMs as number).toISOString()
+      : "",
     /**
      * **Read from the document, not left empty.**
      *
@@ -484,6 +501,47 @@ function pendingApprovalsFor(
     }));
 }
 
+
+/**
+ * The project a task belongs to, read from its PARENT document.
+ *
+ * A project is a task marked `isFolder`, so a task whose parent is a folder is
+ * a task in that project — and the parent is already loaded by every caller
+ * that has one, so this costs nothing.
+ *
+ * **Only what the parent document itself says.** Name, id, description, owner
+ * and the container's own deadline are facts on that record. Status, progress
+ * and membership are derived from ALL of a project's children, which this task
+ * cannot see, so they take neutral values rather than guesses — and nothing
+ * reads them from here. The Projects list builds the complete record through
+ * `#projectFromContainer`, which does have the children.
+ */
+function projectFromParent(parent: LegacyTask | null | undefined): Project | null {
+  if (!parent?.isFolder) return null;
+  const container = toTask(parent);
+  return {
+    organisationId: LEGACY_ORGANISATION_ID,
+    id: container.id,
+    reference: container.reference,
+    name: container.title,
+    description: container.description || null,
+    ownerId: container.createdById as EmployeeId,
+    status: container.status === "completed" ? "completed" : "active",
+    startDate: container.createdAt,
+    /* The container's OWN deadline, which is the ceiling every task under it is
+       held to. Null where the project was created without one. */
+    targetDate: container.deadline.officialDueAt ?? container.deadline.dueAt,
+    completedAt: null,
+    tags: [],
+    priority: null,
+    isRestricted: false,
+    createdById: container.createdById as EmployeeId,
+    createdAt: container.createdAt,
+    updatedAt: container.updatedAt,
+    archivedAt: null,
+  };
+}
+
 export function toTaskView(input: {
   legacy: LegacyTask;
   employeesById: ReadonlyMap<string, Employee>;
@@ -533,6 +591,17 @@ export function toTaskView(input: {
   subtasks?: LegacyTask[];
   /** The parent document, where this task has one and the caller read it. */
   parent?: LegacyTask | null;
+  /**
+   * The parent, FOR THE PROJECT FIELD ONLY.
+   *
+   * Separate from `parent` above on purpose. That one also builds
+   * `TaskView.parent`, whose `claimedRequirements` are computed against the
+   * parent's other children — so supplying it without `parentSubtasks` would
+   * report a subtask as the sole claimant of a requirement several of its
+   * siblings also claim. The list path has the parent DOCUMENT cheaply and the
+   * siblings expensively, so it fills this one and leaves that one alone.
+   */
+  projectParent?: LegacyTask | null;
   /**
    * The PARENT's children — this task's siblings, including itself.
    *
@@ -682,7 +751,27 @@ export function toTaskView(input: {
     /* Supplied by the reader, which has the timer session. Zero only where no
        session exists — which is a real zero, not a missing one. */
     loggedSecs: input.loggedSecs ?? 0,
-    project: null,
+    /**
+     * The PROJECT this task sits in, where it sits in one.
+     *
+     * This was hard-coded `null`, so every task in the product reported
+     * "Project: None" — including tasks created inside a project. Nothing was
+     * broken enough to notice: the panel rendered, it just always said the same
+     * wrong thing, and a reader had no way to tell a task in a project from a
+     * loose one.
+     *
+     * Derived from the PARENT, which the caller already has: a project is a
+     * task marked `isFolder`, so a task whose parent is a folder is a task in
+     * that project. Nothing extra is fetched.
+     *
+     * **Only the fields a task can honestly report about its container.** The
+     * name, the id and the container's own deadline are facts on the parent
+     * document. `status`, membership and progress are derived from ALL the
+     * children — which this task cannot see — so they are left at their neutral
+     * values rather than guessed. Nothing reads them off a task's `project`;
+     * the Projects list builds the full record through `#projectFromContainer`.
+     */
+    project: projectFromParent(input.projectParent ?? input.parent),
     /*
      * MY position in MY queue — not the task's stored number.
      *

@@ -27,6 +27,7 @@ import {
   getRepositoryVersion,
   notifyRepositoryChanged,
   purgeQueryCaches,
+  subscribeToPurgeAll,
   subscribeToRepository,
   subscribeToStaleData,
 } from "@/lib/repositories/events";
@@ -90,6 +91,80 @@ const preloadCache = new Map<string, StaleRecord>();
 subscribeToStaleData((methods) =>
   purgeQueryCaches(methods, staleResultCache, preloadCache),
 );
+
+/* Sync throws away every cached answer, not just the ones a mutation named. */
+subscribeToPurgeAll(() => {
+  staleResultCache.clear();
+  preloadCache.clear();
+});
+
+/**
+ * How many reads are in flight, and a way to hear when that changes.
+ *
+ * Exists so the Sync button can spin for as long as the work actually takes
+ * rather than for a guessed interval. A spinner on a timer is a claim about
+ * something it never measured: it stops while requests are still running and
+ * tells somebody their data is current when it is not — which is the exact
+ * question they pressed the button to settle.
+ *
+ * `inflightCache` already tracks this for deduplication; this only reports it.
+ */
+const inflightListeners = new Set<() => void>();
+
+export function subscribeToInflight(listener: () => void): () => void {
+  inflightListeners.add(listener);
+  return () => inflightListeners.delete(listener);
+}
+
+export function getInflightCount(): number {
+  return inflightCache.size;
+}
+
+/** Server render: no request has been made, so nothing is in flight. */
+export function getServerInflightCount(): number {
+  return 0;
+}
+
+function announceInflight(): void {
+  for (const l of inflightListeners) l();
+}
+
+/**
+ * How many reads have failed, ever, in this session.
+ *
+ * A monotonic counter rather than a flag, because the question Sync asks is
+ * "did anything fail **since I pressed the button**" — and a boolean cannot
+ * answer that without somebody remembering to clear it, which is a race against
+ * the failures it is meant to catch. Comparing two readings of a number that
+ * only goes up has no such window.
+ */
+let queryFailures = 0;
+
+export function getQueryFailureCount(): number {
+  return queryFailures;
+}
+
+/**
+ * Record a failed read, and SAY WHICH ONE in the console.
+ *
+ * The toast a reader gets is deliberately plain — "some information could not
+ * be refreshed" — because a method name means nothing to them and there is
+ * nothing they could do with it. But somebody looking at the problem needs
+ * exactly that name: without it "sync failed" is a report with no next step,
+ * and the only way to find the cause is to guess at which of forty reads it
+ * was.
+ *
+ * `console.warn`, not `error`: the app has already handled this. The screen
+ * that owns the read shows its own message, and this line is for whoever opens
+ * the console to ask why.
+ */
+function noteQueryFailure(methodName: string, cause: unknown): void {
+  queryFailures += 1;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  console.warn(
+    `[cowork] read failed: ${methodName || "(unnamed query)"} — ${message}`,
+  );
+}
 
 /**
  * Pre-populate the query cache for a specific repository method call.
@@ -316,10 +391,17 @@ export function useQuery<T>(
     if (!inflightCache.has(dedupKey)) {
       const p = Promise.resolve().then(() => fetcher(getRepository()));
       inflightCache.set(dedupKey, p);
+      /* Announced on both edges so a watcher sees the count rise and fall.
+         Without the rise, a Sync pressed before any request had started would
+         read zero in flight and stop spinning immediately. */
+      announceInflight();
       // .catch() suppresses the unhandled-rejection the browser fires when `p`
       // rejects and `p.finally(...)` produces a new rejected Promise with no
       // handler. Subscribers still see the rejection through their own chains.
-      p.finally(() => inflightCache.delete(dedupKey)).catch(() => {});
+      p.finally(() => {
+        inflightCache.delete(dedupKey);
+        announceInflight();
+      }).catch(() => {});
     }
 
     (inflightCache.get(dedupKey) as Promise<T>)
@@ -332,9 +414,24 @@ export function useQuery<T>(
         }
       })
       .catch((e: unknown) => {
+        const unavailable = isNotConnected(e);
+        /**
+         * Counted whether or not this component still cares.
+         *
+         * Outside the `cancelled` guard on purpose: a read that failed, failed.
+         * The guard means "do not write state into an unmounted component",
+         * which is a different question from "did anything go wrong" — and Sync
+         * asks the second one. A navigation mid-refresh would otherwise hide the
+         * failure it was about to report.
+         *
+         * `unavailable` is excluded. That is a method the backend does not
+         * implement, which the UI already renders as "unavailable" wherever it
+         * appears — reporting a sync failure for it would flag a permanent,
+         * known gap as a transient fault every single time.
+         */
+        if (!unavailable) noteQueryFailure(methodName, e);
         if (!cancelled) {
           const error = e instanceof Error ? e.message : "Something went wrong.";
-          const unavailable = isNotConnected(e);
           setSettled({ key, data: null, error, unavailable });
           if (effectiveStaleTime > 0) {
             staleResultCache.set(fetcherKey, { error, unavailable, resolvedAt: Date.now() });

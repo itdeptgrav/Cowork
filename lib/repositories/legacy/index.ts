@@ -203,7 +203,11 @@ import {
   readDirectConversationDoc,
   readGroupConversationDoc,
   readMessageDoc,
+  readPinnedMessages,
+  readReactions,
 } from "./messaging.ts";
+import { reactionChanges } from "../../rules/messages/reactions.ts";
+import { withPin, withoutPin } from "../../rules/messages/pins.ts";
 import {
   recipientRefusal,
   redactBcc,
@@ -1210,6 +1214,26 @@ export class LegacyRepository {
          * simply the default.
          */
         if (assignedOrPendingToMe(t) || t.createdById === viewerId) return true;
+        /**
+         * **A decision you owe is your own business too.**
+         *
+         * The clause below rolls a child up into its parent for anybody it does
+         * not belong to — and for a TL or the CEO it does so unconditionally.
+         * That is right for work somebody else is doing inside a folder, and
+         * wrong for the one case where the child is waiting on the reader
+         * personally.
+         *
+         * A self-assigned task inside a project is exactly that case: it is
+         * raised by, and assigned to, the person doing it, so both clauses
+         * above name THEM — while the hours are decided by their manager, who
+         * is usually a TL and is therefore dropped here without appeal. Their
+         * Actionable tab said "Nothing waiting on you" while the task said
+         * "Waiting for {manager} to decide".
+         *
+         * Nothing is widened: a manager who is not being waited on still sees
+         * the parent stand in for the child, exactly as before.
+         */
+        if (t.budgetNegotiation?.waitingForId === viewerId) return true;
         if (isCeo || String(this.#ctx.legacyRole ?? "") === "tl") return false;
         return t.isForwardedTask || !byId.has(t.parentTaskId);
       });
@@ -1410,6 +1434,12 @@ export class LegacyRepository {
       }),
     );
 
+    /* Parents by id, from the documents ALREADY loaded — so a task can name the
+       project it sits in without a read per row. Folders are still in this set
+       at this point; they are filtered out of the RESULT further down, which is
+       a different thing from not having fetched them. */
+    const docsById = new Map(legacyTasks.map((t) => [String(t.id), t]));
+
     let views = legacyTasks.map((legacy) => {
       const subjectId = subjectOf(legacy);
       return toTaskView({
@@ -1417,6 +1447,11 @@ export class LegacyRepository {
         employeesById,
         viewerId,
         nowMs,
+        /* Only to name the container — `toTaskView` reads nothing else off it
+           here, and the detail path passes a fully-read parent for the rest. */
+        projectParent: legacy.parentTaskId
+          ? (docsById.get(String(legacy.parentTaskId)) ?? null)
+          : null,
         /* The ROW's subject queue — the person who actually holds this task — so
            the derived, gap-free 1..N a manager sees is identical to what the
            report sees on their own list, and the operational date agrees too.
@@ -1525,6 +1560,29 @@ export class LegacyRepository {
       /* Non-fatal: the list still renders, just without the decision flags. */
       console.error("[listTasks] extension-decision flags:", e);
     }
+
+    /**
+     * **A project is not work, so it is not in a list of work.**
+     * OWNER CLARIFICATION: assigning a project assigns the PROJECT, not the
+     * tasks under it.
+     *
+     * A folder is stored as a task — that is how the engine models it — so it
+     * has always been returned here alongside real tasks. It went unnoticed
+     * while folders had no assignee: `scope: "mine"` matches on
+     * `assigneeIds array-contains me`, so an unassigned folder could never
+     * appear in anybody's own list.
+     *
+     * The moment a project can be assigned, it does. It would show in that
+     * person's Tasks as a thing to do, and worse, the engine stamps a priority
+     * rank on every task it creates — so assigning a project would take a queue
+     * position and push everyone's P-numbers down for work nobody can do,
+     * because a folder has no timer and nothing to submit.
+     *
+     * Filtered here rather than in each screen so no list can forget. Opt in
+     * with `includeFolders`, which is precisely what `listProjects` does — it
+     * needs the containers, and it is the only caller that does.
+     */
+    if (!q.includeFolders) views = views.filter((v) => !v.task.isFolder);
 
     views.sort(comparerFor(q.sort));
 
@@ -9155,7 +9213,14 @@ export class LegacyRepository {
        assigned to you: a manager's own queue would exclude the very containers
        whose subtasks they handed out. `includeSubtasks` is what makes the
        children available to group under them — see `TaskQuery`. */
-    const page = await this.listTasks({ scope: "all", includeSubtasks: true });
+    /* `includeFolders`, because containers are the whole point of this list —
+       every other caller gets tasks only, so an assigned project cannot turn up
+       in somebody's work queue. */
+    const page = await this.listTasks({
+      scope: "all",
+      includeSubtasks: true,
+      includeFolders: true,
+    });
     const views = page.items;
 
     const childrenOf = new Map<string, TaskView[]>();
@@ -9284,15 +9349,28 @@ export class LegacyRepository {
           ? "archived"
           : "active";
 
-    /* The last commitment anybody made underneath. A container has no deadline
-       of its own — that is the whole point — so the date it is judged on is the
-       latest one its children are actually held to. */
-    const targetDate =
+    /**
+     * The project's OWN deadline where one was set, and the derived one where
+     * it was not.
+     *
+     * A container used to have no date of its own, so the only honest answer
+     * was the latest commitment its children were held to. A project may now
+     * be given one outright, and when it has been it is the answer — a date
+     * somebody typed is a promise, while the derived one is only an
+     * observation about what is currently inside.
+     *
+     * **The fallback is unchanged and load-bearing.** Every project created
+     * before this, and every one created without filling the field in, keeps
+     * exactly the behaviour it had. That is what makes this additive.
+     */
+    const derivedTargetDate =
       live
         .map((c) => c.task.deadline.officialDueAt ?? c.task.deadline.dueAt)
         .filter((d): d is string => Boolean(d))
         .sort()
         .at(-1) ?? null;
+    const targetDate =
+      t.deadline.officialDueAt ?? t.deadline.dueAt ?? derivedTargetDate;
 
     const project: Project = {
       organisationId: LEGACY_ORGANISATION_ID,
@@ -9300,7 +9378,17 @@ export class LegacyRepository {
       reference: t.reference,
       name: t.title,
       description: t.description || null,
-      ownerId: t.createdById,
+      /**
+       * Whoever the project was ASSIGNED to, falling back to whoever made it.
+       *
+       * This is what puts a project under somebody's name: `listProjects`
+       * already filters on `ownerId`, so assigning one is the whole of "it
+       * appears in their projects" — no second list and no membership record.
+       *
+       * The fallback is the previous behaviour verbatim, so an unassigned
+       * project still belongs to its creator and nothing that exists moves.
+       */
+      ownerId: (container.assignees[0]?.id ?? t.createdById) as EmployeeId,
       status,
       startDate: t.createdAt,
       targetDate,
@@ -9489,16 +9577,39 @@ export class LegacyRepository {
       } as unknown as ActionResult<Project>;
     }
 
+    /**
+     * A project may now carry a deadline and an owner. Both optional.
+     *
+     * This reverses part of the 18 Aug 2026 decision that a project is a name
+     * and a description and nothing else — OWNER DECISION, later. What has NOT
+     * changed is that both are optional and that omitting them leaves the old
+     * behaviour exactly intact: no deadline means the project is still judged
+     * on the latest commitment its children carry, and no owner still means the
+     * creator owns it. Nothing that already exists moves.
+     *
+     * The engine stores both on a folder without any special casing —
+     * `taskForward.js:389` writes `fixedDeadline` whatever `isFolder` says, and
+     * `:151` requires `assigneeIds` only for a NON-folder. So this is the
+     * ordinary create path with two fields filled in, not a new one.
+     *
+     * `hasTimer: false` is what makes the deadline stick: `createTaskRequest`
+     * nulls `fixedDeadline` when a task is on a timer, because a timer derives
+     * its own date. A folder has no timer, so the typed date survives.
+     */
+    const deadline = input?.targetDate ? String(input.targetDate) : null;
+    const owner = input?.ownerId ? String(input.ownerId) : null;
+
     const r = await createTaskRequest({
       token,
       body: {
         title: name,
         description,
         isFolder: true,
-        /* No assignees, and the route allows exactly that for a folder; no
-           deadline either, since it writes null regardless. */
-        assigneeIds: [],
+        /* Empty is still allowed and still the default — the route permits it
+           for a folder, and an unassigned project belongs to its creator. */
+        assigneeIds: owner ? [owner] : [],
         hasTimer: false,
+        fixedDeadline: deadline,
       },
     });
     if (!r.ok) {
@@ -11309,6 +11420,39 @@ export class LegacyRepository {
      * need another composite index for a set that is small by construction —
      * only tasks actively waiting on a decision are ever in it. */
     queries.push(query(ref, where("status", "==", "pending_department_approval"), limit(100)));
+
+    /**
+     * Tasks whose TIME BUDGET is waiting on this viewer to decide.
+     *
+     * Invisible to every query above, and for a reason that is only obvious
+     * once written down. A SELF-ASSIGNED task is raised by the person who will
+     * do it, so `assignedBy` and `assigneeIds` both name THEM — and the person
+     * who has to decide the hours is their MANAGER, who appears in neither.
+     * `approverId` would reach it, but that query is CEO-only.
+     *
+     * So the manager's copy of the task was never fetched at all. Their
+     * Actionable tab said "Nothing waiting on you" while the task itself said
+     * "Waiting for {manager} to decide" — the two screens reading the same
+     * record and disagreeing, because one of them could not see it.
+     *
+     * `actionable.ts` already handles this case correctly (`budgetTurn`); it
+     * had nothing to handle it ON. This is the missing document, not a missing
+     * rule.
+     *
+     * **No `orderBy`, deliberately** — the same trade the gate query above
+     * makes. A `where` on one field ordered by another needs a composite index
+     * and a deploy; without one this rides the automatic single-field index and
+     * works the moment it ships. The set is small by construction: only budgets
+     * actively waiting on somebody are ever in it, and `listTasks` sorts the
+     * merged result anyway.
+     */
+    queries.push(
+      query(
+        ref,
+        where("budgetNegotiation.waitingForId", "==", viewerId),
+        limit(100),
+      ),
+    );
 
     /* Folder parents, backfilled for employees only (`page.js:3872-3910`).
      *
@@ -13681,20 +13825,49 @@ export class LegacyRepository {
 
   async listMessages(
     conversationId: string,
-    opts?: { limit?: number },
+    opts?: { limit?: number; before?: string },
   ): Promise<{ messages: Message[]; hasMore: boolean }> {
-    const { collection, getDocs, limit: fsLimit, orderBy, query } =
-      await import("firebase/firestore");
+    const {
+      collection,
+      getDocs,
+      limit: fsLimit,
+      orderBy,
+      query,
+      where,
+      Timestamp,
+    } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const coll = await this.#conversationCollection(conversationId);
     const pageSize = Math.max(1, opts?.limit ?? MESSAGE_PAGE_SIZE);
+
+    /**
+     * The cursor, and why the comparison is `<=` rather than `<`.
+     *
+     * `createdAt` is a `serverTimestamp()` and is NOT unique — two messages
+     * sent in the same instant share one. An exclusive cursor would step over
+     * the second of them, and a message that silently never appears is a far
+     * worse failure than one drawn twice. `<=` guarantees an overlap of at
+     * least the cursor message itself, and `mergeMessagePages` removes it by
+     * id, so the cost is one wasted row per page.
+     *
+     * Range and order are on the SAME field, which needs no composite index.
+     */
+    const cursor =
+      opts?.before && !Number.isNaN(Date.parse(opts.before))
+        ? Timestamp.fromDate(new Date(opts.before))
+        : null;
+
     /* One extra row, asked for but never shown: its PRESENCE is the answer to
        `hasMore`, without a second count query. */
+    const constraints = [
+      ...(cursor ? [where("createdAt", "<=", cursor)] : []),
+      orderBy("createdAt", "desc"),
+      fsLimit(pageSize + 1),
+    ];
     const snap = await getDocs(
       query(
         collection(legacyDb(), coll, conversationId, "messages"),
-        orderBy("createdAt", "desc"),
-        fsLimit(pageSize + 1),
+        ...constraints,
       ),
     ).catch(() => null);
     if (!snap) return { messages: [], hasMore: false };
@@ -14133,6 +14306,188 @@ export class LegacyRepository {
         ok: false,
         code: "offline",
         message: "The message could not be deleted.",
+      };
+    }
+  }
+
+  /**
+   * React to a message, or take the reaction back.
+   *
+   * The one-per-person rule is decided by `reactionChanges` and written as
+   * per-emoji `arrayUnion`/`arrayRemove` sentinels rather than by rewriting
+   * the whole map — two people reacting in the same instant each land their
+   * own change instead of the later write clobbering the earlier one.
+   */
+  async toggleMessageReaction(
+    conversationId: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { arrayRemove, arrayUnion, doc, getDoc, setDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const data = snap.data() as Record<string, unknown>;
+      if (data.isDeleted === true)
+        return {
+          ok: false,
+          code: "invalid_state",
+          message: "A deleted message cannot be reacted to.",
+        };
+      const changes = reactionChanges(readReactions(data.reactions), emoji, me);
+      const reactions: Record<string, unknown> = {};
+      for (const [e, change] of Object.entries(changes)) {
+        reactions[e] = change === "add" ? arrayUnion(me) : arrayRemove(me);
+      }
+      /* `setDoc` + merge rather than `updateDoc`: an emoji is not a valid
+         segment in an `updateDoc` string field path, and merge applies the
+         sentinels inside the nested map the same way. */
+      await setDoc(ref, { reactions }, { merge: true });
+      notifyRepositoryChanged("listConversations");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[toggleMessageReaction]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The reaction could not be saved.",
+      };
+    }
+  }
+
+  /**
+   * Star a message for the viewer, or unstar it.
+   *
+   * No tombstone guard, deliberately: a message somebody starred and the
+   * sender later deleted must still be UN-starrable, or the bookmark is a
+   * dead end nobody can clear.
+   */
+  async toggleMessageStar(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { arrayRemove, arrayUnion, doc, getDoc, setDoc } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const data = snap.data() as Record<string, unknown>;
+      const starred =
+        Array.isArray(data.starredBy) && data.starredBy.includes(me);
+      await setDoc(
+        ref,
+        { starredBy: starred ? arrayRemove(me) : arrayUnion(me) },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listConversations");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[toggleMessageStar]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The star could not be saved.",
+      };
+    }
+  }
+
+  /**
+   * Pin a message to the top of the conversation, for everyone in it.
+   *
+   * Read–modify–write on the parent document's `pinnedMessages` array; the
+   * cap and the dedupe live in `withPin` so the prototype cannot disagree.
+   * `merge: true` because a direct thread's parent is written lazily by the
+   * first send — pinning in a thread nobody has spoken in must not throw.
+   */
+  async pinMessage(
+    conversationId: string,
+    message: { messageId: string; senderName: string; text: string },
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId);
+      const snap = await getDoc(ref);
+      const current = readPinnedMessages(
+        snap.exists()
+          ? (snap.data() as Record<string, unknown>).pinnedMessages
+          : [],
+      );
+      const verdict = withPin(current, {
+        messageId: message.messageId,
+        senderName: message.senderName,
+        text: message.text,
+        pinnedById: me,
+        pinnedAt: new Date().toISOString(),
+      });
+      if (!verdict.ok)
+        return { ok: false, code: "invalid_state", message: verdict.refusal };
+      await setDoc(ref, { pinnedMessages: verdict.pins }, { merge: true });
+      notifyRepositoryChanged("listConversations");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[pinMessage]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The message could not be pinned.",
+      };
+    }
+  }
+
+  /** Take a pinned message off the banner. Unpinning what is not pinned is a
+   *  quiet success — the state asked for already holds. */
+  async unpinMessage(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) return { ok: true, data: undefined };
+      const current = readPinnedMessages(
+        (snap.data() as Record<string, unknown>).pinnedMessages,
+      );
+      await setDoc(
+        ref,
+        { pinnedMessages: withoutPin(current, messageId) },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listConversations");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[unpinMessage]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The message could not be unpinned.",
       };
     }
   }

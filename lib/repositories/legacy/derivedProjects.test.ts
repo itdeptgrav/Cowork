@@ -93,12 +93,16 @@ test("projects are folders only — an ordinary task is never one", () => {
   );
 });
 
-test("a project's deadline is the latest of its tasks, and absent when it has none", () => {
+test("a project with NO deadline of its own still reads the latest of its tasks", () => {
   /**
    * OWNER DECISION, 18 Aug 2026, in the owner's own example: four tasks due
-   * 10:00, 12:00, 15:00 and 18:00 make the project read 18:00. The container
-   * has no date of its own — it is the last commitment anybody made
-   * underneath — and a project with nothing in it shows no date at all.
+   * 10:00, 12:00, 15:00 and 18:00 make the project read 18:00, and a project
+   * with nothing in it shows no date at all.
+   *
+   * A project may now be GIVEN a deadline, which supersedes this — see the
+   * test below. What is protected here is that the derivation is still exactly
+   * what it was for every project that has not been given one, which is every
+   * project that existed before the field did.
    */
   /* Sliced here rather than through `slice()`: the first occurrence of the
      name is the CALL inside `listProjects`, and the declaration comes later,
@@ -110,10 +114,48 @@ test("a project's deadline is the latest of its tasks, and absent when it has no
      empty list falls through to null rather than to a date. */
   assert.match(
     body,
-    /const targetDate = live \.map\(\(c\) => c\.task\.deadline\.officialDueAt \?\? c\.task\.deadline\.dueAt\)/,
+    /const derivedTargetDate = live \.map\(\(c\) => c\.task\.deadline\.officialDueAt \?\? c\.task\.deadline\.dueAt\)/,
   );
   assert.match(body, /\.sort\(\) \.at\(-1\) \?\? null;/);
   assert.match(body, /live = children\.filter\(\(c\) => c\.task\.status !== "cancelled"\)/);
+});
+
+test("a project's OWN deadline wins over the derived one", () => {
+  /**
+   * The later owner decision: a project may carry a deadline, and where it does
+   * that is the date it is judged on. A date somebody typed is a promise; the
+   * derived one is only an observation about what happens to be inside today.
+   *
+   * The ordering is the whole assertion. Derived-first would mean adding one
+   * task due after the project silently MOVED the project's deadline to
+   * accommodate it — turning the cap into something the work below could
+   * overrule, which is the opposite of a ceiling.
+   */
+  const at = source.lastIndexOf(DECL);
+  const body = source.slice(at, at + 4000).replace(/\s+/g, " ");
+  assert.match(
+    body,
+    /const targetDate = t\.deadline\.officialDueAt \?\? t\.deadline\.dueAt \?\? derivedTargetDate;/,
+    "the project's own deadline must be preferred, with the derivation as fallback",
+  );
+});
+
+test("a project belongs to whoever it was assigned to, else its creator", () => {
+  /**
+   * This one line is the whole of "it appears under that person's projects":
+   * `listProjects` already filters on `ownerId`, so there is no second list and
+   * no membership record to keep in step.
+   *
+   * The fallback matters as much as the assignment. Every project made before
+   * the field existed has no assignee, and must go on belonging to its creator
+   * rather than to nobody.
+   */
+  const at = source.lastIndexOf(DECL);
+  const body = source.slice(at, at + 4000).replace(/\s+/g, " ");
+  assert.match(
+    body,
+    /ownerId: \(container\.assignees\[0\]\?\.id \?\? t\.createdById\) as EmployeeId,/,
+  );
 });
 
 test("every documented query filter is applied", () => {

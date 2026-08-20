@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarStack } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import {
@@ -29,15 +29,24 @@ import {
   mediaUrl,
 } from "./MessageAttachments";
 import { formatClock, formatDate, formatRelative, istDayKey } from "@/lib/utils/format";
-import { linkify } from "@/lib/utils/linkify";
+import { linkifyMessage } from "@/lib/utils/linkify";
 import { useNow } from "@/lib/hooks/useNow";
-import { MESSAGE_PAGE_SIZE } from "@/lib/domain";
+import { MESSAGE_PAGE_SIZE, MESSAGE_QUICK_REACTIONS } from "@/lib/domain";
 import {
   conversationsNeedingDelivery,
   messageStatus,
   type MessageStatus,
 } from "@/lib/rules/messages/messageStatus";
+import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
+import { isPinned } from "@/lib/rules/messages/pins";
+import { searchThread } from "@/lib/rules/messages/threadSearch";
 import { clearDraft, readDraft, saveDraft } from "./draftStorage";
+import {
+  mergeMessagePages,
+  newMessagesIn,
+  oldestLoadedAt,
+  shouldLoadOlder,
+} from "@/lib/rules/messages/pagination";
 import type {
   Conversation,
   Employee,
@@ -558,6 +567,21 @@ function Thread({
   );
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  /**
+   * Files that failed to upload, kept WITH their bytes so a retry costs a click.
+   *
+   * Separate from `pending`, which is what will actually be sent: a file with no
+   * URL yet cannot be attached to a message, so putting these in the same list
+   * would either send something broken or hold back the ones that worked.
+   *
+   * A `File` cannot be serialised, so unlike `pending` these do not survive a
+   * refresh — the honest limit behind "where technically possible" in the draft
+   * rules. They do survive switching conversations for as long as the thread
+   * stays mounted, and the message text beside them is kept either way.
+   */
+  const [failedUploads, setFailedUploads] = useState<
+    { id: string; file: File; message: string }[]
+  >([]);
   /** One entry per file in the batch currently uploading — see `handleFiles`. */
   const [uploadProgress, setUploadProgress] = useState<
     { id: string; name: string; sizeBytes: number; fraction: number }[]
@@ -589,6 +613,20 @@ function Thread({
   }, [messageNotice]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = editingId !== null;
+  /* In-conversation search: the bar under the header, the star filter inside
+     it, and which match is current. The position is stored WITH the query it
+     was reached in (`searchNav`), so typing on simply reads as "not yet
+     navigated" rather than needing an effect to reset anything. */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [starFilter, setStarFilter] = useState(false);
+  const [searchNav, setSearchNav] = useState<{
+    key: string;
+    at: number;
+  } | null>(null);
+  /* Which pinned message the banner shows — clicking the banner jumps to it
+     and cycles to the next, the way every chat with multiple pins works. */
+  const [pinAt, setPinAt] = useState(0);
 
   /**
    * **Persist the draft on every change, with no debounce.**
@@ -620,20 +658,39 @@ function Thread({
      the in-memory prototype omits `uploadMessageAttachment`, so it stays off
      rather than failing silently. */
   const canUpload = typeof repo.uploadMessageAttachment === "function";
-  /* The window grows rather than pages: a scroll to the top asks for a
-     BIGGER limit on the same query rather than a second, separately-fetched
-     page. See `listMessages`'s own note — this is what keeps the thread
-     correct for free under `watchConversationMessages`'s live refetch,
-     where two independently-merged pages would need reconciling by hand on
-     every one of those refreshes. */
-  /* No reset-on-conversation-change effect needed: `Thread` is mounted with
-     `key={activeConversation.id}` by its caller, so switching threads already
-     remounts this component and every one of its `useState`s starts fresh. */
-  const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE_SIZE);
+  /**
+   * **One live page of 50, plus a stack of older pages fetched once each.**
+   *
+   * This used to grow a single window — 50, then 100, then 150 — re-reading
+   * everything already on screen to add fifty more. It was correct, and the
+   * reason was real: the thread is re-read on every live update, and one window
+   * stays right under that refetch for free. It was also quadratic. Scrolling
+   * back through a long conversation re-read it from the beginning at every
+   * step, and each live update then re-read however far somebody had scrolled.
+   *
+   * Now the query below stays at exactly `MESSAGE_PAGE_SIZE` and is the only
+   * thing that refetches, so a live update costs 50 reads however deep the
+   * reader has gone. Older pages are fetched once, held here, and never asked
+   * for again — history does not change.
+   *
+   * The reconciliation the old comment was avoiding is written down in
+   * `mergeMessagePages`, which keys on message id: the live page's copy of a
+   * message wins, so an edit or a deletion is picked up, and the same message
+   * arriving in two pages cannot be drawn twice.
+   *
+   * No reset-on-conversation-change effect is needed: `Thread` is mounted with
+   * `key={activeConversation.id}`, so switching threads remounts this component
+   * and every one of its `useState`s starts fresh.
+   */
   const messages = useQuery(
-    (r) => r.listMessages(c.id, { limit: visibleCount }),
-    [c.id, visibleCount],
+    (r) => r.listMessages(c.id, { limit: MESSAGE_PAGE_SIZE }),
+    [c.id],
   );
+  /** Pages of history, oldest fetch last. Never refetched. */
+  const [olderPages, setOlderPages] = useState<Message[][]>([]);
+  /** True once a page came back adding nothing — the top of the conversation. */
+  const [exhausted, setExhausted] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [send, state] = useAction((r) =>
     r.sendMessage(c.id, text, pending.length ? pending : undefined, replyingTo),
   );
@@ -660,16 +717,116 @@ function Thread({
   const pinnedRef = useRef(true);
 
   const others = c.participants.filter((p) => p.id !== viewerId);
-  const list = messages.data?.messages ?? [];
-  const hasMoreHistory = messages.data?.hasMore ?? false;
+  /**
+   * The thread as one sequence: history first, the LIVE page last.
+   *
+   * Order matters — `mergeMessagePages` lets later pages win, and the live page
+   * is the one that was just re-read, so its copy carries the edit, the
+   * tombstone and the newest `readBy`. History passed last would pin a message
+   * to whatever it looked like when that page happened to be fetched.
+   */
+  /* `messages.data` in the deps, not a `?? []` computed outside: that fallback
+     builds a NEW empty array on every render, so the memo would re-merge the
+     whole thread every time anything at all changed. */
+  const list = useMemo(
+    () => mergeMessagePages([...olderPages, messages.data?.messages ?? []]),
+    [olderPages, messages.data],
+  );
+  /* More to fetch while the deepest page we hold still says so, and while no
+     page has come back adding nothing. The live page answers for a thread
+     nobody has scrolled yet — including a short one, where it says false and
+     the "scroll up" hint never appears. */
+  const hasMoreHistory =
+    !exhausted && (messages.data?.hasMore ?? false);
 
-  /* Scrolling within ~80px of the top asks for another window's worth of
-     history — the "on scroll up, load the next 50" behaviour. Guarded by
-     the ref rather than `messages.isLoading`: a growing-window refetch keeps
-     showing the last good answer while it resolves (see `useQuery`), so
-     `isLoading` never actually flips true here, and re-entering this on
-     every scroll tick before the bump lands would ask for a bigger window
-     over and over. */
+  /* A mirror of `list` for the async jump loop below, which outlives any one
+     render: reading the thread from a closure would hand it the messages as
+     they stood when the jump began, and every cursor after the first would be
+     stale. */
+  const listRef = useRef<Message[]>([]);
+  useEffect(() => {
+    listRef.current = list;
+  }, [list]);
+  /* One jump at a time — the loop pages history in, and two at once would
+     fight over the scroll position. */
+  const jumpingRef = useRef(false);
+
+  /* The index is clamped on READ rather than normalised by an effect: a pin
+     removed while the banner showed the last one simply shows the previous. */
+  const pins = c.pinned ?? [];
+  const pinIndex = pins.length ? Math.min(pinAt, pins.length - 1) : 0;
+  const pinShown = pins.length ? pins[pinIndex] : null;
+
+  /* Matches in thread order; navigation counts from the NEWEST match, the way
+     in-chat search works everywhere. Searching only what is loaded is honest
+     — the bar offers "Search earlier" rather than pretending to have read a
+     thread it has not. */
+  const matches = useMemo(
+    () =>
+      searchOpen
+        ? searchThread(list, {
+            query: searchQuery,
+            starredOnly: starFilter,
+            viewerId,
+          })
+        : [],
+    [searchOpen, list, searchQuery, starFilter, viewerId],
+  );
+  /* The current match belongs to ONE query: a stored position only counts
+     while the query it was reached in still stands, so editing the text drops
+     back to "not yet navigated" with no state to reset. */
+  const searchKey = `${starFilter ? "*" : ""} ${searchQuery}`;
+  const searchAt =
+    searchNav && searchNav.key === searchKey ? searchNav.at : -1;
+
+  /**
+   * Fetch the next fifty older messages and keep the reader where they are.
+   *
+   * `loadingOlderRef` rather than the `loadingOlder` state for the guard: the
+   * scroll handler runs on every frame of a scroll, and a state flag does not
+   * take effect until the next render — so dozens of identical requests would
+   * go out before the first one landed. The ref is set synchronously.
+   *
+   * `prevScrollHeightRef` is what the pinning effect uses afterwards to restore
+   * the reader's place by exactly the height the new messages added, so the
+   * thread does not jump when history is spliced in above them.
+   */
+  const loadOlder = useCallback(async () => {
+    const el = scrollRef.current;
+    if (!el || loadingOlderRef.current || exhausted) return;
+    const cursor = oldestLoadedAt(list);
+    /* No cursor means nothing is loaded, and asking without one would return
+       the newest page again and stack it on top of itself. */
+    if (!cursor) return;
+
+    loadingOlderRef.current = true;
+    prevScrollHeightRef.current = el.scrollHeight;
+    setLoadingOlder(true);
+    try {
+      const page = await repo.listMessages(c.id, {
+        limit: MESSAGE_PAGE_SIZE,
+        before: cursor,
+      });
+      const known = new Set(list.map((m) => m.id));
+      const fresh = newMessagesIn(page.messages, known);
+      /* **Nothing new is how the top announces itself.** The cursor is
+         inclusive, so a page always contains at least one message we already
+         hold — "empty" cannot be the signal, and `hasMore` alone would keep
+         offering a page that adds nothing for ever. */
+      if (fresh.length === 0 || !page.hasMore) setExhausted(true);
+      if (fresh.length > 0) setOlderPages((prev) => [fresh, ...prev]);
+    } catch {
+      /* A failed page is not the end of the conversation — leave `exhausted`
+         alone so scrolling up again retries rather than pretending there is
+         nothing older. */
+    } finally {
+      setLoadingOlder(false);
+      /* The ref is released by the scroll-restoring effect, which runs after
+         the new messages have been laid out. Releasing it here would let a
+         second request start before the first one's height was measured. */
+    }
+  }, [repo, c.id, list, exhausted]);
+
   function onThreadScroll() {
     const el = scrollRef.current;
     if (!el) return;
@@ -680,11 +837,15 @@ function Thread({
        demanding an exact zero makes the pin feel like it randomly stops
        working. */
     pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-    if (loadingOlderRef.current || !hasMoreHistory) return;
-    if (el.scrollTop > 80) return;
-    loadingOlderRef.current = true;
-    prevScrollHeightRef.current = el.scrollHeight;
-    setVisibleCount((v) => v + MESSAGE_PAGE_SIZE);
+    if (
+      !shouldLoadOlder({
+        scrollTop: el.scrollTop,
+        loading: loadingOlderRef.current,
+        exhausted: !hasMoreHistory,
+      })
+    )
+      return;
+    void loadOlder();
   }
 
   const typingNames = typingIds
@@ -842,8 +1003,14 @@ function Thread({
     }
     el.scrollTop = el.scrollHeight;
     pinnedRef.current = true;
+    /* `olderPages` as well as the live page, because those are now two separate
+       events. A page of history landing is exactly the case the branch above
+       exists for — it grows the thread from the TOP — and without it in the
+       deps this effect would not run at all, leaving the reader's position
+       unrestored and `loadingOlderRef` stuck true so no further page could ever
+       be requested. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages.data, c.id]);
+  }, [messages.data, olderPages, c.id]);
 
   /**
    * **Stay at the bottom while the content is still settling.**
@@ -916,6 +1083,10 @@ function Thread({
       setPending([]);
       setReplyingTo(null);
       setUploadError(null);
+      /* The message has gone. Files that never uploaded were never part of it,
+         so holding a retry offer for them beside an empty composer would invite
+         somebody to attach them to nothing. */
+      setFailedUploads([]);
       typingSentRef.current = 0;
       void repo.setTyping?.(c.id, false);
       messages.refetch();
@@ -962,6 +1133,132 @@ function Thread({
     }
   }
 
+  /** Scroll a message into view and flash it — if it is on the page. */
+  function flashMessage(id: string): boolean {
+    const el = document.getElementById(`msg-${id}`);
+    if (!el) return false;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    try {
+      el.animate(
+        [
+          { backgroundColor: "var(--control-active)" },
+          { backgroundColor: "transparent" },
+        ],
+        { duration: 1600, easing: "ease-out" },
+      );
+    } catch {
+      /* No Web Animations API — the scroll alone still answers. */
+    }
+    return true;
+  }
+
+  /**
+   * Jump to one message — paging history in until it is loaded, if need be.
+   *
+   * A reply quote, a pinned banner and a search hit all point at a message
+   * that may be older than anything fetched yet. Walking back reuses the same
+   * machinery as scrolling up — `loadingOlderRef` and `prevScrollHeightRef`
+   * around each page, so the pin effect restores the reader's place instead
+   * of flinging them to the bottom — and it is BOUNDED: eight pages, not the
+   * whole archive, with an honest sentence when the target is further still.
+   */
+  async function jumpToMessage(id: string) {
+    if (flashMessage(id)) return;
+    if (jumpingRef.current) return;
+    jumpingRef.current = true;
+    setLoadingOlder(true);
+    try {
+      for (let hop = 0; hop < 8; hop++) {
+        const cursor = oldestLoadedAt(listRef.current);
+        if (!cursor) break;
+        const page = await repo.listMessages(c.id, {
+          limit: MESSAGE_PAGE_SIZE,
+          before: cursor,
+        });
+        const known = new Set(listRef.current.map((m) => m.id));
+        const fresh = newMessagesIn(page.messages, known);
+        if (fresh.length === 0 || !page.hasMore) setExhausted(true);
+        if (fresh.length === 0) break;
+        const el = scrollRef.current;
+        if (el) {
+          prevScrollHeightRef.current = el.scrollHeight;
+          loadingOlderRef.current = true;
+        }
+        setOlderPages((prev) => [fresh, ...prev]);
+        /* Let the page render, so the element — and the next cursor in
+           `listRef` — exist before looking again. */
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        if (fresh.some((m) => m.id === id)) break;
+        if (!page.hasMore) break;
+      }
+    } finally {
+      jumpingRef.current = false;
+      setLoadingOlder(false);
+    }
+    if (!flashMessage(id))
+      setMessageNotice(
+        "The original message is further back in this conversation.",
+      );
+  }
+
+  /** Go to match `i`, counted from the NEWEST. Wraps at either end. */
+  function jumpToMatch(i: number) {
+    if (matches.length === 0) return;
+    const idx = ((i % matches.length) + matches.length) % matches.length;
+    setSearchNav({ key: searchKey, at: idx });
+    void jumpToMessage(matches[matches.length - 1 - idx]);
+  }
+
+  function closeSearch() {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setStarFilter(false);
+    setSearchNav(null);
+  }
+
+  async function react(m: Message, emoji: string) {
+    if (!repo.toggleMessageReaction) return;
+    const r = await repo.toggleMessageReaction(c.id, m.id, emoji);
+    if (r.ok) messages.refetch();
+    else setMessageNotice(r.message ?? "The reaction could not be saved.");
+  }
+
+  async function toggleStar(m: Message) {
+    if (!repo.toggleMessageStar) return;
+    const had = Boolean(viewerId && (m.starredBy ?? []).includes(viewerId));
+    const r = await repo.toggleMessageStar(c.id, m.id);
+    if (r.ok) {
+      /* Feedback matters here: a star is only visible as a small glyph, and
+         un-starring removes even that. */
+      setMessageNotice(had ? "Star removed." : "Message starred.");
+      messages.refetch();
+    } else setMessageNotice(r.message ?? "The star could not be saved.");
+  }
+
+  async function pinThis(m: Message) {
+    if (!repo.pinMessage) return;
+    const r = await repo.pinMessage(c.id, {
+      messageId: m.id,
+      senderName: m.senderName,
+      text: m.text || "📎 Attachment",
+    });
+    if (r.ok) {
+      setMessageNotice("Pinned to the top of this conversation.");
+      /* The banner reads from the conversation record, which the list query
+         owns — so the refresh that shows it is the list's, not the thread's. */
+      onSent();
+    } else setMessageNotice(r.message ?? "The message could not be pinned.");
+  }
+
+  async function unpinThis(messageId: string) {
+    if (!repo.unpinMessage) return;
+    const r = await repo.unpinMessage(c.id, messageId);
+    if (r.ok) {
+      setMessageNotice("Unpinned.");
+      onSent();
+    } else setMessageNotice(r.message ?? "The message could not be unpinned.");
+  }
+
   /**
    * What the right-click menu offers for ONE message.
    *
@@ -979,6 +1276,10 @@ function Thread({
   function menuFor(m: Message): MessageMenuItem[] {
     const mine = m.senderId === viewerId;
     const deleted = m.isDeleted === true;
+    const starredByViewer = Boolean(
+      viewerId && (m.starredBy ?? []).includes(viewerId),
+    );
+    const pinnedHere = isPinned(c.pinned, m.id);
     return [
       {
         id: "reply",
@@ -1005,6 +1306,37 @@ function Thread({
             : undefined,
         run: () => void copyMessage(m),
       },
+      ...(repo.toggleMessageStar
+        ? [
+            {
+              id: "star",
+              label: starredByViewer ? "Unstar" : "Star",
+              disabled: deleted && !starredByViewer,
+              reason:
+                deleted && !starredByViewer
+                  ? "This message was deleted."
+                  : undefined,
+              run: () => void toggleStar(m),
+            },
+          ]
+        : []),
+      ...(repo.pinMessage
+        ? [
+            {
+              id: "pin",
+              label: pinnedHere ? "Unpin" : "Pin",
+              disabled: deleted && !pinnedHere,
+              reason:
+                deleted && !pinnedHere
+                  ? "This message was deleted."
+                  : undefined,
+              run: () => {
+                if (pinnedHere) void unpinThis(m.id);
+                else void pinThis(m);
+              },
+            },
+          ]
+        : []),
       ...(mine
         ? [
             {
@@ -1081,13 +1413,49 @@ function Thread({
     );
     setUploading(false);
     setUploadProgress([]);
-    const ready = results
-      .filter((r): r is { ok: true; data: MessageAttachment } => r.ok)
-      .map((r) => r.data);
+
+    /* Paired with the batch by INDEX rather than filtered, because a failure
+       has to be traced back to the File that produced it — that file is what
+       the retry re-sends, and dropping it is what used to send somebody back
+       to the file picker. `Promise.all` preserves order, so the index holds. */
+    const ready: MessageAttachment[] = [];
+    const failures: { id: string; file: File; message: string }[] = [];
+    results.forEach((r, i) => {
+      if (r.ok) ready.push(r.data);
+      else
+        failures.push({
+          id: batch[i].id,
+          file: batch[i].file,
+          message: r.message,
+        });
+    });
+
     if (ready.length)
       setPending((prev) => [...prev, ...ready].slice(0, MAX_ATTACHMENTS));
-    const failed = results.find((r) => !r.ok);
-    if (failed && !failed.ok) setUploadError(failed.message);
+    /* Appended, not replaced: a retry of two files where one fails again must
+       not discard the other one still waiting. */
+    if (failures.length) setFailedUploads((prev) => [...prev, ...failures]);
+    setUploadError(failures.length ? failures[0].message : null);
+  }
+
+  /**
+   * Send the failed files again — and only those.
+   *
+   * **The list is cleared BEFORE the retry, not after.** `handleFiles` appends
+   * whatever fails to it, so clearing afterwards would wipe the fresh failures
+   * it had just recorded and the retry button would vanish from files that are
+   * still broken.
+   *
+   * Nothing already in `pending` is touched, which is what stops a retry
+   * duplicating: a file that uploaded is a `MessageAttachment` in `pending` and
+   * is not in this list at all, so it is never sent to Drive twice.
+   */
+  async function retryFailedUploads() {
+    if (uploading || failedUploads.length === 0) return;
+    const again = failedUploads.map((f) => f.file);
+    setFailedUploads([]);
+    setUploadError(null);
+    await handleFiles(again);
   }
 
   return (
@@ -1139,6 +1507,19 @@ function Thread({
           </p>
         </div>
 
+        <button
+          type="button"
+          onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
+          aria-label="Search in this conversation"
+          aria-pressed={searchOpen}
+          title="Search in this conversation"
+          className={`grid h-8 w-8 shrink-0 place-items-center rounded-full transition-colors hover:bg-[var(--control)] hover:text-ink ${
+            searchOpen ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+          }`}
+        >
+          <Icon.search className="h-4 w-4" />
+        </button>
+
         {c.kind === "direct" && others[0] && (
           <Link
             href={`/team/${others[0].id}`}
@@ -1166,6 +1547,145 @@ function Thread({
           onClose={() => setShowGroupSettings(false)}
           onChanged={onSent}
         />
+      )}
+
+      {/* In-conversation search. It reads what is LOADED — the live page plus
+          fetched history — and says so: "Search earlier" pulls another page in
+          rather than the bar pretending to have read the whole archive. */}
+      {searchOpen && (
+        <div className="flex items-center gap-1.5 border-b border-hairline px-4 py-2">
+          <Icon.search className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+          <input
+            autoFocus
+            type="search"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => {
+              /* Enter walks to the next older match, the way in-chat search
+                 works everywhere; Escape closes the bar. */
+              if (e.key === "Enter") {
+                e.preventDefault();
+                jumpToMatch(searchAt + 1);
+              }
+              if (e.key === "Escape") closeSearch();
+            }}
+            placeholder={
+              starFilter ? "Search starred messages" : "Search in this conversation"
+            }
+            aria-label="Search in this conversation"
+            className="h-8 min-w-0 flex-1 bg-transparent text-sm text-ink outline-none placeholder:text-ink-faint"
+          />
+          {(searchQuery.trim() || starFilter) && (
+            <span
+              data-figure
+              className="shrink-0 text-[11px] text-ink-faint"
+              aria-live="polite"
+            >
+              {matches.length === 0
+                ? "No matches"
+                : searchAt >= 0
+                  ? `${searchAt + 1} of ${matches.length}`
+                  : `${matches.length} ${matches.length === 1 ? "match" : "matches"}`}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => jumpToMatch(searchAt + 1)}
+            disabled={matches.length === 0}
+            aria-label="Older match"
+            title="Older match"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink disabled:opacity-40"
+          >
+            <Icon.chevronDown className="h-3.5 w-3.5 rotate-180" />
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              jumpToMatch(searchAt <= 0 ? matches.length - 1 : searchAt - 1)
+            }
+            disabled={matches.length === 0}
+            aria-label="Newer match"
+            title="Newer match"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink disabled:opacity-40"
+          >
+            <Icon.chevronDown className="h-3.5 w-3.5" />
+          </button>
+          {repo.toggleMessageStar && (
+            <button
+              type="button"
+              onClick={() => setStarFilter((v) => !v)}
+              aria-pressed={starFilter}
+              aria-label="Only starred messages"
+              title="Only starred messages"
+              className={`grid h-7 w-7 shrink-0 place-items-center rounded-full transition-colors hover:bg-[var(--control)] ${
+                starFilter ? "bg-[var(--control-active)] text-ink" : "text-ink-muted"
+              }`}
+            >
+              <Icon.star className="h-3.5 w-3.5" />
+            </button>
+          )}
+          {hasMoreHistory && (
+            <button
+              type="button"
+              onClick={() => void loadOlder()}
+              disabled={loadingOlder}
+              className="shrink-0 rounded-full bg-[var(--control)] px-2.5 py-1 text-[11px] text-ink transition-colors hover:bg-[var(--control-hover)] disabled:opacity-50"
+            >
+              {loadingOlder ? "Loading…" : "Search earlier"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={closeSearch}
+            aria-label="Close search"
+            className="shrink-0 rounded-full px-1.5 text-base leading-none text-ink-muted hover:text-ink"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {/* The pinned banner — the THREAD's bookmark, shown to everyone in it.
+          Clicking jumps to the message and, with several pins, cycles to the
+          next so each click reads a different one. */}
+      {pinShown && (
+        <div className="flex items-center gap-2 border-b border-hairline bg-[var(--surface-sunken)] px-4 py-2">
+          <Icon.pin className="h-3.5 w-3.5 shrink-0 text-ink-muted" />
+          <button
+            type="button"
+            onClick={() => {
+              void jumpToMessage(pinShown.messageId);
+              if (pins.length > 1) setPinAt((pinIndex + 1) % pins.length);
+            }}
+            title="Go to the pinned message"
+            className="min-w-0 flex-1 text-left"
+          >
+            <span className="block truncate text-xs text-ink">
+              <span className="font-medium">
+                {pinShown.senderName || "Pinned"}
+              </span>
+              {pinShown.text ? (
+                <span className="text-ink-muted">{` · ${pinShown.text}`}</span>
+              ) : null}
+            </span>
+          </button>
+          {pins.length > 1 && (
+            <span data-figure className="shrink-0 text-[11px] text-ink-faint">
+              {pinIndex + 1}/{pins.length}
+            </span>
+          )}
+          {repo.unpinMessage && (
+            <button
+              type="button"
+              onClick={() => void unpinThis(pinShown.messageId)}
+              aria-label="Unpin this message"
+              title="Unpin"
+              className="shrink-0 rounded-full px-1.5 text-base leading-none text-ink-muted hover:text-ink"
+            >
+              ×
+            </button>
+          )}
+        </div>
       )}
 
       <div
@@ -1214,11 +1734,18 @@ function Thread({
              would stop centring inside a wrapper, and neither it nor the
              skeleton has anything that loads late to re-pin for. */
           <div ref={contentRef}>
-            {hasMoreHistory && (
+            {/* Loading takes precedence over the invitation: telling somebody
+                to scroll up while the page they asked for is already on its way
+                reads as the scroll having done nothing. */}
+            {loadingOlder ? (
+              <div className="pb-3 text-center text-[11px] text-ink-faint">
+                Loading earlier messages…
+              </div>
+            ) : hasMoreHistory ? (
               <div className="pb-3 text-center text-[11px] text-ink-faint">
                 Scroll up for earlier messages
               </div>
-            )}
+            ) : null}
             <MessageList
               messages={list}
               participants={c.participants}
@@ -1230,6 +1757,9 @@ function Thread({
               onDelete={removeMessage}
               onForward={setForwarding}
               onContextMenu={(m, x, y) => setMenu({ message: m, x, y })}
+              onJumpTo={(id) => void jumpToMessage(id)}
+              onReact={(m, emoji) => void react(m, emoji)}
+              canReact={typeof repo.toggleMessageReaction === "function"}
             />
           </div>
         )}
@@ -1258,6 +1788,47 @@ function Thread({
         {uploadError && (
           <div className="mb-2">
             <InlineError compact message={uploadError} />
+          </div>
+        )}
+        {/**
+         * **A failed upload keeps its file, so retrying is a button rather than
+         * a trip back to the file picker.**
+         *
+         * The file was dropped on failure and only a message was left behind,
+         * which meant a dropped connection cost the person the file they had
+         * chosen — the thing they are least able to reproduce, since by then the
+         * picker has closed and they may not remember where it came from.
+         *
+         * These are held apart from `pending` on purpose: `pending` is what will
+         * be SENT, and a file with no URL cannot be. Keeping them in one list
+         * would either send a broken attachment or block the send of the ones
+         * that worked.
+         */}
+        {failedUploads.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2 rounded-inset bg-[var(--surface-sunken)] px-2.5 py-2">
+            <span className="min-w-0 flex-1 truncate text-[11px] text-ink-muted">
+              {failedUploads.length === 1
+                ? `“${failedUploads[0].file.name}” did not upload.`
+                : `${failedUploads.length} files did not upload.`}
+            </span>
+            <button
+              type="button"
+              onClick={retryFailedUploads}
+              disabled={uploading}
+              className="shrink-0 rounded-full bg-ink px-2.5 py-1 text-[11px] text-[var(--body-bg)] transition-opacity hover:opacity-90 disabled:opacity-50"
+            >
+              {uploading ? "Retrying…" : "Retry"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setFailedUploads([]);
+                setUploadError(null);
+              }}
+              className="shrink-0 text-[11px] text-ink-faint hover:text-ink"
+            >
+              Discard
+            </button>
           </div>
         )}
         {replyingTo && !editing && (
@@ -1468,6 +2039,17 @@ function Thread({
           x={menu.x}
           y={menu.y}
           items={menuFor(menu.message)}
+          reactions={
+            repo.toggleMessageReaction && menu.message.isDeleted !== true
+              ? {
+                  emojis: MESSAGE_QUICK_REACTIONS,
+                  selected: viewerId
+                    ? myReaction(menu.message.reactions, viewerId)
+                    : null,
+                  onPick: (emoji) => void react(menu.message, emoji),
+                }
+              : undefined
+          }
           onClose={() => setMenu(null)}
         />
       )}
@@ -1557,6 +2139,9 @@ function MessageList({
   onDelete,
   onForward,
   onContextMenu,
+  onJumpTo,
+  onReact,
+  canReact,
 }: {
   messages: Message[];
   participants: Employee[];
@@ -1570,20 +2155,137 @@ function MessageList({
   onForward: (m: Message) => void;
   /** Where the pointer was, so the menu opens under it. */
   onContextMenu: (m: Message, x: number, y: number) => void;
+  /** Jump to one message by id. The THREAD owns this — it can page history in
+   *  when the target is older than anything loaded — so the list only asks. */
+  onJumpTo: (id: string) => void;
+  /** Toggle one emoji on one message — what a reaction chip does on click. */
+  onReact: (m: Message, emoji: string) => void;
+  /** Whether the backend supports reactions at all. Chips still RENDER without
+   *  it (the data may exist), they just stop being buttons that lie. */
+  canReact: boolean;
 }) {
-  /* Clicking a reply quote scrolls its original into view. An imperative read is
-     the right tool: the target is a sibling `<li>`, not state this list owns. */
-  const jumpTo = (id: string) =>
-    document
-      .getElementById(`msg-${id}`)
-      ?.scrollIntoView({ behavior: "smooth", block: "center" });
-
   /* Everyone a message of mine is FOR — the participants without me. Computed
      once for the list rather than per bubble: it is the same set for every
      message in the thread, and `messageStatus` reads it on each one. */
   const recipientIds = participants
     .map((p) => p.id)
     .filter((id) => id !== viewerId);
+
+  /**
+   * Touch gestures on a message row: swipe LEFT to reply, hold to open the
+   * message menu — the two ways every phone chat offers its actions.
+   *
+   * One ref, no state: `touchmove` fires every frame of a drag, and a
+   * re-render per frame is exactly the cost this avoids. The drag is drawn by
+   * writing `transform` on the row directly and clearing it on release.
+   *
+   * The vertical axis stays the browser's: nothing here calls
+   * `preventDefault` on a move, and `touch-action: pan-y` on the row tells
+   * the browser scrolling is untouched. A drag only counts as a swipe once it
+   * is decisively horizontal, so a wobbly scroll never replies to anything.
+   *
+   * Long-press cooperates with the platforms rather than fighting them:
+   * Android fires a real `contextmenu` on hold — the existing right-click
+   * handler answers it — while iOS fires nothing, which is what the timer is
+   * for. Both roads end at the same `onContextMenu`, and opening twice is a
+   * reposition, not a second menu. When the timer fires, the `touchend` that
+   * follows is prevented so its synthetic click cannot land on the thread and
+   * close the menu it just opened.
+   */
+  const touchRef = useRef<{
+    id: string;
+    x: number;
+    y: number;
+    el: HTMLElement;
+    dx: number;
+    horizontal: boolean;
+    timer: ReturnType<typeof setTimeout> | null;
+    longPressed: boolean;
+  } | null>(null);
+
+  function settleRow(el: HTMLElement) {
+    el.style.transition = "transform 160ms ease-out";
+    el.style.transform = "";
+    setTimeout(() => {
+      el.style.transition = "";
+    }, 180);
+  }
+
+  function onRowTouchStart(e: React.TouchEvent<HTMLDivElement>, m: Message) {
+    if (e.touches.length !== 1) return;
+    const touch = e.touches[0];
+    const el = e.currentTarget as HTMLElement;
+    const t = {
+      id: m.id,
+      x: touch.clientX,
+      y: touch.clientY,
+      el,
+      dx: 0,
+      horizontal: false,
+      timer: null as ReturnType<typeof setTimeout> | null,
+      longPressed: false,
+    };
+    t.timer = setTimeout(() => {
+      t.longPressed = true;
+      try {
+        navigator.vibrate?.(12);
+      } catch {
+        /* Not every browser exposes it, and it is only a nicety. */
+      }
+      /* iOS starts selecting the text under a held finger; the menu is what
+         was asked for, so the selection is cleared rather than left glowing
+         behind it. */
+      window.getSelection()?.removeAllRanges();
+      onContextMenu(m, t.x, t.y);
+    }, 480);
+    touchRef.current = t;
+  }
+
+  function onRowTouchMove(e: React.TouchEvent<HTMLDivElement>, m: Message) {
+    const t = touchRef.current;
+    if (!t || t.id !== m.id) return;
+    const touch = e.touches[0];
+    const dx = touch.clientX - t.x;
+    const dy = touch.clientY - t.y;
+    /* Any real movement is not a hold. */
+    if (t.timer && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      clearTimeout(t.timer);
+      t.timer = null;
+    }
+    if (!t.horizontal) {
+      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.4)
+        t.horizontal = true;
+      else return;
+    }
+    /* Only the reply direction drags, and only so far — the row follows the
+       finger enough to promise something, not enough to leave the pane. */
+    const pull = Math.max(-72, Math.min(0, dx));
+    t.dx = pull;
+    t.el.style.transform = pull ? `translateX(${pull}px)` : "";
+  }
+
+  function onRowTouchEnd(e: React.TouchEvent<HTMLDivElement>, m: Message) {
+    const t = touchRef.current;
+    if (!t || t.id !== m.id) return;
+    touchRef.current = null;
+    if (t.timer) clearTimeout(t.timer);
+    if (t.longPressed) {
+      e.preventDefault();
+      settleRow(t.el);
+      return;
+    }
+    const swiped = t.horizontal && t.dx <= -56;
+    settleRow(t.el);
+    if (swiped && m.isDeleted !== true) onReply(m);
+  }
+
+  function onRowTouchCancel(m: Message) {
+    const t = touchRef.current;
+    if (!t || t.id !== m.id) return;
+    touchRef.current = null;
+    if (t.timer) clearTimeout(t.timer);
+    settleRow(t.el);
+  }
 
   return (
     <ol className="flex flex-col gap-0.5">
@@ -1600,6 +2302,14 @@ function MessageList({
         const newDay = !prev || !sameDay(prev.createdAt, m.createdAt);
         const sender = participants.find((p) => p.id === m.senderId);
         const deleted = m.isDeleted === true;
+        const starredByViewer = Boolean(
+          viewerId && (m.starredBy ?? []).includes(viewerId),
+        );
+        const chips = reactionSummary(
+          m.reactions,
+          viewerId ?? "",
+          MESSAGE_QUICK_REACTIONS,
+        );
 
         return (
           <li key={m.id} id={`msg-${m.id}`}>
@@ -1651,6 +2361,13 @@ function MessageList({
                   e.preventDefault();
                   onContextMenu(m, e.clientX, e.clientY);
                 }}
+                onTouchStart={(e) => onRowTouchStart(e, m)}
+                onTouchMove={(e) => onRowTouchMove(e, m)}
+                onTouchEnd={(e) => onRowTouchEnd(e, m)}
+                onTouchCancel={() => onRowTouchCancel(m)}
+                /* `pan-y`: vertical scrolling stays the browser's; the
+                   horizontal axis is ours, for the swipe-to-reply drag. */
+                style={{ touchAction: "pan-y" }}
                 className={`group flex max-w-[min(78%,60ch)] items-end gap-2 ${mine ? "flex-row-reverse" : ""}`}
               >
                 {/* Always present, so every bubble in a run keeps one edge;
@@ -1667,6 +2384,17 @@ function MessageList({
                     />
                   )}
                 </span>
+                {/* A column, not the bubble itself: the reaction pills sit
+                    BELOW the bubble and overlap its bottom edge, floating on
+                    the thread background the way every chat draws them —
+                    which needs a sibling under the bubble, not a row inside
+                    it stretching the bubble taller. Aligned to the tail side:
+                    the right edge of your own messages, the left of theirs. */}
+                <span
+                  className={`flex min-w-0 flex-col ${
+                    mine ? "items-end" : "items-start"
+                  }`}
+                >
                 <span
                   className={`flex min-w-0 flex-col gap-1.5 rounded-inset px-3.5 py-2 text-sm leading-relaxed ${
                     mine
@@ -1677,7 +2405,7 @@ function MessageList({
                   {m.replyTo && (
                     <button
                       type="button"
-                      onClick={() => jumpTo(m.replyTo!.messageId)}
+                      onClick={() => onJumpTo(m.replyTo!.messageId)}
                       className={`block rounded-[8px] border-s-2 px-2 py-1 text-left ${
                         mine
                           ? "border-white/50 bg-white/10"
@@ -1722,7 +2450,7 @@ function MessageList({
                     >
                       {deleted
                         ? m.text
-                        : linkify(
+                        : linkifyMessage(
                             m.text,
                             /* A link needs to read as a link on both bubble
                                colours — the deep ink fill of your own message
@@ -1735,6 +2463,70 @@ function MessageList({
                           )}
                     </span>
                   )}
+                </span>
+
+                {/* Reactions and the viewer's star, floating half over the
+                    bubble's bottom edge. Clicking a chip toggles that emoji
+                    for YOU — the shortest road to "me too" and to taking one
+                    back; who reacted is in the tooltip. The star is only ever
+                    the viewer's own — a personal bookmark, so nobody else's
+                    stars are drawn. */}
+                {!deleted && (chips.length > 0 || starredByViewer) && (
+                  <span
+                    className={`relative z-[1] -mt-2 flex flex-wrap items-center gap-1 px-1 ${
+                      mine ? "justify-end" : ""
+                    }`}
+                  >
+                    {chips.map((chip) => {
+                      const names = (m.reactions?.[chip.emoji] ?? [])
+                        .map(
+                          (id) =>
+                            participants.find((p) => p.id === id)?.firstName ??
+                            "Someone",
+                        )
+                        .join(", ");
+                      return (
+                        <button
+                          key={chip.emoji}
+                          type="button"
+                          disabled={!canReact}
+                          onClick={() => onReact(m, chip.emoji)}
+                          aria-pressed={chip.mine}
+                          aria-label={`${chip.emoji} ${chip.count}, ${
+                            chip.mine
+                              ? "including you — press to remove yours"
+                              : "press to react too"
+                          }`}
+                          title={names}
+                          className={`flex items-center gap-1 rounded-full border border-hairline bg-[var(--surface-raised)] px-1.5 py-[3px] text-[12px] leading-none text-ink shadow-sm ${
+                            chip.mine ? "ring-1 ring-ink/30" : ""
+                          } ${canReact ? "" : "cursor-default"}`}
+                        >
+                          <span aria-hidden>{chip.emoji}</span>
+                          {chip.count > 1 && (
+                            <span
+                              data-figure
+                              aria-hidden
+                              className="text-[11px] text-ink-muted"
+                            >
+                              {chip.count}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                    {starredByViewer && (
+                      <span
+                        role="img"
+                        aria-label="You starred this message"
+                        title="Starred"
+                        className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full border border-hairline bg-[var(--surface-raised)] text-ink-muted shadow-sm"
+                      >
+                        <Icon.star className="h-3 w-3" />
+                      </span>
+                    )}
+                  </span>
+                )}
                 </span>
 
                 {!deleted && (

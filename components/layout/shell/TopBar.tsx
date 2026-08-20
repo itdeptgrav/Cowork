@@ -1,12 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Mark } from "./Mark";
 import { useLens } from "./LensContext";
 import { ThemeToggle } from "./ThemeToggle";
-import { useQuery } from "@/lib/hooks/useRepository";
+import {
+  getInflightCount,
+  getQueryFailureCount,
+  getServerInflightCount,
+  subscribeToInflight,
+  useQuery,
+} from "@/lib/hooks/useRepository";
+import { refreshEverything } from "@/lib/repositories/events";
+import { Icon } from "@/components/ui/Icons";
 import { getRepository } from "@/lib/repositories";
 import { useWheelPan } from "@/lib/hooks/useWheelPan";
 import { useCoworkNotifications } from "@/lib/legacy-ui/useCoworkNotifications";
@@ -331,6 +346,134 @@ function NotificationBell({ unread }: { unread: number }) {
   );
 }
 
+/**
+ * Sync — re-read everything, without reloading the page.
+ *
+ * Most of the workspace is live, but not all of it: several reads carry a
+ * `staleTime`, a Firestore listener can be refused by rules and go quiet, and a
+ * change made in the CMS reaches Cowork only on the next read. Until now the
+ * only way to be sure was to reload — which re-runs the whole sign-in ladder,
+ * re-mounts every provider, and loses scroll position and any open panel.
+ *
+ * **The spinner is driven by the work, not by a timer.** It turns while reads
+ * are actually in flight and stops when they settle. A fixed-duration spinner
+ * would be a claim about something it never measured: it would stop while
+ * requests were still running and report "up to date" when that was exactly the
+ * question being asked.
+ *
+ * `useSyncExternalStore` rather than an effect and a state, because the count
+ * lives outside React — it is the query layer's own dedup map.
+ */
+/**
+ * One turn of the sync icon, in milliseconds.
+ *
+ * Tied to Tailwind's `animate-spin`, which is `spin 1s linear infinite`. The
+ * two have to agree: a floor shorter than the period stops the icon mid-turn at
+ * whatever angle it happened to reach, and a longer one leaves it turning past
+ * the point the work finished.
+ */
+const FULL_ROTATION_MS = 1000;
+
+function SyncButton() {
+  const inflight = useSyncExternalStore(
+    subscribeToInflight,
+    getInflightCount,
+    getServerInflightCount,
+  );
+  /**
+   * Requests do not start until effects run, so the instant after a click the
+   * count is still zero and a spinner reading it alone would flash and stop.
+   * This holds it on until the work has begun AND finished.
+   */
+  const [syncing, setSyncing] = useState(false);
+  /** When the current press started, so the turn can be seen through. */
+  const startedAtRef = useRef(0);
+  /** The failure count at the moment of the press — the baseline to compare. */
+  const failuresAtStartRef = useRef(0);
+
+  useEffect(() => {
+    if (!syncing || inflight > 0) return;
+    /**
+     * **Hold the spin for one whole rotation, however fast the work was.**
+     *
+     * Against a local backend the reads settle in tens of milliseconds, so a
+     * spinner that stopped the moment they did turned about a quarter of a turn
+     * and snapped back — which reads as a twitch, or as a button that did not
+     * work at all. The animation's period is one second, so waiting out the
+     * remainder of that second means the icon always completes exactly one
+     * revolution and comes to rest where it started.
+     *
+     * This never claims to be finished early: `inflight > 0` above returns
+     * before any of it, so slow work still spins for as long as it takes. The
+     * floor only stops the spin being over before the eye can register it.
+     *
+     * The 250ms is still the minimum, for a settling batch that momentarily
+     * empties between one query resolving and the next one starting.
+     */
+    const elapsed = Date.now() - startedAtRef.current;
+    const remaining = Math.max(250, FULL_ROTATION_MS - elapsed);
+    const id = setTimeout(() => {
+      setSyncing(false);
+      /**
+       * **Did anything actually fail while we were reading?**
+       *
+       * `refreshEverything` cannot fail — it empties two caches and increments
+       * a number. What can fail is the reads it sets off, and each one reports
+       * only into its own screen. So the failure is counted centrally and read
+       * here as a difference: any increase since the press means at least one
+       * read did not come back.
+       *
+       * Reported through the toast surface the product already uses rather than
+       * a new one in the bar, because the message has to say what to do and the
+       * bar has room for an icon. The rotation has already stopped by the time
+       * this runs — a spinner still turning beside a failure notice would be
+       * the two halves of the interface disagreeing.
+       */
+      if (getQueryFailureCount() > failuresAtStartRef.current) {
+        window.dispatchEvent(
+          new CustomEvent("cowork:notification", {
+            detail: {
+              type: "sync_failed",
+              title: "Some information could not be refreshed",
+              body: "Check your connection and press Sync again. Nothing you have typed or attached has been lost.",
+              /* A fixed tag, so pressing Sync repeatedly against a connection
+                 that is still down replaces the notice rather than stacking
+                 three identical copies of it. */
+              tag: "sync-failed",
+            },
+          }),
+        );
+      }
+    }, remaining);
+    return () => clearTimeout(id);
+  }, [syncing, inflight]);
+
+  const spinning = syncing || inflight > 0;
+
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        startedAtRef.current = Date.now();
+        failuresAtStartRef.current = getQueryFailureCount();
+        setSyncing(true);
+        refreshEverything();
+      }}
+      disabled={spinning}
+      aria-label={spinning ? "Syncing" : "Sync — check for the latest"}
+      title={spinning ? "Syncing…" : "Sync — check for the latest"}
+      className="grid h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink disabled:cursor-default disabled:text-ink-faint"
+    >
+      {/* `motion-safe` so the rotation is dropped for anybody who has asked
+          their system for reduced motion — the disabled state and the label
+          still say what is happening. */}
+      <Icon.sync
+        className={`h-4 w-4 ${spinning ? "motion-safe:animate-spin" : ""}`}
+      />
+    </button>
+  );
+}
+
 export function TopBar() {
   const [menuOpen, setMenuOpen] = useState(false);
   const sheetId = useId();
@@ -498,6 +641,11 @@ export function TopBar() {
               <div className="hidden sm:block">
                 <LensToggle />
               </div>
+
+              {/* Beside the bell, both being "what is happening now" rather
+                  than a place to go. Sync first: it is the one that changes
+                  what the bell is counting. */}
+              <SyncButton />
 
               <NotificationBell unread={unread} />
 

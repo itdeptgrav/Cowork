@@ -123,6 +123,24 @@ const TYPES: {
  * that a request failed. The placeholder is the only place in a native select
  * where that can be said.
  */
+/**
+ * A `datetime-local` value as an ISO instant, or null where there is no date.
+ *
+ * `<input type="datetime-local">` yields `""` when empty, and `new Date("")` is
+ * an Invalid Date whose `.toISOString()` **throws** — so the obvious conversion
+ * turns an empty box into an exception on submit rather than a validation
+ * message. It also throws on a half-typed value, which a date input produces
+ * freely while somebody is still working through it.
+ *
+ * Returning null instead lets the caller send "no date", which is exactly what
+ * the field means when it is empty.
+ */
+function isoFromLocal(value: string): string | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : new Date(ms).toISOString();
+}
+
 function optionLabel(
   query: { isLoading: boolean; error: string | null; data: unknown[] | null },
   ready: string,
@@ -349,6 +367,31 @@ export function NewTaskForm({
     ? Date.parse(parent.task.deadline.dueAt)
     : null;
   /**
+   * Whether a parent's deadline constrains this task at all.
+   *
+   * Two shapes reach the cap, and they arrive by different routes:
+   *
+   *  · **A subtask**, which has always been capped by its parent task —
+   *    OWNER DECISION, 16 Aug 2026, `subtaskDeadlineCap`.
+   *  · **A task inside a PROJECT that carries its own deadline.** This is new,
+   *    and it could not exist before: a project had no date of its own, so
+   *    `isSubtask` excluding folders excluded nothing that could be breached.
+   *    Now that a project may be given one, work underneath it must fit — a
+   *    part due after the whole is a promise nobody can keep.
+   *
+   * `isSubtask` is deliberately left alone. It governs the subtask CHROME —
+   * the requirement picker, the claim rules — none of which applies to a task
+   * sitting in a folder, and widening it would put that whole apparatus on a
+   * form that has no business showing it.
+   *
+   * A project WITHOUT a deadline yields null here and therefore no cap, which
+   * is precisely the existing behaviour: the task is bounded by its assignee's
+   * own queue and nothing else.
+   */
+  const capApplies =
+    isSubtask ||
+    (parent?.task.isFolder === true && parentDueAtMs !== null);
+  /**
    * C2 · the share of the company's goal points this task claims.
    *
    * Held as text so a half-typed "12." is not rewritten under the person
@@ -392,7 +435,21 @@ export function NewTaskForm({
   const viewer = useQuery((r) => r.getViewer(), []);
   const perms = usePermissions();
 
-  const [fixedDueAt, setFixedDueAt] = useState("2026-08-01T17:00");
+  /**
+   * **Empty, and it must be typed.** OWNER DECISION.
+   *
+   * This held a hard-coded `"2026-08-01T17:00"`, so the date box opened
+   * pre-filled with an instant that never moved — three weeks in the past by
+   * the time anybody read this, and further every day. A default that has to be
+   * cleared before it can be used is worse than none, and the failure it
+   * invites is silent: a task created without noticing the box carries a
+   * deadline already long gone, which reads as overdue the moment it exists.
+   *
+   * Empty means `new Date("")` is an Invalid Date, and `.toISOString()` on one
+   * THROWS — so this is only safe alongside `isoFromLocal` below and the submit
+   * guard that refuses an empty date. The three go together.
+   */
+  const [fixedDueAt, setFixedDueAt] = useState("");
   /* The budget as seconds, so it can be any hours:minutes window rather than a
      whole-hour preset. Defaults to four hours. */
   const [budgetSecs, setBudgetSecs] = useState(4 * 3600);
@@ -467,20 +524,20 @@ export function NewTaskForm({
    */
   const projection = useQuery(
     (r) =>
-      isSubtask && mode === "timer" && parentDueAtMs !== null && assignees[0]
+      capApplies && mode === "timer" && parentDueAtMs !== null && assignees[0]
         ? r.previewDeadlineFeasibility({
             employeeId: assignees[0],
             estimatedWorkSeconds: budgetSecs,
             committedDeadline: parent?.task.deadline.dueAt ?? null,
           })
         : Promise.resolve(null),
-    [isSubtask, mode, parentDueAtMs, assignees[0], budgetSecs],
+    [capApplies, mode, parentDueAtMs, assignees[0], budgetSecs],
   );
 
   /* The instant being judged: the typed date where there is one, otherwise the
      projected finish. Null when neither is known, which the cap reads as "no
      evidence of a breach" rather than as a breach. */
-  const proposedDueAtMs = !isSubtask
+  const proposedDueAtMs = !capApplies
     ? null
     : mode === "fixed"
       ? Date.parse(fixedDueAt)
@@ -566,7 +623,7 @@ export function NewTaskForm({
              has to be true before the child itself is done. */
           requirements,
           fixedDueAt:
-            mode === "fixed" ? new Date(fixedDueAt).toISOString() : null,
+            mode === "fixed" ? isoFromLocal(fixedDueAt) : null,
           senderWindowSecs: mode === "timer" ? budgetSecs : null,
           estimatedEffortSecs: mode === "timer" ? budgetSecs : null,
         })
@@ -609,7 +666,7 @@ export function NewTaskForm({
            */
           fixedDueAt:
             type !== "goal" && mode === "fixed"
-              ? new Date(fixedDueAt).toISOString()
+              ? isoFromLocal(fixedDueAt)
               : null,
           senderWindowSecs:
             type !== "goal" && mode === "timer" ? budgetSecs : null,
@@ -1603,6 +1660,11 @@ export function NewTaskForm({
                 !title.trim() ||
                 hasForbidden ||
                 needsAssignee ||
+                /* A fixed deadline that was never typed. The box no longer
+                   opens pre-filled, so "empty" is now a state somebody can
+                   actually submit from — and a task created with no date on
+                   the one mode that is defined by its date is not a task. */
+                (mode === "fixed" && !fixedDueAt) ||
                 /* A subtask due after its project is prevented, not merely
                    warned about — see `subtaskDeadlineCap`. The engine refuses
                    it too; this saves the round trip and keeps the reason beside

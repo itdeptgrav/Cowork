@@ -28,6 +28,24 @@ function S({ children, className = "" }: P & { children: React.ReactNode }) {
 }
 
 export const Icon = {
+  /**
+   * SYNC — two arcs chasing each other round a circle.
+   *
+   * Two arrowheads rather than one, because a single curved arrow reads as
+   * "undo" at this size. The gaps sit at opposite ends so the pair is legible
+   * as a cycle at 14px, which is where it is actually used.
+   *
+   * Drawn as arcs rather than a closed ring so that a CSS rotation animates
+   * visibly — a perfectly symmetrical ring spinning looks like nothing at all.
+   */
+  sync: (p: P) => (
+    <S {...p}>
+      <path d="M13.2 8a5.2 5.2 0 0 1-8.9 3.7" />
+      <path d="M2.8 8a5.2 5.2 0 0 1 8.9-3.7" />
+      <path d="M11.9 1.9v2.5H9.4" />
+      <path d="M4.1 14.1v-2.5h2.5" />
+    </S>
+  ),
   overview: (p: P) => (
     <S {...p}>
       <rect x="2" y="2.5" width="5" height="5" rx="1.3" />
@@ -295,6 +313,20 @@ export const Icon = {
   heart: (p: P) => (
     <S {...p}>
       <path d="M8 13.2S2.4 10 2.4 6.3A2.9 2.9 0 0 1 8 5.1a2.9 2.9 0 0 1 5.6 1.2c0 3.7-5.6 6.9-5.6 6.9Z" />
+    </S>
+  ),
+  /** STARRED — a personal bookmark; filled by the caller when active. */
+  star: (p: P) => (
+    <S {...p}>
+      <path d="M8 2.6l1.7 3.5 3.9.5-2.8 2.7.7 3.8L8 11.3l-3.5 1.8.7-3.8-2.8-2.7 3.9-.5L8 2.6Z" />
+    </S>
+  ),
+  /** PINNED — a drawing pin; the conversation's shared bookmark, where the
+   *  star is a personal one. */
+  pin: (p: P) => (
+    <S {...p}>
+      <path d="M6.2 2.6h3.6l-.4 4 2.4 2.4v1.4H4.2V9l2.4-2.4-.4-4Z" />
+      <path d="M8 10.4v3.2" />
     </S>
   ),
   /** EXTERNAL — leaves Cowork. Always paired with a visible label. */

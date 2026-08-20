@@ -231,6 +231,8 @@ import { searchHelp } from "@/lib/help/search";
 import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey, MESSAGE_PAGE_SIZE } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
+import { toggleReaction } from "@/lib/rules/messages/reactions";
+import { withPin, withoutPin } from "@/lib/rules/messages/pins";
 import {
   istDayKey,
   isReportPending,
@@ -7074,14 +7076,24 @@ export class MockRepository implements CoworkRepository {
     );
   }
 
-  async listMessages(conversationId: string, opts?: { limit?: number }) {
+  async listMessages(
+    conversationId: string,
+    opts?: { limit?: number; before?: string },
+  ) {
     const pageSize = Math.max(1, opts?.limit ?? MESSAGE_PAGE_SIZE);
     const all = getStore()
       .messages.filter((m) => m.conversationId === conversationId)
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const hasMore = all.length > pageSize;
+    /* `<=`, matching the legacy repository: an exclusive cursor steps over a
+       message sharing its instant with the cursor, and a message that silently
+       never appears is worse than one drawn twice. The overlap is removed by
+       `mergeMessagePages`. */
+    const window = opts?.before
+      ? all.filter((m) => m.createdAt <= opts.before!)
+      : all;
+    const hasMore = window.length > pageSize;
     return delay({
-      messages: hasMore ? all.slice(all.length - pageSize) : all,
+      messages: hasMore ? window.slice(window.length - pageSize) : window,
       hasMore,
     });
   }
@@ -7182,6 +7194,98 @@ export class MockRepository implements CoworkRepository {
     m.isDeleted = true;
     m.text = "";
     m.attachments = [];
+    invalidateQueries("listConversations");
+    return delay(ok(undefined));
+  }
+
+  /** React with an emoji, or take the reaction back — the one-per-person rule
+   *  applied by the same `toggleReaction` the Firestore store derives its
+   *  writes from, so the two cannot drift. */
+  async toggleMessageReaction(
+    conversationId: string,
+    messageId: string,
+    emoji: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.messages.find(
+      (x) => x.id === messageId && x.conversationId === conversationId,
+    );
+    if (!m) return fail("not_found", "That message is gone.");
+    if (m.isDeleted)
+      return fail("invalid_state", "A deleted message cannot be reacted to.");
+    tick();
+    m.reactions = toggleReaction(m.reactions, emoji, actingId());
+    invalidateQueries("listConversations");
+    return delay(ok(undefined));
+  }
+
+  /** Star a message for the acting viewer, or unstar it. No tombstone guard —
+   *  a starred message the sender later deleted must still be un-starrable. */
+  async toggleMessageStar(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.messages.find(
+      (x) => x.id === messageId && x.conversationId === conversationId,
+    );
+    if (!m) return fail("not_found", "That message is gone.");
+    tick();
+    const me = actingId();
+    const starred = (m.starredBy ?? []).includes(me);
+    m.starredBy = starred
+      ? (m.starredBy ?? []).filter((id) => id !== me)
+      : [...(m.starredBy ?? []), me];
+    invalidateQueries("listConversations");
+    return delay(ok(undefined));
+  }
+
+  /** Pin a message to the top of the conversation. Cap and dedupe live in
+   *  `withPin`, shared with the Firestore store. */
+  async pinMessage(
+    conversationId: string,
+    message: { messageId: string; senderName: string; text: string },
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const c = s.conversations.find((x) => x.id === conversationId);
+    if (!c) return fail("not_found", "Conversation not found.");
+    if (!c.participantIds.includes(actingId()))
+      return fail("permission_denied", "This conversation is not yours.");
+    const verdict = withPin(c.pinned ?? [], {
+      messageId: message.messageId,
+      senderName: message.senderName,
+      text: message.text,
+      pinnedById: actingId(),
+      pinnedAt: nowIso(),
+    });
+    if (!verdict.ok) return fail("invalid_state", verdict.refusal);
+    tick();
+    c.pinned = verdict.pins;
+    invalidateQueries("listConversations");
+    return delay(ok(undefined));
+  }
+
+  /** Take a pinned message off the banner. Unpinning what is not pinned is a
+   *  quiet success — the state asked for already holds. */
+  async unpinMessage(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const c = s.conversations.find((x) => x.id === conversationId);
+    if (!c) return fail("not_found", "Conversation not found.");
+    if (!c.participantIds.includes(actingId()))
+      return fail("permission_denied", "This conversation is not yours.");
+    tick();
+    c.pinned = withoutPin(c.pinned ?? [], messageId);
     invalidateQueries("listConversations");
     return delay(ok(undefined));
   }

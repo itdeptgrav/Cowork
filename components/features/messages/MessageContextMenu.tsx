@@ -40,17 +40,34 @@ export interface MessageMenuItem {
   run: () => void;
 }
 
+/**
+ * The quick-reaction bar across the top of the menu.
+ *
+ * Optional because reactions are a repository capability: a backend without
+ * `toggleMessageReaction` passes nothing and the menu is exactly what it was.
+ * `selected` marks the emoji the viewer already holds, so picking it again
+ * visibly reads as "take it back" rather than as a broken repeat.
+ */
+export interface MessageMenuReactions {
+  emojis: readonly string[];
+  selected?: string | null;
+  onPick: (emoji: string) => void;
+}
+
 const MARGIN = 8;
 
 export function MessageContextMenu({
   x,
   y,
   items,
+  reactions,
   onClose,
 }: {
   x: number;
   y: number;
   items: MessageMenuItem[];
+  /** The emoji bar above the items — absent where the backend has no reactions. */
+  reactions?: MessageMenuReactions;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -102,6 +119,35 @@ export function MessageContextMenu({
       style={{ left: at.left, top: at.top }}
       className="frost-bar fixed z-[70] min-w-[168px] rounded-panel border border-hairline p-1 shadow-[var(--deck-seat)]"
     >
+      {reactions && (
+        <div
+          role="group"
+          aria-label="React to this message"
+          className="mb-1 flex items-center gap-0.5 border-b border-hairline px-1 pb-1.5 pt-0.5"
+        >
+          {reactions.emojis.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              aria-label={
+                reactions.selected === emoji
+                  ? `Remove your ${emoji} reaction`
+                  : `React with ${emoji}`
+              }
+              aria-pressed={reactions.selected === emoji}
+              onClick={() => {
+                onClose();
+                reactions.onPick(emoji);
+              }}
+              className={`grid h-8 w-8 place-items-center rounded-full text-base leading-none transition-colors hover:bg-[var(--control)] ${
+                reactions.selected === emoji ? "bg-[var(--control-active)]" : ""
+              }`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      )}
       {items.map((item, i) => (
         <div key={item.id}>
           {item.danger && i > 0 && (

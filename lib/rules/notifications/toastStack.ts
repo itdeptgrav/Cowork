@@ -62,10 +62,19 @@ const GOOD = new Set([
   "extension_granted",
 ]);
 
+/**
+ * Reports that something did NOT work.
+ *
+ * Separate from `COSTLY`, which is about a score being reduced — that set is
+ * "this cost you something", and a refresh that could not complete cost nobody
+ * anything. Both read as warnings; only one of them is about points.
+ */
+const FAILURES = new Set(["sync_failed"]);
+
 /** Which of the three tones a notification type reads as. */
 export function toastToneFor(type: string): ToastTone {
   const t = String(type ?? "");
-  if (COSTLY.has(t)) return "warn";
+  if (FAILURES.has(t) || COSTLY.has(t)) return "warn";
   if (GOOD.has(t)) return "good";
   return "info";
 }

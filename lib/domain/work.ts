@@ -222,6 +222,14 @@ export interface Conversation {
    * single tick. Nothing breaks in its absence.
    */
   deliveredAt?: Record<EmployeeId, string>;
+  /**
+   * Messages pinned to the top of this conversation, oldest pin first.
+   *
+   * Any participant may pin or unpin, up to the cap in
+   * `lib/rules/messages/pins.ts`. Optional because it is additive — a thread
+   * that has never had a pin simply has none.
+   */
+  pinned?: PinnedMessage[];
 }
 
 /**
@@ -282,6 +290,37 @@ export interface MessageReply {
 }
 
 /**
+ * A message somebody pinned to the top of a conversation.
+ *
+ * Denormalised the same way a reply quote is: the sender and a snippet ride
+ * along so the banner renders without loading the original — and stays legible
+ * when the original is older than the loaded window. `messageId` is the jump
+ * target.
+ */
+export interface PinnedMessage {
+  messageId: string;
+  senderName: string;
+  text: string;
+  pinnedById: EmployeeId;
+  pinnedAt: string;
+}
+
+/**
+ * The quick-reaction palette — the six every messaging product converges on.
+ *
+ * One list, shared by the picker and the help corpus, so the emojis offered and
+ * the emojis documented cannot drift apart.
+ */
+export const MESSAGE_QUICK_REACTIONS = [
+  "👍",
+  "❤️",
+  "😂",
+  "😮",
+  "😢",
+  "🙏",
+] as const;
+
+/**
  * How many messages a thread shows before somebody has to ask for more.
  *
  * Opening a long-running conversation used to read every message it had ever
@@ -314,6 +353,22 @@ export interface Message {
   /** True for a soft-deleted message — its slot and tombstone remain. */
   isDeleted?: boolean;
   readBy: EmployeeId[];
+  /**
+   * Emoji reactions: each emoji to the people who chose it. One reaction per
+   * person per message — picking a second emoji replaces the first, the rule
+   * every messaging product shares (`lib/rules/messages/reactions.ts`).
+   *
+   * Optional because it is additive: messages written before reactions existed,
+   * and anything the older application writes, simply have none.
+   */
+  reactions?: Record<string, EmployeeId[]>;
+  /**
+   * Who has starred this message for themselves. A star is a personal bookmark
+   * — each reader sees only their own — but it lives on the message so it
+   * follows the message across devices. Optional for the same additive reason
+   * as `reactions`.
+   */
+  starredBy?: EmployeeId[];
 }
 
 export interface Group {

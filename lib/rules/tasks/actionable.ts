@@ -2,6 +2,7 @@
    repository barrel and can be unit-tested under plain `node --test`. */
 import type { TaskView } from "@/lib/repositories";
 import { mayReview } from "./reviewChain.ts";
+import { budgetTurn } from "./budgetNegotiation.ts";
 
 /**
  * What "waiting on me" actually means.
@@ -198,6 +199,49 @@ export function actionableFor(
       reason: "deadline",
       label: "Propose a deadline",
       href: `/tasks/${id}/deadline`,
+    };
+
+  /*
+   * 3e — a TIME BUDGET whose turn is mine, wherever the branches above missed
+   * it. Every one of them decides "whose turn" from the task's own fields, and
+   * two live cases are not expressible that way:
+   *
+   *  · **A self-assigned task.** The person who decides the hours is the
+   *    assignee's MANAGER, who is neither an assignee nor the creator — the
+   *    creator is the assignee, because they raised it themselves. So
+   *    `isCreator` was false for the one person being waited on, and the task
+   *    said "Waiting for {manager} to decide" while their Actionable tab said
+   *    "Nothing waiting on you". `windowOnOffer` cannot help either: it
+   *    excludes `self_assigned` outright.
+   *  · **An ordinary task the assignee has countered.** The counter goes back
+   *    to the ASSIGNOR, and `countered && mine` names the assignee.
+   *
+   * `budgetTurn` already answers this exactly — it is the one authority on
+   * whose move a budget is, and `statusMeta`, `BudgetNegotiationCard` and the
+   * task-flow diagram all defer to it. Recomputing the judgement here is how
+   * this list and those screens would come to disagree, which is the fault
+   * being fixed rather than a new way to have it.
+   *
+   * Placed LAST in this section deliberately: anything the branches above
+   * already handle returns before reaching here, so nothing that works today
+   * changes label or ordering. This only fills what fell through.
+   */
+  const budget = budgetTurn(view, viewerId);
+  if (
+    budget.ownerId === viewerId &&
+    /* Not `unowned`: a turn the record cannot assign to anybody is a fault with
+       its own notice, and putting it here would offer an action that no screen
+       behind the link can actually perform. */
+    !budget.unowned &&
+    (budget.canAccept || budget.canPropose)
+  )
+    return {
+      reason: "deadline",
+      label:
+        budget.state === "waiting_for_assignor"
+          ? "Decide the time budget"
+          : "Accept or discuss the time",
+      href: `/tasks/${id}`,
     };
 
   /* 4 — intake. Confirming receipt is not busywork: the task holds at

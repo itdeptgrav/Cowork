@@ -71,7 +71,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I give someone a job?",
     ],
     answer:
-      "Open Tasks and choose New task. A task needs a title and at least one assignee — everything else has a default. You can raise work for anyone in the organisation; who you pick decides what has to happen before it starts rather than whether you are allowed to ask. Picking someone senior to you means the task waits for them to accept it. Picking someone in another department means both department heads agree first. Picking someone in your own reporting line means it starts straight away, on a budget you set.",
+      "Open Tasks and choose New task. A task needs a title and at least one assignee, and if you choose a fixed date rather than a time budget it needs that date too — the date box opens empty and Create stays greyed out until you fill it in, rather than starting on a date you did not choose. Everything else has a default. You can raise work for anyone in the organisation; who you pick decides what has to happen before it starts rather than whether you are allowed to ask. Picking someone senior to you means the task waits for them to accept it. Picking someone in another department means both department heads agree first. Picking someone in your own reporting line means it starts straight away, on a budget you set.",
     related: [
       "task-owning-department",
       "task-deadline-modes",
@@ -585,19 +585,24 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "project page shows all tasks",
       "project task list wrong",
       "unrelated tasks in project",
+      "project deadline",
+      "assign a project",
+      "project under someone",
+      "task due after project",
     ],
     examples: [
       "How do I create a project?",
+      "Can I give a project a deadline?",
+      "How do I assign a project to someone?",
       "Why can't I choose who is in a project?",
-      "Where did the project owner dropdown go?",
       "Why is the project's target date filled in already?",
+      "Why won't it let me set this task's deadline?",
       "What is the difference between a project and breaking a task down?",
       "The Projects tab is empty but I broke a task down",
-      "Where did the New project button go?",
       "Why does a project's page show tasks that have nothing to do with it?",
     ],
     answer:
-      "A project is a FOLDER for tasks, and you make one on purpose — New project on the Projects tab, or Create a project from the empty state. It asks for a name and a description and nothing else, because a project has no deadline, no timer and no priority of its own. The work goes in the tasks inside it: create a task under the project and it is an ordinary task in every respect — its own assignee, its own deadline, its own priority, its own timer, its own place in that person’s queue — and one project can hold many tasks going to different people. The project is only the container; it does no work and is never assigned to anybody. **The project’s deadline is the latest deadline among its tasks.** Four tasks due 10:00, 12:00, 15:00 and 18:00 make the project read 18:00, because that is the last commitment anybody underneath has actually made. It is worked out from the tasks every time and can never be typed over, and a project with no tasks in it shows NO deadline at all rather than a blank or a guess. Cancelled tasks are left out — work called off should not count against you. Everything else it reports is read the same way: the members are whoever carries the tasks inside, the start date is when the project was made, and progress and health are counted from how many tasks are done, overdue or blocked. Its status follows the work: Active while it is live, Completed when everything inside is done, Archived if it was cancelled. Projects carry no score — the tasks inside them are the scoring units, so nothing is double-counted. This replaced an earlier model on 18 August 2026, in which a project could not be created at all: it appeared whenever a task was broken into subtasks, so the container was itself a real task carrying a deadline and a timer, and breaking any task down silently produced a project nobody had asked for. What is listed now is only the folders somebody made deliberately.",
+      "A project is a FOLDER for tasks, and you make one on purpose — New project on the Projects tab, or Create a project from the empty state. **Only the name is required.** A description, a deadline and an owner are all optional, and leaving any of them blank is a normal way to make a project rather than an unfinished one. A project still has no timer and no priority of its own. The work goes in the tasks inside it: create a task under the project and it is an ordinary task in every respect — its own assignee, its own deadline, its own priority, its own timer, its own place in that person’s queue — and one project can hold many tasks going to different people. **Its deadline works one of two ways, depending on whether you set one.** If you give the project a deadline, that is the date it is judged on, and nothing inside it may be due later: a task that would land after it is refused with “A task cannot be due after the project it belongs to — choose an earlier date, or move the project's deadline first”, and the Create button stays disabled until it fits. If you leave it blank, nothing inside is capped — each task is bounded only by its assignee’s own queue, exactly as any task is — and the project simply reads the latest deadline among its tasks. Four tasks due 10:00, 12:00, 15:00 and 18:00 make it read 18:00, because that is the last commitment anybody underneath has actually made; a project with no deadline and no tasks shows NO date at all rather than a blank or a guess. Cancelled tasks are left out either way — work called off should not count against you. **Assigning a project decides whose list it appears in and nothing more.** Choose somebody and it shows under their projects; leave it blank and it stays with whoever created it. It is not work handed to them: a project does no work, has no timer and is never something anybody completes. The members are still whoever carries the tasks inside, read from those tasks every time, so nobody is added or removed by assigning the folder. Everything else it reports is read the same way: the start date is when the project was made, and progress and health are counted from how many tasks are done, overdue or blocked. Its status follows the work: Active while it is live, Completed when everything inside is done, Archived if it was cancelled. Projects carry no score — the tasks inside them are the scoring units, so nothing is double-counted. This replaced an earlier model on 18 August 2026, in which a project could not be created at all: it appeared whenever a task was broken into subtasks, so the container was itself a real task carrying a deadline and a timer, and breaking any task down silently produced a project nobody had asked for. What is listed now is only the folders somebody made deliberately.",
     related: ["task-break-down", "task-create", "scoring-components"],
     source:
       "LegacyRepository.listProjects and #projectFromContainer in lib/repositories/legacy/index.ts derive a ProjectView from every root task that has subtasks; progress is computeProgress in lib/repositories/mock/progress.ts, shared with the mock. listTasks's q.projectId filter, added alongside this, is what makes a project's own page (TaskTable / TaskBoard, both already sending projectId) show only that project's subtasks — filtered on parentTaskId to agree with taskLinks, not on a stored projectId the engine never writes. Locked by lib/repositories/legacy/derivedProjects.test.ts. Derived projects replaced the empty-page stub and the dead New project button 2026-08-02; the project page's task list filter added the same day, having never been implemented at all",
@@ -2427,6 +2432,60 @@ export const HELP_ARTICLES: HelpArticle[] = [
     source: "createConversation dedupes direct pairs; markConversationRead",
   },
   {
+    id: "general-sync-button",
+    category: "general",
+    title: "The Sync button, and when you need it",
+    keywords: [
+      "sync",
+      "refresh",
+      "reload",
+      "out of date",
+      "stale",
+      "not updating",
+      "old data",
+      "F5",
+    ],
+    examples: [
+      "What does the Sync button do?",
+      "My screen is showing old information",
+      "Do I need to refresh the page?",
+      "Why has this not updated?",
+      "Sync says some information could not be refreshed",
+    ],
+    answer:
+      "Sync is the circular-arrows button in the top bar, beside the notification bell. It throws away everything Cowork is holding from earlier and reads it all again — the same result as reloading the page, without actually reloading: you keep your place on the page, anything you had open stays open, and you are not signed in again. Most of the workspace already updates on its own, so you will not often need it. It is there for the cases that do not: a few screens keep an answer for up to half a minute rather than re-reading it constantly, a live connection can drop quietly, and something changed in the CMS reaches Cowork the next time it reads rather than immediately. If a figure looks wrong or older than you expect, press Sync before assuming it is a fault. The button spins while it is working and cannot be pressed again until it finishes, and it stops spinning when the reading has genuinely finished rather than after a set time — so when it stops, what you are looking at is current. Nothing is sent when you press it and nothing is changed; it only reads. Unsent message drafts, anything typed into a form and files you have attached but not sent are all untouched. If something could not be read — usually the connection — the spinning stops and a notice appears in the corner saying “Some information could not be refreshed”. Press Sync again once you are back online. Whatever did load stays on screen rather than being cleared, and nothing you had typed or attached is lost.",
+    related: ["general-what-is-cowork"],
+    source: "refreshEverything in lib/repositories/events.ts; SyncButton in TopBar",
+  },
+  {
+    id: "general-message-files-and-history",
+    category: "general",
+    title: "Sending files, and reading back through a conversation",
+    keywords: [
+      "upload",
+      "upload failed",
+      "attach a file",
+      "attachment",
+      "big file",
+      "retry upload",
+      "older messages",
+      "message history",
+      "scroll up",
+      "load more messages",
+    ],
+    examples: [
+      "Why did my file fail to upload?",
+      "Can I send large files?",
+      "My upload failed, do I have to pick the file again?",
+      "How do I see older messages?",
+      "Why does the chat only show the last 50 messages?",
+    ],
+    answer:
+      "Attach a file with the paperclip beside the message box. It uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
+    related: ["general-message-drafts", "general-start-conversation"],
+    source: "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts",
+  },
+  {
     id: "general-message-drafts",
     category: "general",
     title: "Unsent messages are kept per conversation",
@@ -2502,6 +2561,9 @@ export const HELP_ARTICLES: HelpArticle[] = [
     title: "What you can do with a message",
     keywords: [
       "right click a message",
+      "long press a message",
+      "hold a message",
+      "swipe to reply",
       "message options",
       "message menu",
       "reply to a message",
@@ -2516,12 +2578,147 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Can I delete a message somebody sent me?",
       "How do I reply to one particular message?",
       "Where are the message options?",
+      "How do I get the message menu on my phone?",
     ],
     answer:
-      "Right-click any message — yours or somebody else's — and a menu opens with what you can do with it: Reply, Forward, Copy text, and Delete. The same actions appear as small links beside a message when you hover over it, which is also how you reach them from the keyboard: tab to the message and they appear. Reply quotes that one message above the box you type in, and the person reading it can click the quote to jump to the original. Forward asks which conversation to send it to and writes a copy there — the original stays where it is, the copy carries the same text and the same attachments, and it is sent as a new message from you rather than labelled as forwarded. Copy text puts the words on your clipboard; it is unavailable on a message that is only attachments, because there is nothing to copy and quietly replacing what you had on your clipboard would be worse. Edit is offered on your own messages and re-stamps the message as edited, which everyone in the thread can see. Delete works on your own messages only — on somebody else's it is shown but greyed, with the reason, because a missing option reads as a fault where a stated rule does not. Deleting is a soft delete: the message keeps its place in the thread and reads as deleted, so a conversation never silently loses a line and nobody is left wondering what was said. Every action is greyed on a message that has already been deleted, each saying “This message was deleted.” — you can still see where it was, but there is nothing left to reply to, forward or copy. There is no way to delete a message for everybody except your own, and no way to remove one from your own view alone.",
-    related: ["general-start-conversation", "general-group-chat-vs-group"],
+      "Right-click any message — yours or somebody else's — and a menu opens with what you can do with it: Reply, Forward, Copy text, Star, Pin, and Delete, with a row of emoji across the top for reacting. On a phone or tablet, press and hold the message instead — the same menu opens under your finger. The same actions appear as small links beside a message when you hover over it, which is also how you reach them from the keyboard: tab to the message and they appear. Reply quotes that one message above the box you type in, and the person reading it can click the quote to jump to the original — on a touch screen you can also swipe the message to the left and reply mode opens on its own. Forward asks which conversation to send it to and writes a copy there — the original stays where it is, the copy carries the same text and the same attachments, and it is sent as a new message from you rather than labelled as forwarded. Copy text puts the words on your clipboard; it is unavailable on a message that is only attachments, because there is nothing to copy and quietly replacing what you had on your clipboard would be worse. Star keeps the message as a personal bookmark and Pin holds it at the top of the conversation for everyone. Edit is offered on your own messages and re-stamps the message as edited, which everyone in the thread can see. Delete works on your own messages only — on somebody else's it is shown but greyed, with the reason, because a missing option reads as a fault where a stated rule does not. Deleting is a soft delete: the message keeps its place in the thread and reads as deleted, so a conversation never silently loses a line and nobody is left wondering what was said. Every action is greyed on a message that has already been deleted, each saying “This message was deleted.” — you can still see where it was, but there is nothing left to reply to, forward or copy. There is no way to delete a message for everybody except your own, and no way to remove one from your own view alone.",
+    related: [
+      "general-start-conversation",
+      "general-group-chat-vs-group",
+      "general-message-reactions",
+      "general-starred-messages",
+      "general-pinned-messages",
+    ],
     source:
-      "MessageContextMenu items built by menuFor() in MessagesArea; deleteMessage refuses another sender with \"You can only delete your own messages.\"; ForwardDialog sends text + attachments through sendMessage; soft delete keeps the tombstone (Message.isDeleted)",
+      "MessageContextMenu items built by menuFor() in MessagesArea; long-press and swipe handlers in MessageList (onRowTouchStart/Move/End); deleteMessage refuses another sender with \"You can only delete your own messages.\"; ForwardDialog sends text + attachments through sendMessage; soft delete keeps the tombstone (Message.isDeleted)",
+  },
+  {
+    id: "general-message-reactions",
+    category: "general",
+    title: "Reacting to a message with an emoji",
+    keywords: [
+      "reaction",
+      "reactions",
+      "react to a message",
+      "emoji",
+      "thumbs up",
+      "like a message",
+      "remove a reaction",
+    ],
+    examples: [
+      "How do I react to a message?",
+      "How do I remove my reaction?",
+      "Can I react with two emojis?",
+      "Who reacted to my message?",
+    ],
+    answer:
+      "Right-click a message — or press and hold it on a touch screen — and a row of six emoji sits across the top of the menu: 👍 ❤️ 😂 😮 😢 🙏. Choose one and it appears as a small chip under the message, with a count when more than one person picked it. You have one reaction per message: picking a different emoji replaces the one you had, and picking the same one again takes it back. You can also tap a chip that is already under a message to add yourself to it — or, if it is yours, to remove yours. Your own reaction is shown with a highlighted chip so you can tell it apart. A deleted message cannot be reacted to. Reactions do not notify anyone and do not appear in the conversation list — they live under the message they answer.",
+    related: ["general-message-actions", "general-start-conversation"],
+    source:
+      "MESSAGE_QUICK_REACTIONS in lib/domain/work.ts; one-per-person rule in lib/rules/messages/reactions.ts; toggleMessageReaction in both repositories",
+  },
+  {
+    id: "general-starred-messages",
+    category: "general",
+    title: "Starring messages, and finding them again",
+    keywords: [
+      "star a message",
+      "starred messages",
+      "bookmark a message",
+      "save a message",
+      "unstar",
+      "important message",
+    ],
+    examples: [
+      "How do I star a message?",
+      "Where are my starred messages?",
+      "Can other people see what I starred?",
+    ],
+    answer:
+      "Right-click a message — or press and hold on a touch screen — and choose Star. A small star appears under the message, visible to you alone: a star is your personal bookmark, and nobody in the conversation is shown yours. To see everything you have starred in a conversation, open search with the magnifier in the conversation's header and press the star button in the search bar — with no search text it lists your starred messages, and with text it searches only within them. Choose Unstar from the same menu to take a star back, which also works on a message that was deleted after you starred it, so a bookmark can never get stuck. Stars are kept per conversation and follow you between devices.",
+    related: [
+      "general-message-actions",
+      "general-message-search",
+      "general-pinned-messages",
+    ],
+    source:
+      "toggleMessageStar in both repositories (starredBy on the message); star filter in the Thread search bar; searchThread in lib/rules/messages/threadSearch.ts",
+  },
+  {
+    id: "general-pinned-messages",
+    category: "general",
+    title: "Pinning a message to the top of a conversation",
+    keywords: [
+      "pin a message",
+      "pinned message",
+      "unpin",
+      "pin to top",
+      "pinned banner",
+    ],
+    examples: [
+      "How do I pin a message?",
+      "Who can pin messages?",
+      "How many messages can be pinned?",
+      "How do I unpin a message?",
+    ],
+    answer:
+      "Right-click a message — or press and hold on a touch screen — and choose Pin. A banner appears at the top of the conversation showing the pinned message, for everyone in the thread: unlike a star, a pin is shared. Clicking the banner jumps to the pinned message; with several pinned, each click shows the next one, and a small count on the banner says how many there are. Anyone in the conversation can pin or unpin — unpin with the × on the banner, or choose Unpin from the message's own menu. Up to 5 messages can be pinned in a conversation; asking for a sixth is refused with “Up to 5 messages can be pinned in a conversation. Unpin one first.” Pinning does not move or copy the message — it stays exactly where it was in the thread, and the banner is a signpost to it.",
+    related: [
+      "general-message-actions",
+      "general-starred-messages",
+      "general-start-conversation",
+    ],
+    source:
+      "pinMessage/unpinMessage in both repositories (pinnedMessages on the conversation); cap and refusal in lib/rules/messages/pins.ts; the banner in Thread (MessagesArea)",
+  },
+  {
+    id: "general-message-search",
+    category: "general",
+    title: "Searching inside one conversation",
+    keywords: [
+      "search messages",
+      "search in chat",
+      "find a message",
+      "search this conversation",
+      "search earlier",
+    ],
+    examples: [
+      "How do I search within a chat?",
+      "How do I find an old message?",
+      "Why does search say there are no matches when I know the message exists?",
+    ],
+    answer:
+      "Open a conversation and press the magnifier in its header. Type, and the bar counts the matches; Enter walks to the next older match, the arrows go older and newer, and each match is scrolled to and briefly highlighted. Search reads the messages that are currently loaded — the most recent page plus whatever history you have scrolled into. A long conversation is not fetched all at once, so a very old message may not be found at first: the bar offers “Search earlier”, which loads another page of history each time you press it, widening what search can see. The star button in the same bar narrows the search to messages you have starred, and on its own it simply lists them. Search looks at message text — not inside attachments — and deleted messages never match. This search is within one conversation; the box above the conversation LIST searches conversations by name and last message, not their full history.",
+    related: [
+      "general-starred-messages",
+      "general-message-files-and-history",
+      "general-message-actions",
+    ],
+    source:
+      "searchThread in lib/rules/messages/threadSearch.ts over the loaded pages; the search bar and jumpToMessage in Thread (MessagesArea)",
+  },
+  {
+    id: "general-phone-numbers-in-chat",
+    category: "general",
+    title: "Phone numbers in messages are tappable",
+    keywords: [
+      "phone number",
+      "call from chat",
+      "tap a number",
+      "dial",
+      "tel link",
+      "number not clickable",
+    ],
+    examples: [
+      "Can I call a number somebody sent me?",
+      "Why is this number not clickable?",
+      "Why is a random number showing as a link?",
+    ],
+    answer:
+      "When a message contains a phone number — +91 9876543210, 98765 43210, and similar shapes with or without a country code — it is shown as a link, the same blue as a web link. On a phone, tapping it opens your dialler with the number filled in; on a computer it opens whatever app handles calls, if you have one. Recognition is deliberately strict so ordinary numbers do not turn blue: a number is only linked when it has ten digits (or a country code and up to fifteen), so dates, times, amounts, decimals, and figures inside task names or identifiers are left as plain text. That strictness means an unusually short or long number, or one glued to other characters, may not be linked — copy it instead. Nothing is dialled until you confirm in your phone's own dialler; the link only opens it.",
+    related: ["general-message-actions", "general-start-conversation"],
+    source:
+      "detectPhoneNumbers in lib/rules/messages/phoneNumbers.ts; linkifyMessage in lib/utils/linkify.tsx",
   },
   {
     id: "general-lens",

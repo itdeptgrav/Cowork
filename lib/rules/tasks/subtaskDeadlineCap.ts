@@ -106,9 +106,13 @@ export function capRefusal(input: {
 }): string | null {
   if (input.verdict.allowed) return null;
   const by = formatOvershoot(input.verdict.overshootSecs);
+  /* "A task", not "a subtask". The same cap now guards two shapes — a subtask
+     under its parent task, and a task under a PROJECT that carries its own
+     deadline — and a refusal naming only the first reads as the wrong rule to
+     somebody who is looking at the second. Both are tasks. */
   return input.projected
-    ? `This would finish about ${by} after the project is due (${input.parentLabel}). A subtask cannot be due after the project it belongs to — reduce the time, or move the project's deadline first.`
-    : `That is ${by} after the project is due (${input.parentLabel}). A subtask cannot be due after the project it belongs to — choose an earlier date, or move the project's deadline first.`;
+    ? `This would finish about ${by} after the project is due (${input.parentLabel}). A task cannot be due after the project it belongs to — reduce the time, or move the project's deadline first.`
+    : `That is ${by} after the project is due (${input.parentLabel}). A task cannot be due after the project it belongs to — choose an earlier date, or move the project's deadline first.`;
 }
 
 /**

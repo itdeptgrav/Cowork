@@ -87,6 +87,34 @@ export function invalidateQueries(...methods: string[]): void {
   for (const l of staleListeners) l(methods);
 }
 
+const purgeAllListeners = new Set<() => void>();
+
+/** Subscribe to "throw away every cached read". Only the query cache listens. */
+export function subscribeToPurgeAll(listener: () => void): () => void {
+  purgeAllListeners.add(listener);
+  return () => purgeAllListeners.delete(listener);
+}
+
+/**
+ * Re-read everything, now — what the Sync button does.
+ *
+ * **Deliberately heavier than a version bump.** A bump alone re-runs the live
+ * queries but leaves the TTL cache standing, so the reads with a `staleTime`
+ * would answer from their own copy and the one thing somebody pressing Sync is
+ * asking for — *are you sure this is current?* — would be the thing they did
+ * not get. Every cached answer goes first.
+ *
+ * It exists because until now the honest answer to "is this stale?" was
+ * "reload the page". A full reload re-runs the whole sign-in ladder, re-mounts
+ * every provider, and loses scroll position and any open panel — an expensive
+ * way to ask a question this answers in one round trip.
+ */
+export function refreshEverything(): void {
+  for (const l of purgeAllListeners) l();
+  version += 1;
+  for (const l of listeners) l();
+}
+
 /**
  * Does a cached query key belong to this repository method?
  *

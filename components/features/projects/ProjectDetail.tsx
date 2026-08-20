@@ -476,8 +476,18 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 </span>
               </Fact>
               <Fact label="Target">
+                {/* **The time, not just the day.** A project deadline is now
+                    typed with an hour and a minute, and a target set for
+                    "25 Aug 18:00" that reads back as "25 Aug" hides the half
+                    that decides whether a task fits under it. Same format as a
+                    task's own deadline — `24 Aug · 18:00 IST` — so the ceiling
+                    and the thing measured against it are read the same way.
+
+                    It is right for a DERIVED target too: that is the latest
+                    commitment a task underneath actually carries, and those
+                    have always had times. */}
                 <span className="text-sm text-ink">
-                  {formatDate(p.targetDate)}
+                  {formatDateTime(p.targetDate)}
                 </span>
               </Fact>
               {p.tags.length > 0 && (

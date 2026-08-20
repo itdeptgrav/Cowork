@@ -20,6 +20,7 @@ import type {
   Message,
   MessageAttachment,
   MessageReply,
+  PinnedMessage,
 } from "../../domain/work.ts";
 import { driveFileIdFrom } from "../../rules/media/driveUrls.ts";
 
@@ -180,7 +181,51 @@ export function readMessageDoc(
     isDeleted: d.isDeleted === true,
     createdAt: instant(d.createdAt) ?? new Date(0).toISOString(),
     readBy: strArray(d.readBy),
+    reactions: readReactions(d.reactions),
+    starredBy: strArray(d.starredBy),
   };
+}
+
+/**
+ * The stored reactions map — `{ [emoji]: employeeId[] }` — with anything
+ * malformed dropped and EMPTY entries removed. An emoji everyone has taken
+ * back leaves an empty array behind in the document (`arrayRemove` does not
+ * delete the field), and reading that as a chip with a count of zero would
+ * draw reactions nobody holds.
+ */
+export function readReactions(
+  v: unknown,
+): Record<string, string[]> | undefined {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return undefined;
+  const out: Record<string, string[]> = {};
+  for (const [emoji, ids] of Object.entries(v as Record<string, unknown>)) {
+    const list = strArray(ids);
+    if (list.length) out[emoji] = list;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * The conversation's pinned messages, oldest pin first, malformed entries
+ * dropped. A pin without a `messageId` has nothing to jump to and is not a
+ * pin; the rest of the fields default so a partial record still renders.
+ */
+export function readPinnedMessages(v: unknown): PinnedMessage[] {
+  if (!Array.isArray(v)) return [];
+  const out: PinnedMessage[] = [];
+  for (const raw of v) {
+    if (!raw || typeof raw !== "object") continue;
+    const o = raw as Record<string, unknown>;
+    if (typeof o.messageId !== "string" || !o.messageId) continue;
+    out.push({
+      messageId: o.messageId,
+      senderName: typeof o.senderName === "string" ? o.senderName : "",
+      text: typeof o.text === "string" ? o.text : "",
+      pinnedById: typeof o.pinnedById === "string" ? o.pinnedById : "",
+      pinnedAt: instant(o.pinnedAt) ?? new Date(0).toISOString(),
+    });
+  }
+  return out;
 }
 
 /** The quoted message on a reply, defaulted so a partial record never throws. */
@@ -240,6 +285,7 @@ export function readDirectConversationDoc(
       last && typeof last.text === "string" ? last.text : null,
     unreadCount: 0,
     deliveredAt: readDeliveryMap(d.delivery),
+    pinned: readPinnedMessages(d.pinnedMessages),
   };
 }
 
@@ -277,6 +323,7 @@ export function readGroupConversationDoc(
     lastMessagePreview: preview,
     unreadCount: 0,
     deliveredAt: readDeliveryMap(d.delivery),
+    pinned: readPinnedMessages(d.pinnedMessages),
   };
 }
 

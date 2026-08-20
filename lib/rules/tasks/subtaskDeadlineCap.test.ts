@@ -151,3 +151,54 @@ test("an extension past the parent offers to move the parent by the same amount"
   /* And the consequence, so it is a decision rather than a formality. */
   assert.match(offer?.message ?? "", /only if the whole project can slip/);
 });
+
+/* ── The owner's own example, in their numbers ────────────────────────────── */
+
+/**
+ * OWNER CLARIFICATION: the project deadline is a CEILING for the work beneath
+ * it and nothing else. It is not the task's deadline, it is not copied onto the
+ * task, and it constrains only the latest a task may be due.
+ *
+ *   Project deadline: 25 Aug 2026, 18:00
+ *     24 Aug, 15:00  ✅  comfortably inside
+ *     25 Aug, 18:00  ✅  exactly on it — due WHEN the project is due is not
+ *                        due AFTER it, and refusing this would make the stated
+ *                        limit unreachable
+ *     26 Aug, 10:00  ❌  past it
+ */
+const PROJECT_DUE = Date.parse("2026-08-25T18:00:00+05:30");
+
+test("a task due before the project's deadline is allowed", () => {
+  const v = subtaskDeadlineCap({
+    parentDueAtMs: PROJECT_DUE,
+    proposedDueAtMs: Date.parse("2026-08-24T15:00:00+05:30"),
+  });
+  assert.equal(v.allowed, true);
+});
+
+test("a task due EXACTLY on the project's deadline is allowed", () => {
+  const v = subtaskDeadlineCap({
+    parentDueAtMs: PROJECT_DUE,
+    proposedDueAtMs: PROJECT_DUE,
+  });
+  assert.equal(v.allowed, true, "the stated limit must be reachable");
+});
+
+test("a task due after the project's deadline is refused", () => {
+  const v = subtaskDeadlineCap({
+    parentDueAtMs: PROJECT_DUE,
+    proposedDueAtMs: Date.parse("2026-08-26T10:00:00+05:30"),
+  });
+  assert.equal(v.allowed, false);
+  assert.equal(v.breach, "after_parent");
+});
+
+test("a project with no deadline constrains nothing", () => {
+  /* "If the project has no deadline, follow the existing task deadline logic."
+     Absent is not zero and not now — it is no ceiling at all. */
+  assert.equal(
+    subtaskDeadlineCap({ parentDueAtMs: null, proposedDueAtMs: Date.parse("2099-01-01") })
+      .allowed,
+    true,
+  );
+});
