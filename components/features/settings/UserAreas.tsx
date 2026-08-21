@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { ProfilePicture } from "./ProfilePicture";
+import { ChangePassword } from "./ChangePassword";
 import { Icon, type IconName } from "@/components/ui/Icons";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { GmailConnection } from "@/components/features/mail/GmailConnection";
@@ -112,6 +113,10 @@ export function SettingsPage() {
             </dl>
           ) : null}
         </Panel>
+
+        {/* Directly after Account, because it is the one thing on this page
+            that changes an account rather than describing one. */}
+        <ChangePassword />
 
         <Panel>
           <h2 className="text-sm font-medium text-ink">About this build</h2>

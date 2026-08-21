@@ -53,6 +53,16 @@ export interface ProvisionResult {
   employeeId: string;
   tempPassword: string;
   role: string;
+  /**
+   * Whether the new starter was actually sent their sign-in details.
+   *
+   * Optional because an older engine does not return it, and `undefined` there
+   * means "unknown", not "no" — the panel says nothing rather than claiming a
+   * failure that may not have happened. When it is `false` the admin is holding
+   * the only remaining copy of the temporary password, so they have to be told.
+   */
+  emailSent?: boolean;
+  emailError?: string | null;
 }
 
 /** HR employees from MongoDB, tagged with whether they already have a CoWork account. */
@@ -93,6 +103,29 @@ export async function resetCoworkPassword(input: {
     method: "POST",
     token: input.token,
     body: { newPassword: input.newPassword },
+  });
+}
+
+/**
+ * Send somebody their sign-in details again.
+ *
+ * For when the automatic welcome email did not arrive — it bounced, it was
+ * filtered, the mail server was switched off that day. Nothing is generated
+ * here: it re-sends the temporary password the account already has.
+ *
+ * The engine refuses once that person has chosen their own password, because
+ * from that moment nobody holds it — not this panel, not an administrator, not
+ * the engine. It answers with a message naming Reset password as the way
+ * forward, which is the one operation that can help.
+ */
+export async function sendCoworkCredentials(input: {
+  token: string;
+  employeeId: string;
+}): Promise<LegacyResult<{ message: string; emailSent: boolean }>> {
+  return legacyFetch({
+    path: `/cowork/employee/${encodeURIComponent(input.employeeId)}/send-credentials`,
+    method: "POST",
+    token: input.token,
   });
 }
 

@@ -2148,6 +2148,13 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "employee locked out",
       "forgot password",
       "welcome email",
+      "invitation email",
+      "email not sent",
+      "did they get the email",
+      "send mail",
+      "resend credentials",
+      "send login details again",
+      "never got the email",
       "hr system",
       "biometric id",
       "no email in hr",
@@ -2168,7 +2175,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Do I have to type in a name, email and department to add somebody?",
     ],
     answer:
-      "Administration, then Settings, then Add employees. The list comes from the HR system rather than from Cowork, so nobody is typed in twice: everyone in HR appears, each row marked either Add — no Cowork account yet — or Linked, meaning they already have one. Search by name, email or ID, or filter by department. **Nothing here is typed in by hand.** The name, email, department, designation, phone and employee ID all come from the HR record; where HR holds a personal email address rather than a work one, that is the address used, and somebody already provisioned under either address is recognised as Linked rather than offered a second account. **Creating an account:** tick the people who need one and press Create accounts, or press Add on a single row. Cowork creates their Firebase login, generates a temporary password, and sends a welcome email carrying it; their biometric ID from HR becomes their Cowork employee ID, and where HR has none, one is generated. The temporary password is shown on the row afterwards, because the email is not always the fastest way to get it to somebody. **A row with no Add button:** a Cowork login is an email address, so somebody HR has no address for cannot be created from here at all. That row reads “No email in HR” where the address would be and “Add email in HR” where the button would be, it cannot be ticked, Select all without account skips it, and the count at the top says how many are in that state — “12 without account · 3 need details in HR”. The fix is in the HR system, not in Cowork: fill the field there and the row becomes addable. Pressing Add on a record that is still short of something answers with what is missing by name — “HR has no email address for this employee. Add it in the HR system, then try again.” — rather than asking you to supply it here. **Resetting a password:** every Linked row has a Reset password button. It offers a generated temporary password — twelve readable characters with no lookalikes like l1I or 0O, since somebody has to type or read it out — which you can replace with your own of at least six characters. Read what it says before pressing it: setting the password **signs that person out of every device immediately**, mid-task if they were working, and tells them it happened in the app, by push and by email. Unsaved work in an open tab is lost; saved work is not touched. Afterwards the new password is shown once with a Copy button, and they are asked to choose their own the next time they sign in. There is no way to see somebody's existing password — nobody has it, including administrators — so a reset is the only route back in for a locked-out account.",
+      "Administration, then Settings, then Add employees. The list comes from the HR system rather than from Cowork, so nobody is typed in twice: everyone in HR appears, each row marked either Add — no Cowork account yet — or Linked, meaning they already have one. Search by name, email or ID, or filter by department. **Nothing here is typed in by hand.** The name, email, department, designation, phone and employee ID all come from the HR record; where HR holds a personal email address rather than a work one, that is the address used, and somebody already provisioned under either address is recognised as Linked rather than offered a second account. **Creating an account:** tick the people who need one and press Create accounts, or press Add on a single row. Cowork creates their Firebase login, generates a temporary password, and emails it to them; their biometric ID from HR becomes their Cowork employee ID, and where HR has none, one is generated. **The welcome email** addresses them by name and carries their employee ID, their email address, the temporary password, their role and department, a sign-in button, and a plain instruction to change the password on first sign-in and to share it with nobody — including anybody claiming to be from IT. The temporary password is also shown on the row afterwards, because the email is not always the fastest way to get it to somebody, and the row says which happened: “Emailed to sam@grav.in” when it went, or “Email not sent — share these yourself” when it did not. Read that second one: the account exists and works either way, but the mail may have been refused or switched off on the server, and when it was, the row is the only remaining copy of that password — nobody, administrators included, can read it back later. **Sending it again:** every row with an account has a Send mail button beside Reset password. It re-sends exactly the same welcome email to the same address and changes nothing — nobody is signed out, no password is altered — so it is the right answer when the first one bounced, was filtered into spam, or was deleted. It works only while that person is still on the temporary password. Once they have chosen their own, Send mail refuses, because from that moment nobody holds their password: it answers “They have chosen their own password, which cannot be read back. Use Reset password instead.” A row HR has no email address for offers no Send mail button at all. **If the row reports a mail failure instead**, the fault is with the mail provider rather than with Cowork or the account, and the message names which: “Brevo is blocking this server's IP” means the account has an IP allowlist that this server is not on, and an administrator has to add the address it quotes to the authorised IPs in the Brevo account before any email will send — the automatic welcome emails are being refused for the same reason until they do. “Brevo has no sending credit left” and “Brevo rejected this server's mail credentials” are what they say. In every one of these cases the account itself is fine, and the temporary password shown on the row is still valid to pass on by hand. The two buttons answer the same complaint — “I cannot get in” — and Send mail is the gentler of them: try it first, and reach for Reset password only when the password itself is gone. **A row with no Add button:** a Cowork login is an email address, so somebody HR has no address for cannot be created from here at all. That row reads “No email in HR” where the address would be and “Add email in HR” where the button would be, it cannot be ticked, Select all without account skips it, and the count at the top says how many are in that state — “12 without account · 3 need details in HR”. The fix is in the HR system, not in Cowork: fill the field there and the row becomes addable. Pressing Add on a record that is still short of something answers with what is missing by name — “HR has no email address for this employee. Add it in the HR system, then try again.” — rather than asking you to supply it here. **Resetting a password:** every Linked row has a Reset password button. It offers a generated temporary password — twelve readable characters with no lookalikes like l1I or 0O, since somebody has to type or read it out — which you can replace with your own of at least six characters. Read what it says before pressing it: setting the password **signs that person out of every device immediately**, mid-task if they were working, and tells them it happened in the app, by push and by email. Unsaved work in an open tab is lost; saved work is not touched. Afterwards the new password is shown once with a Copy button, and they are asked to choose their own the next time they sign in. There is no way to see somebody's existing password — nobody has it, including administrators — so a reset is the only route back in for a locked-out account.",
     related: ["settings-console", "settings-roles", "general-sign-in-did-not-finish"],
     source:
       "AddFromHrPanel.tsx and ResetPasswordDialog.tsx; listHrEmployees / provisionCoworkAccount / resetCoworkPassword / generateTempPassword in lib/legacy/employeeAdmin.ts; the engine's GET /cowork/admin/hr-employees (CEO-only; resolves the address as email || personalEmail, matches an existing account on either, and returns coworkEmployeeId so it can be addressed plus missingInHr naming the HR fields still absent, which is what suppresses Add), POST /cowork/employee/create (fills name, email, department and phone from the HR record by biometricId before validating, so a blank payload field is answered from HR rather than refused) and POST /cowork/employee/:id/reset-password, which sets the Firebase password, stores it as a temp one, revokes every refresh token and notifies through notifyEmployees",
@@ -2392,6 +2399,40 @@ export const HELP_ARTICLES: HelpArticle[] = [
   },
 
   /* ── General ────────────────────────────────────────────────────────────── */
+  {
+    id: "general-change-your-password",
+    category: "general",
+    title: "Changing your own password",
+    keywords: [
+      "change my password",
+      "change password",
+      "new password",
+      "update password",
+      "password settings",
+      "current password",
+      "wrong current password",
+      "password must be different",
+      "password too short",
+      "forgot my password",
+      "temporary password",
+      "still on the temporary password",
+    ],
+    examples: [
+      "How do I change my password?",
+      "Where do I set a new password?",
+      "It says that is not my current password.",
+      "I forgot my password — what now?",
+      "How do I get off the temporary password?",
+    ],
+    answer:
+      "Settings has a Password section: enter your current password, your new one, and the new one again to confirm. It is the way off the temporary password you were emailed when your account was made, and the way to change one you chose yourself. **Your current password is required, and it is genuinely checked** — being signed in is not enough on its own, so an unattended open tab cannot be used to lock you out of your own account. The new password must be at least six characters and must be different from your current one; the confirmation is checked as you type it rather than at the end. Everything you type is refused before it is sent if it cannot work, so the only errors that reach the server are real ones. What the messages mean: “That is not your current password” is exactly that — the new password is fine, the old one was mistyped. “Too many attempts. Wait a few minutes and try again” comes from Firebase rate-limiting repeated wrong guesses, and waiting is the fix; nothing is locked permanently. “This session cannot change a password” means you arrived through the sign-in handoff from the other application rather than by typing an email address and password, so there is no password here to check — sign in directly with your email address and password, then change it. **If you have forgotten your current password there is no way to recover it** — nobody holds it, administrators included, and it cannot be read back from anywhere. Ask an administrator to reset it: they set a new temporary one, which signs you out of every device immediately, and you then change it here. If your welcome email never arrived, ask them for Send mail instead, which sends the same details again and signs nobody out.",
+    related: [
+      "general-sign-in-did-not-finish",
+      "settings-add-employees",
+    ],
+    source:
+      "ChangePassword.tsx; passwordChangeProblems in lib/rules/auth/passwordChange.ts (MIN_PASSWORD_LENGTH = 6); reauthenticate in lib/legacy/firebase.ts; changePassword in lib/legacy/auth.ts; POST /cowork/change-password verifies the current password with svc.verifyEmployeePassword before svc.changeEmployeePassword",
+  },
   {
     id: "mrf-basics",
     category: "general",

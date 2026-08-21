@@ -6,7 +6,8 @@
  * Lists everyone in MongoDB who does not yet have a CoWork account. The admin
  * picks who to provision — one at a time or in bulk — and the backend creates a
  * Firebase Auth user + Firestore record, auto-generates a temp password, and
- * sends a welcome email.
+ * emails it to them. The row reports whether that email actually went: when it
+ * did not, this panel holds the only remaining copy of the password.
  *
  * It lists EVERYBODY, not only the unprovisioned, and the people who already
  * have accounts are what an administrator comes here about second: somebody
@@ -26,6 +27,7 @@ import { firebaseAuth } from "@/lib/legacy-ui/coworkFirebase";
 import {
   listHrEmployees,
   provisionCoworkAccount,
+  sendCoworkCredentials,
   type HrEmployee,
 } from "@/lib/legacy/employeeAdmin";
 import {
@@ -50,8 +52,20 @@ async function getToken(): Promise<string> {
 type ProvisionStatus =
   | { kind: "idle" }
   | { kind: "pending" }
-  | { kind: "done"; employeeId: string; tempPassword: string }
+  | {
+      kind: "done";
+      employeeId: string;
+      tempPassword: string;
+      /* undefined = an older engine that does not report it, so say nothing. */
+      emailSent?: boolean;
+    }
   | { kind: "error"; message: string };
+
+/** Outcome of pressing Send mail on one row. */
+type MailState =
+  | { kind: "sending" }
+  | { kind: "sent"; to: string }
+  | { kind: "failed"; message: string };
 
 // ── What HR holds, and what it genuinely does not ─────────────────────────────
 
@@ -104,6 +118,11 @@ export function AddFromHrPanel() {
     employeeId: string;
     displayName: string;
   } | null>(null);
+
+  /* Per-row outcome of Send mail, keyed by Cowork employee id. Kept out of
+     `statuses`, which is about provisioning: a row can be freshly created AND
+     have had its mail re-sent, and one must not overwrite the other. */
+  const [mailState, setMailState] = useState<Map<string, MailState>>(new Map());
 
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -205,6 +224,7 @@ export function AddFromHrPanel() {
             kind: "done",
             employeeId: res.data!.employeeId,
             tempPassword: res.data!.tempPassword,
+            emailSent: res.data!.emailSent,
           }),
         );
         setEmployees((prev) =>
@@ -222,6 +242,38 @@ export function AddFromHrPanel() {
       setStatuses((prev) =>
         new Map(prev).set(emp.hrId, {
           kind: "error",
+          message: e instanceof Error ? e.message : "Unknown error",
+        }),
+      );
+    }
+  }
+
+  /**
+   * Re-send somebody their sign-in details.
+   *
+   * Nothing is generated and nothing is reset — this is the same temporary
+   * password the account already carries, sent to the same address again. The
+   * engine refuses once that person has chosen their own, and the refusal it
+   * gives back names Reset password, so it is shown verbatim rather than
+   * flattened into "failed".
+   */
+  async function sendMail(employeeId: string, to: string) {
+    setMailState((prev) => new Map(prev).set(employeeId, { kind: "sending" }));
+    try {
+      const token = await getToken();
+      const res = await sendCoworkCredentials({ token, employeeId });
+      setMailState((prev) =>
+        new Map(prev).set(
+          employeeId,
+          res.ok
+            ? { kind: "sent", to }
+            : { kind: "failed", message: res.error.message },
+        ),
+      );
+    } catch (e) {
+      setMailState((prev) =>
+        new Map(prev).set(employeeId, {
+          kind: "failed",
           message: e instanceof Error ? e.message : "Unknown error",
         }),
       );
@@ -332,6 +384,11 @@ export function AddFromHrPanel() {
             {visible.map((emp) => {
               const status = statuses.get(emp.hrId) ?? { kind: "idle" };
               const done = status.kind === "done" || emp.hasCoworkAccount;
+              /* Keyed by Cowork id, not HR id: Send mail addresses the account,
+                 and the account is the thing the engine knows about. */
+              const mailFor = emp.coworkEmployeeId
+                ? mailState.get(emp.coworkEmployeeId)
+                : undefined;
               const pending = status.kind === "pending";
               const gaps = hrGaps(emp);
 
@@ -407,6 +464,63 @@ export function AddFromHrPanel() {
                         Reset password
                       </button>
                     )}
+                    {/**
+                     * Send mail, beside Reset password because they are the two
+                     * halves of the same problem — "they cannot get in".
+                     *
+                     * Send mail is the gentler one and is deliberately listed
+                     * first in an admin's mind: it changes nothing, signs
+                     * nobody out, and is the right answer when the welcome mail
+                     * simply never arrived. Reset password is the answer when it
+                     * did arrive and the password is gone.
+                     *
+                     * Needs an address to send to, so a row HR has no email for
+                     * does not offer it — the same reason such a row cannot be
+                     * added in the first place.
+                     */}
+                    {done && emp.coworkEmployeeId && emp.email && (
+                      <button
+                        type="button"
+                        disabled={mailFor?.kind === "sending"}
+                        onClick={() =>
+                          void sendMail(emp.coworkEmployeeId!, emp.email)
+                        }
+                        className="rounded-inset px-2 py-1 text-[11px] text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink disabled:opacity-50"
+                      >
+                        {mailFor?.kind === "sending" ? "Sending…" : "Send mail"}
+                      </button>
+                    )}
+                    {/* The engine's refusal is shown as written — it explains
+                        why an already-changed password cannot be re-sent and
+                        names Reset password, which "Failed" would throw away.
+
+                        Clamped, because some of these messages come from the
+                        mail provider rather than from us. Brevo's IP-allowlist
+                        refusal is three sentences and an IPv6 address, and
+                        unclamped it wrapped to six lines and forced the row
+                        open. The engine shortens what it can recognise; this is
+                        the guard for what it cannot, since no layout should
+                        depend on a third party's prose staying brief. Full text
+                        on hover, and never truncated mid-flow for the short
+                        messages that are the normal case. */}
+                    {mailFor && mailFor.kind !== "sending" && (
+                      <p
+                        title={
+                          mailFor.kind === "sent"
+                            ? `Sent to ${mailFor.to}`
+                            : mailFor.message
+                        }
+                        className={`line-clamp-3 max-w-[200px] break-words text-right text-[10px] leading-snug ${
+                          mailFor.kind === "sent"
+                            ? "text-ink-faint"
+                            : "text-[var(--state-overdue-ink)]"
+                        }`}
+                      >
+                        {mailFor.kind === "sent"
+                          ? `Sent to ${mailFor.to}`
+                          : mailFor.message}
+                      </p>
+                    )}
                     {done && status.kind !== "done" && (
                       <Chip tone="positive">Linked</Chip>
                     )}
@@ -419,6 +533,22 @@ export function AddFromHrPanel() {
                         <p className="text-[10px] text-ink-faint">
                           Temp: <span className="font-mono">{status.tempPassword}</span>
                         </p>
+                        {/*
+                          Only speak when we know. `false` is the case that
+                          matters: the email did not go, so this panel is the
+                          only place the password now exists and the admin has
+                          to pass it on themselves.
+                        */}
+                        {status.emailSent === false && (
+                          <p className="mt-0.5 text-[10px] text-[var(--state-overdue-ink)]">
+                            Email not sent — share these yourself
+                          </p>
+                        )}
+                        {status.emailSent === true && (
+                          <p className="mt-0.5 text-[10px] text-ink-faint">
+                            Emailed to {emp.email}
+                          </p>
+                        )}
                       </div>
                     )}
                     {status.kind === "error" && (

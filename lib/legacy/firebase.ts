@@ -4,8 +4,10 @@ import { type FirebaseApp, getApps, initializeApp } from "firebase/app";
 import {
   type Auth,
   type User,
+  EmailAuthProvider,
   browserLocalPersistence,
   getAuth,
+  reauthenticateWithCredential,
   setPersistence,
   onAuthStateChanged,
   onIdTokenChanged,
@@ -189,6 +191,57 @@ export async function signInWithToken(customToken: string): Promise<User> {
 
 export async function signOut(): Promise<void> {
   await fbSignOut(legacyFirebase().auth);
+}
+
+/** Why a re-authentication attempt failed, in terms a person can act on. */
+export type ReauthFailure =
+  | "wrong-password"
+  | "too-many-attempts"
+  | "no-session"
+  | "unavailable";
+
+/**
+ * Prove the signed-in person knows their current password.
+ *
+ * Firebase checks it; the password is never sent to our own server. This runs
+ * before a password change so the wrong-password case is answered immediately
+ * and locally, rather than after a round trip — but it is **not** the security
+ * boundary. The engine verifies the current password again on
+ * `POST /cowork/change-password`, because anything the browser checks, the
+ * browser can skip.
+ *
+ * Returns a discriminated result rather than throwing: "you typed the wrong
+ * password" is an ordinary outcome of this operation, not an exception.
+ */
+export async function reauthenticate(
+  currentPassword: string,
+): Promise<{ ok: true } | { ok: false; reason: ReauthFailure }> {
+  const user = currentUser();
+  /* No email means a custom-token session (the CMS SSO handoff), which has no
+     password to re-check — such a session cannot prove one and must not be
+     told it typed the wrong thing. */
+  if (!user?.email) return { ok: false, reason: "no-session" };
+
+  try {
+    await reauthenticateWithCredential(
+      user,
+      EmailAuthProvider.credential(user.email, currentPassword),
+    );
+    return { ok: true };
+  } catch (e) {
+    const code = (e as { code?: string })?.code ?? "";
+    if (
+      code === "auth/wrong-password" ||
+      code === "auth/invalid-credential" ||
+      code === "auth/invalid-login-credentials"
+    )
+      return { ok: false, reason: "wrong-password" };
+    if (code === "auth/too-many-requests")
+      return { ok: false, reason: "too-many-attempts" };
+    if (code === "auth/user-token-expired" || code === "auth/user-mismatch")
+      return { ok: false, reason: "no-session" };
+    return { ok: false, reason: "unavailable" };
+  }
 }
 
 /**
