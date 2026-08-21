@@ -398,7 +398,11 @@ function ConversationRow({
     <Link
       href={`/messages/${c.id}`}
       aria-current={active ? "page" : undefined}
-      className={`flex items-center gap-3 rounded-inset px-2.5 py-2.5 transition-colors duration-[180ms] ease-[var(--ease-deck)] ${
+      /* A touch target, not a mouse one: 44px is the smallest thing a finger
+         hits reliably, and these rows were 52px tall with 2.5 of padding —
+         comfortable to click and tight to tap next to its neighbour. The
+         extra vertical padding on a phone is what separates them. */
+      className={`flex items-center gap-3 rounded-inset px-2.5 py-3 transition-colors duration-[180ms] ease-[var(--ease-deck)] sm:py-2.5 ${
         active ? "bg-[var(--control-active)]" : "hover:bg-[var(--control)]"
       }`}
     >
@@ -1460,7 +1464,10 @@ function Thread({
 
   return (
     <Panel padded={false} label="Conversation" className="flex h-full flex-col">
-      <header className="flex items-center gap-3 border-b border-hairline px-4 py-3">
+      {/* Tighter on a phone at every edge: the header carries an avatar, two
+          lines of text and up to three controls, and desktop gutters spent 32
+          of the ~336px a 360px screen has on nothing. */}
+      <header className="flex items-center gap-2 border-b border-hairline px-2.5 py-2.5 sm:gap-3 sm:px-4 sm:py-3">
         <Link
           href="/messages"
           aria-label="All conversations"
@@ -1705,7 +1712,7 @@ function Thread({
          * attachments are width-capped — so the axis is closed rather than left
          * to answer for the next child that forgets.
          */
-        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-4 scroll-slim"
+        className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto px-2.5 py-3 scroll-slim sm:px-4 sm:py-4"
       >
         {messages.error ? (
           <QueryError
@@ -1765,7 +1772,11 @@ function Thread({
         )}
       </div>
 
-      <div className="border-t border-hairline px-4 py-3">
+      {/* The composer keeps clear of a phone's gesture bar. `env()` is zero on
+          every device without one, so the desktop padding is unchanged — and
+          without it the send button sits under the home indicator on exactly
+          the phones that have no hardware buttons to fall back on. */}
+      <div className="border-t border-hairline px-2.5 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:px-4 sm:pt-3 sm:pb-3">
         {typingLabel && (
           <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-ink-faint">
             <span className="flex gap-0.5" aria-hidden>
@@ -2368,7 +2379,11 @@ function MessageList({
                 /* `pan-y`: vertical scrolling stays the browser's; the
                    horizontal axis is ours, for the swipe-to-reply drag. */
                 style={{ touchAction: "pan-y" }}
-                className={`group flex max-w-[min(78%,60ch)] items-end gap-2 ${mine ? "flex-row-reverse" : ""}`}
+                /* 88% on a phone, 78% from `sm` up. The desktop figure is a
+                   line-length decision and a phone has no length to spare:
+                   at 360px it left a 74px margin beside every bubble and
+                   broke short sentences over two lines. */
+                className={`group flex max-w-[min(88%,60ch)] items-end gap-2 sm:max-w-[min(78%,60ch)] ${mine ? "flex-row-reverse" : ""}`}
               >
                 {/* Always present, so every bubble in a run keeps one edge;
                     only the picture is conditional. Empty it has no height, so

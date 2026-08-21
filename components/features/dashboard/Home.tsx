@@ -51,12 +51,19 @@ import { AttentionCard } from "@/components/features/dashboard/AttentionCard";
 import { TeamLoadCard } from "@/components/features/dashboard/TeamLoadCard";
 import { WorkMix } from "@/components/features/dashboard/WorkMix";
 import { NextCard } from "@/components/features/dashboard/NextCard";
+import { AttendanceButton } from "@/components/features/dashboard/AttendanceButton";
 import { QuickAssign } from "@/components/features/dashboard/QuickAssign";
 import { useLens } from "@/components/layout/shell/LensContext";
+import { useSession } from "@/components/features/auth/SessionProvider";
+import { canAccessAdminConsole } from "@/lib/rules/admin/access";
 
 export function Home() {
   const { lens } = useLens();
   const team = lens === "team";
+  /* Everybody's whereabouts on one screen is the comparative visibility the
+     lens rule reserves for administration — the same single definition of
+     administrator the console and the lens toggle use, never a second one. */
+  const isAdmin = canAccessAdminConsole(useSession());
 
   return (
     <>
@@ -125,6 +132,13 @@ export function Home() {
             at the foot of a three-card stack it was the least findable thing on
             the dashboard while being the one thing people arrive wanting to do. */}
         <div className="flex min-w-0 flex-col gap-4 deck:col-span-4">
+          {/* Today's attendance — administrators only, and a BUTTON rather than
+              the roster card this replaced: the count is the glance, the drawer
+              behind it is the detail. It leads the right column because "who is
+              here" is the first question of an administrator's morning, and a
+              slim control can sit at the top of the page without displacing the
+              work surfaces the way a full roster did. */}
+          {isAdmin && <AttendanceButton />}
           <QuickAssign />
           <AttentionCard />
           <NextCard />

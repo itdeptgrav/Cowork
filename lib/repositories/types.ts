@@ -25,6 +25,7 @@ import type {
 import type { ActionableReason } from "@/lib/rules/tasks/actionable";
 import type { CompletionState } from "@/lib/rules/tasks/completion";
 import type { DutyMode, DutyHistoryEntry, DutySnapshot } from "@/lib/rules/presence/duty";
+import type { DutyFacts } from "@/lib/rules/presence/roster";
 import type { OfficePolicy } from "@/lib/legacy/officePolicy";
 import type {
   TimerSopConfig,
@@ -1224,6 +1225,47 @@ export interface CoworkRepository {
     employeeIds: EmployeeId[],
     onChange: (modes: Map<EmployeeId, DutyMode>) => void,
   ): () => void;
+  /**
+   * Live presence for a set of people WITH the clocks behind it — the
+   * administrator's roster.
+   *
+   * `watchDutyModes` answers one word per person, which is all a dot beside a
+   * name needs. This adds what a roster is actually asked for: how long each
+   * person has been in their current state, and how much time they have logged
+   * today. Both come from fields the duty document already carries, so this is
+   * a richer read of the same documents rather than a second source of truth.
+   *
+   * Separate from `watchDutyModes` rather than replacing it: the dots on the
+   * team pages do not need the arithmetic, and changing a method that several
+   * surfaces depend on to serve one new card is how a working feature breaks.
+   *
+   * Optional, like every capability a backend may not have. A store without it
+   * simply renders the card unavailable rather than showing everybody offline,
+   * which would be a wrong answer rather than a missing one.
+   */
+  watchDutyRoster?(
+    employeeIds: EmployeeId[],
+    onChange: (facts: Map<EmployeeId, DutyFacts>) => void,
+  ): () => void;
+  /**
+   * One day's status transitions for SEVERAL people — the attendance report.
+   *
+   * `listDutyHistory` answers for the acting employee alone, which is right for
+   * "my own history" and cannot answer "when did each person come on and go off
+   * today". This reads the same `cowork_duty_history` collection over a window
+   * of time rather than over one employee, and groups the result.
+   *
+   * The window is a half-open range on the stamp — one field, so no composite
+   * index — and the caller passes the range rather than a day key so the report
+   * and the times it prints agree about which day they mean.
+   *
+   * Optional: a store without it renders the report unavailable rather than
+   * showing a day of blanks, which would read as "nobody worked".
+   */
+  listDutyDay?(
+    employeeIds: EmployeeId[],
+    window: { startMs: number; endMs: number },
+  ): Promise<Map<EmployeeId, DutyHistoryEntry[]>>;
   /**
    * The acting employee's OWN presence, live, with the clocks behind it.
    *

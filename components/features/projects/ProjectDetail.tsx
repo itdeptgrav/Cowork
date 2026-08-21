@@ -251,6 +251,18 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             note={pr.overdueTasks ? "needs attention" : "none"}
             alert={pr.overdueTasks > 0}
           />
+          {/* **Work that is finished and waiting on somebody to look at it.**
+              `inReviewTasks` has been computed all along and shown nowhere, so
+              a project could hold a submission nobody had noticed — and the row
+              for that task reads "Overdue" rather than "In review", because
+              `statusMeta` answers with the deadline first. Both facts are true;
+              only one of them was reachable without opening the task. */}
+          <ProgressCell
+            label="In review"
+            value={String(pr.inReviewTasks)}
+            note={pr.inReviewTasks ? "waiting on a reviewer" : "none"}
+            alert={pr.inReviewTasks > 0}
+          />
           <ProgressCell
             label="Blocked"
             value={String(pr.blockedTasks)}

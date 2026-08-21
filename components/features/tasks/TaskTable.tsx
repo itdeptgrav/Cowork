@@ -1265,6 +1265,7 @@ function Row({
 
       <span className="min-w-0">
         <Chip tone={meta.tone}>{meta.label}</Chip>
+        <InReviewChip view={view} meta={meta} />
         {/* No next action on a container. `action`/`meta` read this document's
             own stored status — usually whatever it was mid-negotiation when it
             got broken down — and nothing here decides for itself that the
@@ -1437,8 +1438,42 @@ function NarrowRow({ view }: { view: TaskView }) {
           </span>
         </span>
         <Chip tone={meta.tone}>{meta.label}</Chip>
+        <InReviewChip view={view} meta={meta} />
       </div>
     </Link>
+  );
+}
+
+/**
+ * "In review", where the main chip is saying something else.
+ *
+ * `statusMeta` answers with ONE label, and it answers with the deadline first:
+ * `isBlocked`, then `isOverdue`, and only after those does it reach the task's
+ * actual status. That order is right — a task past its deadline is the more
+ * urgent fact — but it means a submission sitting with a reviewer reads as
+ * "Overdue" and nothing else, on every list in the product. The reviewer cannot
+ * tell the work is waiting on THEM without opening the task and finding the
+ * Review tab.
+ *
+ * So this adds the missing half rather than reordering the existing one. Both
+ * things are true: the task is late, AND it is finished and waiting on a person.
+ * Suppressed when the main chip already says it, so nothing is ever doubled.
+ *
+ * Nothing about status, precedence or `statusMeta` changes — this reads
+ * `task.status` and draws a second chip.
+ */
+function InReviewChip({
+  view,
+  meta,
+}: {
+  view: TaskView;
+  meta: { label: string };
+}) {
+  if (view.task.status !== "in_review" || meta.label === "In review") return null;
+  return (
+    <Chip tone="extension" title="Submitted — waiting on a reviewer">
+      In review
+    </Chip>
   );
 }
 

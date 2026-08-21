@@ -8,6 +8,7 @@ import { InlineError, SkeletonRows } from "@/components/ui/Primitives";
 import { useLens } from "@/components/layout/shell/LensContext";
 import { useQuery } from "@/lib/hooks/useRepository";
 import type { WorkloadFlow } from "@/lib/domain";
+import { axisLabelVisibility } from "@/lib/rules/ui/axisLabels";
 
 /**
  * The signature card — Cowork's flow graph, given the dashboard's hero slot.
@@ -90,7 +91,7 @@ export function SignatureGraph() {
 
       <div className="relative z-10 flex flex-1 flex-col">
         {/* Header. Title left, window control right. */}
-        <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-5 pt-4">
+        <div className="flex flex-wrap items-start gap-x-4 gap-y-3 px-4 pt-4 sm:px-5">
           <div className="min-w-0">
             <h2
               className="text-[17px] leading-none font-medium tracking-[-0.02em]"
@@ -155,7 +156,11 @@ export function SignatureGraph() {
 
         {/* The reading. The reference floats a value chip over its chart; this
             is the same device carrying the only number that is a decision. */}
-        <div className="mt-3 flex flex-wrap items-end gap-x-4 gap-y-2 px-5">
+        {/* The reading. `gap-x-3` and a tighter inline padding on a phone:
+            at 360px the figure, its unit and the chip are three items on one
+            wrapping row, and the desktop gutters pushed the chip onto a line
+            of its own beneath a figure that had room beside it. */}
+        <div className="mt-3 flex flex-wrap items-end gap-x-3 gap-y-2 px-4 sm:gap-x-4 sm:px-5">
           <p className="min-w-0">
             <span
               data-figure
@@ -226,7 +231,7 @@ export function SignatureGraph() {
              card's corner and the labels sit on it, not under it. */
           <div
             aria-hidden="true"
-            className="pointer-events-none mt-auto flex px-5 pb-4"
+            className="pointer-events-none mt-auto flex px-4 pb-4 sm:px-5"
             style={{ color: "var(--graph-ink-muted)" }}
           >
             {data.points.map((p, i) => (
@@ -239,7 +244,7 @@ export function SignatureGraph() {
                     : i === data.points.length - 1
                       ? "text-right"
                       : "text-center"
-                } ${data.points.length > 9 && i % 2 === 1 ? "invisible deck:visible" : ""}`}
+                } ${axisLabelVisibility(i, data.points.length)}`}
               >
                 {p.label}
               </span>

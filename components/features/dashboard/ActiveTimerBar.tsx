@@ -743,7 +743,7 @@ function EmptyBar() {
  * captions gone.
  */
 const BAR_SHELL =
-  "flex min-h-[58px] flex-wrap items-center gap-x-4 gap-y-3 rounded-full border border-hairline bg-[var(--surface-raised)] px-5 py-2.5 shadow-sm";
+  "flex min-h-[58px] flex-wrap items-center gap-x-2.5 gap-y-2 rounded-[29px] border border-hairline bg-[var(--surface-raised)] px-3 py-2.5 shadow-sm sm:gap-x-4 sm:px-5";
 
 /**
  * The bar's CONTROL columns are fixed. The title is the one that gives.
@@ -782,10 +782,33 @@ const BAR_SHELL =
 /** The leading slot — the priority picker, or the empty state's glyph. Fixed so
     the title starts at the same x whatever is to its left, and so a "P—" tag
     does not sit the row two pixels off a "P1" one. */
-const COL_LEAD = "w-[56px] shrink-0";
-const COL_TITLE = "min-w-[140px] max-w-[400px] flex-1 basis-0";
-const COL_TIME = "w-[150px] shrink-0";
-const COL_ACTION = "w-[150px] shrink-0";
+/**
+ * ## The same columns, at a phone's width
+ *
+ * The widths above were measured against the bar's DESKTOP mount and nothing
+ * narrower, and on a 360px screen they came to more than the row had: the
+ * action wrapped onto a second line, and because the shell was `rounded-full`
+ * the two-line row rendered as a stadium with a button hanging inside it —
+ * the shape in the reported screenshot.
+ *
+ * So every fixed column has a smaller phone value, chosen so the commonest
+ * state — a glyph, a title and one button — still fits on ONE line at 360px:
+ * 44 + 10 + 96 + 10 + 136 = 296, inside the 312 a 360px screen leaves after
+ * the page gutter. Below that it wraps, which is the honest answer, and the
+ * radius is now a fixed 29px — identical to `rounded-full` at the bar's 58px
+ * height, so nothing changes on a desktop — so a wrapped row reads as a card
+ * rather than as a mistake.
+ *
+ * The controls keep `shrink-0` at every width and are NOT allowed to grow: a
+ * growing button would split the spare pixels with the title, and the title is
+ * the column that actually needs them — a name at its 96px floor beside a
+ * 190px-wide "Browse tasks" is the wrong trade at exactly the width where
+ * space is scarcest.
+ */
+const COL_LEAD = "w-[44px] shrink-0 sm:w-[56px]";
+const COL_TITLE = "min-w-[96px] max-w-[400px] flex-1 basis-0 sm:min-w-[140px]";
+const COL_TIME = "w-[136px] shrink-0 sm:w-[150px]";
+const COL_ACTION = "w-[136px] shrink-0 sm:w-[150px]";
 /** The box every control on the bar wears: same height, same corner, always. */
 const BOX =
   "inline-flex h-9 w-full items-center rounded-full px-3.5 text-[13px] transition-colors";

@@ -20,6 +20,7 @@ import {
   type DutyMode,
   type DutySnapshot,
 } from "../../rules/presence/duty.ts";
+import type { DutyFacts } from "../../rules/presence/roster.ts";
 import {
   bankableRunSecs,
   TIMER_BANKABLE_GRACE_MS,
@@ -5651,6 +5652,72 @@ export class LegacyRepository {
   }
 
   /**
+   * The same documents as `watchDutyModes`, read for their CLOCKS as well as
+   * their mode — the administrator's roster.
+   *
+   * `dailyHoursSecs` and `updatedAt` are both already on the duty document, so
+   * this adds no field and no collection: it stops throwing away two facts
+   * every existing listener was receiving and discarding.
+   *
+   * One listener per person, exactly as `watchDutyModes` does. A roster of a
+   * few dozen people is a few dozen document listeners, which is what the team
+   * pages already open — and a collection-wide query would need a rule change
+   * on `cowork_duty_status` that the old application's own security model does
+   * not grant.
+   */
+  watchDutyRoster(
+    employeeIds: EmployeeId[],
+    onChange: (facts: Map<EmployeeId, DutyFacts>) => void,
+  ): () => void {
+    const docs = new Map<string, DutyDocument | null>();
+    const unsubscribers: (() => void)[] = [];
+    let stopped = false;
+
+    const emit = () => {
+      if (stopped) return;
+      const now = Date.now();
+      const facts = new Map<EmployeeId, DutyFacts>();
+      for (const [id, doc] of docs) {
+        facts.set(id, {
+          mode: readDutyMode(doc, now),
+          /* Closed sessions only — the shared field's own meaning. The live
+             session is added by `rosterRows`, where the reader is told the
+             figure is "today so far". */
+          closedSecs: dailyHoursSecs(doc, now),
+          sinceMs:
+            typeof doc?.updatedAt === "number" && Number.isFinite(doc.updatedAt)
+              ? doc.updatedAt
+              : null,
+        });
+      }
+      onChange(facts);
+    };
+
+    void (async () => {
+      const { doc: docRef, onSnapshot } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      if (stopped) return;
+      for (const employeeId of employeeIds) {
+        const id = String(employeeId);
+        const unsub = onSnapshot(
+          docRef(legacyDb(), ...(dutyStatusPath(id) as [string, string])),
+          (snap) => {
+            docs.set(id, snap.exists() ? (snap.data() as DutyDocument) : null);
+            emit();
+          },
+          (error) => console.error(`[duty] roster ${id}:`, error.message),
+        );
+        unsubscribers.push(unsub);
+      }
+    })();
+
+    return () => {
+      stopped = true;
+      for (const unsub of unsubscribers) unsub();
+    };
+  }
+
+  /**
    * The acting employee's status changes for one day — see `DutyHistoryEntry`.
    *
    * `where("employeeId", "==", …)` bounds the read to one person rather than
@@ -5689,6 +5756,65 @@ export class LegacyRepository {
       });
     }
     return out.sort((a, b) => b.at - a.at);
+  }
+
+  /**
+   * One day's transitions for several people — the attendance report.
+   *
+   * **Ranged on `at` rather than filtered per employee**, and that is what
+   * makes it one read instead of one per person: `at` is a single field, so the
+   * range needs no composite index, and a day of transitions across a whole
+   * organisation is a small set. The employee filter is applied in memory
+   * afterwards, which also drops anybody who has left the directory.
+   *
+   * Newest-first per person, matching `listDutyHistory` — `spanRows` reads that
+   * order and closes each stretch against the one after it.
+   */
+  async listDutyDay(
+    employeeIds: EmployeeId[],
+    window: { startMs: number; endMs: number },
+  ): Promise<Map<EmployeeId, DutyHistoryEntry[]>> {
+    const wanted = new Set(employeeIds.map(String));
+    const out = new Map<EmployeeId, DutyHistoryEntry[]>();
+    if (wanted.size === 0) return out;
+
+    const { collection, getDocs, orderBy, query, where } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const snap = await getDocs(
+      query(
+        collection(legacyDb(), "cowork_duty_history"),
+        where("at", ">=", window.startMs),
+        where("at", "<", window.endMs),
+        orderBy("at", "desc"),
+      ),
+    ).catch(() => null);
+    /* A refused or failed read is an empty report, never a throw: this is one
+       card on a dashboard, and the rest of the page is not its business. */
+    if (!snap) return out;
+
+    for (const d of snap.docs) {
+      const data = d.data() as {
+        employeeId?: unknown;
+        mode?: DutyMode;
+        at?: unknown;
+        reason?: string | null;
+      };
+      const employeeId =
+        typeof data.employeeId === "string" ? data.employeeId : null;
+      if (!employeeId || !wanted.has(employeeId)) continue;
+      if (typeof data.at !== "number" || !data.mode) continue;
+      const list = out.get(employeeId) ?? [];
+      list.push({
+        id: d.id,
+        mode: data.mode,
+        at: data.at,
+        reason: data.reason ?? null,
+      });
+      out.set(employeeId, list);
+    }
+    return out;
   }
 
   /**
@@ -9826,6 +9952,7 @@ export class LegacyRepository {
               agreedWindowSecs: number | null;
               senderWindowSecs: number | null;
               createdAtMs: number | null;
+              clockStartsAtMs: number | null;
             };
             return {
               taskId: x.id,
@@ -9840,6 +9967,12 @@ export class LegacyRepository {
                  anchored at the office opening spent the morning against work
                  that only arrived in the afternoon. */
               createdAtMs: x.createdAtMs,
+              /* Nor before its own clock starts — the instant the budget is
+                 counted from. Creation says when the work arrived; this says
+                 when the person could first have begun it, and the gap between
+                 them is where "Deadline 11:30 · Counted from 13:17" came
+                 from. */
+              clockStartsAtMs: x.clockStartsAtMs,
             };
           }) as never,
         anchorMs,

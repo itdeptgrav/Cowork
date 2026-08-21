@@ -161,6 +161,7 @@ import {
   tick,
 } from "./store";
 import {
+  dailyHoursSecs,
   dutyDayKey,
   dutyTransition,
   heartbeatPatch,
@@ -172,6 +173,7 @@ import {
   type DutyMode,
   type DutySnapshot,
 } from "@/lib/rules/presence/duty";
+import type { DutyFacts } from "@/lib/rules/presence/roster";
 import { presenceWriteRefusal } from "@/lib/rules/presence/taskGate";
 import {
   readOfficePolicy,
@@ -3983,6 +3985,36 @@ export class MockRepository implements CoworkRepository {
     };
   }
 
+  /** The roster's richer read of the same documents — see the interface note.
+   *  Implemented here as well as in the legacy store so the card can be
+   *  exercised without a backend rather than rendering unavailable. */
+  watchDutyRoster(
+    employeeIds: EmployeeId[],
+    onChange: (facts: Map<EmployeeId, DutyFacts>) => void,
+  ): () => void {
+    const emit = () => {
+      const now = Date.now();
+      const facts = new Map<EmployeeId, DutyFacts>();
+      for (const id of employeeIds) {
+        const doc = this.#duty.get(String(id)) ?? null;
+        facts.set(id, {
+          mode: readDutyMode(doc, now),
+          closedSecs: dailyHoursSecs(doc, now),
+          sinceMs:
+            typeof doc?.updatedAt === "number" && Number.isFinite(doc.updatedAt)
+              ? doc.updatedAt
+              : null,
+        });
+      }
+      onChange(facts);
+    };
+    this.#dutyWatchers.add(emit);
+    emit();
+    return () => {
+      this.#dutyWatchers.delete(emit);
+    };
+  }
+
   /** The acting employee's own presence, live — see the interface note. */
   watchDutyStatus(
     onChange: (snapshot: DutySnapshot) => void,
@@ -3996,6 +4028,21 @@ export class MockRepository implements CoworkRepository {
     return () => {
       this.#dutyWatchers.delete(emit);
     };
+  }
+
+  /** One day's transitions for several people — see the interface note. */
+  async listDutyDay(
+    employeeIds: EmployeeId[],
+    window: { startMs: number; endMs: number },
+  ): Promise<Map<EmployeeId, DutyHistoryEntry[]>> {
+    const out = new Map<EmployeeId, DutyHistoryEntry[]>();
+    for (const id of employeeIds) {
+      const entries = (this.#dutyHistory.get(String(id)) ?? [])
+        .filter((e) => e.at >= window.startMs && e.at < window.endMs)
+        .sort((a, b) => b.at - a.at);
+      if (entries.length) out.set(id, entries);
+    }
+    return out;
   }
 
   async listDutyHistory(dayKey?: string): Promise<DutyHistoryEntry[]> {

@@ -261,8 +261,17 @@ function ProjectCard({ view }: { view: ProjectView }) {
         />
       </div>
 
-      <div className="mt-3 grid grid-cols-4 gap-2 border-t border-hairline pt-2.5">
+      {/* Five now, not four: **In review** is work that is finished and waiting
+          on a person. It was computed and shown nowhere, so a card could report
+          "Overdue 1 · Blocked 0" on a project whose only problem was a
+          submission sitting on somebody's desk. */}
+      <div className="mt-3 grid grid-cols-5 gap-2 border-t border-hairline pt-2.5">
         <Stat label="Done" value={`${pr.completedTasks}/${pr.totalTasks}`} />
+        <Stat
+          label="In review"
+          value={String(pr.inReviewTasks)}
+          alert={pr.inReviewTasks > 0}
+        />
         <Stat
           label="Overdue"
           value={String(pr.overdueTasks)}

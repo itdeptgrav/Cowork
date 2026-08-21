@@ -85,6 +85,26 @@ export interface QueueTask {
    * `startedAtMs`, which is the same tolerant parse.
    */
   createdAtMs?: unknown;
+  /**
+   * When the clock on this task actually starts — its budget's own origin.
+   *
+   * **A task cannot be due before its clock starts**, which is the same rule as
+   * `createdAtMs` above taken one step further. Creation says when the work
+   * arrived; this says when the person could first have begun it — the moment
+   * they came online for it, or their acceptance where they were not online.
+   * It is stamped once, when the budget is accepted, and never moves.
+   *
+   * The two are not the same instant and the gap between them is not small. A
+   * task created at 09:00 whose assignee first came online at 13:17 has a
+   * budget counted from 13:17, and a queue anchored only on creation gave it a
+   * deadline of 11:30 — an hour's work due two hours before the hour could
+   * start. The task then said "Deadline 11:30" beside "Counted from 13:17",
+   * which is not a tight deadline but an impossible one.
+   *
+   * Same tolerant parse as the others: Firestore timestamps, ISO strings and
+   * epoch ms all arrive here.
+   */
+  clockStartsAtMs?: unknown;
 }
 
 /**
@@ -311,6 +331,37 @@ export function chainDeadlines(input: {
 }): ChainedDeadline[] {
   const out: ChainedDeadline[] = [];
   let anchorMs = input.anchorMs;
+
+  /**
+   * **The queue cannot begin before the person could — measured ONCE.**
+   *
+   * `clockStartsAt` is when they could first have started: the moment they came
+   * online for the work, or their acceptance where they were not. It is what the
+   * time budget is counted from, so a chain that ignored it produced a deadline
+   * before the budget's own origin — the reported "Deadline 11:30 · Counted from
+   * 13:17", an hour's work due two hours before the hour could start.
+   *
+   * **Taken from the LEADER, and applied to the queue rather than to each task.**
+   * That distinction is the whole of the second fault. Applied per task it
+   * double-counts the wait: the chain already places P2 after P1, and P2's own
+   * stamp is later for exactly that reason — it was accepted after P1 was — so
+   * clamping to it adds the same hour twice. Worse, after a reorder whichever
+   * task carried the late stamp dragged the entire chain with it, so swapping
+   * two ranks moved both dates later instead of exchanging them.
+   *
+   *   Both given 13:32, both 1h:
+   *     P1 -> 14:32, P2 -> 15:32        and swapping the ranks swaps the dates
+   *
+   * Availability is a fact about the PERSON, not about each task. It belongs to
+   * the start of their queue, once. Each task's own `createdAtMs` still clamps
+   * individually below, because "this did not exist yet" genuinely is per task.
+   *
+   * Not `startedAt`: pressing play must never move a date — see `anchorMsFor`.
+   * `clockStartsAt` is stamped once when the budget is accepted and never moves,
+   * so reading it here cannot reintroduce that.
+   */
+  const leaderClockMs = startedAtMs(input.queue[0]?.clockStartsAtMs);
+  if (leaderClockMs !== null && leaderClockMs > anchorMs) anchorMs = leaderClockMs;
 
   for (const task of input.queue) {
     /**

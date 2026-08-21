@@ -1458,6 +1458,42 @@ export const HELP_ARTICLES: HelpArticle[] = [
   },
 
   {
+    id: "status-who-is-on-duty",
+    category: "status",
+    title: "Today's attendance — the administrator's panel",
+    keywords: [
+      "who is online",
+      "who is working",
+      "team presence",
+      "on duty",
+      "everybody's status",
+      "online today",
+      "today's attendance",
+      "attendance panel",
+      "attendance right now",
+      "what time did they come online",
+      "when did they go offline",
+    ],
+    examples: [
+      "How do I see who is online?",
+      "Where can I see everyone's status?",
+      "What time did someone come online today?",
+      "How many hours has each person worked today?",
+      "Why can't I see today's attendance?",
+    ],
+    answer:
+      "Administrators get a <b>Today's attendance</b> button at the top of the right-hand column on the home page. It reads the count without being opened — “15 of 18 on duty”, and how many are away — and clicking it slides a panel in from the right with the detail. Each person shows their status, the times they came on and went off, and their total for the day: for example “9:30 AM → 6:30 PM” with “9h 00m” beside it. Somebody still working reads “9:30 AM → still on duty”, and the total climbs while you watch. Where a day has more than one stretch — a break in the middle, a reconnect — the row says how many sessions there were and opens to list each one with its own times and length. Break and Emergency time is not counted as time on duty, so a day split by a lunch break adds up to the work, not the whole span. All times are IST. The panel searches by name, refreshes on demand, closes with the ×, the Escape key or a click outside, and can be widened or narrowed by dragging its left edge — on a phone it fills the screen and can be swiped away to the right. One thing worth knowing before acting on a figure: <b>a session stays open until the person ends it</b>, because nothing in Cowork takes a status away from somebody who did not ask to lose it — so a person who closed their laptop without going offline still reads as on duty, and their time today counts from midnight rather than from when they actually stopped. Two things the panel does not do: it makes no judgement — there is no late, no ranking and no score in it, only what the status records say — and it is not a way to see anybody's screen, which stays where it was and still requires being that person's manager. <b>Only a system administrator has this button.</b> Everybody's whereabouts on one screen is the same comparative visibility the Team lens is reserved for; a manager sees the same facts for the people who report to them, on the team pages.",
+    related: [
+      "status-online",
+      "status-history",
+      "general-lens",
+      "settings-console",
+    ],
+    source:
+      "components/features/dashboard/AttendanceButton.tsx and AttendanceDrawer.tsx, gated in Home.tsx on canAccessAdminConsole (lib/rules/admin/access.ts); sessions, day clipping and the printed times in lib/rules/presence/attendanceDay.ts over spanRows; live states from watchDutyRoster and the day's transitions from listDutyDay over cowork_duty_history, both repositories",
+  },
+
+  {
     id: "status-task-actions",
     category: "status",
     title: "Task actions while you are away",

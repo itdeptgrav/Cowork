@@ -127,13 +127,17 @@ function ScorePill({
       onClick={() => onVisit("/score")}
       aria-current={active ? "page" : undefined}
       title="Your performance score. Visible only to you and your reporting chain."
-      className={`inline-flex items-center gap-1 rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
+      /* `min-w-0` makes this the control that gives way when the bar is tight.
+         It is the widest thing in the cluster and the only one whose label can
+         be shortened without losing meaning — an icon button clipped is a
+         target nobody can hit, where "Sco…(95%)" is still a score. */
+      className={`inline-flex min-w-0 items-center gap-1 rounded-full px-3.5 py-1.5 text-[15px] font-medium tracking-[-0.012em] transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
         active
           ? "bg-ink text-[var(--body-bg)]"
           : "text-ink-muted hover:bg-[var(--surface-sunken)] hover:text-ink"
       }`}
     >
-      <span>Score</span>
+      <span className="truncate">Score</span>
       {pct === null ? (
         /* The label is present and clickable while the number loads, rather than
            a bare skeleton that is neither. `bg-current` tints to whichever state
@@ -566,7 +570,9 @@ export function TopBar() {
           className={`frost-bar ${menuOpen ? "rounded-[30px]" : "rounded-full"}`}
           aria-label="Main"
         >
-          <div className="flex h-[52px] items-center gap-2 pr-2 pl-4">
+          {/* `min-w-0`, or nothing inside this row can ever be narrower than
+              its content and the bar sets the width of the whole document. */}
+          <div className="flex h-[52px] min-w-0 items-center gap-2 pr-2 pl-4">
             <Link
               href="/"
               className="mr-3 flex shrink-0 items-center gap-2.5 rounded-full py-1.5"
@@ -626,10 +632,23 @@ export function TopBar() {
               })}
             </ul>
 
-            {/* `shrink-0`: the right-hand controls are fixed-content pills and
-                must keep their size, so the tab list is what yields. Without it
-                both groups shrink and the pills deform before anything scrolls. */}
-            <div className="ml-auto flex shrink-0 items-center gap-2 deck:ml-0">
+            {/**
+              * `shrink-0` **only where there is something else to yield.**
+              *
+              * These are fixed-content pills and they should keep their size —
+              * which is right from `deck:` up, where the tab list beside them
+              * can scroll instead. Below that breakpoint the tab list is
+              * `hidden`, so it yields nothing, and two `shrink-0` groups in one
+              * flex row cannot fit 375px between them. The row then sets its own
+              * width from its content, the bar grows with it, and the DOCUMENT
+              * grows with the bar — which is the strip of dead space down the
+              * right of every page on a phone, not just this bar.
+              *
+              * So below `deck:` the cluster is allowed to compress and the score
+              * pill absorbs it (see `ScorePill`, which truncates). Above it,
+              * nothing changes.
+              */}
+            <div className="ml-auto flex min-w-0 shrink items-center gap-2 deck:ml-0 deck:shrink-0">
               {/* Presence, everywhere. It belongs to the person rather than to
                   a route: someone reading the dashboard is as online as someone
                   on a task page, and going online should not require finding a

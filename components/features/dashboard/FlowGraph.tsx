@@ -2,6 +2,7 @@
 
 import { memo, useMemo, useState } from "react";
 import type { FlowChannelId, WorkloadFlow } from "@/lib/domain";
+import { axisLabelVisibility } from "@/lib/rules/ui/axisLabels";
 
 /**
  * The workload-flow graph — structure and visual treatment from `anywhere.png`.
@@ -413,9 +414,15 @@ export const FlowGraph = memo(function FlowGraph({
             </div>
           )}
 
-          {!loading && !hasMovement && (
+          {/* **Never in the hero.** This is centred on the PLATE, and in the
+              hero the plate fills the whole card with the reading drawn over
+              it — the figure and its "Quiet" chip. On a narrow card the
+              plate's centre lands exactly on that line, so the two sentences
+              printed on top of one another. The hero already says the window
+              is empty, in its own words and in its own place. */}
+          {!loading && !hasMovement && !hero && (
             <p
-              className="absolute inset-0 grid place-items-center text-xs"
+              className="absolute inset-0 grid place-items-center px-4 text-center text-xs"
               style={{ color: "var(--graph-ink-muted)" }}
             >
               No movement recorded in this window.
@@ -440,7 +447,7 @@ export const FlowGraph = memo(function FlowGraph({
                 : i === points.length - 1
                   ? "text-right"
                   : "text-center"
-            } ${points.length > 8 && i % 2 === 1 ? "invisible sm:visible" : ""}`}
+            } ${axisLabelVisibility(i, points.length)}`}
             data-figure
           >
             {p.label}

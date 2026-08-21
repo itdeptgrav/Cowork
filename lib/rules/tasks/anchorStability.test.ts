@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorMsFor, officeOpenMsFor } from "./priorityDeadline.ts";
+import { anchorMsFor, chainDeadlines, officeOpenMsFor } from "./priorityDeadline.ts";
 
 /**
  * The projection anchor must not depend on the instant it is asked for.
@@ -103,4 +103,239 @@ test("the anchor is always the day's opening, whatever the leader did", () => {
       openMs,
     );
   }
+});
+
+/* ── A task is never due before its own clock starts ──────────────────────── */
+
+/**
+ * REPORTED: after swapping two tasks' priorities, one read
+ * "Deadline 21 Aug · 11:30 IST" beside "Counted from 21 Aug · 13:17 IST" —
+ * an hour's work due nearly two hours before the hour could begin.
+ *
+ * The swap did not cause it; it revealed it. The chain clamped its anchor to
+ * `createdAtMs` ("a task cannot be due before it existed") and stopped there,
+ * while the BUDGET is counted from `clockStartsAt` — the moment the person
+ * could first have started. Where somebody comes online hours after the work
+ * arrives, those are different instants, and the queue was scheduling against
+ * the earlier one.
+ */
+
+const HOUR = 3600;
+const at = (iso: string) => Date.parse(iso);
+
+test("the chain never schedules a task before its clock starts", () => {
+  const officeOpen = at("2026-08-21T05:00:00.000Z"); // 10:30 IST
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "T107",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: at("2026-08-21T03:30:00.000Z"), // 09:00 IST — before opening
+        clockStartsAtMs: at("2026-08-21T07:47:00.000Z"), // 13:17 IST
+      },
+    ],
+    anchorMs: officeOpen,
+    budget: "full",
+    /* Plain seconds, so the arithmetic under test is the ANCHOR rather than the
+       working-hours walk. */
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+
+  const due = Date.parse(chained[0].dueDate);
+  assert.ok(
+    due >= at("2026-08-21T07:47:00.000Z"),
+    `due ${chained[0].dueDate} is before the clock starts — the reported fault`,
+  );
+  assert.equal(chained[0].dueDate, "2026-08-21T08:47:00.000Z"); // 14:17 IST
+});
+
+test("a clock stamp EARLIER than the queue is free changes nothing", () => {
+  /* Clamping may only ever move the anchor later. Somebody who was already
+     online when the work arrived must not have their place in the queue
+     rewritten. */
+  const officeOpen = at("2026-08-21T05:00:00.000Z");
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "A",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: officeOpen,
+        clockStartsAtMs: at("2026-08-21T04:00:00.000Z"), // before opening
+      },
+    ],
+    anchorMs: officeOpen,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-21T06:00:00.000Z");
+});
+
+test("a task with no clock stamp is unaffected", () => {
+  /* Every task created before the stamp existed, and anything not yet accepted. */
+  const officeOpen = at("2026-08-21T05:00:00.000Z");
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "A",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: officeOpen,
+      },
+    ],
+    anchorMs: officeOpen,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-21T06:00:00.000Z");
+});
+
+test("the swap case: the task behind still starts when the one ahead finishes", () => {
+  /* Both tasks late-started. The leader is pushed to its clock, and the second
+     chains off the leader's new finish rather than off its own stamp. */
+  const officeOpen = at("2026-08-21T05:00:00.000Z");
+  const clock = at("2026-08-21T07:47:00.000Z"); // 13:17 IST
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "T106",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: officeOpen,
+        clockStartsAtMs: clock,
+      },
+      {
+        taskId: "T107",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 2 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: officeOpen,
+        clockStartsAtMs: clock,
+      },
+    ],
+    anchorMs: officeOpen,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-21T08:47:00.000Z"); // 14:17 IST
+  assert.equal(chained[1].dueDate, "2026-08-21T09:47:00.000Z"); // 15:17 IST
+});
+
+/* ── Swapping two ranks exchanges their dates ─────────────────────────────── */
+
+/**
+ * OWNER'S CASE, in their numbers. Two 1-hour tasks, both given 13:32:
+ *
+ *   before   T1 P1 -> 14:32     T2 P2 -> 15:32
+ *   after    T1 P2 -> 15:32     T2 P1 -> 14:32
+ *
+ * The dates belong to the QUEUE POSITIONS. Swapping the ranks exchanges them,
+ * and nothing else moves.
+ *
+ * What it looked like instead was both dates an hour late — 15:32 and 16:32 —
+ * because the clock floor was applied to every task rather than once to the
+ * queue, so the wait the chain had already counted was counted a second time.
+ */
+const GIVEN = at("2026-08-21T08:02:00.000Z"); // 13:32 IST
+const QUEUE_ANCHOR = at("2026-08-21T05:00:00.000Z"); // 10:30 IST
+
+function twoTaskQueue(order: readonly string[]) {
+  return chainDeadlines({
+    queue: order.map((id, i) => ({
+      taskId: id,
+      assigneeIds: ["E1"],
+      assigneePriorities: { E1: i + 1 },
+      agreedWindowSecs: HOUR,
+      createdAtMs: GIVEN,
+      clockStartsAtMs: GIVEN,
+    })),
+    anchorMs: QUEUE_ANCHOR,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+}
+
+test("before the swap: P1 lands an hour on, P2 an hour after that", () => {
+  const chained = twoTaskQueue(["T1", "T2"]);
+  assert.equal(chained[0].dueDate, "2026-08-21T09:02:00.000Z"); // 14:32 IST
+  assert.equal(chained[1].dueDate, "2026-08-21T10:02:00.000Z"); // 15:32 IST
+});
+
+test("after the swap: the SAME two dates, exchanged", () => {
+  /* The dates belong to the positions. Nothing new appears and nothing moves
+     later — T2 takes 14:32 and T1 takes 15:32. */
+  const chained = twoTaskQueue(["T2", "T1"]);
+  assert.equal(chained[0].taskId, "T2");
+  assert.equal(chained[0].dueDate, "2026-08-21T09:02:00.000Z"); // 14:32 IST
+  assert.equal(chained[1].taskId, "T1");
+  assert.equal(chained[1].dueDate, "2026-08-21T10:02:00.000Z"); // 15:32 IST
+});
+
+test("the set of dates is identical either way round", () => {
+  /* The strongest form of it: a reorder redistributes the slots, it does not
+     create later ones. Both dates an hour on was the reported fault. */
+  const before = twoTaskQueue(["T1", "T2"]).map((c) => c.dueDate).sort();
+  const after = twoTaskQueue(["T2", "T1"]).map((c) => c.dueDate).sort();
+  assert.deepEqual(after, before);
+});
+
+test("a late stamp on the SECOND task does not drag the chain", () => {
+  /* This is the double-count. P2's own clock is later precisely because it sits
+     behind P1 — the chain has already counted that hour. */
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "T2",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: GIVEN,
+        clockStartsAtMs: GIVEN,
+      },
+      {
+        taskId: "T1",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 2 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: GIVEN,
+        /* Stamped LATER THAN THE SLOT the chain gives it — 15:32 against a
+           14:32 start. Chosen so the two designs disagree: applied per task
+           this pushes the anchor to 15:32 and the date to 16:32, which is the
+           reported fault. Applied once to the queue it is ignored, and the
+           chain keeps its own 15:32. */
+        clockStartsAtMs: at("2026-08-21T10:02:00.000Z"),
+      },
+    ],
+    anchorMs: QUEUE_ANCHOR,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-21T09:02:00.000Z"); // 14:32 IST
+  assert.equal(chained[1].dueDate, "2026-08-21T10:02:00.000Z"); // 15:32, not 16:32
+});
+
+test("the leader's clock still floors the queue", () => {
+  /* The first fault must stay fixed: a leader whose clock starts at 13:17 is
+     not due at 11:30. */
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "A",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HOUR,
+        createdAtMs: at("2026-08-21T03:30:00.000Z"),
+        clockStartsAtMs: at("2026-08-21T07:47:00.000Z"), // 13:17 IST
+      },
+    ],
+    anchorMs: QUEUE_ANCHOR,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-21T08:47:00.000Z"); // 14:17 IST
 });
