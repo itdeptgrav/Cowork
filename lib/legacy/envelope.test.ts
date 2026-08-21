@@ -78,6 +78,65 @@ test("a failure without a body still explains itself", () => {
   assert.equal(!r.ok && r.error.kind, "permission");
 });
 
+/* ── Error pages are not error messages ───────────────────────────────────── */
+
+/**
+ * The engine answered a call to an unmounted route with Express's own 404 page,
+ * and the whole document was rendered into the row where the explanation goes:
+ *
+ *     <!DOCTYPE html> <html lang="en"> <head> <meta charset="utf-8">
+ *     <title>Error</title> </head> <body> <pre>Cannot POST /cowork/…
+ *
+ * Any front door can do this — nginx, a load balancer, a tunnel — so it is not
+ * specific to one deployment being behind.
+ */
+const EXPRESS_404 =
+  '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<title>Error</title>\n' +
+  "</head>\n<body>\n<pre>Cannot POST /cowork/employee/GR0122/send-credentials</pre>\n</body>\n</html>\n";
+
+test("an HTML error page is never used as the message", () => {
+  assert.equal(readErrorMessage(EXPRESS_404), null);
+  assert.equal(readErrorMessage("<html><body>502 Bad Gateway</body></html>"), null);
+  assert.equal(readErrorMessage("  <!doctype html><p>nope"), null);
+});
+
+test("a 404 served as a page says the server is behind, not that a record is missing", () => {
+  const r = failure(404, EXPRESS_404);
+  assert.equal(
+    !r.ok && r.error.message,
+    "This server does not have that feature yet — it may be running an older version.",
+  );
+  assert.equal(!r.ok && r.error.kind, "not_found");
+});
+
+test("a 404 answered properly still reads as a missing record", () => {
+  /* The distinction is the whole point: a mounted route that found nothing
+     replies in JSON, and that person should go looking for the record. */
+  const empty = failure(404, {});
+  assert.equal(!empty.ok && empty.error.message, "That could not be found.");
+
+  const named = failure(404, { error: "Employee not found." });
+  assert.equal(!named.ok && named.error.message, "Employee not found.");
+});
+
+test("a 500 served as a page says so rather than pretending to be an answer", () => {
+  const r = failure(502, "<html><head><title>502</title></head><body>nginx</body></html>");
+  assert.equal(
+    !r.ok && r.error.message,
+    "The server answered with an error page rather than an answer.",
+  );
+});
+
+test("plain-text failures are still passed through — only markup is dropped", () => {
+  /* Legacy answers some failures with a bare string, and those ARE the
+     explanation. Rejecting every string body would have thrown them away. */
+  assert.equal(readErrorMessage("Missing token"), "Missing token");
+  assert.equal(
+    readErrorMessage("Password must be at least 6 characters."),
+    "Password must be at least 6 characters.",
+  );
+});
+
 /* ── Retry honesty ────────────────────────────────────────────────────────── */
 
 test("statuses are classified by whether retrying could help", () => {
