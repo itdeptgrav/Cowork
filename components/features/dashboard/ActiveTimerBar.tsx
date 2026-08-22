@@ -10,6 +10,7 @@ import {
 } from "@/components/features/tasks/TimerControl";
 import { nextAction } from "@/components/features/tasks/statusMeta";
 import { DurationField } from "@/components/features/tasks/DurationField";
+import { RequestMoreTime } from "@/components/features/tasks/RequestMoreTime";
 import { Icon } from "@/components/ui/Icons";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { budgetTurn } from "@/lib/rules/tasks/budgetNegotiation";
@@ -434,8 +435,16 @@ function TimerCell({
       onMouseEnter={show}
       onMouseLeave={hide}
     >
+      {/* **Whatever the clock renders fills the slot.**
+          This targeted `button` only, and `TimerControl` does not always give
+          you one: blocked, stale and not-yours are all non-interactive spans.
+          Those fell back to their own content width and sat visibly narrower
+          than every other control on the row — the blocked clock in particular,
+          which is the one state where the row should look most like itself.
+          `[&>*]` is the child whatever tag it turns out to be, so the slot's
+          geometry stops depending on the branch inside it. */}
       <div
-        className={`[&_button]:w-full [&_button]:justify-center ${running ? "" : FORCE_WHITE}`}
+        className={`[&>*]:w-full [&>*]:justify-center ${running ? "" : FORCE_WHITE}`}
       >
         {/* Blocked is not a different control — `TimerControl`'s own bar branch
             keeps the figure and turns it amber. The bar used to swap in a
@@ -489,119 +498,10 @@ function TimerCell({
       )}
 
       {asking && (
-        <MoreTime
-          view={view}
-          panelRef={askRef}
-          onClose={() => setAsking(false)}
-        />
+        <div className={`${HOVER_BRIDGE} right-0`} ref={askRef}>
+          <RequestMoreTime view={view} onClose={() => setAsking(false)} />
+        </div>
       )}
-    </div>
-  );
-}
-
-/**
- * Asking for more hours, in the shape the first negotiation used.
- *
- * The same three parts in the same order as the terms panel — a stepper, a
- * reason, one button that sends — because it is the same conversation held
- * later. Somebody who agreed four hours on this row already knows how this
- * works; making them learn a second form on a second screen to say "make it
- * five" is the friction that had people quietly running over instead.
- *
- * It asks for an ADDITION, not a new total. `requestTimeBudgetExtension` takes
- * `requestedAdditionalSecs`, and the two readings of "5h" — five more, or five
- * altogether — differ by the whole budget already spent. The stepper starts at
- * one hour, states the total it would make, and the write is unambiguous.
- */
-function MoreTime({
-  view,
-  panelRef,
-  onClose,
-}: {
-  view: TaskView;
-  panelRef: React.RefObject<HTMLDivElement | null>;
-  onClose: () => void;
-}) {
-  const [extraSecs, setExtraSecs] = useState(3600);
-  const [reason, setReason] = useState("");
-  const current = view.task.estimatedEffortSecs ?? 0;
-
-  const [send, sendState] = useAction(async (r) => {
-    const result = discard(
-      await r.requestTimeBudgetExtension({
-        taskId: view.task.id,
-        requestedAdditionalSecs: extraSecs,
-        reason: reason.trim() || undefined,
-      }),
-    );
-    /* Closed on success only — a refused request keeps the panel and the words
-       that were typed into it. */
-    if (result.ok) onClose();
-    return result;
-  });
-
-  return (
-    <div className={`${HOVER_BRIDGE} right-0`} ref={panelRef}>
-      <div
-        role="dialog"
-        aria-label="Request more time"
-        className="frost-bar w-[300px] rounded-panel border border-hairline p-3.5 shadow-[var(--deck-seat)]"
-      >
-        <p className="text-[13px] font-medium text-ink">Ask for more time</p>
-        <p className="mt-1 text-[11px] leading-relaxed text-ink-muted">
-          How much on top of the {hoursMinutes(current)} already agreed. Your
-          manager answers, and you confirm whatever they grant.
-        </p>
-
-        <div className="mt-2.5">
-          <DurationField
-            compact
-            secs={extraSecs}
-            onChange={setExtraSecs}
-            minSecs={300}
-            aria-label="Extra time"
-          />
-        </div>
-        <p className="mt-1.5 text-[11px] text-ink-faint">
-          Would make <span data-figure>{hoursMinutes(current + extraSecs)}</span>{" "}
-          in total.
-        </p>
-
-        <textarea
-          value={reason}
-          autoFocus
-          rows={3}
-          onChange={(e) => setReason(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Escape") onClose();
-          }}
-          placeholder="Why the work needs longer"
-          aria-label="Why the work needs longer"
-          className="mt-2.5 w-full resize-none rounded-panel bg-[var(--surface-sunken)] px-3 py-2 text-[13px] leading-relaxed text-ink placeholder:text-ink-faint outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--ink-muted)]"
-        />
-        {sendState.error && (
-          <p
-            role="alert"
-            className="mt-2 text-[11px] leading-relaxed text-[var(--state-overdue-ink)]"
-          >
-            {sendState.error}
-          </p>
-        )}
-
-        <div className="mt-2.5 flex gap-2">
-          <button type="button" onClick={onClose} className={PILL_GREY}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            disabled={sendState.isPending}
-            onClick={() => void send()}
-            className={PILL}
-          >
-            {sendState.isPending ? "Sending…" : "Send"}
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

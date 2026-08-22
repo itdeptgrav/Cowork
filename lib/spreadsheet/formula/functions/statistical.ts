@@ -10,8 +10,8 @@
 
 import type { Node } from "../ast";
 import type { FnContext } from "../evaluator";
-import { DIV0, FormulaError, NA, isError } from "../errors";
-import { isBlank, type ScalarValue } from "../value";
+import { DIV0, FormulaError, NA, NUM, isError } from "../errors";
+import { isArray, isBlank, toNumber, type ScalarValue } from "../value";
 import { aggregateNumbers, matchesCriteria, type Fn } from "./types";
 
 const AVERAGE: Fn = (args, ctx) => {
@@ -20,16 +20,35 @@ const AVERAGE: Fn = (args, ctx) => {
   return nums.length === 0 ? DIV0 : nums.reduce((a, b) => a + b, 0) / nums.length;
 };
 
+/** COUNT never errors — it counts what is numeric and ignores the rest. In a
+    range (or array) only numeric CELLS count; a direct argument counts when it
+    coerces (TRUE, "5"), and unparseable direct text simply does not. Error
+    values — direct or in a range — are ignored, not propagated (Sheets/Excel). */
 const COUNT: Fn = (args, ctx) => {
-  const nums = aggregateNumbers(args, ctx);
-  return isError(nums) ? nums : nums.length;
+  let count = 0;
+  for (const arg of args) {
+    if (arg.type === "range") {
+      for (const v of ctx.collect(arg)) if (typeof v === "number") count += 1;
+      continue;
+    }
+    const v = ctx.eval(arg);
+    if (isArray(v)) {
+      for (const x of v.flat()) if (typeof x === "number") count += 1;
+      continue;
+    }
+    if (isError(v) || isBlank(v)) continue;
+    if (!isError(toNumber(v))) count += 1;
+  }
+  return count;
 };
 
+/** Counts every non-blank value — errors and empty strings included. An array
+    argument (UNIQUE, FILTER, …) is flattened to its elements, like the other
+    aggregates. */
 const COUNTA: Fn = (args, ctx) => {
   let count = 0;
   for (const arg of args) {
-    const vals = arg.type === "range" ? ctx.collect(arg) : [ctx.eval(arg)];
-    for (const v of vals) if (!isBlank(v)) count += 1;
+    for (const v of ctx.collect(arg)) if (!isBlank(v)) count += 1;
   }
   return count;
 };
@@ -37,7 +56,7 @@ const COUNTA: Fn = (args, ctx) => {
 const MEDIAN: Fn = (args, ctx) => {
   const nums = aggregateNumbers(args, ctx);
   if (isError(nums)) return nums;
-  if (nums.length === 0) return NA;
+  if (nums.length === 0) return NUM; // no numeric data is #NUM!, per Sheets/Excel
   const sorted = [...nums].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;

@@ -124,9 +124,16 @@ test("a figure is never shown as an answer to a question it does not answer", ()
 
 test("the assignee is named on the card", () => {
   /* On a cross-department task the reader is a manager elsewhere, and "based on
-     the workload" without a name invites them to assume it is their own. */
+     the workload" without a name invites them to assume it is their own.
+
+     Matched as three separate facts rather than one `Based on {employeeName`
+     literal: Prettier moves the `{" "}` separator between the text and the
+     expression when the surrounding line lengths change, which broke this
+     assertion on a card whose copy had not changed at all. */
   const src = code(CARD);
-  assert.match(src, /Based on \{employeeName/);
+  assert.match(src, /Based on\b/);
+  assert.match(src, /employeeName \? `\$\{employeeName\}/);
+  assert.match(src, /"the assignee/, "the unnamed fallback is gone");
 });
 
 test("setting hours is never blocked by a risky verdict", () => {
@@ -301,34 +308,107 @@ test("effort is drawn as well as printed", () => {
   assert.match(src, /const longest = Math\.max\(/);
 });
 
-test("budget can be tried in the panel, but the parent still owns it", () => {
+test("the panel cannot grow a budget control of its own", () => {
+  /* CHANGED ON PURPOSE — this used to assert the panel's own row of hour chips
+     (`onBudgetChange(h * 3600)`) read its selected state from the prop, so it
+     could not drift from the dropdown the form drew above it.
+
+     That was a rule holding TWO controls for ONE number in step. They could not
+     disagree, but nothing told a reader that, and two controls sitting together
+     is a promise that they do different things. The rule is now structural
+     instead: the budget control is passed IN as a node, so the panel has
+     nothing of its own to keep in step. */
   const src = code(CARD);
-  assert.match(src, /onBudgetChange\(h \* 3600\)/);
-  /* Selected state reads the PROP, so the chips cannot drift from the
-     dropdown — there is one number and two ways to reach it. */
-  assert.match(src, /estimatedWorkSeconds === h \* 3600/);
+  assert.match(src, /budgetControl\?: React\.ReactNode;/);
+  assert.match(src, /\{budgetControl\}/);
   assert.equal(
-    /useState.*[Bb]udget|setBudget|setHours/.test(src),
+    /useState.*[Bb]udget|setBudget|setHours|onBudgetChange/.test(src),
     false,
-    "the panel is holding its own budget",
+    "the panel is holding, setting, or reporting a budget of its own",
   );
 });
 
-test("the budget chips drive the same field the button submits", () => {
+test("the budget offers ONE list of hours, from one place", () => {
+  /* There used to be two lists: `[1, 2, 4, 8, 12, 16]` on the panel's chips and
+     `[1, 2, 3, 4, 6, 8, 12, 16, 24, 40]` in the form's dropdown. The dropdown
+     could therefore show a value no chip could reach, and pressing a chip
+     silently narrowed the range somebody had already chosen from. */
   const detail = code("components/features/tasks/TaskDetail.tsx");
-  assert.match(detail, /onBudgetChange=\{\(secs\) => setHours\(secs \/ 3600\)\}/);
-  /* Every chip must exist in the dropdown, or pressing one would leave the
-     Select showing a value it has no option for. */
-  const chips = code(CARD).match(/\[1, 2, 4, 8, 12, 16\]/);
-  assert.ok(chips, "the chip set moved; re-check it against the dropdown");
-  const opts = detail.match(/\[1, 2, 3, 4, 6, 8, 12, 16, 24, 40\]/);
-  assert.ok(opts, "the dropdown option set moved; re-check it against the chips");
+  assert.match(
+    detail,
+    /const BUDGET_HOURS = \[1, 2, 3, 4, 6, 8, 12, 16, 24, 40\];/,
+    "the hour list moved — there must still be exactly one",
+  );
+  /* The control writes the same `hours` the commit button submits. */
+  assert.match(detail, /<BudgetChoice hours=\{hours\} onChange=\{setHours\} \/>/);
+  assert.match(detail, /budgetControl=\{budgetControl\}/);
+  /* And no second list survives anywhere. */
+  assert.equal(
+    /\[1, 2, 4, 8, 12, 16\]/.test(code(CARD)),
+    false,
+    "the panel grew a second set of budget chips",
+  );
+  assert.equal(
+    /<Select/.test(detail.slice(detail.indexOf("function EffortEstimateForm("))),
+    false,
+    "the dropdown came back alongside the chips",
+  );
+});
+
+test("the budget control is a real radiogroup, not ten tab stops", () => {
+  /* It picks one of ten. Arrow keys move between them and only the selected
+     hour is in the tab order — anything else makes a keyboard reader press Tab
+     nine times to cross one field. */
+  const detail = code("components/features/tasks/TaskDetail.tsx");
+  assert.match(detail, /role="radiogroup"/);
+  assert.match(detail, /role="radio"/);
+  assert.match(detail, /aria-checked=\{on\}/);
+  assert.match(detail, /tabIndex=\{on \? 0 : -1\}/);
+  assert.match(detail, /ArrowRight|ArrowLeft/);
 });
 
 test("budget selection is offered only where the budget is being set", () => {
-  /* The priority dialog changes an order, not an estimate. Chips there would
-     offer to set a budget that control cannot save. */
-  assert.equal(/onBudgetChange/.test(code(DIALOG)), false);
+  /* The priority dialog changes an order, not an estimate. A budget control
+     there would offer to set a number that control cannot save. */
+  assert.equal(/budgetControl/.test(code(DIALOG)), false);
+});
+
+test("the budget control survives a preview that cannot answer", () => {
+  /* It is the one thing on the card that is NOT a preview. Dropping it while
+     the engine thinks would take the form's only input away for the length of a
+     round trip; dropping it on failure would strand a reader who has just been
+     told the preview is the broken part. */
+  const src = code(CARD);
+  const failed = src.slice(src.indexOf("if (failed) {"), src.indexOf("const taskTitleFor"));
+  assert.equal(
+    (failed.match(/\{budgetControl\}/g) ?? []).length,
+    2,
+    "a waiting state drops the budget control",
+  );
+  /* And where the panel renders nothing at all, the FORM mounts it instead. */
+  const detail = code("components/features/tasks/TaskDetail.tsx");
+  assert.match(detail, /\{!assigneeId && \(/);
+});
+
+test("the two halves split on the panel's own width, not the window's", () => {
+  /* The same panel is mounted in `PriorityDialog` at ~512px. A viewport
+     breakpoint would put two columns in a dialog that has room for one. */
+  const src = code(CARD);
+  assert.match(src, /@container/);
+  assert.match(src, /@3xl:grid-cols-2/);
+  assert.equal(
+    /\b(sm|md|lg|xl|deck):grid-cols-2/.test(src),
+    false,
+    "the split reads the viewport instead of the container",
+  );
+  /* Left half is the commitment, right half is the placement. */
+  const gridAt = src.indexOf("@3xl:grid-cols-2");
+  const queueAt = src.indexOf("hasQueue && (", gridAt);
+  const budgetAt = src.indexOf("{budgetControl}", gridAt);
+  assert.ok(
+    budgetAt > gridAt && budgetAt < queueAt,
+    "the budget is no longer in the left half, above the queue",
+  );
 });
 
 /* ── Drag and drop ────────────────────────────────────────────────────────── */

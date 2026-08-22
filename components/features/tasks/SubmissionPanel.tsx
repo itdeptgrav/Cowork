@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Chip,
@@ -19,7 +19,13 @@ import {
 import { SubmittedFiles } from "./SubmittedFiles";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { viewerHolds } from "@/lib/rules/tasks/viewerHolds";
-import { formatDateTime } from "@/lib/utils/format";
+import { useLiveNow } from "@/lib/hooks/useLiveNow";
+import {
+  istDayKey,
+  hasReportFor,
+  workedToday,
+} from "@/lib/rules/tasks/dailyReport";
+import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -57,6 +63,97 @@ export function SubmissionPanel({
   const [submit, state] = useAction((r) =>
     r.submitCompletion({ taskId, message, attachmentIds: files }),
   );
+
+  /**
+   * **The daily report is filed from this same composer.**
+   *
+   * They were two forms on two tabs asking the same question — what did you
+   * do, and what can somebody look at — and the second was usually the first
+   * reworded. One box, two buttons: log today's progress, or hand the work
+   * over. What differs is the consequence, not the writing.
+   *
+   * `useLiveNow`, not `useNow`: `useNow` floors to the current minute, so a
+   * timer started seconds ago computes a negative elapsed and `workedToday`
+   * drops it — the task would not count as worked until the minute rolled.
+   */
+  const nowMs = useLiveNow();
+  const today = istDayKey(nowMs);
+  const reports = useQuery((r) => r.listDailyReports(taskId), [taskId]);
+  const commits = useQuery((r) => r.listDayCommits(today), [today]);
+  const timers = useQuery((r) => r.listTimers(), []);
+
+  const workedThis = useMemo(() => {
+    const worked = workedToday(
+      commits.data ?? [],
+      (timers.data ?? []) as Parameters<typeof workedToday>[1],
+      nowMs,
+    );
+    return worked.find((w) => w.taskId === taskId) ?? null;
+  }, [commits.data, timers.data, nowMs, taskId]);
+
+  /**
+   * When a report is owed: you worked on it, you have not filed one today, and
+   * the task is NOT finished.
+   *
+   * The last condition is the new one. A report is the record of a day spent on
+   * work still in progress — once the task is completed the submission is the
+   * account of it, and asking for a daily report as well would be asking twice
+   * for the same day.
+   */
+  const isClosed =
+    view.task.status === "completed" ||
+    view.task.status === "cancelled" ||
+    view.task.status === "assignment_rejected";
+  const reportOwed =
+    Boolean(me) &&
+    !isClosed &&
+    workedThis !== null &&
+    !hasReportFor(reports.data ?? [], String(me ?? ""), today);
+
+  const [filing, setFiling] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  /**
+   * A daily report needs its supporting documents; a submission does not.
+   *
+   * Deliberately different, and the reason is what each is for. A submission is
+   * read by a reviewer who can ask for anything missing; a daily report is read
+   * later, by somebody reconstructing what a day went on, and a sentence with
+   * nothing attached is not a record of work. So the report button waits for a
+   * file and the submit button does not.
+   */
+  const canFileReport =
+    reportOwed && message.trim().length > 0 && staged.length > 0;
+
+  async function fileReport() {
+    setFiling(true);
+    setFileError(null);
+    const r = await repo.submitDailyReport({
+      taskId,
+      message: message.trim(),
+      /* Still on the contract, no longer meaningful and no longer shown —
+         nobody can compute what fraction of a task is done, so the figure was
+         only ever an assertion. Written as zero rather than invented. */
+      progressPercent: 0,
+      attachmentIds: [],
+      /* Named and typed from the chosen files. `url` is empty because nothing
+         has been uploaded yet — the report records WHAT was attached; the
+         bytes follow the same staging path the submission uses. */
+      attachments: staged.map((f) => ({
+        name: f.name,
+        url: "",
+        mimeType: f.type || "application/octet-stream",
+      })),
+    });
+    setFiling(false);
+    if (!r.ok) {
+      setFileError(r.message);
+      return;
+    }
+    setMessage("");
+    setStaged([]);
+    onChange();
+  }
 
   /**
    * **Three answers, not two — see `viewerHolds`.**
@@ -181,7 +278,33 @@ export function SubmissionPanel({
             </div>
           )}
 
-          <div className="mt-3 flex justify-end">
+          {fileError && (
+            <div className="mt-3">
+              <InlineError message={fileError} />
+            </div>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            {/* **File a daily report, from the same box.**
+                Only when one is actually owed — the timer ran on this task
+                today, nothing has been filed, and the task is still open. On a
+                task nobody worked today this button is simply absent rather
+                than present and refused. */}
+            {reportOwed && (
+              <>
+                <span className="mr-auto text-[11px] text-ink-faint">
+                  {formatDuration(workedThis?.totalSecs ?? 0)} worked today
+                  {staged.length === 0 &&
+                    " · attach the supporting work to file a report"}
+                </span>
+                <Button
+                  disabled={filing || !canFileReport}
+                  onClick={() => void fileReport()}
+                >
+                  {filing ? "Filing…" : "File daily report"}
+                </Button>
+              </>
+            )}
             <Button
               data-help="task-submit-work-button"
               tone="primary"

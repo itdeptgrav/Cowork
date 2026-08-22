@@ -11,15 +11,15 @@
  *   A$1   → column shifts, row held    $A1   → row shifts, column held
  *
  * It works at the TOKEN level rather than parse → serialise, so everything that
- * is not a reference — operators, numbers, function names, strings — is emitted
- * back exactly as written and only the references change. That keeps the output
- * faithful (`=A2*2`, not a re-parenthesised equivalent) and sidesteps having to
+ * is not a reference — operators, numbers, function names, strings, and the
+ * spacing between them — is emitted back exactly as written (from each token's
+ * source slice) and only the references change. That keeps the output faithful
+ * (`=A2*2`, not a re-parenthesised equivalent) and sidesteps having to
  * reproduce precedence when printing an AST back out.
  */
 
 import { columnIndex, columnLabel } from "../coordinates";
-import { renderSheetPrefix } from "./sheets";
-import { tokenize, type Token } from "./tokenizer";
+import { tokenizeSpanned, type SpannedToken } from "./tokenizer";
 
 /** The shape of a reference token: optional `$`, letters, optional `$`, digits. */
 const REF_SHAPE = /^(\$?)([A-Za-z]+)(\$?)(\d+)$/;
@@ -41,40 +41,35 @@ export function shiftReference(ref: string, dRow: number, dCol: number): string 
   return `${absCol ? "$" : ""}${columnLabel(col)}${absRow ? "$" : ""}${row + 1}`;
 }
 
-/** Re-emit a single token as source text, shifting it if it is a reference.
-    A cross-sheet reference's row/column shift like any other (a copied
-    `=Sheet2!A1` becomes `=Sheet2!A2` a row down) — only its sheet stays. */
-function renderToken(token: Token, dRow: number, dCol: number): string {
-  switch (token.type) {
-    case "ref":
-      return shiftReference(token.value, dRow, dCol);
-    case "sheet":
-      return renderSheetPrefix(token.value);
-    case "string":
-      /* Re-quote, doubling any embedded quote — the inverse of the tokenizer. */
-      return `"${token.value.replace(/"/g, '""')}"`;
-    default:
-      return token.value;
-  }
-}
-
 /**
- * Adjust every relative reference in a raw formula by a (row, col) delta.
+ * Adjust every relative reference in a raw formula by a (row, col) delta. A
+ * cross-sheet reference's row/column shift like any other (a copied
+ * `=Sheet2!A1` becomes `=Sheet2!A2` a row down) — only its sheet stays.
  *
  * A non-formula, a zero delta, or anything that will not tokenize is returned
  * untouched — a broken formula stays exactly as the person wrote it rather than
- * being silently rewritten.
+ * being silently rewritten. Everything that is not a shifted reference is
+ * re-emitted from its source slice, so spacing and spellings survive.
  */
 export function adjustFormula(raw: string, dRow: number, dCol: number): string {
   if (!raw.startsWith("=")) return raw;
   if (dRow === 0 && dCol === 0) return raw;
-  let tokens: Token[];
+  const body = raw.slice(1);
+  let tokens: SpannedToken[];
   try {
-    tokens = tokenize(raw.slice(1));
+    tokens = tokenizeSpanned(body);
   } catch {
     return raw;
   }
   let out = "=";
-  for (const token of tokens) out += renderToken(token, dRow, dCol);
+  let pos = 0;
+  for (const token of tokens) {
+    if (token.type !== "ref") continue;
+    const shifted = shiftReference(token.value, dRow, dCol);
+    if (shifted === token.value) continue; // clamped or anchored — verbatim
+    out += body.slice(pos, token.start) + shifted;
+    pos = token.end;
+  }
+  out += body.slice(pos);
   return out;
 }

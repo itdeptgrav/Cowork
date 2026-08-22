@@ -16,6 +16,8 @@
 import {
   DEFAULT_COL_COUNT,
   DEFAULT_ROW_COUNT,
+  MAX_IMPORT_COLS,
+  MAX_IMPORT_ROWS,
 } from "./model";
 import { DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT } from "./metrics";
 import type { SerializedCell, SerializedSheet, SerializedWorkbook } from "./persistence";
@@ -39,6 +41,12 @@ function str(x: unknown, fallback: string): string {
 }
 function num(x: unknown, fallback: number): number {
   return typeof x === "number" && Number.isFinite(x) ? x : fallback;
+}
+/** A sheet dimension as a usable count: at least 1, capped at the same ceiling
+    the xlsx importer enforces — a claimed 0×-5 grid or a claimed billion-row
+    one both come out loadable. */
+function dimension(x: unknown, fallback: number, max: number): number {
+  return Math.min(max, Math.max(1, Math.floor(num(x, fallback))));
 }
 function numberRecord(x: unknown): Record<number, number> {
   if (!isObject(x)) return {};
@@ -81,8 +89,8 @@ function normalizeSheet(x: unknown, index: number): SerializedSheet {
   const sheet: SerializedSheet = {
     id: str(s.id, `sheet-${index + 1}`),
     name: str(s.name, `Sheet${index + 1}`),
-    rowCount: num(s.rowCount, DEFAULT_ROW_COUNT),
-    colCount: num(s.colCount, DEFAULT_COL_COUNT),
+    rowCount: dimension(s.rowCount, DEFAULT_ROW_COUNT, MAX_IMPORT_ROWS),
+    colCount: dimension(s.colCount, DEFAULT_COL_COUNT, MAX_IMPORT_COLS),
     defaultRowHeight: num(s.defaultRowHeight, DEFAULT_ROW_HEIGHT),
     defaultColWidth: num(s.defaultColWidth, DEFAULT_COL_WIDTH),
     frozenRows: num(s.frozenRows, 0),
@@ -108,6 +116,10 @@ function normalizeSheet(x: unknown, index: number): SerializedSheet {
   if (links) sheet.links = links;
   const comments = passthroughObject<NonNullable<SerializedSheet["comments"]>>(s.comments);
   if (comments) sheet.comments = comments;
+  const rowGroups = passthroughArray<NonNullable<SerializedSheet["rowGroups"]>[number]>(
+    s.rowGroups,
+  );
+  if (rowGroups) sheet.rowGroups = rowGroups;
   return sheet;
 }
 
@@ -130,7 +142,14 @@ export function importWorkbookJson(text: string): JsonImportResult {
   }
 
   const sheets = parsed.sheets.map((s, i) => normalizeSheet(s, i));
-  const styles = Array.isArray(parsed.styles) ? parsed.styles : [];
+  /* The style table is id-indexed, so a corrupt ENTRY is replaced by the empty
+     style in place rather than filtered out — dropping it would renumber every
+     later id and mis-style unrelated cells. Only plain objects pass through;
+     null/number/string/array entries (which would throw inside the style
+     deserializer) degrade to {}. */
+  const styles = Array.isArray(parsed.styles)
+    ? parsed.styles.map((s) => (isObject(s) ? s : {}))
+    : [];
   const activeSheetId =
     typeof parsed.activeSheetId === "string" &&
     sheets.some((s) => s.id === parsed.activeSheetId)

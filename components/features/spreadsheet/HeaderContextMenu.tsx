@@ -56,6 +56,9 @@ export function HeaderContextMenu({
       className="fixed z-50 max-h-[70vh] min-w-[184px] overflow-y-auto rounded-card border border-hairline bg-[var(--surface-raised)] py-1 text-[13px] shadow-lg"
       style={{ left: x, top: y }}
       onContextMenu={(e) => e.preventDefault()}
+      /* Menu actions act on the grid's selection, so the press must not take
+         focus off the grid — the toolbar convention, applied here too. */
+      onMouseDown={(e) => e.preventDefault()}
     >
       {items.map((item, i) =>
         item.label === undefined ? (

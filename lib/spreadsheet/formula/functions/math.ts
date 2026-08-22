@@ -52,11 +52,15 @@ const POWER: Fn = (args, ctx) => {
   if (isError(a)) return a;
   const b = toNumber(ctx.eval(args[1]));
   if (isError(b)) return b;
+  /* 0 to a negative power is a division by zero (1/0^n), per Sheets/Excel. */
+  if (a === 0 && b < 0) return DIV0;
   const r = Math.pow(a, b);
   return Number.isFinite(r) ? r : NUM;
 };
 
-/** Round away from zero to a multiple of `significance` (default 1). */
+/** Round up (toward +∞) to a multiple of `significance` (default 1); a
+    negative significance with a negative value rounds away from zero instead.
+    A positive value with a negative significance is #NUM!, per Sheets/Excel. */
 const CEILING: Fn = (args, ctx) => {
   const bad = argCount(args, 1, 2);
   if (bad) return bad;
@@ -65,10 +69,13 @@ const CEILING: Fn = (args, ctx) => {
   const sig = args.length === 2 ? toNumber(ctx.eval(args[1])) : 1;
   if (isError(sig)) return sig;
   if (sig === 0) return 0;
+  if (x > 0 && sig < 0) return NUM;
   return Math.ceil(x / sig) * sig;
 };
 
-/** Round toward zero to a multiple of `significance` (default 1). */
+/** Round down (toward −∞) to a multiple of `significance` (default 1); a
+    negative significance with a negative value rounds toward zero instead. A
+    positive value with a negative significance is #NUM!, per Sheets/Excel. */
 const FLOOR: Fn = (args, ctx) => {
   const bad = argCount(args, 1, 2);
   if (bad) return bad;
@@ -77,6 +84,7 @@ const FLOOR: Fn = (args, ctx) => {
   const sig = args.length === 2 ? toNumber(ctx.eval(args[1])) : 1;
   if (isError(sig)) return sig;
   if (sig === 0) return DIV0;
+  if (x > 0 && sig < 0) return NUM;
   return Math.floor(x / sig) * sig;
 };
 

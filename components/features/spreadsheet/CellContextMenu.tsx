@@ -135,6 +135,9 @@ export function CellContextMenu({
       className="fixed z-50 overflow-visible rounded-card border border-hairline bg-[var(--surface-raised)] text-[13px] shadow-lg"
       style={{ left: x, top: y }}
       onContextMenu={(e) => e.preventDefault()}
+      /* Menu actions act on the grid's selection, so the press must not take
+         focus off the grid — the toolbar convention, applied here too. */
+      onMouseDown={(e) => e.preventDefault()}
     >
       <MenuList items={items} onClose={onClose} />
     </div>

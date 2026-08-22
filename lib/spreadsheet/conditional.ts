@@ -105,20 +105,35 @@ export function rangeContains(range: Rect, row: number, col: number): boolean {
 /**
  * The displayed values that appear more than once (non-blank) in a range — the
  * lookup a `duplicateValues` rule needs, computed once per rule.
+ *
+ * Counted CASE-INSENSITIVELY (the key is lowercased), the way every other text
+ * comparison in this module reads — "Apple" and "apple" are the same value, as
+ * Excel's Duplicate Values rule flags them. The returned set holds every
+ * original casing that appeared, so a caller's `set.has(display)` membership
+ * test is already case-insensitive without lowering anything itself.
  */
 export function duplicateValueSet(
   range: Rect,
   displayAt: (row: number, col: number) => string,
 ): Set<string> {
-  const counts = new Map<string, number>();
+  const counts = new Map<string, { count: number; variants: Set<string> }>();
   for (let r = range.top; r <= range.bottom; r++) {
     for (let c = range.left; c <= range.right; c++) {
       const v = displayAt(r, c);
       if (v === "") continue;
-      counts.set(v, (counts.get(v) ?? 0) + 1);
+      const key = v.toLowerCase();
+      const entry = counts.get(key);
+      if (entry) {
+        entry.count += 1;
+        entry.variants.add(v);
+      } else {
+        counts.set(key, { count: 1, variants: new Set([v]) });
+      }
     }
   }
   const dups = new Set<string>();
-  for (const [v, n] of counts) if (n > 1) dups.add(v);
+  for (const { count, variants } of counts.values()) {
+    if (count > 1) for (const v of variants) dups.add(v);
+  }
   return dups;
 }

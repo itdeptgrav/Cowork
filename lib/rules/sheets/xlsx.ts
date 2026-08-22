@@ -75,7 +75,11 @@ function safeSheetName(name: string, index: number): string {
 
 /** One stored raw cell string as a SheetJS cell — a formula, a number, or text. */
 function cellFor(raw: string): XLSX.CellObject {
-  if (isFormula(raw)) return { t: "n", f: raw.slice(1) };
+  /* `isFormula` tolerates leading whitespace (" =A1+1" is a formula), so the
+     strip has to go THROUGH the "=" rather than `slice(1)` blindly — slicing
+     one character off " =SUM(…)" removes the space and leaves the "=" inside
+     the `.f` field SheetJS expects to hold formula text without it. */
+  if (isFormula(raw)) return { t: "n", f: raw.trimStart().slice(1) };
   if (raw !== "" && /^-?\d+(\.\d+)?$/.test(raw.trim())) return { t: "n", v: Number(raw) };
   return { t: "s", v: raw };
 }

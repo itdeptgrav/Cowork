@@ -299,7 +299,11 @@ export class FileWorkbookStore implements WorkbookStore {
       const byPrincipal = new Map<string, ShareGrant>();
       for (const g of shares) {
         if (!g?.principalId || g.principalId === existing.ownerId) continue;
-        if (!ROLE_RANK[g.role]) continue; // unknown role — drop it, never default up
+        /* Unknown role — drop it, never default up. An OWN-property lookup, so
+           object-prototype key names ("constructor", "__proto__", "toString")
+           cannot pass as roles the way a plain `ROLE_RANK[g.role]` truthiness
+           check would let them. */
+        if (!Object.hasOwn(ROLE_RANK, g.role)) continue;
         byPrincipal.set(g.principalId, { principalId: g.principalId, role: g.role });
       }
       const next = [...byPrincipal.values()];

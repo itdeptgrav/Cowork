@@ -37,10 +37,14 @@ export function FilterMenu({
   const [condKind, setCondKind] = useState<"none" | "number" | "text">(
     current?.condition ? (current.condition.type === "text" ? "text" : "number") : "none",
   );
-  const [numOp, setNumOp] = useState<NumberOp>(">");
-  const [numA, setNumA] = useState("0");
-  const [textOp, setTextOp] = useState<TextOp>("contains");
-  const [textVal, setTextVal] = useState("");
+  /* Every field seeds from the stored condition, not just the kind — otherwise
+     reopening a "< 5" filter showed the defaults, and Apply silently rewrote
+     the condition to "> 0". */
+  const cond = current?.condition;
+  const [numOp, setNumOp] = useState<NumberOp>(cond && cond.type === "number" ? cond.op : ">");
+  const [numA, setNumA] = useState(cond && cond.type === "number" ? String(cond.a) : "0");
+  const [textOp, setTextOp] = useState<TextOp>(cond && cond.type === "text" ? cond.op : "contains");
+  const [textVal, setTextVal] = useState(cond && cond.type === "text" ? cond.value : "");
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {

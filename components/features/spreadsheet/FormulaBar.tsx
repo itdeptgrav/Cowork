@@ -26,6 +26,8 @@ export function FormulaBar({
   const content = formulaBarContent(editing, activeRaw);
 
   function onKeyDown(e: ReactKeyboardEvent) {
+    /* An IME's Enter/Escape confirms or cancels the COMPOSITION, not the edit. */
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter") {
       e.preventDefault();
       controller.commitEdit(e.shiftKey ? "up" : "down");

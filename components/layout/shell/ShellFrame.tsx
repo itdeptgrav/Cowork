@@ -182,6 +182,37 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
     if (anonymous) window.location.href = "/signin";
   }, [anonymous]);
 
+  /**
+   * **A file dropped ANYWHERE is not a navigation.**
+   *
+   * A browser handed a file it was not told to keep opens it, which on a
+   * desktop reads as the file landing in Downloads and the workspace being
+   * replaced by a PDF viewer. The composers now take a drop, but a drop lands
+   * where the pointer is, not where it was aimed — release fifteen pixels
+   * outside the box and the default fires with the page still open behind it.
+   *
+   * So the window refuses the default for file drags, and every real drop zone
+   * keeps working because it calls `preventDefault` first and this listener
+   * only ever sees what nothing else claimed.
+   *
+   * Scoped to file drags by `types.includes("Files")`: the task list reorders
+   * by dragging rows, and those carry `text/plain`. Blanket-preventing every
+   * drop would break them.
+   */
+  useEffect(() => {
+    const onlyFiles = (e: DragEvent) =>
+      Boolean(e.dataTransfer?.types?.includes("Files"));
+    const block = (e: DragEvent) => {
+      if (onlyFiles(e)) e.preventDefault();
+    };
+    window.addEventListener("dragover", block);
+    window.addEventListener("drop", block);
+    return () => {
+      window.removeEventListener("dragover", block);
+      window.removeEventListener("drop", block);
+    };
+  }, []);
+
   if (session.status === "loading") {
     return (
       <div

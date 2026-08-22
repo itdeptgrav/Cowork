@@ -8,6 +8,7 @@ import {
   groupLedger,
   isFiltered,
   isReversed,
+  recentEntries,
   signedPointsOf,
   totalsOf,
   LEDGER_COMPONENTS,
@@ -26,6 +27,7 @@ import {
   reasonsFor,
 } from "@/lib/rules/scoring/taskExplanation";
 import {
+  explanationFor,
   presentChannel,
   presentLedgerEntry,
   presentOverview,
@@ -48,7 +50,7 @@ import { ComponentBand } from "@/components/ui/ComponentBand";
 import { TimerSopCounters } from "@/components/features/attendance/TimerSopCounters";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
-import { formatPoints } from "@/lib/utils/format";
+import { formatDateFull, formatPoints } from "@/lib/utils/format";
 import { formatPeriod } from "@/lib/rules/scoring/engine";
 import { CHANNEL_CODE, CHANNEL_LABEL, type ChannelId } from "@/lib/domain";
 
@@ -78,6 +80,23 @@ export function ScoreOverviewPage({
   /* The annual strip, for a trend the engine actually reported. Failure here
      costs the arrow and nothing else — the score does not depend on it. */
   const history = useQuery((r) => r.listScoreHistory(subject), [subject]);
+  /**
+   * **What actually happened to the score, on the page that states it.**
+   *
+   * Reported 17 Aug 2026: the Score tab explained the model at length and never
+   * once said what had been earned or taken off. The events were two clicks away
+   * on History and what stood in their place was prose, so the first thing a
+   * person read about their own quarter was a caveat about weightings.
+   *
+   * The whole ledger, unfiltered, exactly as the History tab asks for it — the
+   * panel below shows the newest entries and names how many earlier ones it is
+   * not showing. Gated on `subject` for the reason spelled out in `ChannelPage`:
+   * an empty id builds a path that matches no route and answers an HTML 404.
+   */
+  const ledger = useQuery(
+    (r) => (subject ? r.listLedger(subject) : Promise.resolve([])),
+    [subject],
+  );
 
   if (isLoading) return <SkeletonRows rows={8} />;
   if (error) return <ErrorState body={error} onRetry={refetch} />;
@@ -171,18 +190,22 @@ export function ScoreOverviewPage({
                     </span>
                   )}
                 </p>
-                {/* This paragraph used to end "nothing here implies a weighting
-                    between them", which was false. Pooling every unit into one
-                    total weights each component by how many units it happens to
-                    have, so attendance carries the composite simply because
-                    there are more attendance days than tasks. The honest thing
-                    is to say so, and to keep the four channels independent
-                    below where the statement is actually true. */}
-                <p className="mt-2 max-w-[60ch] text-xs text-slab-ink-muted">
-                  Provisional. This figure pools every measured unit, so a
-                  component with more units counts for more — which stands in
-                  for a weighting the product has not yet decided. The four
-                  channels below are independent and assert nothing.{" "}
+                {/**
+                 * **One line, and it still cannot be a comfortable one.**
+                 *
+                 * This was four sentences of caveat standing where the record of
+                 * somebody's quarter belongs. What it may not lose is the fact
+                 * that pooling every unit into one total weights each component
+                 * by how many units it happens to have — attendance carries the
+                 * composite simply because there are more attendance days than
+                 * tasks — because an earlier version claimed the opposite and
+                 * that claim was false. So the fact stays and the essay goes;
+                 * the decisions themselves are one link away, where they can be
+                 * read by anybody who wants them.
+                 */}
+                <p className="mt-2 text-xs text-slab-ink-muted">
+                  Provisional — pooled, so a component with more measured units
+                  counts for more.{" "}
                   <Link
                     href="/admin/scoring-rules"
                     className="text-slab-ink underline-offset-2 hover:underline"
@@ -192,14 +215,32 @@ export function ScoreOverviewPage({
                 </p>
               </div>
               <div className="slab-content px-6 pb-6">
-                <ComponentBand channels={data.channels} height={92} verbose />
+                {/* `verbose` off: the band's captions restated what each channel
+                    measures under all four columns, and the channel's own tab is
+                    where that sentence now lives — see `ChannelPage`. What stays
+                    is the figure, its label and what it was measured across. */}
+                <ComponentBand
+                  channels={data.channels}
+                  height={92}
+                  verbose={false}
+                />
               </div>
             </div>
+          </div>
+
+          {/* The record, directly under the figure it produced. */}
+          <div className="mt-4">
+            <EarnedAndLost
+              entries={ledger.data ?? []}
+              isLoading={ledger.isLoading}
+              error={ledger.error}
+              onRetry={ledger.refetch}
+            />
           </div>
         </div>
 
         <div className="flex flex-col gap-4 deck:col-span-4">
-          <Panel>
+          <Panel label="Channels">
             <h2 className="text-sm font-medium text-ink">Channels</h2>
             <ul className="mt-3 space-y-3">
               {data.channels.map((c) => {
@@ -237,13 +278,12 @@ export function ScoreOverviewPage({
                           className="mt-1.5"
                         />
                       )}
-                      {/* What moves this channel, in the reader's terms. Four
-                          codes listed together mean nothing to somebody who
-                          does not already know the model. */}
-                      <p className="mt-1.5 text-[11px] leading-relaxed text-ink-faint">
-                        {ch.explanation}
-                      </p>
-                      <p className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
+                      {/* What moves this channel is stated on the channel's own
+                          tab, which is one tap from here and is where somebody
+                          asking the question is going anyway. Four sentences of
+                          it in a rail is what pushed the actual record off the
+                          page. */}
+                      <p className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[11px] text-ink-faint">
                         {/* Points only when they actually produce the
                             percentage above — see `pointsReconcile`. */}
                         {ch.earnedPoints !== null && ch.possiblePoints !== null && (
@@ -267,36 +307,215 @@ export function ScoreOverviewPage({
                 );
               })}
             </ul>
-            {/* Named rather than omitted. A channel absent from the list is
-                indistinguishable from one the reader forgot exists, and "why is
-                my score only from tasks" is the question this answers. */}
-            {view.awaiting.length > 0 && !view.isEmpty && (
-              <p className="mt-3 border-t border-hairline pt-3 text-[11px] leading-relaxed text-ink-faint">
-                Nothing measured yet in{" "}
-                {view.awaiting.map((c) => c.code).join(", ")}. Those channels
-                will start contributing once there is something to measure.
+            {/**
+             * **An unmeasured channel names itself, in its own row.**
+             *
+             * This footer used to list the awaiting codes and add that they
+             * would start contributing once there was something to measure —
+             * both of which the rows above already say, since a channel with
+             * nothing in it is listed like every other one and reads "Not scored
+             * yet". The absence it was written to explain is not an absence any
+             * more, so the sentence is a second statement of the same fact.
+             */}
+            {data.hasProvisionalRules && (
+              <p className="mt-3 border-t border-hairline pt-3 text-[11px] text-ink-faint">
+                Some figures come from placeholder rules and are marked.{" "}
+                <Link
+                  href="/admin/scoring-rules"
+                  className="inline-flex items-center gap-0.5 text-ink-muted underline-offset-2 hover:text-ink hover:underline"
+                >
+                  Every rule <Icon.chevronRight className="h-3 w-3" />
+                </Link>
               </p>
             )}
           </Panel>
-
-          {data.hasProvisionalRules && (
-            <Panel>
-              <h2 className="text-sm font-medium text-ink">Rules in force</h2>
-              <p className="mt-2 text-xs text-ink-muted">
-                Some deductions use placeholder values because the owner
-                decision is unresolved. Every affected figure is marked.
-              </p>
-              <Link
-                href="/admin/scoring-rules"
-                className="mt-3 flex items-center gap-1 text-xs text-ink-muted hover:text-ink"
-              >
-                See every rule <Icon.chevronRight className="h-3 w-3" />
-              </Link>
-            </Panel>
-          )}
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * **What was earned and what was lost, on the tab that states the score.**
+ *
+ * The Score tab used to explain the model and never say what had happened: the
+ * events sat two tabs away under History, and a person opening their own score
+ * read a paragraph about weightings where the record belonged. Asked for on
+ * 17 Aug 2026 in exactly those terms — too much written, not enough of what the
+ * employee gained or lost.
+ *
+ * It is the History tab's own shape, shortened: a day, that day's reward and
+ * penalty, then the entries that made it up, each with its reason. The
+ * arithmetic is `groupLedger` and `totalsOf` — the same tested functions
+ * `PointHistory` renders — so the two tabs can never disagree about a day.
+ *
+ * **What it does not do is truncate quietly.** A panel showing twelve of ninety
+ * entries reads as a complete record unless it says otherwise, so the count it
+ * is not showing is named and the link to the whole thing is part of the panel
+ * rather than a tab somebody has to think of.
+ */
+const RECENT_ENTRIES = 12;
+
+function EarnedAndLost({
+  entries,
+  isLoading,
+  error,
+  onRetry,
+}: {
+  entries: LedgerEntryLike[];
+  isLoading: boolean;
+  error: string | null;
+  onRetry: () => void;
+}) {
+  const recent = recentEntries(entries, RECENT_ENTRIES);
+  /* Years are collapsed away: every date printed below carries its own year, so
+     a year header on a twelve-row panel is a heading for nothing. */
+  const days = groupLedger(recent).flatMap((y) => y.days);
+  /* Over the WHOLE record, not the rows on screen — and labelled as such. A net
+     computed from twelve visible entries, sitting unqualified at the top of a
+     panel, is read as the total of everything. */
+  const record = totalsOf(entries);
+  const earlier = entries.length - recent.length;
+
+  return (
+    <Panel padded={false} label="Earned and lost">
+      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-hairline px-4 py-3">
+        <h2 className="text-sm font-medium text-ink">Earned and lost</h2>
+        {entries.length > 0 && (
+          <span className="text-[11px] text-ink-faint">
+            <span data-figure>{entries.length}</span>{" "}
+            {entries.length === 1 ? "entry" : "entries"} on record
+          </span>
+        )}
+        {entries.length > 0 && (
+          /* Earned and deducted apart, never only netted — a record with
+             nothing in it and a record with ten points each way are different
+             facts, and the net alone cannot tell them apart.
+
+             Both figures are said in words as well as in sign and colour, and
+             they cover the whole record rather than the twelve rows below —
+             which is what the count beside the heading is there to establish. */
+          <span className="ml-auto flex items-baseline gap-2.5 text-xs">
+            <span className="text-[var(--state-positive-ink)]">
+              <span data-figure>+{record.earned.toFixed(1)}</span> earned
+            </span>
+            <span className="text-[var(--state-rework-ink)]">
+              <span data-figure>−{record.deducted.toFixed(1)}</span> deducted
+            </span>
+          </span>
+        )}
+      </div>
+
+      {error ? (
+        <ErrorState
+          title="Your points could not be loaded"
+          body={error}
+          onRetry={onRetry}
+        />
+      ) : isLoading ? (
+        <SkeletonRows rows={5} />
+      ) : !entries.length ? (
+        <EmptyState
+          compact
+          title="Nothing on your record yet"
+          body="Points appear here as they are earned or taken off, each with its reason."
+        />
+      ) : (
+        <>
+          <div className="divide-y divide-hairline">
+            {days.map((day) => (
+              <div key={day.date || "undated"}>
+                <div className="flex items-baseline gap-2 bg-[var(--surface-sunken,transparent)] px-4 py-1.5">
+                  <span data-figure className="text-[11px] text-ink-muted">
+                    {day.date ? formatDateFull(day.date) : "No date"}
+                  </span>
+                  <span className="ml-auto flex gap-2.5 text-[11px]">
+                    {day.totals.earned > 0 && (
+                      <span
+                        data-figure
+                        className="text-[var(--state-positive-ink)]"
+                      >
+                        +{day.totals.earned.toFixed(1)} reward
+                      </span>
+                    )}
+                    {day.totals.deducted > 0 && (
+                      <span
+                        data-figure
+                        className="text-[var(--state-rework-ink)]"
+                      >
+                        −{day.totals.deducted.toFixed(1)} penalty
+                      </span>
+                    )}
+                  </span>
+                </div>
+
+                {day.entries.map((e) => {
+                  const points = signedPointsOf(e);
+                  const reversed = isReversed(e);
+                  return (
+                    <div
+                      key={e.id}
+                      className={`flex items-baseline gap-2 px-4 py-2 ${reversed ? "opacity-60" : ""}`}
+                    >
+                      {e.component && (
+                        <span className="w-5 shrink-0 text-[10px] font-medium tracking-wide text-ink-faint uppercase">
+                          {e.component.toUpperCase()}
+                        </span>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p
+                          className={`truncate text-sm text-ink ${reversed ? "line-through" : ""}`}
+                        >
+                          {e.sourceLabel || "Score entry"}
+                        </p>
+                        {/* The reason, because a figure without one is a
+                            verdict. Clamped rather than cut: two lines is a
+                            recorded sentence, and the whole of it is on the
+                            History tab. */}
+                        {e.reason && (
+                          <p className="line-clamp-2 text-[11px] leading-relaxed text-ink-faint">
+                            {e.reason}
+                          </p>
+                        )}
+                        {/* Said in words, not only struck through. */}
+                        {reversed && (
+                          <p className="text-[11px] text-ink-faint">
+                            reversed after review
+                          </p>
+                        )}
+                      </div>
+                      <span
+                        data-figure
+                        className={`shrink-0 text-sm ${
+                          points > 0
+                            ? "text-[var(--state-positive-ink)]"
+                            : points < 0
+                              ? "text-[var(--state-rework-ink)]"
+                              : "text-ink-faint"
+                        }`}
+                      >
+                        {points > 0 ? "+" : points < 0 ? "−" : ""}
+                        {formatPoints(Math.abs(points))}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+
+          <Link
+            href="/score/history"
+            className="flex items-center gap-1 border-t border-hairline px-4 py-2.5 text-[11px] text-ink-muted hover:text-ink"
+          >
+            {earlier > 0
+              ? `${earlier} earlier ${earlier === 1 ? "entry" : "entries"} — open the full history`
+              : "Open the full history"}
+            <Icon.chevronRight className="h-3 w-3" />
+          </Link>
+        </>
+      )}
+    </Panel>
   );
 }
 
@@ -380,13 +599,20 @@ export function ChannelPage({ channel }: { channel: ChannelId }) {
       ) : (
         <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
           <div className="deck:col-span-7">
-            {DETAIL_ELSEWHERE[CHANNEL_CODE[channel]] && (
-              <Panel className="mb-4">
-                <p className="text-xs leading-relaxed text-ink-muted">
-                  {DETAIL_ELSEWHERE[CHANNEL_CODE[channel]]}
-                </p>
-              </Panel>
-            )}
+            {/* **What moves this channel — one sentence, on the channel's own
+                page.** It used to be repeated under all four rows of the
+                overview's rail and under all four columns of its band, which is
+                the same rule stated eight times on a page that never said what
+                had actually happened to the score. Here it is answering a
+                question the reader has just asked by opening the tab. */}
+            <Panel className="mb-4">
+              <p className="text-xs leading-relaxed text-ink-muted">
+                {explanationFor(CHANNEL_CODE[channel])}
+                {DETAIL_ELSEWHERE[CHANNEL_CODE[channel]] && (
+                  <> {DETAIL_ELSEWHERE[CHANNEL_CODE[channel]]}</>
+                )}
+              </p>
+            </Panel>
             <Panel padded={false}>
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-b border-hairline px-4 py-3">
                 {/* "Scoring units" named a data structure. This names the thing

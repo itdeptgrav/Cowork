@@ -21,6 +21,7 @@ import { SCORE_TABS } from "./tabs";
 import { CHANNEL_CODE, CHANNEL_LABEL } from "@/lib/domain";
 import type { ConductPolicy, ConductSeverity, EmployeeId } from "@/lib/domain";
 import { conductNet, disputeOutcome } from "@/lib/rules/scoring/conduct";
+import { explanationFor } from "@/lib/rules/scoring/scoreDisplay";
 
 /**
  * C3 · Conduct.
@@ -124,6 +125,15 @@ export function ConductPage() {
       ) : (
         <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
           <div className="deck:col-span-7">
+            {/* What C3 does to a score, on C3's own page. The overview's channel
+                rail used to carry this sentence for all four channels at once,
+                which is where the Score tab's wall of writing came from; each
+                channel now states it where the reader has asked. */}
+            <Panel className="mb-4">
+              <p className="text-xs leading-relaxed text-ink-muted">
+                {explanationFor(CHANNEL_CODE.c3)}
+              </p>
+            </Panel>
             <MyDeductions
               entries={mine}
               error={ledger.error}

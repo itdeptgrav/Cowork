@@ -14,6 +14,7 @@
  */
 
 import { useState } from "react";
+import { columnLabel } from "@/lib/spreadsheet/coordinates";
 import type { BorderLineStyle, BorderPreset, CellStyle, NumberFormatKind } from "@/lib/spreadsheet/style";
 import { Dropdown } from "./Dropdown";
 import { SheetIcon } from "./SheetIcons";
@@ -166,11 +167,13 @@ export function HomeTab({
 
   const numberKind = s.numberFormat?.kind ?? "automatic";
   const decimals = s.numberFormat?.decimals;
+  /* Clamped to Excel's 0–30: an unbounded count walked past toFixed's limit of
+     100 and every render of the cell then threw a RangeError. */
   const stepDecimals = (d: number) =>
     set({
       numberFormat: {
         kind: numberKind === "automatic" ? "number" : numberKind,
-        decimals: Math.max(0, (decimals ?? 2) + d),
+        decimals: Math.min(30, Math.max(0, (decimals ?? 2) + d)),
         currency: s.numberFormat?.currency,
       },
     });
@@ -178,8 +181,11 @@ export function HomeTab({
   /** AutoSum — a SUM under each selected column, over the selection. */
   function autoSum() {
     const r = controller.selection.range;
+    if (r.bottom + 1 >= controller.bounds.rows) return; // no row below to write into
     for (let c = r.left; c <= r.right; c++) {
-      const col = String.fromCharCode(65 + c); // A–Z covers the visible span
+      /* columnLabel handles AA+ — the old hand-rolled A–Z letter wrote
+         `=SUM([1:[5)` past column Z. */
+      const col = columnLabel(c);
       controller.commitValue(r.bottom + 1, c, `=SUM(${col}${r.top + 1}:${col}${r.bottom + 1})`);
     }
   }
@@ -360,8 +366,8 @@ export function HomeTab({
               <button type="button" className={menuItem} onClick={() => { close(); controller.unhideRows(); }}>Unhide rows</button>
               <button type="button" className={menuItem} onClick={() => { close(); controller.hideCols(); }}>Hide columns</button>
               <button type="button" className={menuItem} onClick={() => { close(); controller.unhideCols(); }}>Unhide columns</button>
-              <button type="button" className={menuItem} title="Set an exact height, in pixels, for every selected row." onClick={() => { close(); const v = globalThis.prompt?.("Row height in pixels", "24"); const n = Number(v); if (Number.isFinite(n) && n > 0) { const r = controller.selection.range; for (let i = r.top; i <= r.bottom; i++) controller.resizeRow(i, n); } }}>Row height…</button>
-              <button type="button" className={menuItem} title="Set an exact width, in pixels, for every selected column." onClick={() => { close(); const v = globalThis.prompt?.("Column width in pixels", "100"); const n = Number(v); if (Number.isFinite(n) && n > 0) { const r = controller.selection.range; for (let i = r.left; i <= r.right; i++) controller.resizeCol(i, n); } }}>Column width…</button>
+              <button type="button" className={menuItem} title="Set an exact height, in pixels, for every selected row." onClick={() => { close(); const v = globalThis.prompt?.("Row height in pixels", "24"); const n = Number(v); if (Number.isFinite(n) && n > 0) { const r = controller.selection.range; controller.resizeRows(r.top, r.bottom, n); } }}>Row height…</button>
+              <button type="button" className={menuItem} title="Set an exact width, in pixels, for every selected column." onClick={() => { close(); const v = globalThis.prompt?.("Column width in pixels", "100"); const n = Number(v); if (Number.isFinite(n) && n > 0) { const r = controller.selection.range; controller.resizeCols(r.left, r.right, n); } }}>Column width…</button>
               <button type="button" className={menuItem} title="Resets the active row to the default height." onClick={() => { close(); controller.autoFitRow(controller.selection.active.row); }}>Auto-fit row height</button>
             </>
           )}

@@ -24,6 +24,7 @@ export function WorkspaceHead({
   tabs,
   toolbar,
   breadcrumb,
+  actionPlacement = "title",
 }: {
   title: string;
   /** Inline, in muted ink, on the same baseline as the title. */
@@ -33,30 +34,76 @@ export function WorkspaceHead({
   tabs?: ReactNode;
   toolbar?: ReactNode;
   breadcrumb?: ReactNode;
+  /**
+   * Which row the primary action rides on.
+   *
+   * `title` is the original reading — the action at the far edge of the title
+   * line, opposite the page name. On a header with no visible heading, that
+   * line holds nothing else, and a row drawn to float one button in is a band
+   * of empty page above the tabs. `tabs` puts the action at the right end of
+   * the tab row instead, and the title row collapses.
+   *
+   * Opt-in, so the surfaces that still read well the first way are untouched.
+   * There is no matching option for `scope`: the one page whose scope control
+   * needed to move put it in its own list toolbar instead, next to the filter
+   * that asks the next question about the same rows.
+   */
+  actionPlacement?: "title" | "tabs";
 }) {
+  const actionOnTabs = actionPlacement === "tabs" && !!action;
+
   return (
     <div className="mb-4">
       {breadcrumb && <div className="mb-2">{breadcrumb}</div>}
 
-      {/* `Task_overview` puts the scope control INLINE, immediately after the
+      {/**
+       * **The page title is read, not seen.**
+       *
+       * A workspace page said its own name twice over: the navigation rail
+       * already has the section lit, the tab row underneath opens with the same
+       * word, and then a display-scale heading above both repeated it. Somebody
+       * who has just clicked Tasks does not need to be told they are in Tasks —
+       * that is a line of the tallest type on the page spent confirming what the
+       * click already did, and it pushed the first real row further down every
+       * screen in the product.
+       *
+       * `sr-only` rather than deleted. A page with no `h1` has no name for a
+       * screen reader and nothing to jump to by heading, and the visible chrome
+       * that replaces it — an active pill in a rail — is not a heading and does
+       * not announce as one. The word is gone from the design, not from the
+       * document.
+       *
+       * The home page is the exception and keeps its heading, because there
+       * "Overview" is not the name of the thing you clicked — it is a statement
+       * about the page. It has its own `h1` in the dashboard chrome and never
+       * used this header.
+       */}
+      <h1 className="sr-only">{title}</h1>
+
+      {/* Whatever else the title row held. It is skipped entirely when it would
+          be empty — with the heading gone, most pages have nothing left to put
+          on this line, and an empty flex row is still a band of blank page
+          above the tabs.
+
+          `Task_overview` puts the scope control INLINE, immediately after the
           title and its count — the three are read as one sentence: "Tasks, 3
           jobs, whose?". Only the primary action is pushed to the far edge. An
           earlier pass right-aligned the scope control and broke that reading. */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <h1 className="text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
-          {title}
-        </h1>
-        {/* `ink-muted`, not `ink-faint`: this line sits on the raw field, where
-            faint ink measures 4.10:1 against the flat body and less under a
-            blob. `ink-faint` is a panel-only token — see docs/architecture/DESIGN.md. */}
-        {count && <span className="text-sm text-ink-muted">{count}</span>}
-        {scope && <div className="flex items-center gap-2">{scope}</div>}
-        {action && <div className="ml-auto">{action}</div>}
-      </div>
+      {(count || scope || (action && !actionOnTabs)) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+          {/* `ink-muted`, not `ink-faint`: this line sits on the raw field, where
+              faint ink measures 4.10:1 against the flat body and less under a
+              blob. `ink-faint` is a panel-only token — see docs/architecture/DESIGN.md. */}
+          {count && <span className="text-sm text-ink-muted">{count}</span>}
+          {scope && <div className="flex items-center gap-2">{scope}</div>}
+          {action && !actionOnTabs && <div className="ml-auto">{action}</div>}
+        </div>
+      )}
 
-      {(tabs || toolbar) && (
-        <div className="mt-3 flex items-center gap-3 border-b border-hairline pb-2">
+      {(tabs || toolbar || actionOnTabs) && (
+        <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-hairline pb-2">
           <div className="min-w-0 flex-1">{tabs}</div>
+          {actionOnTabs && <div className="shrink-0">{action}</div>}
           {toolbar && (
             <div className="flex shrink-0 items-center gap-1.5">{toolbar}</div>
           )}

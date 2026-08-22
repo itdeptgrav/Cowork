@@ -14,9 +14,10 @@
  * must be editable by hand afterwards, and it is.
  *
  * Templates are inserted at the anchor cell and OVERWRITE what they cover. The
- * caller is expected to have checked (see `tableFootprint` and `regionIsEmpty`)
- * — silently eating somebody's data is the one failure a convenience feature
- * cannot have.
+ * caller is expected to have checked (see `tableFootprint`, `regionIsEmpty` and
+ * `regionHasMerge` — a merged region inside the block blocks placement exactly
+ * as occupied cells do) — silently eating somebody's data is the one failure a
+ * convenience feature cannot have.
  */
 
 import { cellRef, type Rect } from "./coordinates";
@@ -199,7 +200,8 @@ export function tableFootprint(
 }
 
 /** Whether every cell in a rectangle is empty — what the caller checks before
-    dropping a table on top of somebody's data. */
+    dropping a table on top of somebody's data. Deliberately a cheap cell-map
+    scan: merged regions are checked separately by `regionHasMerge`. */
 export function regionIsEmpty(ws: Worksheet, rect: Rect): boolean {
   for (let r = rect.top; r <= rect.bottom; r++) {
     for (let c = rect.left; c <= rect.right; c++) {
@@ -207,6 +209,14 @@ export function regionIsEmpty(ws: Worksheet, rect: Rect): boolean {
     }
   }
   return true;
+}
+
+/** Whether any merged region overlaps a rectangle. Checked beside
+    `regionIsEmpty` before placement: a merge inside the block would hide the
+    table's headers and rows behind one anchor cell, so it blocks placement the
+    same way occupied cells do (the Insert menu's "occupied" reason). */
+export function regionHasMerge(ws: Worksheet, rect: Rect): boolean {
+  return (ws.merges ?? []).some((m) => overlaps(m, rect));
 }
 
 /** Whether a template dropped at `at` would run off the sheet. */
@@ -239,7 +249,11 @@ const BAND_BG = "#f5f6f7";
  * can take the result as one snapshot and one undo step. Existing validations
  * and any existing filter over the same block are replaced rather than layered:
  * a second table dropped on the same cells should behave like the only one
- * there, not inherit half of its predecessor's rules.
+ * there, not inherit half of its predecessor's rules. A validation whose range
+ * REACHES BEYOND the block keeps governing the cells outside it — its range is
+ * trimmed to the remainder, never deleted wholesale. Merged regions overlapping
+ * the block are cleared (the placement checks refuse them first; this keeps a
+ * direct build sane), and an existing deeper row freeze is never shrunk.
  */
 export function buildTable(
   ws: Worksheet,
@@ -287,9 +301,19 @@ export function buildTable(
   });
 
   /* One validation per ruled column, over its BODY only — a rule on the header
-     would refuse the header's own label. */
+     would refuse the header's own label. Existing rules lose only the part of
+     their range the table covers: a rule over D1:D100 under a 13-row table
+     keeps governing D14:D100 rather than vanishing because it touched the
+     block. */
   const bodyTop = at.row + 1;
-  const kept = (next.validations ?? []).filter((v) => !overlaps(v.range, rect));
+  const kept: Validation[] = [];
+  for (const v of next.validations ?? []) {
+    if (!overlaps(v.range, rect)) {
+      kept.push(v);
+      continue;
+    }
+    for (const part of subtractRect(v.range, rect)) kept.push({ ...v, range: part });
+  }
   const added: Validation[] = [];
   columns.forEach((column, i) => {
     if (!column.rule) return;
@@ -305,14 +329,40 @@ export function buildTable(
     ...next,
     colWidths,
     validations: [...kept, ...added],
+    /* A merge left inside the block would hide headers and body rows behind one
+       anchor cell — the placement checks refuse it, and a direct build clears
+       it, the same way the block's old values and styles are replaced. */
+    ...(next.merges?.length
+      ? { merges: next.merges.filter((m) => !overlaps(m, rect)) }
+      : {}),
     /* The header row gets the filter, as it does when you turn one on by hand. */
     filter: { range: rect, columns: {} },
     /* Freezing is only right when the table starts at the top — freezing row 5
-       because a table happens to begin there would hide the rows above it. */
-    frozenRows: at.row === 0 ? 1 : next.frozenRows,
+       because a table happens to begin there would hide the rows above it. And
+       the table only ever needs its header row held: an existing DEEPER freeze
+       is somebody's choice, not this table's to shrink. */
+    frozenRows: at.row === 0 ? Math.max(1, next.frozenRows) : next.frozenRows,
   };
 }
 
 function overlaps(a: Rect, b: Rect): boolean {
   return !(a.right < b.left || a.left > b.right || a.bottom < b.top || a.top > b.bottom);
+}
+
+/** The up-to-four rectangles of `a` left over after cutting `b` out of it —
+    the band above, the band below, and the side slices of the overlapped rows.
+    Only meaningful when the two overlap. */
+function subtractRect(a: Rect, b: Rect): Rect[] {
+  const out: Rect[] = [];
+  if (b.top > a.top) out.push({ top: a.top, left: a.left, bottom: b.top - 1, right: a.right });
+  if (b.bottom < a.bottom) {
+    out.push({ top: b.bottom + 1, left: a.left, bottom: a.bottom, right: a.right });
+  }
+  const midTop = Math.max(a.top, b.top);
+  const midBottom = Math.min(a.bottom, b.bottom);
+  if (b.left > a.left) out.push({ top: midTop, left: a.left, bottom: midBottom, right: b.left - 1 });
+  if (b.right < a.right) {
+    out.push({ top: midTop, left: b.right + 1, bottom: midBottom, right: a.right });
+  }
+  return out;
 }

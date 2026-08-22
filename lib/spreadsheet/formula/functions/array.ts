@@ -15,8 +15,8 @@
  * array.
  */
 
-import { NA, isError } from "../errors";
-import { ArrayValue, isBlank, toBoolean, type ScalarValue } from "../value";
+import { NA, VALUE, isError } from "../errors";
+import { ArrayValue, isBlank, toBoolean, toNumber, type ScalarValue } from "../value";
 import { argCount, compareValues, type Fn } from "./types";
 
 const UNIQUE: Fn = (args, ctx) => {
@@ -48,9 +48,12 @@ const FILTER: Fn = (args, ctx) => {
   if (bad) return bad;
   const matrix = ctx.matrix(args[0]);
   const include = ctx.matrix(args[1]).flat();
+  /* The condition must supply exactly one value per row — a shorter or longer
+     range is a shape mismatch, #VALUE! as in Sheets. */
+  if (include.length !== matrix.length) return VALUE;
   const kept: ScalarValue[][] = [];
   for (let i = 0; i < matrix.length; i++) {
-    const keep = toBoolean(include[i] ?? false);
+    const keep = toBoolean(include[i]);
     if (isError(keep)) return keep;
     if (keep) kept.push(matrix[i]);
   }
@@ -58,14 +61,35 @@ const FILTER: Fn = (args, ctx) => {
   return new ArrayValue(kept);
 };
 
+/** SORT(range, [sort_index], [is_ascending]). `is_ascending` is a boolean —
+    FALSE (or 0, or the legacy −1) sorts descending, TRUE/1 ascending. A
+    `sort_index` outside the range's columns (0, negative, past the last) is a
+    #VALUE!, as in Sheets. */
 const SORT: Fn = (args, ctx) => {
   const bad = argCount(args, 1, 3);
   if (bad) return bad;
   const matrix = ctx.matrix(args[0]);
-  const index = args.length >= 2 ? Math.trunc(Number(ctx.eval(args[1]))) : 1;
-  const order = args.length >= 3 ? Math.trunc(Number(ctx.eval(args[2]))) : 1;
-  const col = Math.max(0, index - 1);
-  const dir = order < 0 ? -1 : 1;
+  let index = 1;
+  if (args.length >= 2) {
+    const n = toNumber(ctx.eval(args[1]));
+    if (isError(n)) return n;
+    index = Math.trunc(n);
+  }
+  const cols = matrix[0]?.length ?? 0;
+  if (index < 1 || index > cols) return VALUE;
+  let ascending = true;
+  if (args.length >= 3) {
+    const order = ctx.eval(args[2]);
+    if (isError(order)) return order;
+    if (typeof order === "boolean") ascending = order;
+    else {
+      const n = toNumber(order);
+      if (isError(n)) return n;
+      ascending = n > 0; // 1 ascending; 0 (FALSE-like) and −1 descending
+    }
+  }
+  const col = index - 1;
+  const dir = ascending ? 1 : -1;
   const rows = matrix
     .map((row, i) => ({ row, i }))
     .sort((a, b) => {

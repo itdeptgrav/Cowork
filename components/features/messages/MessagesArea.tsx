@@ -13,7 +13,12 @@ import {
   SkeletonRows,
   Textarea,
 } from "@/components/ui/Primitives";
-import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import {
+  invalidateQuery,
+  useAction,
+  useQuery,
+  useRepo,
+} from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { NewChatDialog } from "./NewChatDialog";
 import { GroupSettings } from "./GroupSettings";
@@ -24,6 +29,7 @@ import {
 } from "./MessageContextMenu";
 import {
   MessageAttachments,
+  FileDropZone,
   filesFromClipboard,
   formatBytes,
   mediaUrl,
@@ -40,11 +46,6 @@ import {
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { isPinned } from "@/lib/rules/messages/pins";
 import { escapeAction } from "@/lib/rules/messages/escapeLadder";
-import {
-  dragCarriesFiles,
-  dragDepth,
-  isDropActive,
-} from "@/lib/rules/messages/fileDrop";
 import { searchThread } from "@/lib/rules/messages/threadSearch";
 import { clearDraft, readDraft, saveDraft } from "./draftStorage";
 import {
@@ -188,6 +189,25 @@ export function MessagesPage({
 
   function openCreated(id: string) {
     setNewChat(null);
+    /**
+     * **Invalidate before navigating, not merely refetch.**
+     *
+     * Merged in from the incoming branch, which found this: `listConversations`
+     * carries a 30s `staleTime`, and that TTL cache is keyed without the
+     * repository version — so the write that just created this conversation
+     * does not clear it. The `refetch()` below only forces THIS hook past the
+     * TTL, and this hook is about to unmount: `/messages/[conversationId]` is a
+     * different route segment, so the page remounts and its new hook starts at
+     * nonce 0 with nothing forced. It was then served the list as it stood
+     * BEFORE the conversation existed, found no match for the id in the URL,
+     * and fell through to the empty state — offering to start a conversation
+     * the reader had just finished starting. Taking that offer created a second
+     * one, because `createConversation` deduplicates direct pairs only.
+     *
+     * The refetch stays: it warms the inflight entry at the new version, so the
+     * remounted page joins that read instead of opening its own.
+     */
+    invalidateQuery("listConversations");
     conversations.refetch();
     router.push(`/messages/${id}`);
   }
@@ -293,6 +313,9 @@ export function MessagesPage({
               <NoThread
                 loading={conversations.isLoading}
                 empty={all.length === 0}
+                /* The URL names a thread this list does not contain. That is
+                   never an invitation to start another one — see `NoThread`. */
+                missing={Boolean(conversationId)}
                 /* Capped at five each. This pane is a way back in, not a second
                    copy of the list — which is already on screen beside it. */
                 waiting={all.filter((c) => c.unreadCount > 0).slice(0, 5)}
@@ -531,6 +554,7 @@ function ConversationRow({
 function NoThread({
   loading,
   empty,
+  missing,
   waiting,
   recent,
   viewerId,
@@ -539,6 +563,16 @@ function NoThread({
 }: {
   loading: boolean;
   empty: boolean;
+  /**
+   * The route names a conversation, and it is not in the list.
+   *
+   * Merged in from the incoming branch. The reader has not failed to choose a
+   * thread — they are looking at one that did not arrive, and offering "Create
+   * a group" there answers a question nobody asked and does real damage if
+   * taken: `createConversation` deduplicates direct pairs only, so every press
+   * writes another group with the same name and members.
+   */
+  missing: boolean;
   /** Conversations carrying unread messages, most recent first. */
   waiting: ConversationView[];
   /** The latest threads, for when nothing is unread. */
@@ -547,18 +581,54 @@ function NoThread({
   onDirect: () => void;
   onGroup: () => void;
 }) {
+  /* Withheld entirely on the not-found state — see `missing`. Both controls sit
+     inside the ONE guard: letting only the first out would still leave "Create
+     a group", which is the press that writes the duplicate.
+
+     Belt and braces with the early return below, deliberately. The return is
+     what protects the reader today; this is what protects them if somebody
+     later gives the not-found state a body of its own and reaches for the
+     shared `actions` to fill it. */
   const actions = (
-    <div className="flex flex-wrap items-center gap-2">
-      <Button tone="primary" size="sm" onClick={onDirect}>
-        <Icon.chat className="h-3.5 w-3.5" />
-        Start a conversation
-      </Button>
-      <Button size="sm" onClick={onGroup}>
-        <Icon.team className="h-3.5 w-3.5" />
-        Create a group
-      </Button>
-    </div>
+    <>
+      {!missing && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button tone="primary" size="sm" onClick={onDirect}>
+            <Icon.chat className="h-3.5 w-3.5" />
+            Start a conversation
+          </Button>
+          <Button size="sm" onClick={onGroup}>
+            <Icon.team className="h-3.5 w-3.5" />
+            Create a group
+          </Button>
+        </div>
+      )}
+    </>
   );
+
+  /* A thread that should be here and is not. Answered before the unread
+     summary, because "where did that conversation go" is the question in front
+     of the reader — not how much else is unread. */
+  if (missing)
+    return (
+      <Panel label="No conversation open" className="grid h-full place-items-center">
+        <div className="max-w-[44ch] px-6 py-10 text-center">
+          <span
+            aria-hidden="true"
+            className="mx-auto mb-5 grid h-14 w-14 place-items-center rounded-full bg-[var(--surface-sunken)] text-ink-faint"
+          >
+            <Icon.chat className="h-6 w-6" />
+          </span>
+          <p className="text-[17px] leading-tight font-medium tracking-[-0.02em] text-ink">
+            This conversation could not be opened
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-ink-muted">
+            It is not in your list — it may have been removed, or you may no
+            longer be in it. Pick another from the list on the left.
+          </p>
+        </div>
+      </Panel>
+    );
 
   if (loading)
     return (
@@ -737,9 +807,6 @@ function Thread({
      it, and which match is current. The position is stored WITH the query it
      was reached in (`searchNav`), so typing on simply reads as "not yet
      navigated" rather than needing an effect to reset anything. */
-  /* Counted, not a boolean — `dragenter`/`dragleave` fire per child, so a flag
-     strobes as the pointer crosses message bubbles. See `dragDepth`. */
-  const [dragDepthState, setDragDepthState] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [starFilter, setStarFilter] = useState(false);
@@ -1652,59 +1719,18 @@ function Thread({
   }
 
   return (
-    <Panel
-      padded={false}
-      label="Conversation"
-      className="relative flex h-full flex-col"
-      /**
-       * Files dropped anywhere on the conversation attach to it.
-       *
-       * **The whole panel, not the composer.** A one-line text box is a small
-       * target to hit with a file, and the thing somebody is looking at while
-       * they drag is the conversation. Pasting already worked across the whole
-       * composer; this is the same idea given the area it deserves.
-       *
-       * Every handler is a no-op for a drag that is not carrying files, so
-       * dragging a selected sentence or a link across the thread behaves
-       * exactly as it did before.
-       */
-      onDragEnter={(e) => {
-        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        setDragDepthState((d) => dragDepth(d, "enter"));
-      }}
-      onDragOver={(e) => {
-        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        /* Without this the browser refuses the drop and then NAVIGATES to the
-           file — the tab is replaced by the image somebody meant to send. */
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }}
-      onDragLeave={(e) => {
-        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        setDragDepthState((d) => dragDepth(d, "leave"));
-      }}
-      onDrop={(e) => {
-        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        e.preventDefault();
-        setDragDepthState((d) => dragDepth(d, "drop"));
-        const dropped = filesFromClipboard(e.dataTransfer);
-        if (dropped.length) void handleFiles(dropped);
-      }}
+    /* The whole conversation is the drop target — see `FileDropZone`.
+       Merged in from the incoming branch, which built the same feature as a
+       shared component rather than as handlers on this one panel. Its version
+       won on structure: the task discussion needs the identical behaviour, and
+       two copies of it is two places for the depth counting to drift. */
+    <FileDropZone
+      canUpload={canUpload}
+      onFiles={(files: File[]) => void handleFiles(files)}
+      hint="Drop files to attach them to this conversation"
+      className="flex h-full flex-col"
     >
-      {/* The overlay is `pointer-events-none` on purpose: an element that
-          swallowed the pointer would fire `dragleave` on the panel the instant
-          it appeared, hiding itself and cancelling the drag under it. */}
-      {isDropActive(dragDepthState) && (
-        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-panel bg-[color-mix(in_srgb,var(--body-bg)_78%,transparent)] backdrop-blur-[2px]">
-          <div className="flex flex-col items-center gap-2 rounded-panel border border-dashed border-ink/40 px-8 py-6">
-            <Icon.attach className="h-5 w-5 text-ink-muted" />
-            <p className="text-sm font-medium text-ink">Drop to attach</p>
-            <p className="text-[11px] text-ink-faint">
-              Any file, up to {MAX_ATTACHMENTS} at a time
-            </p>
-          </div>
-        </div>
-      )}
+    <Panel padded={false} label="Conversation" className="flex h-full flex-col">
       {/* Tighter on a phone at every edge: the header carries an avatar, two
           lines of text and up to three controls, and desktop gutters spent 32
           of the ~336px a 360px screen has on nothing. */}
@@ -2334,6 +2360,7 @@ function Thread({
         </div>
       )}
     </Panel>
+    </FileDropZone>
   );
 }
 

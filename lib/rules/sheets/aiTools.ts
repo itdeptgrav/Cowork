@@ -140,7 +140,11 @@ export function validateSheetsToolCall(
         const pos = parseRef(ref);
         if (!pos || pos.row >= sheet.rows || pos.col >= sheet.cols)
           return { ok: false, message: `"${ref}" is not a valid cell on this sheet.` };
-        cells.push({ ref: ref.toUpperCase(), value });
+        /* Re-encoded through cellRef, not merely uppercased: "B02" parses to
+           the cell everyone calls B2, but a key stored as "B02" is one the
+           grid never reads back — the apply step would write an invisible
+           orphan. Same canonicalisation parseSheet applies to stored keys. */
+        cells.push({ ref: cellRef(pos.row, pos.col), value });
       }
       return { ok: true, action: { tool: "set_cells", cells } };
     }
@@ -157,6 +161,13 @@ export function validateSheetsToolCall(
       const atRow = oneBased - 1;
       if (tool === "delete_rows" && atRow + count > sheet.rows)
         return { ok: false, message: "That would delete rows past the end of the sheet." };
+      /* An insert position is bounds-checked like the delete twin. `beforeRow`
+         may be at most rows+1 (atRow === sheet.rows) — "below the last row",
+         the same append the grid's own insert menu performs — but anything
+         further would only inflate the row count with nothing shifting, which
+         reads to the user as the assistant having done nothing. */
+      if (tool === "insert_rows" && atRow > sheet.rows)
+        return { ok: false, message: "That would insert rows past the end of the sheet." };
       return { ok: true, action: { tool, atRow, count } as SheetsAiAction };
     }
 
@@ -171,6 +182,9 @@ export function validateSheetsToolCall(
         return { ok: false, message: `The assistant proposed an invalid column count (must be 1–${MAX_STRUCTURAL_COUNT}).` };
       if (tool === "delete_columns" && atCol + count > sheet.cols)
         return { ok: false, message: "That would delete columns past the end of the sheet." };
+      /* Column twin of the insert_rows bound above. */
+      if (tool === "insert_columns" && atCol > sheet.cols)
+        return { ok: false, message: "That would insert columns past the end of the sheet." };
       return { ok: true, action: { tool, atCol, count } as SheetsAiAction };
     }
 
@@ -194,14 +208,19 @@ export function validateSheetsToolCall(
       const anchorPos = parseRef(anchor)!;
       if (anchorPos.row + safeRows.length + 1 > sheet.rows || anchorPos.col + headers.length > sheet.cols)
         return { ok: false, message: "That table would not fit on this sheet." };
-      return { ok: true, action: { tool: "create_table", anchor: anchor.toUpperCase(), headers, rows: safeRows } };
+      return {
+        ok: true,
+        /* cellRef-canonical, same as set_cells. */
+        action: { tool: "create_table", anchor: cellRef(anchorPos.row, anchorPos.col), headers, rows: safeRows },
+      };
     }
 
     case "set_formula": {
       const ref = str(args, "ref");
       const formula = str(args, "formula");
       const explanation = str(args, "explanation") ?? "";
-      if (!ref || !parseRef(ref)) return { ok: false, message: "The assistant returned an invalid cell reference." };
+      const pos = ref ? parseRef(ref) : null;
+      if (!pos) return { ok: false, message: "The assistant returned an invalid cell reference." };
       if (!formula || !formula.trim().startsWith("="))
         return { ok: false, message: "The assistant's formula didn't start with =." };
       /* A light sanity check, not a parser — HyperFormula is the real judge at
@@ -211,7 +230,8 @@ export function validateSheetsToolCall(
       const closes = (formula.match(/\)/g) ?? []).length;
       if (opens !== closes)
         return { ok: false, message: "That formula has unbalanced parentheses." };
-      return { ok: true, action: { tool: "set_formula", ref: ref.toUpperCase(), formula, explanation } };
+      /* cellRef-canonical, same as set_cells — see the note there. */
+      return { ok: true, action: { tool: "set_formula", ref: cellRef(pos.row, pos.col), formula, explanation } };
     }
 
     case "format_range": {
@@ -270,8 +290,8 @@ export function validateSheetsToolCall(
       if (typeof kind !== "string" || !CONDITIONAL_KINDS.includes(kind as ConditionalKind))
         return { ok: false, message: "The assistant proposed an unsupported conditional-format rule." };
       const needs = CONDITIONAL_NEEDS[kind as ConditionalKind] ?? [];
-      const value = typeof args["value"] === "number" ? (args["value"] as number) : undefined;
-      const value2 = typeof args["value2"] === "number" ? (args["value2"] as number) : undefined;
+      let value = typeof args["value"] === "number" ? (args["value"] as number) : undefined;
+      let value2 = typeof args["value2"] === "number" ? (args["value2"] as number) : undefined;
       const text = typeof args["text"] === "string" ? (args["text"] as string) : undefined;
       if (needs.includes("value") && value === undefined)
         return { ok: false, message: `A "${kind}" rule needs a numeric value.` };
@@ -279,6 +299,12 @@ export function validateSheetsToolCall(
         return { ok: false, message: `A "${kind}" rule needs a second numeric value.` };
       if (needs.includes("text") && !text)
         return { ok: false, message: `A "${kind}" rule needs text to match.` };
+      /* Reversed between-bounds are SWAPPED, as Excel does, rather than
+         refused: evalConditional tests value ≤ v ≤ value2, so applying
+         `between 10 and 2` as written would be a rule that can never match —
+         the exact silent failure this validator exists to prevent. */
+      if (kind === "between" && value !== undefined && value2 !== undefined && value > value2)
+        [value, value2] = [value2, value];
       const color = typeof args["color"] === "string" ? (args["color"] as string) : undefined;
       return {
         ok: true,
@@ -329,7 +355,9 @@ export function validateSheetsToolCall(
            actually supports, whatever the model claims about it. */
         if (!pos || !inRect(pos.row, pos.col, rect))
           return { ok: false, message: `"${ref}" is outside the range being analysed.` };
-        flags.push({ ref: ref.toUpperCase(), reason });
+        /* cellRef-canonical, same as set_cells — a flag on "A03" would paint
+           a style onto an address no cell ever renders. */
+        flags.push({ ref: cellRef(pos.row, pos.col), reason });
       }
       return { ok: true, action: { tool: "flag_outliers", rect, flags } };
     }

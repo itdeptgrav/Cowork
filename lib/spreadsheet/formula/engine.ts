@@ -19,7 +19,7 @@
 
 import { interpret, type CellAlign } from "../values";
 import type { Node } from "./ast";
-import { FormulaError, NAME, REF, isError } from "./errors";
+import { FormulaError, NAME, REF, VALUE, isError } from "./errors";
 import { evaluate } from "./evaluator";
 import { parse } from "./parser";
 import { isFormula } from "../values";
@@ -133,9 +133,16 @@ export class FormulaEngine {
     return this.values.get(key) ?? BLANK;
   }
 
-  /** The text and alignment a cell shows. */
+  /** The text and alignment a cell shows. A FORMULA whose result is a blank
+      displays 0, as in Sheets (`=A1` with A1 empty shows 0 — the classic
+      `=IF(A1="","",A1)` workaround exists because of it); an empty cell itself
+      still displays nothing. */
   display(sheetId: string, row: number, col: number): CellDisplay {
     const value = this.getValue(sheetId, row, col);
+    const scalar = isArray(value) ? value.first : value;
+    if (isBlank(scalar) && this.entries.get(keyOf(sheetId, row, col))?.ast) {
+      return { text: "0", align: "right" };
+    }
     return { text: formatValue(value), align: alignOf(value) };
   }
 
@@ -160,14 +167,20 @@ export class FormulaEngine {
     const overrideMap = new Map<Key, ScalarValue>();
     for (const o of overrides) overrideMap.set(keyOf(sheetId, o.row, o.col), o.value);
     const visiting = new Set<Key>();
-    return evaluate(ast, {
-      resolveCell: (sheet, r, c) => {
-        const id = sheet ? this.resolveName(sheet) : sheetId;
-        if (!id) return REF;
-        const k = keyOf(id, r, c);
-        return overrideMap.has(k) ? overrideMap.get(k)! : this.evaluateKey(k, visiting);
-      },
-    });
+    try {
+      return evaluate(ast, {
+        resolveCell: (sheet, r, c) => {
+          const id = sheet ? this.resolveName(sheet) : sheetId;
+          if (!id) return REF;
+          const k = keyOf(id, r, c);
+          return overrideMap.has(k) ? overrideMap.get(k)! : this.evaluateKey(k, visiting);
+        },
+      });
+    } catch {
+      /* No function bug may crash the product — an unexpected exception is a
+         plain #VALUE! (same guard as evaluateKey). */
+      return VALUE;
+    }
   }
 
   private collectDirty(start: Key): Set<Key> {
@@ -200,13 +213,21 @@ export class FormulaEngine {
     } else if (!entry.ast) {
       value = literalValue(entry.raw);
     } else {
-      value = evaluate(entry.ast, {
-        resolveCell: (sheet, r, c) => {
-          const id = sheet ? this.resolveName(sheet) : ownSheetId;
-          if (!id) return REF; // a reference to a sheet that does not exist
-          return this.evaluateKey(keyOf(id, r, c), visiting);
-        },
-      });
+      /* The defensive boundary: a bug inside a function must surface as a
+         #VALUE! in the one cell, never as an exception that takes the whole
+         recalculation (and the UI above it) down. Each evaluateKey frame has
+         its own guard, so an inner cell's failure is a value to its readers. */
+      try {
+        value = evaluate(entry.ast, {
+          resolveCell: (sheet, r, c) => {
+            const id = sheet ? this.resolveName(sheet) : ownSheetId;
+            if (!id) return REF; // a reference to a sheet that does not exist
+            return this.evaluateKey(keyOf(id, r, c), visiting);
+          },
+        });
+      } catch {
+        value = VALUE;
+      }
     }
     visiting.delete(key);
     this.values.set(key, value);

@@ -45,7 +45,8 @@ function endChars(args: Node2, ctx: Ctx, side: "left" | "right"): ScalarValue {
   if (isError(t)) return t;
   const n = args.length === 2 ? toNumber(ctx.eval(args[1])) : 1;
   if (isError(n)) return n;
-  const count = Math.max(0, Math.trunc(n));
+  if (n < 0) return VALUE; // a negative count is an error, per Sheets/Excel
+  const count = Math.trunc(n);
   return side === "left" ? t.slice(0, count) : count === 0 ? "" : t.slice(-count);
 }
 type Node2 = Parameters<Fn>[0];

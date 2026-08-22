@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Card } from "./Card";
+import { Card, CardLink, CardTitle } from "./Card";
 import { isOpen } from "./signals";
 import {
   EmptyState,
@@ -168,9 +168,16 @@ export function WorkMix({ className = "" }: { className?: string }) {
       ];
     }, []);
 
+  const title = team ? "Where the team's work sits" : "Where your work sits";
+
   return (
+    /* `bare`: the heading moves inside, beside the ring — see the note on the
+       layout below. The card keeps `title` as its accessible name either way,
+       and the loading, error and empty states render their own header, because
+       those have no ring to sit beside. */
     <Card
-      title={team ? "Where the team's work sits" : "Where your work sits"}
+      title={title}
+      bare={total > 0 && !tasks.error && !tasks.isLoading}
       href="/tasks?view=tasks"
       hrefLabel="Open the task list"
       className={`min-w-0 ${className}`}
@@ -189,13 +196,24 @@ export function WorkMix({ className = "" }: { className?: string }) {
           body="Every task assigned to you is closed."
         />
       ) : (
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-4">
+        /**
+         * The heading sits in the COLUMN, not across the top.
+         *
+         * A full-width title bar over a card whose content is one tall circle
+         * put the ring in the bottom-left and left a band of empty card above
+         * the pills — the biggest area on the card, holding nothing. Moving the
+         * heading beside the ring, directly over the row it labels, gives the
+         * ring the card's whole height and gives the pills something to hang
+         * from. `items-start` rather than `items-center`, because the heading is
+         * now the thing the top edge aligns to.
+         */
+        <div className="flex flex-wrap items-start gap-x-5 gap-y-4">
           {/* The ring, with the total in the middle — the reference's own
               device for "this is the whole, and these are its parts". */}
           <div className="relative shrink-0">
             <svg
               viewBox="0 0 130 130"
-              className="h-[130px] w-[130px] -rotate-90"
+              className="h-[164px] w-[164px] -rotate-90"
               role="img"
               aria-label={`${total} open, ${arcs.map((a) => `${a.count} ${a.label.toLowerCase()}`).join(", ")}`}
             >
@@ -222,12 +240,15 @@ export function WorkMix({ className = "" }: { className?: string }) {
                 />
               ))}
             </svg>
+            {/* The centre figure grows with the ring rather than staying at the
+                size it was: a 130px hole that now measures 164 would otherwise
+                have made the number look like it had shrunk. */}
             <span className="pointer-events-none absolute inset-0 grid place-items-center">
               <span className="text-center">
-                <span className="block text-[11px] text-ink-faint">Open</span>
+                <span className="block text-[12px] text-ink-faint">Open</span>
                 <span
                   data-figure
-                  className="block text-[22px] leading-none tracking-[-0.025em] text-ink"
+                  className="block text-[28px] leading-none tracking-[-0.03em] text-ink"
                 >
                   {total}
                 </span>
@@ -245,7 +266,26 @@ export function WorkMix({ className = "" }: { className?: string }) {
               row, carrying both jobs: it names the parts of the ring AND jumps
               into that slice of the list. The dot keeps each row tied to its
               arc, which a bare pill would have thrown away. */}
-          <ul className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+          <div className="flex min-w-0 flex-1 flex-col self-stretch">
+            {/* The card's own heading, and the way out, on one line over the
+                row they describe. It keeps the top edge — level with the link,
+                which belongs in the corner wherever the heading goes. */}
+            <div className="flex shrink-0 items-center gap-3">
+              <CardTitle>{title}</CardTitle>
+              <div className="ml-auto">
+                <CardLink
+                  href="/tasks?view=tasks"
+                  label="Open the task list"
+                />
+              </div>
+            </div>
+
+            {/* The pills take the rest of the column and sit in the middle of
+                it. Hanging them straight under the heading left the bottom
+                third of the card empty beside a full-height ring — the same
+                hole this rearrangement set out to close, moved down rather than
+                filled. Centred, the space reads as the row's own margin. */}
+            <ul className="flex min-w-0 flex-1 flex-wrap content-center items-center gap-1.5 pt-3">
             {shown.map((p) => {
               const lead = p.id === leadId;
               return (
@@ -274,7 +314,8 @@ export function WorkMix({ className = "" }: { className?: string }) {
                 </li>
               );
             })}
-          </ul>
+            </ul>
+          </div>
         </div>
       )}
     </Card>

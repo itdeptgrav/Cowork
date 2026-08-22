@@ -103,6 +103,28 @@ export function windowOnOffer(task: TaskView["task"]): boolean {
 }
 
 /**
+ * Is a workflow decision on this task addressed to me BY NAME?
+ *
+ * Exported because three surfaces need the same answer and must not each
+ * write their own: the Actionable inbox (through `actionableFor` below), the
+ * task table — which floats these rows to the top and shows a mark where a
+ * queue position would go — and the Home attention card. A predicate copied
+ * three times is three chances for the table to disagree with the tab.
+ *
+ * Deliberately `pendingApprovals` and not `approvals`: the second holds the
+ * whole chain, including stages that have already been decided and stages
+ * whose turn has not come. Answering from it would put a mark on a task whose
+ * approval the engine would refuse.
+ */
+export function awaitsApprovalFrom(
+  view: TaskView,
+  viewerId: string | null,
+): boolean {
+  if (!viewerId) return false;
+  return view.pendingApprovals.some((a) => a.approverId === viewerId);
+}
+
+/**
  * The one place that decides whether a task belongs in the action inbox.
  *
  * Returns `null` for everything else, including work that is genuinely mine to
@@ -133,7 +155,7 @@ export function actionableFor(
   const isCreator = task.createdById === viewerId;
 
   /* 1 — a workflow decision addressed to me by name. */
-  if (view.pendingApprovals.some((a) => a.approverId === viewerId)) {
+  if (awaitsApprovalFrom(view, viewerId)) {
     const kind = view.pendingApprovals.find(
       (a) => a.approverId === viewerId,
     )?.kind;

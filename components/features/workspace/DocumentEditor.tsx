@@ -425,7 +425,35 @@ export function DocumentEditor({
         Highlight.configure({ multicolor: true }),
         Subscript,
         Superscript,
-        ResizableImage,
+        /**
+         * `ResizableImage`, not the plain `Image` the incoming branch used.
+         *
+         * It IS the Tiptap image extension — `Image.extend(...)` — carrying the
+         * eight drag handles, the crop rectangle, alignment and alt text. So
+         * the two changes compose rather than compete: the extension is ours,
+         * the option below is theirs, and `configure` is inherited.
+         */
+        /**
+         * **`allowBase64`, or an inserted image survives until the next load.**
+         *
+         * The default is false, and it is not a permission — it is a PARSE
+         * rule. Tiptap builds `img[src]:not([src^="data:"])`, so a data-URI
+         * image is dropped the moment stored HTML is read back into the editor.
+         * `setImage` does not go through parsing, which is what made this look
+         * like it worked: the picture appeared, the body saved with the `<img>`
+         * intact, and reopening the document showed an empty page. An `https://`
+         * image was fine throughout, so it read as "images are broken sometimes"
+         * rather than as one rule.
+         *
+         * It matters for more than the address box. A screenshot pasted from
+         * the clipboard arrives as a data URI in every browser that supports it,
+         * so pasting a picture into a document had the same fate.
+         *
+         * Worth knowing: a data URI is stored inline in the document body, so a
+         * large pasted image makes a large document. `MAX_IMAGE_BYTES` bounds
+         * the upload path; a paste is not bounded here.
+         */
+        ResizableImage.configure({ allowBase64: true }),
         TaskList,
         TaskItem.configure({ nested: true }),
         TableKit.configure({ table: { resizable: true } }),
@@ -1285,9 +1313,13 @@ export function DocumentEditor({
   return (
     /* One shape. The surface this fills is the whole window — the stage owns
        the frame; this owns the document inside it. */
+    /* `doc-light` pins this subtree to the light palette whatever the rest of
+       the application is set to — see globals.css. A document is a page, and
+       the print rules already force white paper and dark ink; the editor now
+       agrees with them on screen instead of only at the printer. */
     <div
       ref={shell}
-      className="flex h-full min-h-0 flex-col bg-[var(--body-bg)]"
+      className="doc-light flex h-full min-h-0 flex-col bg-[var(--body-bg)]"
     >
       {/* ── Title bar ───────────────────────────────────────────────────── */}
       <header className="flex shrink-0 flex-wrap items-start gap-x-3 gap-y-1 border-b border-hairline bg-[var(--surface-raised)] px-3 pt-2 pb-1">

@@ -305,14 +305,19 @@ function parseSheet(input: unknown): SheetData {
   const cells: CellMap = {};
   for (const [ref, value] of Object.entries(raw.cells ?? {})) {
     /* Both halves checked: a key that is not a reference cannot be placed on
-         the grid, and a non-string value would reach the engine as an object. */
-    if (parseRef(ref) && typeof value === "string")
-      cells[ref.toUpperCase()] = value;
+         the grid, and a non-string value would reach the engine as an object.
+       The key is re-encoded through cellRef(parseRef(…)) rather than merely
+       uppercased: "A01" parses to the same cell as "A1", but every grid
+       lookup goes through cellRef, which only ever writes "A1" — a key kept
+       as "A01" would be an orphan the screen can never show. */
+    const pos = parseRef(ref);
+    if (pos && typeof value === "string") cells[cellRef(pos.row, pos.col)] = value;
   }
   const styles: StyleMap = {};
   for (const [ref, style] of Object.entries(raw.styles ?? {})) {
-    if (parseRef(ref) && style && typeof style === "object") {
-      styles[ref.toUpperCase()] = style as CellStyle;
+    const pos = parseRef(ref);
+    if (pos && style && typeof style === "object") {
+      styles[cellRef(pos.row, pos.col)] = style as CellStyle;
     }
   }
   const chartTypes = [
@@ -493,10 +498,11 @@ function parseSheet(input: unknown): SheetData {
   const images: Record<string, CellImage> = {};
   if (raw.images && typeof raw.images === "object") {
     for (const [ref, value] of Object.entries(raw.images as Record<string, unknown>)) {
-      if (!parseRef(ref) || !value || typeof value !== "object") continue;
+      const pos = parseRef(ref);
+      if (!pos || !value || typeof value !== "object") continue;
       const v = value as Partial<CellImage>;
       if (typeof v.url !== "string" || !v.url) continue;
-      images[ref.toUpperCase()] = {
+      images[cellRef(pos.row, pos.col)] = {
         fileId: typeof v.fileId === "string" ? v.fileId : null,
         url: v.url,
         name: typeof v.name === "string" ? v.name : "image",
@@ -910,8 +916,11 @@ export function formulaAcceptsReference(text: string): boolean {
  * Rows and columns clamp at the top-left edge so a reference never goes negative.
  *
  * A scan, not a parser. It skips anything shaped like a reference but followed by
- * `(` — `LOG10(` is a function, not cell `LOG10` — and leaves plain text alone,
- * which is what keeps it small and predictable.
+ * `(` — `LOG10(` is a function, not cell `LOG10` — leaves plain text alone, and
+ * steps over quoted string literals whole, so `=CONCATENATE("A1",B2)` shifts
+ * `B2` but never the `"A1"` the user typed as text. `""` inside a literal is an
+ * escaped quote; an unterminated literal runs to the end of the formula, which
+ * matches how a sheet lexes it. That is what keeps it small and predictable.
  */
 export function offsetReferences(
   formula: string,
@@ -920,17 +929,22 @@ export function offsetReferences(
 ): string {
   if (!isFormula(formula)) return formula;
   return formula.replace(
-    /* `(?![\w(])` — not followed by a word char or `(`. Excluding digits stops
-       the quantifier backtracking (`LOG10(` matching as `LOG1`); excluding `(`
-       skips function names. */
-    /(\$?)([A-Za-z]+)(\$?)(\d+)(?![\w(])/g,
+    /* First alternative: a double-quoted string literal (`""` = escaped quote,
+       missing close = runs to the end), matched whole so the reference pattern
+       never sees its contents. Second: a reference. `(?![\w(])` — not followed
+       by a word char or `(`. Excluding digits stops the quantifier
+       backtracking (`LOG10(` matching as `LOG1`); excluding `(` skips
+       function names. */
+    /"(?:[^"]|"")*"?|(\$?)([A-Za-z]+)(\$?)(\d+)(?![\w(])/g,
     (
       whole,
-      colAbs: string,
-      colLetters: string,
-      rowAbs: string,
-      rowDigits: string,
+      colAbs: string | undefined,
+      colLetters: string | undefined,
+      rowAbs: string | undefined,
+      rowDigits: string | undefined,
     ) => {
+      /* The string-literal alternative has no capture groups — leave it as-is. */
+      if (colLetters === undefined || rowDigits === undefined) return whole;
       const col = columnIndex(colLetters);
       if (col < 0) return whole;
       const row = Number(rowDigits) - 1;
@@ -1508,14 +1522,29 @@ function shiftRef(ref: string, atRow: number, dRow: number, atCol: number, dCol:
   return cellRef(row, col);
 }
 
-/** A range string shifted by a structural edit. Collapses to null if the whole range was deleted. */
+/**
+ * A range string shifted by a structural edit.
+ *
+ * For an INSERT (positive delta) every edge at or after `at` moves by the
+ * delta, so a range the insertion lands inside grows and one below it shifts.
+ * For a DELETE (negative delta, with `at` naming the FIRST removed index and
+ * `-delta` how many follow) an edge inside the deleted band clips to the
+ * band's boundary: a top edge falls to `at` (the first surviving index after
+ * the shift), a bottom edge to `at - 1` (the last survivor before the band).
+ * A range lying entirely inside the band collapses to null — the caller drops
+ * the chart/rule/merge whose data no longer exists.
+ */
 function shiftRangeString(range: string, atRow: number, dRow: number, atCol: number, dCol: number): string | null {
   const rect = rangeToRect(range);
   if (!rect) return range;
-  const top = rect.top >= atRow ? rect.top + dRow : rect.top;
-  const bottom = rect.bottom >= atRow ? rect.bottom + dRow : rect.bottom;
-  const left = rect.left >= atCol ? rect.left + dCol : rect.left;
-  const right = rect.right >= atCol ? rect.right + dCol : rect.right;
+  const lo = (p: number, at: number, d: number): number =>
+    d < 0 && p >= at && p < at - d ? at : p >= at ? p + d : p;
+  const hi = (p: number, at: number, d: number): number =>
+    d < 0 && p >= at && p < at - d ? at - 1 : p >= at ? p + d : p;
+  const top = lo(rect.top, atRow, dRow);
+  const bottom = hi(rect.bottom, atRow, dRow);
+  const left = lo(rect.left, atCol, dCol);
+  const right = hi(rect.right, atCol, dCol);
   if (top > bottom || left > right) return null;
   return rangeLabel({ top, bottom, left, right });
 }
@@ -1550,10 +1579,15 @@ function shiftChartsAndConditionals(
       const rect = rangeToRect(range);
       return !!rect && !(rect.top === rect.bottom && rect.left === rect.right);
     });
+  /* Emptied lists are returned as explicit `undefined` — same as the callers'
+   * `images: undefined` handling — so spreading this AFTER `...data` still
+   * OVERWRITES the old field. A conditional `...(charts.length ? … : {})`
+   * spread would omit the key instead, quietly resurrecting the stale,
+   * unshifted array from `...data` whenever every entry collapsed. */
   return {
-    ...(charts.length ? { charts } : {}),
-    ...(conditionals.length ? { conditionals } : {}),
-    ...(mergedRanges.length ? { mergedRanges } : {}),
+    charts: charts.length ? charts : undefined,
+    conditionals: conditionals.length ? conditionals : undefined,
+    mergedRanges: mergedRanges.length ? mergedRanges : undefined,
   };
 }
 
@@ -1648,7 +1682,9 @@ export function deleteRows(data: SheetData, atRow: number, count: number): Sheet
     cells,
     styles,
     ...(Object.keys(images).length ? { images } : { images: undefined }),
-    ...shiftChartsAndConditionals(data, atRow + n, -n, 0, 0),
+    /* `atRow`, not `atRow + n`: shiftRangeString takes the band's FIRST removed
+       index, and clips/collapses ranges inside the band itself. */
+    ...shiftChartsAndConditionals(data, atRow, -n, 0, 0),
     rows: clamp(data.rows - n, 1, MAX_ROWS),
     hidden: (data.hidden ?? [])
       .filter((r) => r < atRow || r >= atRow + n)
@@ -1698,7 +1734,8 @@ export function deleteColumns(data: SheetData, atCol: number, count: number): Sh
     cells,
     styles,
     ...(Object.keys(images).length ? { images } : { images: undefined }),
-    ...shiftChartsAndConditionals(data, 0, 0, atCol + n, -n),
+    /* `atCol`, not `atCol + n` — see the matching note in deleteRows. */
+    ...shiftChartsAndConditionals(data, 0, 0, atCol, -n),
     cols: clamp(data.cols - n, 1, MAX_COLS),
     columnWidths: shiftSizeMap(data.columnWidths, atCol, -n),
   };
@@ -1786,32 +1823,48 @@ export function sortRange(
   const sorted = [...rowIndices].sort((a, b) => {
     const av = keyOf(a);
     const bv = keyOf(b);
+    /* Blank key cells sink to the BOTTOM in either direction — Excel and
+       Google Sheets both do this, so an ascending sort never floats a run of
+       empty rows above the data. Deliberately outside the direction flip. */
+    if (av === "" || bv === "") return av === bv ? 0 : av === "" ? 1 : -1;
     const an = Number(av);
     const bn = Number(bv);
-    const bothNumeric = av !== "" && bv !== "" && Number.isFinite(an) && Number.isFinite(bn);
+    const bothNumeric = Number.isFinite(an) && Number.isFinite(bn);
     const cmp = bothNumeric ? an - bn : av.localeCompare(bv);
     return direction === "asc" ? cmp : -cmp;
   });
 
   const cells: CellMap = { ...data.cells };
   const styles: StyleMap = { ...data.styles };
+  const images: Record<string, CellImage> = { ...(data.images ?? {}) };
   for (const col of range(rect.left, rect.right)) {
     const originalValues = rowIndices.map((row) => data.cells[cellRef(row, col)]);
     const originalStyles = rowIndices.map((row) => data.styles[cellRef(row, col)]);
+    /* An image is part of its row's record the same way a value or a style
+       is — sorting moves all three together. */
+    const originalImages = rowIndices.map((row) => data.images?.[cellRef(row, col)]);
     sorted.forEach((sourceRow, i) => {
       const destRow = rowIndices[i]!;
       const ref = cellRef(destRow, col);
       const sourceIndex = rowIndices.indexOf(sourceRow);
       const value = originalValues[sourceIndex];
       const style = originalStyles[sourceIndex];
+      const image = originalImages[sourceIndex];
       if (value === undefined) delete cells[ref];
       else cells[ref] = value;
       if (style === undefined) delete styles[ref];
       else styles[ref] = style;
+      if (image === undefined) delete images[ref];
+      else images[ref] = image;
     });
   }
 
-  return { ...data, cells, styles };
+  return {
+    ...data,
+    cells,
+    styles,
+    ...(Object.keys(images).length ? { images } : { images: undefined }),
+  };
 }
 
 function range(from: number, to: number): number[] {

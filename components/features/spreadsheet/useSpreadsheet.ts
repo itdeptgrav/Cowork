@@ -25,6 +25,7 @@ import {
   getCellStyleId,
   getCellValue,
   isFilled,
+  setCellValue,
   withActiveWorksheet,
   type Workbook,
   type Worksheet,
@@ -106,25 +107,27 @@ import {
   History,
   revertChanges,
   structuralCommand,
+  workbookStructuralCommand,
   type CellEdit,
   type Command,
 } from "@/lib/spreadsheet/history";
 import {
-  deleteCols as deleteColsOp,
-  deleteRows as deleteRowsOp,
+  deleteColsWorkbook,
+  deleteRowsWorkbook,
   freezeCols as freezeColsOp,
   freezeRows as freezeRowsOp,
-  insertCols as insertColsOp,
-  insertRows as insertRowsOp,
+  insertColsWorkbook,
+  insertRowsWorkbook,
   setColWidth,
   setColsHidden,
   setRowHeight,
   setRowsHidden,
-  shiftCells as shiftCellsOp,
+  shiftCellsWorkbook,
 } from "@/lib/spreadsheet/structure";
 import {
   buildTable,
   fitsOnSheet,
+  regionHasMerge,
   regionIsEmpty,
   tableFootprint,
   templateById,
@@ -200,6 +203,8 @@ export interface SpreadsheetController {
   activeStyle: CellStyle;
   /** The block awaiting paste, for the copy/cut outline — null when none. */
   clipboard: Clipboard | null;
+  /** Dismiss the pending copy/cut block — Escape's job, as in Excel. */
+  clearClipboard: () => void;
 
   clickCell: (pos: CellPos, shiftKey: boolean) => void;
   dragTo: (pos: CellPos) => void;
@@ -249,6 +254,8 @@ export interface SpreadsheetController {
   hideRows: () => void;
   unhideRows: () => void;
   resizeRow: (row: number, height: number) => void;
+  /** Resize a run of rows as one undoable command. */
+  resizeRows: (from: number, to: number, height: number) => void;
   autoFitRow: (row: number) => void;
   insertCols: (where: "left" | "right") => void;
   deleteCols: () => void;
@@ -273,9 +280,13 @@ export interface SpreadsheetController {
   hideCols: () => void;
   unhideCols: () => void;
   resizeCol: (col: number, width: number) => void;
+  /** Resize a run of columns as one undoable command. */
+  resizeCols: (from: number, to: number, width: number) => void;
   autoFitCol: (col: number, width: number) => void;
   freezeRows: (n: number) => void;
   freezeCols: (n: number) => void;
+  /** Clear both freeze axes as one command. */
+  unfreeze: () => void;
 
   /* Workbook — the sheets, and the operations over them. */
   /** The id of the sheet currently shown. */
@@ -390,6 +401,16 @@ export function useSpreadsheet(): SpreadsheetController {
     cellSelection({ row: 0, col: 0 }),
   );
   const [editing, setEditing] = useState<CellEditorState | null>(null);
+  /* A synchronous mirror of `editing`, consumed by commit/cancel.
+     The editor input commits on blur as a safety net, and blur fires INSIDE the
+     same event as an Enter-commit or an Escape-cancel — before React re-renders
+     — so the blur handler's closure still sees the edit as open. Reading the
+     mirror instead, and nulling it the moment a commit or cancel CONSUMES the
+     edit, makes the second call a no-op: Escape no longer commits the draft it
+     just discarded, and Enter no longer records the same edit twice. Written
+     only at event time — by beginEdit/changeEdit and the consumers — never
+     during render. */
+  const editingRef = useRef<CellEditorState | null>(null);
   /* Created once. It mirrors the raw cells (both are updated on every edit) and
      owns the computed values, so an edit recomputes only the cells that depend
      on it rather than the whole sheet. */
@@ -441,9 +462,20 @@ export function useSpreadsheet(): SpreadsheetController {
    * it for undo. A command that changes nothing records nothing. This is what
    * gives edits, paste, cut, fill and clear their undo/redo for free.
    */
+  /** A pending CUT is disarmed by any edit or reshape, as in Excel.
+      Its source-clearing is a deferred destructive write aimed at coordinates
+      captured at cut time; once anything else changes the sheet — a value typed
+      into the cut range, a row inserted above it, another sheet made active —
+      those coordinates point at data the user did not ask to move, and pasting
+      would wipe it. A COPY stays live (it destroys nothing on paste). */
+  function cancelPendingCut(): void {
+    if (clipboard?.cut) setClipboard(null);
+  }
+
   function applyEdits(label: string, edits: CellEdit[]): void {
     const command = buildCommand(label, worksheet, edits);
     if (command.changes.length === 0) return;
+    cancelPendingCut();
     for (const c of command.changes) engine.setCell(activeSheetId, c.row, c.col, c.after);
     setWorkbook((wb) => {
       const ws = sheetById(wb, command.sheetId);
@@ -460,6 +492,11 @@ export function useSpreadsheet(): SpreadsheetController {
         const merged = ws ? withActiveWorksheet(wb, applyChanges(ws, command.changes)) : wb;
         return { ...merged, activeSheetId: command.sheetId };
       });
+    } else if (command.kind === "workbookStructural") {
+      const restored = command.sheets.reduce((wb, s) => withActiveWorksheet(wb, s.after), workbook);
+      const next = { ...restored, activeSheetId: command.sheetId };
+      rebuildEngine(next);
+      setWorkbook(next);
     } else {
       const rebuilt = withActiveWorksheet(workbook, command.after);
       rebuildEngine(rebuilt);
@@ -478,6 +515,11 @@ export function useSpreadsheet(): SpreadsheetController {
         const merged = ws ? withActiveWorksheet(wb, revertChanges(ws, command.changes)) : wb;
         return { ...merged, activeSheetId: command.sheetId };
       });
+    } else if (command.kind === "workbookStructural") {
+      const restored = command.sheets.reduce((wb, s) => withActiveWorksheet(wb, s.before), workbook);
+      const next = { ...restored, activeSheetId: command.sheetId };
+      rebuildEngine(next);
+      setWorkbook(next);
     } else {
       const rebuilt = withActiveWorksheet(workbook, command.before);
       rebuildEngine(rebuilt);
@@ -493,9 +535,29 @@ export function useSpreadsheet(): SpreadsheetController {
       resize, hide and freeze leave the values untouched and skip it. */
   function applyStructural(label: string, next: Worksheet, rebuild = true): void {
     if (next === worksheet) return;
+    cancelPendingCut();
     if (rebuild) rebuildEngine(withActiveWorksheet(workbook, next));
     setWorkbook((wb) => withActiveWorksheet(wb, next));
     historyRef.current.record(structuralCommand(label, worksheet, next));
+  }
+
+  /** Apply a structural reshape whose formula rewrites reach the WHOLE workbook
+      — insert/delete of rows, columns or cell blocks also rewrites references
+      to the edited sheet from every other sheet. One undoable command covers
+      every sheet that changed. */
+  function applyStructuralWorkbook(label: string, next: Workbook): void {
+    if (next === workbook) return;
+    const command = workbookStructuralCommand(label, activeSheetId, workbook, next);
+    if (command.sheets.length === 0) return;
+    cancelPendingCut();
+    rebuildEngine(next);
+    setWorkbook(next);
+    historyRef.current.record(command);
+  }
+
+  /** Swap one worksheet (matched by id) inside a workbook. */
+  function withSheet(wb: Workbook, ws: Worksheet): Workbook {
+    return { ...wb, worksheets: wb.worksheets.map((s) => (s.id === ws.id ? ws : s)) };
   }
 
   /** Apply a workbook-level change (add/delete/rename/… a sheet): re-sync the
@@ -503,6 +565,9 @@ export function useSpreadsheet(): SpreadsheetController {
       have moved. Not part of the cell/structural undo history. */
   function applyWorkbook(next: Workbook): void {
     if (next === workbook) return;
+    /* Includes switching sheets: a cut pasted on ANOTHER sheet would clear the
+       source rectangle's coordinates on that sheet — someone else's data. */
+    cancelPendingCut();
     rebuildEngine(next);
     setWorkbook(next);
     if (next.activeSheetId !== activeSheetId) {
@@ -533,8 +598,16 @@ export function useSpreadsheet(): SpreadsheetController {
   function duplicateSheet(id: string): void {
     applyWorkbook(duplicateSheetOp(workbook, id).workbook);
   }
-  function moveSheet(id: string, toIndex: number): void {
-    applyWorkbook(moveSheetOp(workbook, id, toIndex));
+  function moveSheet(id: string, toVisibleIndex: number): void {
+    /* The tab bar counts VISIBLE tabs, but the workbook array also holds hidden
+       sheets. The target slot is where the visible sheet at that position sits
+       in the full array — passing the visible index straight through made
+       "Move right" swap with a hidden neighbour, which visibly does nothing. */
+    const target = visibleSheets(workbook)[toVisibleIndex];
+    if (!target) return;
+    const fullIndex = workbook.worksheets.findIndex((s) => s.id === target.id);
+    if (fullIndex < 0) return;
+    applyWorkbook(moveSheetOp(workbook, id, fullIndex));
   }
   function hideSheet(id: string): void {
     applyWorkbook(setSheetHiddenOp(workbook, id, true));
@@ -863,26 +936,45 @@ export function useSpreadsheet(): SpreadsheetController {
   }
 
   /**
-   * A SUM under each run of equal values in `groupCol`, written into the last
-   * row of the run. Excel assumes the data is SORTED by that column — a group is
-   * a run, not every row sharing a value — and this follows the same rule, which
-   * is why Subtotal is normally used straight after a sort.
+   * A SUM in a row INSERTED under each run of equal values in `groupCol`.
+   * Excel assumes the data is SORTED by that column — a group is a run, not
+   * every row sharing a value — and this follows the same rule, which is why
+   * Subtotal is normally used straight after a sort.
+   *
+   * The rows are inserted bottom-up, so earlier insertions cannot move a group
+   * not yet processed, and the whole reshape lands as ONE structural command:
+   * no data row is overwritten, the SUM never includes its own cell (writing it
+   * into the last data row did both — every group ended `#REF!` with its last
+   * value destroyed), and a single undo removes every subtotal again. A group
+   * whose subtotal row would fall off the fixed grid is skipped rather than
+   * letting the insertion push data off the edge.
    */
   function insertSubtotals(groupCol: number, sumCol: number): number {
     const plan = subtotalPlan(selection.range, groupCol, displayAt);
     if (plan.length === 0) return 0;
     const letter = columnLabelFor(sumCol);
-    const edits: CellEdit[] = [];
-    for (const g of plan) {
-      edits.push({ row: g.to, col: groupCol, raw: `${g.label} total` });
-      edits.push({
-        row: g.to,
-        col: sumCol,
-        raw: `=SUM(${letter}${g.from + 1}:${letter}${g.to + 1})`,
-      });
+    let nextWb = workbook;
+    let inserted = 0;
+    for (let i = plan.length - 1; i >= 0; i--) {
+      const g = plan[i];
+      let ws = nextWb.worksheets.find((s) => s.id === activeSheetId);
+      if (!ws || g.to + 1 >= ws.rowCount) continue;
+      /* Workbook-level insertion, so references into this sheet from other
+         sheets shift with the data like any other row insertion. */
+      nextWb = insertRowsWorkbook(nextWb, activeSheetId, g.to + 1, 1);
+      ws = nextWb.worksheets.find((s) => s.id === activeSheetId)!;
+      /* On a single-column selection the label and the SUM share one cell —
+         the SUM wins, so the figure is never lost. */
+      if (groupCol !== sumCol) {
+        ws = setCellValue(ws, g.to + 1, groupCol, `${g.label} total`);
+      }
+      ws = setCellValue(ws, g.to + 1, sumCol, `=SUM(${letter}${g.from + 1}:${letter}${g.to + 1})`);
+      nextWb = withSheet(nextWb, ws);
+      inserted++;
     }
-    applyEdits("Subtotal", edits);
-    return plan.length;
+    if (inserted === 0) return 0;
+    applyStructuralWorkbook("Subtotal", nextWb);
+    return inserted;
   }
 
   function groupRows(): void {
@@ -917,7 +1009,10 @@ export function useSpreadsheet(): SpreadsheetController {
     for (let r = rect.top; r <= rect.bottom; r++) {
       const key = [];
       for (let c = rect.left; c <= rect.right; c++) key.push(displayAt(r, c));
-      const k = key.join("0001");
+      /* Joined on a control character no typed cell value can contain — a
+         printable separator (this was the literal string "0001") lets distinct
+         rows collide and be deleted as "duplicates". */
+      const k = key.join(String.fromCharCode(1));
       if (seen.has(k)) continue;
       seen.add(k);
       keep.push(r);
@@ -1105,26 +1200,36 @@ export function useSpreadsheet(): SpreadsheetController {
 
   function beginEdit(opts?: BeginEditOptions): void {
     const { active } = selection;
-    setEditing(startEdit(active, rawValue(active.row, active.col), opts));
+    const next = startEdit(active, rawValue(active.row, active.col), opts);
+    editingRef.current = next;
+    setEditing(next);
   }
 
   function changeEdit(value: string): void {
-    /* Functional, so the formula bar's first keystroke composes correctly on top
-       of the edit its focus just began. Begins a bar-sourced edit if somehow
-       none is open. */
-    setEditing((prev) =>
-      prev
-        ? editDraft(prev, value)
-        : startEdit(selection.active, rawValue(selection.active.row, selection.active.col), {
-            initial: value,
-            source: "bar",
-          }),
-    );
+    /* Composes on the MIRROR, which beginEdit has already set within this very
+       event — so the formula bar's first keystroke lands on the edit its focus
+       just began, without waiting for a render. Begins a bar-sourced edit if
+       somehow none is open. */
+    const base = editingRef.current ?? editing;
+    const next = base
+      ? editDraft(base, value)
+      : startEdit(selection.active, rawValue(selection.active.row, selection.active.col), {
+          initial: value,
+          source: "bar",
+        });
+    editingRef.current = next;
+    setEditing(next);
   }
 
   function commitEdit(thenMove?: Direction): void {
-    if (editing) {
-      const { pos, draft } = editing;
+    /* Consume the edit through the mirror, not the render closure: the editor's
+       blur fires a second commit inside the same event as Enter/Escape, and the
+       closure would still see the edit as open (double record; Escape-then-
+       commit). The first consumer nulls the mirror; the second finds nothing. */
+    const current = editingRef.current;
+    editingRef.current = null;
+    if (current) {
+      const { pos, draft } = current;
       /* Data validation rejects a disallowed value — the cell keeps what it had
          (Phase 10). Dropdown/checkbox cells can only enter valid values anyway. */
       if (isEditAllowed(pos.row, pos.col, draft)) {
@@ -1138,6 +1243,7 @@ export function useSpreadsheet(): SpreadsheetController {
   }
 
   function cancelEdit(): void {
+    editingRef.current = null;
     setEditing(null);
   }
 
@@ -1163,6 +1269,13 @@ export function useSpreadsheet(): SpreadsheetController {
     } catch {
       /* No clipboard API at all — internal clipboard still holds the block. */
     }
+  }
+
+  /** Escape's dismissal of the dashed border, as in Excel: the pending block —
+      copy or cut — is forgotten. A paste afterwards falls back to the system
+      clipboard's plain values; a disarmed cut clears nothing. */
+  function clearClipboard(): void {
+    setClipboard(null);
   }
 
   function copy(): void {
@@ -1241,13 +1354,17 @@ export function useSpreadsheet(): SpreadsheetController {
   /* --- Undo / redo ------------------------------------------------------- */
 
   function undo(): void {
+    editingRef.current = null;
     setEditing(null);
+    cancelPendingCut();
     const command = historyRef.current.undo();
     if (command) undoCommand(command);
   }
 
   function redo(): void {
+    editingRef.current = null;
     setEditing(null);
+    cancelPendingCut();
     const command = historyRef.current.redo();
     if (command) commitCommand(command);
   }
@@ -1336,11 +1453,14 @@ export function useSpreadsheet(): SpreadsheetController {
 
   function insertRows(where: "above" | "below"): void {
     const { at, end, count } = rowSpan();
-    applyStructural("Insert rows", insertRowsOp(worksheet, where === "above" ? at : end + 1, count));
+    applyStructuralWorkbook(
+      "Insert rows",
+      insertRowsWorkbook(workbook, activeSheetId, where === "above" ? at : end + 1, count),
+    );
   }
   function deleteRows(): void {
     const { at, count } = rowSpan();
-    applyStructural("Delete rows", deleteRowsOp(worksheet, at, count));
+    applyStructuralWorkbook("Delete rows", deleteRowsWorkbook(workbook, activeSheetId, at, count));
   }
   function hideRows(): void {
     const { at, end } = rowSpan();
@@ -1361,11 +1481,14 @@ export function useSpreadsheet(): SpreadsheetController {
 
   function insertCols(where: "left" | "right"): void {
     const { at, end, count } = colSpan();
-    applyStructural("Insert columns", insertColsOp(worksheet, where === "left" ? at : end + 1, count));
+    applyStructuralWorkbook(
+      "Insert columns",
+      insertColsWorkbook(workbook, activeSheetId, where === "left" ? at : end + 1, count),
+    );
   }
   function deleteCols(): void {
     const { at, count } = colSpan();
-    applyStructural("Delete columns", deleteColsOp(worksheet, at, count));
+    applyStructuralWorkbook("Delete columns", deleteColsWorkbook(workbook, activeSheetId, at, count));
   }
   function hideCols(): void {
     const { at, end } = colSpan();
@@ -1383,15 +1506,15 @@ export function useSpreadsheet(): SpreadsheetController {
   }
 
   function insertCells(direction: "down" | "right"): void {
-    applyStructural(
+    applyStructuralWorkbook(
       "Insert cells",
-      shiftCellsOp(worksheet, selection.range, direction),
+      shiftCellsWorkbook(workbook, activeSheetId, selection.range, direction),
     );
   }
   function deleteCells(direction: "up" | "left"): void {
-    applyStructural(
+    applyStructuralWorkbook(
       "Delete cells",
-      shiftCellsOp(worksheet, selection.range, direction),
+      shiftCellsWorkbook(workbook, activeSheetId, selection.range, direction),
     );
   }
 
@@ -1407,7 +1530,11 @@ export function useSpreadsheet(): SpreadsheetController {
     if (!template) return { ok: false, blocked: "no-room" };
     const at = selection.active;
     if (!fitsOnSheet(worksheet, template, at)) return { ok: false, blocked: "no-room" };
-    if (!regionIsEmpty(worksheet, tableFootprint(template, at)))
+    const footprint = tableFootprint(template, at);
+    /* A merged region under the block counts as occupied even when its cells
+       are empty — a table body rendered through someone's merge is garbled,
+       and the menu must grey out for the same reason the build refuses. */
+    if (!regionIsEmpty(worksheet, footprint) || regionHasMerge(worksheet, footprint))
       return { ok: false, blocked: "occupied" };
     return { ok: true };
   }
@@ -1441,10 +1568,33 @@ export function useSpreadsheet(): SpreadsheetController {
   }
 
   function freezeRows(n: number): void {
+    if (worksheet.frozenRows === n) return; // a no-op freeze is not an undo step
     applyStructural(n > 0 ? "Freeze rows" : "Unfreeze rows", freezeRowsOp(worksheet, n), false);
   }
   function freezeCols(n: number): void {
+    if (worksheet.frozenCols === n) return;
     applyStructural(n > 0 ? "Freeze columns" : "Unfreeze columns", freezeColsOp(worksheet, n), false);
+  }
+  /** Clear both freeze axes as ONE command. Calling freezeRows(0) and
+      freezeCols(0) from one click builds two worksheets from the same stale
+      snapshot — the second write resurrects what the first cleared, which is
+      why View ▸ Unfreeze never actually unfroze rows. */
+  function unfreeze(): void {
+    if (worksheet.frozenRows === 0 && worksheet.frozenCols === 0) return;
+    applyStructural("Unfreeze", freezeColsOp(freezeRowsOp(worksheet, 0), 0), false);
+  }
+  /** Resize a run of rows as ONE command — Format ▸ Row height over a
+      multi-row selection used to loop per row from the same stale snapshot,
+      so only the last row's height survived. */
+  function resizeRows(from: number, to: number, height: number): void {
+    let next = worksheet;
+    for (let r = from; r <= to; r++) next = setRowHeight(next, r, height);
+    applyStructural("Resize rows", next, false);
+  }
+  function resizeCols(from: number, to: number, width: number): void {
+    let next = worksheet;
+    for (let c = from; c <= to; c++) next = setColWidth(next, c, width);
+    applyStructural("Resize columns", next, false);
   }
 
   const activeStyle = styleAt(selection.active.row, selection.active.col);
@@ -1464,6 +1614,7 @@ export function useSpreadsheet(): SpreadsheetController {
     styleRegistry,
     activeStyle,
     clipboard,
+    clearClipboard,
     activeSheetId,
     sheets,
     hiddenSheets,
@@ -1552,6 +1703,7 @@ export function useSpreadsheet(): SpreadsheetController {
     hideRows,
     unhideRows,
     resizeRow,
+    resizeRows,
     autoFitRow,
     insertCols,
     deleteCols,
@@ -1562,8 +1714,10 @@ export function useSpreadsheet(): SpreadsheetController {
     hideCols,
     unhideCols,
     resizeCol,
+    resizeCols,
     autoFitCol,
     freezeRows,
     freezeCols,
+    unfreeze,
   };
 }

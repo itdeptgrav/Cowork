@@ -15,12 +15,13 @@ import {
 } from "@/components/ui/Primitives";
 import { useAction } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { useMyDutyMode } from "@/lib/hooks/useDutyMode";
 import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import {
   coverageSummary,
   requirementCoverage,
 } from "@/lib/rules/tasks/requirementCoverage";
-import { statusMeta } from "./statusMeta";
+import { nextAction, statusMeta } from "./statusMeta";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -38,6 +39,24 @@ import type { TaskView } from "@/lib/repositories";
  * itself whether three of five were done would eventually disagree with the
  * gate that refuses the submission.
  */
+/**
+ * Whether this panel is showing the footer that carries the submit button.
+ *
+ * Exported because `NextActionCard` drops its generic "Go" link when this
+ * panel is carrying the same move, and a suppression that guesses is how the
+ * card ended up rendering "Your move" above nothing — see
+ * `assignmentAcceptance.test.ts`. It reads this rather than restating it, so
+ * the two cannot drift: if the footer is not on screen, the link stays.
+ */
+export function requirementsFooterVisible(
+  view: TaskView,
+  viewerId: string | null,
+): boolean {
+  const isOwner = view.task.createdById === viewerId;
+  const isAssignee = view.assignments.some((a) => a.employeeId === viewerId);
+  return view.completion.total > 0 && (isOwner || isAssignee);
+}
+
 export function ProjectPanel({
   view,
   subtasks,
@@ -48,11 +67,20 @@ export function ProjectPanel({
   onChange: () => void;
 }) {
   const me = useViewerId();
+  /* The submit action is offered here now, so this panel has to know whether
+     submitting IS the move. Asking `nextAction` — the same function, with the
+     same duty mode the action card passes — rather than testing the status
+     directly: being away withdraws your move, and a status test would offer a
+     button the card had already taken away. */
+  const dutyMode = useMyDutyMode();
   const router = useRouter();
   const [drafting, setDrafting] = useState(false);
   const [draft, setDraft] = useState("");
 
   const c = view.completion;
+  const move = nextAction(view, me ?? "", dutyMode);
+  const submitHref =
+    move.href === `/tasks/${view.task.id}/submission` ? move.href : null;
   /* Assigned versus nobody's — a different question from the meter's
      satisfied-versus-not, and the one an owner asks while breaking work down. */
   const coverage = requirementCoverage(c.requirements);
@@ -333,7 +361,7 @@ export function ProjectPanel({
           </ul>
         )}
 
-        {c.total > 0 && mayDelegate && (
+        {requirementsFooterVisible(view, me) && (
           <div className="flex flex-wrap items-center gap-2 border-t border-hairline px-5 py-3">
             {!isSubtask && (
               /* The full task form, not a cut-down dialog. A subtask needs
@@ -360,6 +388,32 @@ export function ProjectPanel({
                 {c.total - c.satisfiedCount === 1 ? "" : "s"} outstanding — this
                 cannot be submitted yet.
               </span>
+            )}
+            {/**
+             * **The move itself, beside the requirements it depends on.**
+             *
+             * This was the action card’s generic “Go”, a card lower, under
+             * the eyebrow “Your move · Submit when ready”. The reason you may
+             * not submit is printed here, in this footer; the control that
+             * submits was somewhere else. Now they are one row.
+             *
+             * **Not gated on `canComplete`**, which is the mistake the first
+             * attempt made. This link goes to the submission surface, and that
+             * surface carries two moves: the daily report for a day’s work on
+             * an unfinished task, and the submission itself. Outstanding
+             * requirements refuse the second, never the first — so a task at
+             * 0/4 still needs this link, and hiding it stranded the report.
+             * The sentence beside it already says which of the two is refused.
+             *
+             * `submitHref` is null unless submitting is genuinely the move, so
+             * this never offers a write the engine would refuse. The card drops
+             * its own link whenever this one renders — see
+             * `requirementsFooterVisible` above.
+             */}
+            {submitHref && (
+              <Button tone="primary" size="sm" className="ml-auto">
+                <Link href={submitHref}>Submit task</Link>
+              </Button>
             )}
           </div>
         )}

@@ -137,7 +137,7 @@ test("a project shows its deadline and still withholds its time budget", () => {
   }
 });
 
-test("a project keeps Deadline, Submission and Review tabs, but not Reports", () => {
+test("a project keeps Deadline and Submission, and its review, but not Reports", () => {
   /* Reports is the exception: a daily report is written against time a timer
      measured, and a project has no timer. Its days belong to the subtasks. */
   const at = detail.indexOf("id: \"reports\"");
@@ -146,7 +146,16 @@ test("a project keeps Deadline, Submission and Review tabs, but not Reports", ()
     detail.slice(Math.max(0, at - 300), at).includes("isContainer"),
     "Reports is offered on a project — there is no timer behind it to report on",
   );
-  for (const id of ['id: "deadline"', 'id: "submission"', 'id: "review"']) {
+  /**
+   * **Review is no longer a tab, and the affordance did not go with it.**
+   *
+   * Submission and Review were merged: `ReviewPanel` renders inside the
+   * Submission tab, under the submit box, and `/tasks/:id/review` still lands
+   * there. A container therefore still reaches its sign-off, through the tab
+   * that absorbed it. So the loop checks the two tabs that remain, and the
+   * assertion after it checks the review is still rendered.
+   */
+  for (const id of ['id: "deadline"', 'id: "submission"']) {
     const tabAt = detail.indexOf(id);
     assert.ok(tabAt > 0, `${id} tab is missing`);
     assert.equal(
@@ -155,6 +164,11 @@ test("a project keeps Deadline, Submission and Review tabs, but not Reports", ()
       `${id} is withheld from a project again`,
     );
   }
+  assert.match(
+    detail,
+    /tab === "submission" \|\| tab === "review"/,
+    "the review is no longer rendered — a container lost its sign-off",
+  );
 });
 
 test("the container gets its own explanatory panel in the overview tab", () => {

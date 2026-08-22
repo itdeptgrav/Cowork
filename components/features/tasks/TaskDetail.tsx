@@ -1,18 +1,19 @@
 "use client";
 
 import Link from "next/link";
-import { formatRankDisplay, rankFor, rankTitle } from "@/lib/rules/tasks/priorityDisplay";
+import {
+  formatRankDisplay,
+  rankFor,
+  rankTitle,
+} from "@/lib/rules/tasks/priorityDisplay";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { isProjectContainer } from "@/lib/rules/tasks/completion";
-import {
-  deadlineOrigin,
-  formatWindow,
-} from "@/lib/rules/tasks/deadlineOrigin";
+import { deadlineOrigin, formatWindow } from "@/lib/rules/tasks/deadlineOrigin";
 import { useEffect, useRef, useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
 import { meetingFirstHint } from "@/lib/rules/meetings/meetingFirst";
-import { ProjectPanel } from "./ProjectPanel";
+import { ProjectPanel, requirementsFooterVisible } from "./ProjectPanel";
 import { ResponsibilityPanel } from "./ResponsibilityPanel";
 import { RelatedMeetings } from "@/components/features/meetings/RelatedMeetings";
 import { TaskMeetingPanel } from "./TaskMeetingPanel";
@@ -58,12 +59,10 @@ import {
   Button,
   Chip,
   ErrorState,
-  Field,
   InlineError,
   Meter,
   Panel,
   ProvisionalBadge,
-  Select,
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
@@ -171,7 +170,9 @@ export function TaskDetail({
     return (
       <Panel>
         <ErrorState
-          title={isUnavailable ? "Not available yet" : "Could not open this task"}
+          title={
+            isUnavailable ? "Not available yet" : "Could not open this task"
+          }
           body={error}
           onRetry={isUnavailable ? undefined : refetch}
         />
@@ -228,30 +229,20 @@ export function TaskDetail({
       href: `/tasks/${taskId}/deadline`,
       icon: "clock" as const,
     },
-    /* Between the deadline and the submission because that is where it falls in
-       the work: the time is settled, then the days are reported as they pass,
-       then the work is handed in. */
-    ...(isContainer
-      ? []
-      : [
-          {
-            id: "reports",
-            label: "Reports",
-            href: `/tasks/${taskId}/reports`,
-            icon: "timeline" as const,
-          },
-        ]),
+    /* Between the deadline and the submission: the reference material you work
+       FROM is read before the work is handed in, and it is the thing people
+       open most often after the brief itself. */
+    {
+      id: "files",
+      label: "Files",
+      href: `/tasks/${taskId}/files`,
+      icon: "folder" as const,
+    },
     {
       id: "submission",
       label: "Submission",
       href: `/tasks/${taskId}/submission`,
       icon: "send" as const,
-    },
-    {
-      id: "review",
-      label: "Review",
-      href: `/tasks/${taskId}/review`,
-      icon: "approvals" as const,
     },
     {
       id: "chat",
@@ -284,12 +275,19 @@ export function TaskDetail({
           },
         ]
       : []),
-    {
-      id: "files",
-      label: "Files",
-      href: `/tasks/${taskId}/files`,
-      icon: "folder" as const,
-    },
+    /* Withheld from a project, and the only tab that is. A daily report is
+       written against time a timer measured, and a project has no timer — its
+       days are reported on the subtasks where the work happened. */
+    ...(isContainer
+      ? []
+      : [
+          {
+            id: "reports",
+            label: "Reports",
+            href: `/tasks/${taskId}/reports`,
+            icon: "timeline" as const,
+          },
+        ]),
     {
       id: "history",
       label: "History",
@@ -414,12 +412,24 @@ export function TaskDetail({
           {/* Badges are attached HERE rather than built into `tabs` above, so
               the tab list stays a description of the task's shape and knows
               nothing about who has read what. */}
-          <IconTabs items={badgedTabs} active={tab} />
+          {/* A /review URL lights Submission, the tab that absorbed it —
+              otherwise an old bookmark shows a bar with nothing selected. */}
+          <IconTabs
+            items={badgedTabs}
+            active={tab === "review" ? "submission" : tab}
+          />
         </div>
       </div>
 
       <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
-        <div className="flex flex-col gap-4 deck:col-span-8">
+        {/* Eight columns beside the rail, twelve without it. The rail is an
+           overview-only thing now, and a tab that does not draw one must not
+           leave a third of the page blank beside a panel that has to scroll. */}
+        <div
+          className={`flex flex-col gap-4 ${
+            tab === "overview" ? "deck:col-span-8" : "deck:col-span-12"
+          }`}
+        >
           {/* The timer, above everything. It is the one control on this page
               somebody presses repeatedly through a working day — start, pause,
               start again — where every card below is a decision taken once and
@@ -435,7 +445,56 @@ export function TaskDetail({
               button here would bank time against a task whose work is somebody
               else's — counted twice, once on the parent and once on the subtask
               actually doing it. */}
-          {tab === "overview" && !isContainer && <TimePanel view={v} />}
+          {/* **What the task is, first.**
+              The brief and the completion requirements were the last two cards
+              in the column, under the timer, the decisions, the negotiations
+              and the flow diagram. That is the wrong way round: everything
+              below is a decision ABOUT this work, and you cannot take one
+              without first reading what the work is. They lead now. */}
+          {tab === "overview" && <BriefPanel view={v} />}
+
+          {tab === "overview" && (
+            <ProjectPanel
+              view={v}
+              subtasks={subtasks.data ?? []}
+              onChange={() => {
+                refetch();
+                subtasks.refetch();
+              }}
+            />
+          )}
+
+          {/* **The deadline and its negotiation, straight after the brief.**
+              These five carry the whole time conversation — the hours stepper,
+              the date counter-offer, and whose move it is — and they sat below
+              the timer and the action card, four cards down. Reading what the
+              work is and then agreeing how long it gets is one thought, so they
+              follow the requirements directly.
+
+              The order WITHIN the block is unchanged and deliberate: a live
+              request is answered before a standing state, and hours are settled
+              before dates. Each card still decides for itself whether it has
+              anything to say, so on a task with no negotiation open this whole
+              block renders nothing and the timer moves up to meet the brief. */}
+          {tab === "overview" && (
+            <ExtensionDecisionCard view={v} viewerId={me} onChange={refetch} />
+          )}
+
+          {tab === "overview" && (
+            <DeadlineRevisionCard view={v} viewerId={me} onChange={refetch} />
+          )}
+
+          {tab === "overview" && (
+            <CounterDeadlineCard view={v} viewerId={me} onChange={refetch} />
+          )}
+
+          {tab === "overview" && (
+            <BudgetConfirmationCard view={v} viewerId={me} onChange={refetch} />
+          )}
+
+          {tab === "overview" && (
+            <BudgetNegotiationCard view={v} viewerId={me} onChange={refetch} />
+          )}
 
           {/*
             The next required action, first among the decisions.
@@ -475,50 +534,10 @@ export function TaskDetail({
             />
           )}
 
-          {/* An assignee's request for MORE time, answered in hours before
-              anybody is asked about a date. It renders only where there is such
-              a request, and it decides for itself whether this viewer is the
-              manager who owns the hours. Above the budget card because it is a
-              live question rather than a standing state. */}
-          {tab === "overview" && (
-            <ExtensionDecisionCard view={v} viewerId={me} onChange={refetch} />
-          )}
-
-          {/* The assignor's half of the same escalation, in DATES only. It
-              renders only for a deadline request and decides for itself whether
-              this viewer owns the commitment. */}
-          {tab === "overview" && (
-            <DeadlineRevisionCard view={v} viewerId={me} onChange={refetch} />
-          )}
-
-          {/* The move that had no surface: a counter-offer hands the turn back
-              to whoever asked, and nothing rendered for them. */}
-          {tab === "overview" && (
-            <CounterDeadlineCard view={v} viewerId={me} onChange={refetch} />
-          )}
-
-          {/* The OTHER move that had no surface, and the one reported: a manager
-              answers a request for hours, and the assignee — whose week the
-              figure binds — has to agree to it. `approved` used to be terminal,
-              so the record said "confirm this" and nothing rendered. */}
-          {tab === "overview" && (
-            <BudgetConfirmationCard view={v} viewerId={me} onChange={refetch} />
-          )}
-
-          {/* The time budget, for whichever side is being waited on — and a
-              plain statement of whose turn it is for everybody else. One card
-              for both parties: two cards each with their own conditions is how
-              an assignee came to be offered an accept over their own proposal. */}
-          {tab === "overview" && (
-            <BudgetNegotiationCard view={v} viewerId={me} onChange={refetch} />
-          )}
-
           {/* Both extension conversations in the order they happened, each in
               its own unit. Filtered by the rule: the assignor sees the dates
               only, because the hours are not their decision. */}
-          {tab === "overview" && (
-            <ExtensionTimeline view={v} viewerId={me} />
-          )}
+          {tab === "overview" && <ExtensionTimeline view={v} viewerId={me} />}
 
           {/* What was asked to be corrected, above the flow — somebody whose
               work came back needs the list before the diagram. Renders nothing
@@ -557,9 +576,7 @@ export function TaskDetail({
               /* From the same resolver the confirmation card renders from, so the
                  sentence and the control cannot disagree about whose move it is —
                  which is what "Waiting for Umung Arora — you" over no button was. */
-              acceptanceIsViewers={
-                getAssignmentActions(me, v).canAccept
-              }
+              acceptanceIsViewers={getAssignmentActions(me, v).canAccept}
               assignees={v.assignees}
               /* Held off the task by an open gate, and still who it is for. */
               pendingAssignees={v.pendingAssignees}
@@ -603,16 +620,7 @@ export function TaskDetail({
             </Panel>
           )}
 
-          {tab === "overview" && (
-            <Overview
-              view={v}
-              subtasks={subtasks.data ?? []}
-              onChange={() => {
-                refetch();
-                subtasks.refetch();
-              }}
-            />
-          )}
+          {tab === "overview" && <Overview view={v} />}
           {/* Guarded as well as untabbed: the tab is gone from the bar, and
               `/tasks/:id/deadline` is still a URL somebody can hold open from
               before the task was broken down. */}
@@ -640,15 +648,28 @@ export function TaskDetail({
                 </p>
               </Panel>
             )}
-          {tab === "deadline" && (
-            <DeadlinePanel view={v} onChange={refetch} />
-          )}
+          {tab === "deadline" && <DeadlinePanel view={v} onChange={refetch} />}
           {tab === "reports" && !isContainer && <ReportsPanel view={v} />}
-          {tab === "submission" && (
-            <SubmissionPanel view={v} onChange={refetch} />
-          )}
-          {tab === "review" && (
-            <ReviewPanel view={v} onChange={refetch} />
+          {/* **Submission and review are one tab.**
+              They were two, and they are two halves of one exchange: the work
+              goes in, and somebody decides on it. Splitting them meant the
+              person handing work in and the person judging it read different
+              screens about the same submission, and neither could see the other
+              half without changing tab.
+
+              The review sits UNDER the submit box, in the order the work moves.
+              `ReviewPanel` decides for itself whether this viewer owes a
+              decision, so on a task nobody has submitted it renders nothing and
+              the tab is the submit box alone — exactly what it was before.
+
+              `tab === "review"` still lands here: /tasks/:id/review is a URL
+              people hold in bookmarks and notifications, and it now shows the
+              tab that absorbed it rather than an empty column. */}
+          {(tab === "submission" || tab === "review") && (
+            <>
+              <SubmissionPanel view={v} onChange={refetch} />
+              <ReviewPanel view={v} onChange={refetch} />
+            </>
           )}
           {tab === "meetings" && <TaskMeetingPanel view={v} />}
 
@@ -660,17 +681,36 @@ export function TaskDetail({
           )}
         </div>
 
-        {/* The constant facts. */}
-        <div className="flex flex-col gap-4 deck:col-span-4">
-          <FactsRail
-            view={v}
-            isContainer={isContainer}
-            onPriority={
-              mayChangePriority ? () => setPriorityOpen(true) : null
-            }
-          />
-          <ScoreImpact view={v} />
-        </div>
+        {/* **The constant facts, on the overview only.**
+           They are the standing description of the task — owner, priority,
+           deadline, budget, score impact — and they were repeated beside every
+           tab, including the ones that are themselves a full reading surface:
+           the chat, the file list, the history. On those the rail was a column
+           of facts nobody had come to read, taking a third of the width from
+           the thing they had. */}
+        {tab === "overview" && (
+          <div className="flex flex-col gap-4 deck:col-span-4">
+            {/* **The timer rides the rail, above the facts.**
+              It led the wide column, which put the control somebody presses
+              repeatedly through a day at the top of the reading column and
+              pushed the brief down. Here it sits with the other constants —
+              deadline, budget, priority — which is what it is a live reading
+              of, and the wide column is left to what the task IS.
+
+              Still overview-only and still absent on a container: the same two
+              conditions it carried before, moved with it unchanged. */}
+            {tab === "overview" && !isContainer && <TimePanel view={v} />}
+
+            <FactsRail
+              view={v}
+              isContainer={isContainer}
+              onPriority={
+                mayChangePriority ? () => setPriorityOpen(true) : null
+              }
+            />
+            <ScoreImpact view={v} />
+          </div>
+        )}
       </div>
 
       {priorityOpen && (
@@ -722,6 +762,39 @@ function NextActionCard({
 
   const mineApproval = v.pendingApprovals.find((a) => a.approverId === me);
 
+  /* **The submit move now lives in the completion panel above.** When it is
+     showing this same move, a second control here is the same jump from a box
+     that cannot say why it might be refused.
+
+     Suppression asks that panel whether it is on screen rather than guessing
+     from the status. Guessing is exactly what left `assigned` with no control
+     at all: two conditions that looked equivalent were not, and both were
+     false at once. A task with no requirements has no footer, so it keeps the
+     link below. */
+  const submitRelocated =
+    action.href === `/tasks/${taskId}/submission` &&
+    requirementsFooterVisible(v, me);
+
+  /**
+   * **A card with nothing left in it does not render.**
+   *
+   * Handing the submit move upstairs left this one stating “Your move —
+   * Submit when ready” above an empty space, directly under the button that
+   * had just offered it. An eyebrow naming a move it cannot perform is worse
+   * than no card: it reads as a second, broken control.
+   *
+   * Only this one case. Every other move still has its own button here, and
+   * `meetFirst` is checked because the meeting suggestion lives in this card
+   * too — if it is showing, the card still has something to say. All hooks
+   * are above this line.
+   */
+  if (submitRelocated && !meetFirst) return null;
+
+  /* Kept on one line and intact: `assignmentAcceptance.test.ts` asserts on the
+     exact text of this condition, because it is the one that went dead. */
+  const fallbackGo =
+    action.href && !mineApproval && v.task.status !== "confirmed";
+
   /*
    * The approval chain used to replace this card's one-line summary, because
    * "Waiting on someone else" answers none of the questions a held task raises.
@@ -765,7 +838,7 @@ function NextActionCard({
   return (
     <Panel>
       <div className="flex flex-wrap items-center gap-3">
-        {(
+        {
           <span
             className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${
               action.actor === "you"
@@ -775,7 +848,7 @@ function NextActionCard({
           >
             <Icon.chevronRight />
           </span>
-        )}
+        }
         <div className="min-w-0 flex-1">
           <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
             {action.actor === "you"
@@ -807,10 +880,17 @@ function NextActionCard({
                 department has to enter a number before the task can reach
                 anyone. Legacy gave it its own control for that reason
                 (`department-tl-set-hours`), so the generic buttons are
-                suppressed for it. */}
-            {mineApproval?.kind === "effort_estimate" ? (
-              <EffortEstimateForm taskId={taskId} view={view} onDone={onRefetch} />
-            ) : mineApproval ? (
+                suppressed for it.
+
+                **And it is not rendered here.** This row is a slot for one or
+                two capsule buttons sitting beside a heading that takes the rest
+                of the line: `items-center`, a `flex-1` title, a `shrink-0`
+                cluster. `EffortEstimateForm` is a whole planning surface — a
+                selector, a feasibility panel and a queue — and putting it in
+                the Approve/Reject slot is what left the heading stranded beside
+                a void with the commit button floating in the corner. It has its
+                own full-width block below this row. */}
+            {mineApproval && mineApproval.kind !== "effort_estimate" ? (
               <>
                 <Button
                   tone="primary"
@@ -868,14 +948,29 @@ function NextActionCard({
                 confirmation condition failed. It is now handled by
                 `AssignmentConfirmationCard`, so the exclusion is gone and this
                 link is a real fallback rather than a third dead branch. */}
-            {action.href && !mineApproval && v.task.status !== "confirmed" && (
+            {/* Every other move still routes from here. Only the submit move
+                is handed over, and only when the panel that took it is
+                actually rendering — `submitRelocated` reads that panel’s own
+                gate rather than re-deriving it. */}
+            {fallbackGo && !submitRelocated && (
               <Button tone="primary" size="sm">
-                <Link href={action.href}>Go</Link>
+                <Link href={action.href!}>Go</Link>
               </Button>
             )}
           </div>
         )}
       </div>
+
+      {/* The effort estimate, at the panel's full width.
+          Separated by a hairline and space rather than a nested card — the
+          house rule, and a card inside a Panel would read as a second surface
+          when it is the same move the heading above already named. */}
+      {action.actor === "you" && mineApproval?.kind === "effort_estimate" && (
+        <div className="mt-4 border-t border-hairline pt-4">
+          <EffortEstimateForm taskId={taskId} view={view} onDone={onRefetch} />
+        </div>
+      )}
+
       {err && (
         <div className="mt-3">
           <InlineError message={err} code={code} />
@@ -956,18 +1051,7 @@ function TimePanel({ view }: { view: import("@/lib/repositories").TaskView }) {
 
 /* ── Overview ─────────────────────────────────────────────────────────────── */
 
-function Overview({
-  view,
-  subtasks,
-  onChange,
-}: {
-  view: import("@/lib/repositories").TaskView;
-  subtasks: import("@/lib/repositories").TaskView[];
-  /* Requirement and subtask changes have to refetch BOTH the task and its
-     children — satisfaction is derived from the pair, so refreshing one leaves
-     the panel showing a count the other half no longer supports. */
-  onChange: () => void;
-}) {
+function Overview({ view }: { view: import("@/lib/repositories").TaskView }) {
   return (
     <>
       {/* The Time panel used to sit here, between the brief and the subtasks.
@@ -991,22 +1075,10 @@ function Overview({
           and filterable, which is one place instead of four and takes 2+N
           fetches off this page. */}
 
-      <Panel>
-        <div className="flex items-start justify-between gap-3">
-          <h2 className="text-sm font-medium text-ink">Brief</h2>
-          <span className="text-[11px] text-ink-faint">
-            Created {formatDate(view.task.createdAt)}
-          </span>
-        </div>
-        <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
-          {view.task.description ?? "No description was given for this task."}
-        </p>
-        {/* Requirements moved to `ProjectPanel`, which owns their satisfaction
-            state. Rendering them here too would show the same checklist twice
-            with only one copy able to be ticked. */}
-      </Panel>
-
-      <ProjectPanel view={view} subtasks={subtasks} onChange={onChange} />
+      {/* The brief and the completion requirements used to be here, at the
+          bottom of the column. They are now `BriefPanel` and `ProjectPanel`,
+          rendered at the TOP — what the task is has to be readable before any
+          decision about it, and it was sitting under a dozen cards. */}
 
       {/* Daily reports used to be the last card here, and only when at least
           one existed — so on the task where somebody wondered where the
@@ -1015,6 +1087,32 @@ function Overview({
           two lists of one thing is two places to keep right, and the one
           further down the page loses. */}
     </>
+  );
+}
+
+/**
+ * What the task is — the first thing on the page.
+ *
+ * Lifted out of `Overview` so it can be rendered above the decision cards
+ * rather than beneath them. Same panel, same type, same "Created" stamp; only
+ * its position changed.
+ *
+ * Requirements are NOT repeated here. `ProjectPanel` owns their satisfaction
+ * state, and a second checklist would be a copy nobody could tick.
+ */
+function BriefPanel({ view }: { view: import("@/lib/repositories").TaskView }) {
+  return (
+    <Panel>
+      <div className="flex items-start justify-between gap-3">
+        <h2 className="text-sm font-medium text-ink">Brief</h2>
+        <span className="text-[11px] text-ink-faint">
+          Created {formatDate(view.task.createdAt)}
+        </span>
+      </div>
+      <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
+        {view.task.description ?? "No description was given for this task."}
+      </p>
+    </Panel>
   );
 }
 
@@ -1181,15 +1279,15 @@ function FactsRail({
         )}
 
         {v.task.deadline.officialDueAt !== v.task.deadline.dueAt && (
-            <Fact label="Scored against">
-              <span
-                className="text-sm text-ink"
-                title="Charged extensions move the working deadline but not the scored one"
-              >
-                {formatDateTime(v.task.deadline.officialDueAt)}
-              </span>
-            </Fact>
-          )}
+          <Fact label="Scored against">
+            <span
+              className="text-sm text-ink"
+              title="Charged extensions move the working deadline but not the scored one"
+            >
+              {formatDateTime(v.task.deadline.officialDueAt)}
+            </span>
+          </Fact>
+        )}
 
         {/* No time budget on a container — it has none of its own; each
             subtask has its own, shown on that subtask's own facts. Showing this
@@ -1365,41 +1463,36 @@ function EffortEstimateForm({
   const [set, state] = useAction((r) =>
     r.setEffortEstimate(taskId, hours * 3600),
   );
+  /* The person who will DO the work — a held cross-department task keeps them
+     in `pendingAssigneeIds` until it is handed over, so they are not in
+     `assignees` yet. Never the viewer: the manager sizing a cross-department
+     task is in a different department entirely. */
+  const assigneeId =
+    view.pendingAssignees[0]?.id ?? view.assignees[0]?.id ?? null;
+  const assigneeName =
+    view.pendingAssignees[0]?.displayName ??
+    view.assignees[0]?.displayName ??
+    null;
+
+  /* ONE control for the number, handed to the panel so it renders beside the
+     dates it moves. There is no second copy anywhere — see `BudgetChoice`. */
+  const budgetControl = <BudgetChoice hours={hours} onChange={setHours} />;
+
   return (
     <div>
       {/* Said in full, because this control is the last thing standing between
           an approved task and the person waiting for it — and until it is set,
           they cannot see the task at all. "Effort" alone did not convey that. */}
-      <p className="mb-2 text-[13px] leading-relaxed text-ink-muted">
+      <p className="text-[13px] leading-relaxed text-ink-muted">
         Set the estimated hours for the person doing this work. It is assigned
         to them once you do.
       </p>
-      <div className="flex flex-wrap items-end gap-2">
-      <Field label="Time budget" hint="The estimated working hours for this task.">
-        <Select
-          value={String(hours)}
-          onChange={(e) => setHours(Number(e.target.value))}
-        >
-          {[1, 2, 3, 4, 6, 8, 12, 16, 24, 40].map((h) => (
-            <option key={h} value={h}>
-              {h} hours
-            </option>
-          ))}
-        </Select>
-      </Field>
+
       {/* Between the number and the commitment, which is where the question
-          "is this enough time?" actually arises. Measured against the person
-          who will DO the work: a held cross-department task keeps them in
-          `pendingAssigneeIds` until it is handed over. */}
+          "is this enough time?" actually arises. */}
       <FeasibilityPreview
-        employeeId={
-          view.pendingAssignees[0]?.id ?? view.assignees[0]?.id ?? null
-        }
-        employeeName={
-          view.pendingAssignees[0]?.displayName ??
-          view.assignees[0]?.displayName ??
-          null
-        }
+        employeeId={assigneeId}
+        employeeName={assigneeName}
         taskId={taskId}
         /* Position is not chosen here — it is set later in the flow — so none
            is given, and the rule places the task where it actually goes: the
@@ -1414,30 +1507,137 @@ function EffortEstimateForm({
         /* Position is not committed on this card — trying one shows the impact
            without setting anything, which is the question being asked here. */
         selectable
-        /* Budget, unlike position, IS what this card sets. So the chips drive
-           the same `hours` the dropdown above holds rather than a second copy
-           of it — one number, two ways to reach it, and no way for the
-           simulation to disagree with what the button will submit. */
-        onBudgetChange={(secs) => setHours(secs / 3600)}
+        budgetControl={budgetControl}
       />
 
-      <Button
-        tone="primary"
-        size="sm"
-        /* The engine refuses `val <= 0`; refusing it here means the reader
-           finds out before a round trip rather than through a validation
-           message about a field they cannot see. */
-        disabled={state.isPending || !(hours > 0)}
-        onClick={async () => {
-          const r = await set();
-          if (r.ok) onDone();
-        }}
-        data-help="set-time-budget-button"
-      >
-        {state.isPending ? "Setting…" : "Set hours"}
-      </Button>
+      {/* An assignee is what the preview measures against. Without one there is
+          no queue and no dates to show, and the panel renders nothing — so the
+          budget control is mounted here instead rather than disappearing with
+          the preview that was only ever advisory. */}
+      {!assigneeId && (
+        <div className="mt-3 rounded-inset border border-[var(--hairline)] bg-[var(--surface-sunken)] px-3.5 py-3">
+          {budgetControl}
+        </div>
+      )}
+
+      {/* The form's terminal action, on its own line under both halves. It was
+          wedged into a wrapping flex row beside the selector and the whole
+          preview panel, which left it floating against the panel's bottom-right
+          corner with no relationship to anything. */}
+      <div className="mt-4 flex flex-wrap items-center justify-end gap-3 border-t border-hairline pt-3">
+        {state.error && (
+          <div className="min-w-0 flex-1">
+            <InlineError message={state.error} />
+          </div>
+        )}
+        <Button
+          tone="primary"
+          size="sm"
+          /* The engine refuses `val <= 0`; refusing it here means the reader
+             finds out before a round trip rather than through a validation
+             message about a field they cannot see. */
+          disabled={state.isPending || !(hours > 0)}
+          onClick={async () => {
+            const r = await set();
+            if (r.ok) onDone();
+          }}
+          data-help="set-time-budget-button"
+        >
+          {state.isPending ? "Setting…" : "Set hours"}
+        </Button>
       </div>
-      {state.error && <InlineError message={state.error} />}
+    </div>
+  );
+}
+
+/** The hours this budget may be set to — the ONE list, offered once. */
+const BUDGET_HOURS = [1, 2, 3, 4, 6, 8, 12, 16, 24, 40];
+
+/**
+ * The time budget, as a single control.
+ *
+ * **This replaces a dropdown and a chip row that set the same number.** They
+ * were wired to one `hours` so they could never disagree — but a reader has no
+ * way to see that, and two controls sitting together is a promise that they do
+ * different things. Worse, they did not even offer the same hours: the chips
+ * stopped at 16 while the dropdown went to 40, so the dropdown could show a
+ * value no chip could reach and pressing a chip silently narrowed the range.
+ *
+ * Chips rather than the select, because this screen is for TRYING budgets: the
+ * verdict beside it recomputes on every change, and one tap per trial is the
+ * whole interaction. A select costs two clicks and hides the range it offers.
+ *
+ * A real radiogroup, not a row of buttons — arrow keys move between the hours
+ * and only the selected one is in the tab order, which is what a person using a
+ * keyboard expects from a control that picks one of ten.
+ */
+function BudgetChoice({
+  hours,
+  onChange,
+}: {
+  hours: number;
+  onChange: (hours: number) => void;
+}) {
+  return (
+    <div>
+      <p id="budget-choice-label" className="text-[11px] text-ink-faint">
+        Time budget
+      </p>
+      <div
+        role="radiogroup"
+        aria-labelledby="budget-choice-label"
+        className="mt-1.5 flex flex-wrap gap-1.5"
+        onKeyDown={(e) => {
+          const step =
+            e.key === "ArrowRight" || e.key === "ArrowDown"
+              ? 1
+              : e.key === "ArrowLeft" || e.key === "ArrowUp"
+                ? -1
+                : 0;
+          if (!step) return;
+          e.preventDefault();
+          const at = BUDGET_HOURS.indexOf(hours);
+          /* Wraps, so the ends are not dead. */
+          const next =
+            BUDGET_HOURS[
+              (at + step + BUDGET_HOURS.length) % BUDGET_HOURS.length
+            ];
+          onChange(next);
+          /* Focus follows selection, which is the radiogroup contract. */
+          (
+            e.currentTarget.querySelector(
+              `[data-hours="${next}"]`,
+            ) as HTMLElement | null
+          )?.focus();
+        }}
+      >
+        {BUDGET_HOURS.map((h) => {
+          const on = hours === h;
+          return (
+            <button
+              key={h}
+              type="button"
+              role="radio"
+              aria-checked={on}
+              data-hours={h}
+              /* Roving tab stop: the group is one stop, not ten. */
+              tabIndex={on ? 0 : -1}
+              onClick={() => onChange(h)}
+              data-figure
+              className={`rounded-full px-2.5 py-1 text-[12px] transition-colors duration-[180ms] ease-[var(--ease-deck)] ${
+                on
+                  ? "bg-ink text-[var(--body-bg)]"
+                  : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)] hover:text-ink"
+              }`}
+            >
+              {h}h
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-[11px] text-ink-faint">
+        The estimated working hours for this task.
+      </p>
     </div>
   );
 }

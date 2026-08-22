@@ -188,14 +188,20 @@ export class StyleRegistry {
     return JSON.stringify(this.styles);
   }
 
-  /** Rebuild a registry from `serialize()`, preserving every id. */
+  /** Rebuild a registry from `serialize()`, preserving every id. Tolerant of a
+      corrupt table: a non-array degrades to the default registry, and a corrupt
+      ENTRY (null, a number, an array) degrades to the empty style at its id —
+      cells referencing it render unformatted, which is the least-damage reading
+      of a bad record; a persisted file must never kill the whole load. */
   static deserialize(json: string): StyleRegistry {
     const reg = new StyleRegistry();
-    const arr = JSON.parse(json) as CellStyle[];
+    const parsed: unknown = JSON.parse(json);
+    const arr = Array.isArray(parsed) ? (parsed as unknown[]) : [];
     reg.styles = [];
     reg.index = new Map();
     arr.forEach((style, id) => {
-      const norm = normalizeStyle(style);
+      const usable = typeof style === "object" && style !== null && !Array.isArray(style);
+      const norm = usable ? normalizeStyle(style as CellStyle) : EMPTY_STYLE;
       reg.styles[id] = norm;
       reg.index.set(JSON.stringify(norm), id);
     });

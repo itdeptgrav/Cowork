@@ -6,6 +6,7 @@ import {
   groupLedger,
   isFiltered,
   isReversed,
+  recentEntries,
   signedPointsOf,
   totalsOf,
   type LedgerEntryLike,
@@ -139,6 +140,54 @@ test("the summary says earned or deducted in words", () => {
   assert.equal(describeTotals({ earned: 16.4, deducted: 0, net: 16.4 }), "+16.4 pts earned");
   assert.equal(describeTotals({ earned: 0, deducted: 3, net: -3 }), "−3.0 pts deducted");
   assert.equal(describeTotals({ earned: 2, deducted: 2, net: 0 }), "0 pts net");
+});
+
+/* ── Recent ───────────────────────────────────────────────────────────────── */
+
+test("the newest entries are the ones taken, whatever order they arrived in", () => {
+  /* The ledger arrives grouped by filing year, so a plain slice off the front
+     shows whichever year the provider sent first — the Score tab would lead
+     with last year's entries and call them recent. */
+  const rows = [
+    entry({ id: "older", effectiveDate: "2025-11-02", periodKey: "2025" }),
+    entry({ id: "oldest", effectiveDate: "2025-01-09", periodKey: "2025" }),
+    entry({ id: "newest", effectiveDate: "2026-08-14" }),
+    entry({ id: "newer", effectiveDate: "2026-08-03" }),
+  ];
+  assert.deepEqual(
+    recentEntries(rows, 3).map((e) => e.id),
+    ["newest", "newer", "older"],
+  );
+});
+
+test("an undated entry is placed after every dated one, not before", () => {
+  /* An empty date sorts before every real one, so without lifting the empty
+     case out an unstamped entry heads the panel. It is still eligible for the
+     slice — points that were really taken are not withheld over a missing
+     stamp. */
+  const rows = [
+    entry({ id: "undated", effectiveDate: "" }),
+    entry({ id: "dated", effectiveDate: "2026-08-05" }),
+  ];
+  assert.deepEqual(
+    recentEntries(rows, 2).map((e) => e.id),
+    ["dated", "undated"],
+  );
+  assert.deepEqual(
+    recentEntries(rows, 1).map((e) => e.id),
+    ["dated"],
+  );
+});
+
+test("asking for none returns none, and the source is never reordered", () => {
+  const rows = [
+    entry({ id: "a", effectiveDate: "2026-01-01" }),
+    entry({ id: "b", effectiveDate: "2026-06-01" }),
+  ];
+  assert.deepEqual(recentEntries(rows, 0), []);
+  /* The caller's array is the one the History panel renders unsorted. Sorting
+     it in place would reorder somebody else's list as a side effect. */
+  assert.deepEqual(rows.map((e) => e.id), ["a", "b"]);
 });
 
 /* ── Grouping ─────────────────────────────────────────────────────────────── */

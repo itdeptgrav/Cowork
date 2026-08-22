@@ -304,7 +304,7 @@ function TableList({
           const verdict = controller.tableFits(t.id);
           const reason =
             verdict.blocked === "occupied"
-              ? `${t.columns.length} columns × ${BODY_ROWS + 1} rows from ${anchor} — those cells aren't empty`
+              ? `${t.columns.length} columns × ${BODY_ROWS + 1} rows from ${anchor} — those cells aren't empty (a merged range counts)`
               : verdict.blocked === "no-room"
                 ? "Not enough room from here to the edge of the sheet"
                 : `${t.columns.length} columns × ${BODY_ROWS + 1} rows from ${anchor}`;

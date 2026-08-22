@@ -36,6 +36,8 @@ import * as XLSX from "xlsx";
 import {
   DEFAULT_COL_COUNT,
   DEFAULT_ROW_COUNT,
+  MAX_IMPORT_COLS,
+  MAX_IMPORT_ROWS,
   getCellStyleId,
   getCellValue,
   type Workbook,
@@ -52,10 +54,8 @@ import {
 } from "./style";
 import type { SerializedCell, SerializedSheet, SerializedWorkbook } from "./persistence";
 
-/** Beyond these a cell is dropped on import — well past any real hand-built
-    sheet, but a hard ceiling against a crafted file claiming millions of cells. */
-const MAX_IMPORT_ROWS = 200_000;
-const MAX_IMPORT_COLS = 4_096;
+/* Cells beyond MAX_IMPORT_ROWS/MAX_IMPORT_COLS (model.ts — shared with the
+   JSON importer) are dropped on import rather than materialised. */
 
 export type XlsxImportResult =
   | { ok: true; workbook: SerializedWorkbook }
@@ -101,7 +101,12 @@ function cellFor(raw: string): XLSX.CellObject {
   const upper = trimmed.toUpperCase();
   if (upper === "TRUE" || upper === "FALSE") return { t: "b", v: upper === "TRUE" };
   if (trimmed !== "" && /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(trimmed)) {
-    return { t: "n", v: Number(trimmed) };
+    /* The same finiteness guard the engine's own reader applies (values.ts):
+       "1e999" overflows to Infinity, which is TEXT to the engine — writing it
+       as a number would come back as the string "Infinity" and corrupt the
+       cell. */
+    const value = Number(trimmed);
+    if (Number.isFinite(value)) return { t: "n", v: value };
   }
   return { t: "s", v: raw };
 }
