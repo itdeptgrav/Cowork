@@ -400,9 +400,35 @@ export function chainDeadlines(input: {
   const createdTimes = input.queue
     .map((t) => startedAtMs(t.createdAtMs))
     .filter((n): n is number => n !== null);
-  const queueStartMs = createdTimes.length
-    ? Math.max(input.anchorMs, Math.min(...createdTimes))
-    : input.anchorMs;
+  /**
+   * **And floored at the person's clock as well as at the earliest task.**
+   *
+   * Two order-dependencies were found separately and each was fixed against
+   * its own reported case; both floors belong in this one number.
+   *
+   *  · `min(createdAtMs)` — the rule above. Without it the head started
+   *    wherever it happened to be raised, so the queue's start moved with
+   *    whichever task led it (12:28:55 vs 13:21:24, same queue).
+   *  · `min(clockStartsAt)` — when the person could first work at all. The
+   *    engine stamps each task's clock as `max(availability, end of the queue
+   *    ahead)`, so every stamp but the first ENCODES ITS OWN QUEUE POSITION.
+   *    Reading the leader's fed a position-derived value back in as the new
+   *    start, and promoting the second of two half-hour tasks moved the whole
+   *    queue half an hour later — 16:29/16:59 became 16:59/17:29, with the
+   *    demoted task left reading "Counted from 15:59" against a 17:29
+   *    deadline. The minimum is the one stamp with no queue baked into it.
+   *
+   * Both are minima across the queue, so the number is the same whichever task
+   * leads — which is the property the whole rule exists for. Taking the LATER
+   * of the two keeps each guarantee: no task is scheduled before it existed,
+   * and none before its budget could start being spent.
+   */
+  const clockFloorMs = earliestClockStartMs(input.queue);
+  const queueStartMs = Math.max(
+    input.anchorMs,
+    createdTimes.length ? Math.min(...createdTimes) : input.anchorMs,
+    clockFloorMs ?? input.anchorMs,
+  );
   let isHead = true;
   let anchorMs = input.anchorMs;
 
@@ -461,9 +487,10 @@ export function chainDeadlines(input: {
    * which is the property the chain needs — swapping two ranks must exchange
    * two dates and move nothing else.
    */
-  const earliestClockMs = earliestClockStartMs(input.queue);
-  if (earliestClockMs !== null && earliestClockMs > anchorMs)
-    anchorMs = earliestClockMs;
+  /* Folded into `queueStartMs` above — the head is where both floors apply,
+     and everything behind it starts when the task ahead finishes, which is
+     already later than either. Two places computing one floor is how they
+     drift apart. */
 
   for (const task of input.queue) {
     /**
