@@ -177,10 +177,22 @@ test("the queue owner falls back to the stored rank, like everybody else", () =>
      means "no position was read for this person", which is a different and honest
      fact from "they have no rank". */
   assert.match(map, /rank: resolveTaskPriority\(legacy, employeeId\)/);
-  assert.match(
-    map,
-    /queuePosition:\s*\n?\s*input\.queue && input\.queue\.ownerId === employeeId\s*\n?\s*\? \(input\.queue\.positions\.get\(legacy\.id\) \?\? null\)\s*\n?\s*: null/,
-  );
+
+  /* **The decision moved into `positionFor`, and gained a second source.**
+     The owner check is unchanged: a position is read only from THIS person's
+     queue. What changed is the fall-back — it was `null`, and null sent
+     `displayPriority` to the stored rank, which is how a blocked task showed
+     P1 beside a deadline computed for position 2. It now reads
+     `effectivePriority`, the figure the engine's own chain recorded, so the
+     badge and the deadline come from one number. */
+  assert.match(map, /if \(queue && queue\.ownerId === employeeId\) \{/);
+  assert.match(map, /return queue\.positions\.get\(legacy\.id\) \?\? null;/);
+  assert.match(map, /return soleHolder \? \(legacy\.effectivePriority \?\? null\) : null;/);
+
+  /* And only where the task has ONE assignee: the field records a position in
+     whichever queue was last chained, so on shared work it names a queue we
+     cannot identify. */
+  assert.match(map, /legacy\.assigneeIds\.length === 1 && legacy\.assigneeIds\[0\] === employeeId/);
 
   /* And the fall-through that keeps a holder from seeing a dash is in the
      authority, where it is made once for every surface. */
@@ -285,4 +297,39 @@ test("the list and the task page get their dates from one chain", () => {
      and one assigned at 15:00 arrived already overdue. A task cannot be due
      before it existed. */
   assert.match(fn, /createdAtMs: x\.createdAtMs/);
+});
+
+/* ── The badge and the deadline come from one number ──────────────────────── */
+
+/**
+ * **Reported: badge P1, deadline 22 Aug 12:19 — the P2 slot.**
+ *
+ * The detail page reads the SUBJECT's queue, and a failed read is swallowed
+ * (`catch { queue = undefined }`) so a task stays openable. That fallback then
+ * left `queuePosition` null, `displayPriority` fell through to the rank
+ * somebody SET, and a blocked task showed its stored 1 next to dates the chain
+ * had laid out for position 2.
+ *
+ * Both numbers are now the engine's: `effectivePriority` is written by
+ * `rechainQueueFor`, the same walk that produced the dates.
+ */
+
+test("a task with no queue read shows the recorded position, not the stored rank", () => {
+  const map = code(MAP);
+  const at = map.indexOf("function positionFor(");
+  assert.ok(at !== -1, "positionFor is gone — renamed?");
+  const fn = map.slice(at, map.indexOf("\n}", at));
+  /* The stored rank must not appear in it at all: that was the wrong answer. */
+  assert.doesNotMatch(fn, /resolveTaskPriority|assigneePriorities|legacy\.priority/);
+  assert.match(fn, /legacy\.effectivePriority/);
+});
+
+test("shared work reports no position rather than a confident wrong one", () => {
+  /* `effectivePriority` names a position in whichever person's queue was last
+     chained. On a task with two assignees that queue cannot be identified, and
+     a number attributed to the wrong person is worse than an honest null. */
+  const map = code(MAP);
+  const at = map.indexOf("function positionFor(");
+  const fn = map.slice(at, map.indexOf("\n}", at));
+  assert.match(fn, /assigneeIds\.length === 1/);
 });

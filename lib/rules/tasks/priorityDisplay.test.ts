@@ -134,9 +134,9 @@ test('"P—" can no longer be produced', () => {
 test("the tooltip says whose rank it is", () => {
   /* A manager told "your priority" about a report's rank comes to believe their
      own day is ordered by somebody else's queue. */
-  assert.match(rankTitle({ rank: 2, isMine: true, isHistoric: false, isProvisional: false }), /Your priority/);
-  assert.match(rankTitle({ rank: 2, isMine: false, isHistoric: false, isProvisional: false }), /assignee's priority/);
-  assert.match(rankTitle({ rank: null, isMine: false, isHistoric: false, isProvisional: false }), /No priority/);
+  assert.match(rankTitle({ rank: 2, isMine: true, isHistoric: false, isProvisional: false, isBlocked: false, setRank: null }), /Your priority/);
+  assert.match(rankTitle({ rank: 2, isMine: false, isHistoric: false, isProvisional: false, isBlocked: false, setRank: null }), /assignee's priority/);
+  assert.match(rankTitle({ rank: null, isMine: false, isHistoric: false, isProvisional: false, isBlocked: false, setRank: null }), /No priority/);
 });
 
 /* ── Live position against closed record ─────────────────────────────────── */
@@ -277,6 +277,7 @@ test("a holder's not-yet-accepted task is labelled 'to accept', not a bare P1", 
       isMine: mine.isMine,
       isHistoric: mine.isHistoric,
       isProvisional: mine.scale === "provisional_position",
+      isBlocked: false, setRank: null,
     }),
     "P2 to accept",
   );
@@ -305,7 +306,7 @@ test("a holder's accepted task keeps its live queue position", () => {
       rank: mine.rank,
       isMine: mine.isMine,
       isHistoric: mine.isHistoric,
-      isProvisional: false,
+      isProvisional: false, isBlocked: false, setRank: null,
     }),
     "P1",
   );
@@ -338,4 +339,138 @@ test("a closed task reports the stored rank whatever positions are passed", () =
   });
   assert.equal(mine.scale, "stored_rank");
   assert.equal(mine.isHistoric, true);
+});
+
+/* ── Blocked work says so ─────────────────────────────────────────────────── */
+
+/**
+ * **A demotion with no explanation reads as the assignor being ignored.**
+ * OWNER RULE, 21 Aug 2026.
+ *
+ * A blocked task drops below workable work — that is the whole feature. But the
+ * manager who put it at P1 then sees `P2` and no sign of what they asked for or
+ * why it is not happening. So a blocked task shows the rank somebody SET, with
+ * the reason attached.
+ */
+
+test("a blocked task reads as the position it actually holds", () => {
+  /**
+   * OWNER RULE, 21 Aug 2026, reversing an earlier decision. `P1 blocked` put
+   * two scales in one column and showed a number that did not match the row's
+   * place in the list. The chip shows where the task IS; what it was set to
+   * belongs in the tooltip.
+   */
+  assert.equal(
+    formatRankDisplay({ rank: 2, isMine: true, isHistoric: false, isProvisional: false, isBlocked: true, setRank: 1 }),
+    "P2",
+  );
+});
+
+test("blocked outranks nothing — a closed task is still historic", () => {
+  /* A task that has left the queue holds no position at all, blocked or not. */
+  assert.equal(
+    formatRankDisplay({ rank: 3, isMine: true, isHistoric: true, isProvisional: false, isBlocked: true, setRank: null }),
+    "Was P3",
+  );
+});
+
+test("the tooltip names the rank the assignor set, and that it returns to it", () => {
+  /* The answer to "what happened to the P1 I set?" — one hover away rather
+     than crowded into a chip. */
+  const t = rankTitle({ rank: 2, isMine: true, isHistoric: false, isProvisional: false, isBlocked: true, setRank: 1 });
+  assert.match(t, /P2 for now/);
+  assert.match(t, /waiting on an input/);
+  assert.match(t, /set to P1/);
+  assert.match(t, /takes that place back by itself/);
+});
+
+test("no set-rank to report means no claim about one", () => {
+  /* Blocked but still sitting where it was put: there is nothing to explain,
+     so the tooltip does not invent a demotion. */
+  const t = rankTitle({ rank: 2, isMine: true, isHistoric: false, isProvisional: false, isBlocked: true, setRank: null });
+  assert.match(t, /P2 for now/);
+  assert.doesNotMatch(t, /set to P/);
+});
+
+test("nothing changes for a task with no outputs", () => {
+  assert.equal(
+    formatRankDisplay({ rank: 2, isMine: true, isHistoric: false, isProvisional: false, isBlocked: false, setRank: null }),
+    "P2",
+  );
+});
+
+/* ── The scale must not depend on the number ──────────────────────────────── */
+
+/**
+ * **Reported twice, from real queues.** Rakesh: `P1` on an accepted task beside
+ * a bare `P3` on one awaiting acceptance, with nothing saying they belong to
+ * different sequences. Umung: the same shape.
+ *
+ * The holder branch used to recover the scale by asking whether the displayed
+ * number EQUALLED the provisional position. That held only while the displayed
+ * number was that position — and the owner decision of 17 Aug changed exactly
+ * that, so a task at provisional position 1 carrying a stored rank of 3
+ * compared `1 === 3`, failed, and lost its `to accept` suffix.
+ *
+ * Membership decides it now: `calculateProvisionalOrder` puts a task in exactly
+ * one of the two sequences, so holding a place in one IS the answer.
+ */
+
+test("awaiting acceptance reads 'to accept' even when rank and position differ", () => {
+  const r = displayPriority({
+    status: "assigned",
+    viewerId: "GR0045",
+    myRank: 3,
+    myStoredRank: 3,
+    holders: [
+      {
+        employeeId: "GR0045",
+        rank: 3,
+        queuePosition: null,
+        /* Rank 3, but first in the pending pile — the case that broke. */
+        provisionalPosition: 1,
+      },
+    ],
+  });
+  assert.equal(r.scale, "provisional_position");
+  assert.equal(r.rank, 3, "it must show the rank somebody chose, not the pile's index");
+  assert.equal(
+    formatRankDisplay({
+      rank: r.rank,
+      isMine: r.isMine,
+      isHistoric: r.isHistoric,
+      isProvisional: r.scale === "provisional_position",
+      isBlocked: false, setRank: null,
+    }),
+    "P3 to accept",
+  );
+});
+
+test("an accepted task in the live queue is still a queue position", () => {
+  const r = displayPriority({
+    status: "in_progress",
+    viewerId: "GR0045",
+    myRank: 1,
+    myStoredRank: 1,
+    holders: [
+      { employeeId: "GR0045", rank: 1, queuePosition: 1, provisionalPosition: null },
+    ],
+  });
+  assert.equal(r.scale, "queue_position");
+});
+
+test("a live position wins over a provisional one, whatever the numbers", () => {
+  /* Belt and braces: the two sequences are disjoint, but if a row ever carried
+     both, the committed queue is the one that matters. */
+  const r = displayPriority({
+    status: "in_progress",
+    viewerId: "GR0045",
+    myRank: 2,
+    myStoredRank: 7,
+    holders: [
+      { employeeId: "GR0045", rank: 7, queuePosition: 2, provisionalPosition: 1 },
+    ],
+  });
+  assert.equal(r.scale, "queue_position");
+  assert.equal(r.rank, 2);
 });

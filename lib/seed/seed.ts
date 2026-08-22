@@ -765,6 +765,7 @@ function baseTask(
     isScoreEligible: true,
     recurrence: null,
     goalId: null,
+    outputs: [],
     isBlocked: false,
     blockedReason: null,
     tags: [],
@@ -1538,6 +1539,7 @@ export const submissions: TaskSubmission[] = [
   {
     id: "sb-01",
     taskId: "t-08",
+    outputId: null,
     attempt: 1,
     submittedById: "e-01",
     submittedAt: iso(-3),
@@ -1553,6 +1555,7 @@ export const submissions: TaskSubmission[] = [
   {
     id: "sb-02",
     taskId: "t-16",
+    outputId: null,
     attempt: 1,
     submittedById: "e-06",
     submittedAt: iso(-1),
@@ -1567,6 +1570,7 @@ export const submissions: TaskSubmission[] = [
   {
     id: "sb-03",
     taskId: "t-09",
+    outputId: null,
     attempt: 1,
     submittedById: "e-02",
     submittedAt: iso(-50),

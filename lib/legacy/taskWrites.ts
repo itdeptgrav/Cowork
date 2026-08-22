@@ -105,6 +105,97 @@ export async function startTask(input: {
  * Moves `completionStatus` to `submitted` and leaves `status` at `open` — the
  * two axes the live lifecycle probe confirmed run independently.
  */
+/**
+ * Every output in the workspace, with its label and whether it is approved.
+ *
+ * An input is another task's output, so a task document cannot say on its own
+ * whether its inputs have landed. One read serves a whole screen rather than
+ * one per link.
+ */
+export async function fetchOutputIndex(input: {
+  token: string;
+}): Promise<
+  LegacyResult<{
+    items?: {
+      outputId: string;
+      label: string;
+      taskId: string;
+      taskTitle: string;
+      approved: boolean;
+    }[];
+  }>
+> {
+  return legacyFetch({
+    path: "/cowork/task-outputs/index",
+    method: "GET",
+    token: input.token,
+  });
+}
+
+/**
+ * Declare what a task hands over.
+ *
+ * Outputs are the task's INTERFACE — what other people receive — as distinct
+ * from `requirements`, which say when the task itself is done. The engine
+ * refuses to remove one that has already been submitted, because its submission
+ * and review name it.
+ */
+export async function setTaskOutputs(input: {
+  token: string;
+  taskId: string;
+  outputs: { id?: string; label: string; needsOutputIds: string[] }[];
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/outputs`,
+    method: "PUT",
+    body: { outputs: input.outputs },
+    token: input.token,
+  });
+}
+
+/**
+ * Hand ONE output over for review.
+ *
+ * Deliberately not `submit-completion`: the task does not move. Its assignee is
+ * still delivering the rest, so `completionStatus` stays where it is and their
+ * queue position and clock are untouched.
+ */
+export async function submitOutput(input: {
+  token: string;
+  taskId: string;
+  outputId: string;
+  message: string;
+  imageUrls?: string[];
+  pdfAttachments?: unknown[];
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/outputs/${encodeURIComponent(input.outputId)}/submit`,
+    method: "POST",
+    body: {
+      message: input.message,
+      imageUrls: input.imageUrls ?? [],
+      pdfAttachments: input.pdfAttachments ?? [],
+    },
+    token: input.token,
+  });
+}
+
+/** Approve or return ONE output. The last approval finishes the task. */
+export async function reviewOutput(input: {
+  token: string;
+  taskId: string;
+  outputId: string;
+  approved: boolean;
+  note?: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/outputs/${encodeURIComponent(input.outputId)}/review`,
+    method: "POST",
+    body: { approved: input.approved, note: input.note ?? "" },
+    token: input.token,
+  });
+}
+
 export async function submitCompletion(input: {
   token: string;
   taskId: string;

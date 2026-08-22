@@ -1,3 +1,4 @@
+import { isTaskBlocked } from "./outputs.ts";
 import type { TaskView } from "@/lib/repositories";
 import { displayPriority } from "./priority.ts";
 
@@ -53,6 +54,25 @@ export interface RankDisplay {
    * their own day is ordered by a report's queue.
    */
   isMine: boolean;
+  /**
+   * Nothing on this task can be started — every output it declares is waiting
+   * on an input nobody has approved yet.
+   *
+   * When true, `rank` is the rank somebody SET rather than the position the
+   * task fell to. A blocked task is demoted in the queue, which is the point of
+   * the feature — but a demotion with no explanation reads as the assignor's
+   * instruction being ignored. "P1 blocked" says both: the intent stands, and
+   * the work cannot run yet.
+   */
+  isBlocked: boolean;
+  /**
+   * The rank somebody SET, where a block has pushed the task off it.
+   *
+   * Null when there is nothing to explain — either the task is not blocked, or
+   * it is blocked and still sitting where it was put. Used by the tooltip only:
+   * the chip shows the real position, and this says what it would have been.
+   */
+  setRank: number | null;
   /**
    * The task has left the active queue, so this is a record and not a position.
    *
@@ -126,11 +146,35 @@ export function rankFor(view: TaskView, viewerId: string | null): RankDisplay {
     })),
   });
 
+  /**
+   * **The chip shows where the task actually IS.** OWNER RULE, 21 Aug 2026.
+   *
+   * A blocked task is demoted, so it reads P2 — plainly, with no qualifier. An
+   * earlier version showed `P1 blocked`, the rank the assignor set: that put
+   * two different scales in one column again, and a number that did not match
+   * the row's place in the list.
+   *
+   * The assignor's intent is not lost by this and never was. It lives in
+   * `assigneePriorities`, which nothing in this feature writes — which is
+   * exactly why the task takes first place back on its own when its input is
+   * approved. `isBlocked` and `setRank` carry it to the TOOLTIP, so the answer
+   * to "what happened to the P1 I set?" is one hover away instead of crowded
+   * into a chip.
+   */
+  const blocked = isTaskBlocked(view.outputs ?? []) && !resolved.isHistoric;
+
   return {
     rank: resolved.rank,
     isMine: resolved.isMine,
     isHistoric: resolved.isHistoric,
     isProvisional: resolved.scale === "provisional_position",
+    /** Nothing on this task can be started — an input has not been approved. */
+    isBlocked: blocked,
+    /** The rank somebody SET, for explaining a demotion. Null when unchanged. */
+    setRank:
+      blocked && (resolved.storedRank ?? view.myStoredRank ?? null) !== resolved.rank
+        ? (resolved.storedRank ?? view.myStoredRank ?? null)
+        : null,
   };
 }
 
@@ -161,6 +205,8 @@ export function formatRankDisplay(display: RankDisplay): string {
      said so. `To accept` names the sequence in the two words that fit a chip;
      the tooltip carries the full sentence. */
   if (display.isProvisional) return `P${display.rank} to accept`;
+  /* A blocked task reads as the position it actually holds — see `isBlocked`.
+     What it was set to is in the tooltip, not the chip. */
   return `P${display.rank}`;
 }
 
@@ -169,6 +215,17 @@ export function rankTitle(display: RankDisplay): string {
   if (display.rank === null) return "No priority has been set for this task";
   if (display.isHistoric) {
     return `This task is closed. It was P${display.rank} when it left the queue.`;
+  }
+  if (display.isBlocked) {
+    const setTo =
+      display.setRank === null
+        ? ""
+        : ` It is set to P${display.setRank} and takes that place back by itself once the input lands — nothing needs re-ordering.`;
+    return (
+      `P${display.rank} for now. Nothing on this task can be started — every ` +
+      `output it produces is waiting on an input nobody has approved — so it ` +
+      `sits below work that can be done.${setTo}`
+    );
   }
   if (display.isProvisional) {
     return (

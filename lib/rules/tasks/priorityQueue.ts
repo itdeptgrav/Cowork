@@ -77,6 +77,24 @@ export interface QueueCandidate {
    * filters on `!subtaskIds.length` for exactly this reason; this had not.
    */
   isContainer?: boolean;
+  /**
+   * Whether anything on this task can be worked on right now.
+   *
+   * False only for a task whose every declared output is waiting on somebody
+   * else's — see `taskHasWorkableOutput`. Undefined means the task declares no
+   * outputs, which is every task in the product today, and is treated as
+   * workable.
+   *
+   * **Blocked work holds no slot, and that is the point.** Keeping P1 while
+   * nothing on it can be started would put an unstartable task above work that
+   * is ready, and number everything behind it around work nobody can touch.
+   * Dropping out here is what promotes the next task, through the same renumber
+   * a completed task already triggers.
+   *
+   * It stays a LIVE candidate below, so it is still numbered provisionally and
+   * still visible. Waiting on somebody is not the same as not existing.
+   */
+  isWorkable?: boolean;
 }
 
 /**
@@ -137,6 +155,13 @@ export const INACTIVE_STATUSES = [
  *  4. **Accepted by this person.** Work nobody has taken on is not yet workload,
  *     and letting it hold a slot means accepted work is ranked behind something
  *     that may never be accepted at all.
+ *
+ * **Workability is deliberately NOT a condition here.** A task waiting on
+ * somebody else's output keeps its place in the queue and is numbered like any
+ * other; it simply sorts BELOW work that can be started — see
+ * `compareQueueCandidates`. Dropping it out entirely was tried and was wrong:
+ * the work is still committed to, still owned, and still has a stored rank it
+ * must return to the moment its input lands.
  */
 export function isActiveWorkload(candidate: QueueCandidate): boolean {
   if (candidate.isContainer) return false;
@@ -214,10 +239,41 @@ function compareQueueCandidates(a: QueueCandidate, b: QueueCandidate): number {
   return a.taskId.localeCompare(b.taskId);
 }
 
+/**
+ * The top of the queue must be something the person can actually start.
+ *
+ * OWNER RULE: a task blocked on somebody else's output must not hold P1. The
+ * highest-ranked task that CAN be started takes the top spot, and everything
+ * else keeps the order it already had — so a blocked P1 becomes P2 and nothing
+ * further down moves at all.
+ *
+ * Deliberately not a sort key on workability. That would carry every blocked
+ * task below every workable one and re-order a queue nobody asked to change;
+ * this moves exactly one task, and only when the top of the queue is unstartable.
+ *
+ * Nothing is written. The stored rank is untouched, so when the input lands the
+ * task returns to its own position with nobody restoring anything.
+ */
+function workableFirst(order: QueueCandidate[]): QueueCandidate[] {
+  /* Already fine: either the queue is empty or its top can be started. Every
+     queue in the product without outputs takes this path and is untouched. */
+  if (order.length === 0 || order[0].isWorkable !== false) return order;
+  const firstWorkable = order.findIndex((c) => c.isWorkable !== false);
+  /* Nobody can start anything. There is no better answer than the order their
+     manager set, and inventing one would be noise. */
+  if (firstWorkable === -1) return order;
+  const promoted = order[firstWorkable];
+  return [
+    promoted,
+    ...order.slice(0, firstWorkable),
+    ...order.slice(firstWorkable + 1),
+  ];
+}
+
 export function calculatePriorityOrder(candidates: QueueCandidate[]): string[] {
-  return [...getActiveTasksForUser(candidates)]
-    .sort(compareQueueCandidates)
-    .map((c) => c.taskId);
+  return workableFirst(
+    [...getActiveTasksForUser(candidates)].sort(compareQueueCandidates),
+  ).map((c) => c.taskId);
 }
 
 /**

@@ -13,7 +13,10 @@ import { getRepository, setRepository } from "@/lib/repositories";
 import { unregisterFCMToken, useFCMToken } from "@/lib/hooks/useFCMToken";
 import { LegacyRepository, toCoworkRepository } from "@/lib/repositories/legacy";
 import { startTaskWatch } from "@/lib/repositories/legacy/taskWatch";
-import { PROFILE_STORAGE_KEY } from "@/lib/config/profileSwitcher";
+import {
+  PROFILE_STORAGE_KEY,
+  PROFILE_SWITCHER_ENABLED,
+} from "@/lib/config/profileSwitcher";
 import { LENS_STORAGE_KEY } from "@/components/layout/shell/LensContext";
 import { archetypeForLegacyRole, LEGACY_LANDING } from "@/lib/auth/roleMap";
 import { fetchIdentity } from "@/lib/legacy/auth";
@@ -277,6 +280,45 @@ export function SessionProvider({
   const load = useCallback(async () => {
     if (anonymous) return;
     started.current = true;
+    /**
+     * The prototype session — development only, and off unless asked for.
+     *
+     * The mock store is the world the whole test suite runs against, and it was
+     * reachable from Node and from nowhere else: every route redirects to
+     * `/signin`, and signing in installs the legacy repository over it. With
+     * `NEXT_PUBLIC_MOCK_SESSION=1` the workspace opens as the seed's current
+     * employee against the mock store, so a chain can be clicked through.
+     *
+     * It authorises nothing: the mock repository applies its own permission
+     * checks against whichever identity this resolves to.
+     */
+    if (
+      process.env.NODE_ENV !== "production" &&
+      process.env.NEXT_PUBLIC_MOCK_SESSION === "1"
+    ) {
+      /* Restore who the prototype bar last chose BEFORE the first read —
+         `setActingEmployee` is what every query and permission resolves
+         against, so applying it after would show one person's name over
+         another person's data. */
+      if (PROFILE_SWITCHER_ENABLED) {
+        const chosen = window.localStorage.getItem(PROFILE_STORAGE_KEY);
+        if (chosen) getRepository().setActingEmployee?.(chosen);
+      }
+      const employee = await getRepository().getCurrentEmployee();
+      setState({
+        status: "authenticated",
+        employeeId: employee?.id ?? null,
+        displayName: employee
+          ? `${employee.firstName} ${employee.lastName}`
+          : "Prototype",
+        email: employee?.email ?? null,
+        archetype: null,
+        landing: "/home",
+        stallReason: null,
+        stallKind: null,
+      });
+      return;
+    }
     try {
       /**
        * **A different person is signed in, so the last one's residue goes.**

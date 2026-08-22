@@ -350,12 +350,29 @@ export function displayPriority(input: {
        * that happens to share the number cannot mislabel it.
        */
       const mine = holders.find((h) => h.employeeId === viewerId);
-      const fromQueue =
-        mine?.queuePosition != null && mine.queuePosition === usable;
+      /**
+       * **Which sequence the task is IN, not which number happens to match.**
+       *
+       * This recovered the scale by testing `position === usable`, and that
+       * worked only while the displayed number WAS the position. The owner
+       * decision of 17 Aug changed exactly that: a task awaiting acceptance now
+       * shows the rank a manager chose, so a task at provisional position 1
+       * carrying a stored rank of 3 compared `1 === 3`, failed, and fell
+       * through to `stored_rank` — losing the `to accept` suffix for the one
+       * person the label is for.
+       *
+       * Reported twice: a rank-3 task showing a bare `P3` beside a live `P1`,
+       * with nothing on screen saying they belong to different sequences.
+       *
+       * Membership is the honest test and cannot drift with the label:
+       * `calculateProvisionalOrder` enforces that a task sits in exactly one of
+       * the two sequences, so holding a position in one IS the answer.
+       */
+      const fromQueue = mine?.queuePosition != null && mine.queuePosition > 0;
       const fromProvisional =
         !fromQueue &&
         mine?.provisionalPosition != null &&
-        mine.provisionalPosition === usable;
+        mine.provisionalPosition > 0;
 
       /* Awaiting acceptance shows the rank a manager CHOSE, not the pending
          pile's derived position — see the `provisionalPosition` branch above

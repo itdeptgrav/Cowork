@@ -14,6 +14,7 @@ import { statusMeta, nextAction } from "./statusMeta";
 import { meetingFirstHint } from "@/lib/rules/meetings/meetingFirst";
 import { ProjectPanel } from "./ProjectPanel";
 import { ResponsibilityPanel } from "./ResponsibilityPanel";
+import { OutputsPanel } from "./OutputsPanel";
 import { RelatedMeetings } from "@/components/features/meetings/RelatedMeetings";
 import { TaskMeetingPanel } from "./TaskMeetingPanel";
 import { GoalRoadmapPanel } from "./GoalRoadmapPanel";
@@ -968,6 +969,10 @@ function Overview({
      the panel showing a count the other half no longer supports. */
   onChange: () => void;
 }) {
+  /* Read here rather than threaded down: the outputs panel is the only part of
+     Overview that needs it, and who may declare or submit an output resolves
+     from the acting employee. */
+  const viewerId = useViewerId();
   return (
     <>
       {/* The Time panel used to sit here, between the brief and the subtasks.
@@ -1005,6 +1010,11 @@ function Overview({
             state. Rendering them here too would show the same checklist twice
             with only one copy able to be ticked. */}
       </Panel>
+
+      {/* Below the brief and above the project panel: an output is a promise
+          the brief explains, and it is read before the requirements that decide
+          whether the task itself is done. */}
+      <OutputsPanel view={view} viewerId={viewerId} onChange={onChange} />
 
       <ProjectPanel view={view} subtasks={subtasks} onChange={onChange} />
 

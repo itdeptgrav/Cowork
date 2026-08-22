@@ -288,7 +288,48 @@ export function NewTaskForm({
   /* Which of the parent's completion requirements this child closes. Empty and
      unused on an ordinary task; required on a subtask, and the reason the
      parent is read at all. */
+  /**
+   * What this task will hand over, declared while raising it.
+   *
+   * Optional, and empty by default — most tasks hand over nothing nameable and
+   * behave exactly as they always have. Written AFTER the task exists, because
+   * outputs are keyed to a task id the engine only mints on creation.
+   */
+  const [outputDrafts, setOutputDrafts] = useState<
+    { label: string; needsOutputId: string }[]
+  >([]);
+  const [outputDraft, setOutputDraft] = useState("");
+
+  /**
+   * Add one or many, from a single field.
+   *
+   * Splits on commas and newlines because both are how people actually write a
+   * list — typed inline, or pasted from a doc. Blanks are dropped so a trailing
+   * comma does not create an unnamed output, and duplicates are refused against
+   * what is already declared: two outputs with the same name cannot be told
+   * apart on the review screen or in a "waits for" picker.
+   */
+  function addOutputDrafts(raw: string) {
+    const parts = raw
+      .split(/[\n,]/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!parts.length) return;
+    setOutputDrafts((current) => {
+      const seen = new Set(current.map((o) => o.label.toLowerCase()));
+      const added: typeof current = [];
+      for (const label of parts) {
+        if (seen.has(label.toLowerCase())) continue;
+        seen.add(label.toLowerCase());
+        added.push({ label, needsOutputId: "" });
+      }
+      return [...current, ...added];
+    });
+    setOutputDraft("");
+  }
+
   const [claims, setClaims] = useState<string[]>([]);
+
   const parentView = useQuery(
     (r) =>
       presetParentTaskId
@@ -313,7 +354,29 @@ export function NewTaskForm({
    * false — the plain form — so the subtask chrome never flashes up on a
    * project task and then disappear.
    */
-  const isSubtask = !!presetParentTaskId && parent?.task.isFolder !== true;
+  /**
+   * Whether this form is raising a SUBTASK of a real parent task.
+   *
+   * **Not the same question as "does this belong to a project".** On the legacy
+   * engine a project IS a container task and membership is `parentTaskId`, so a
+   * task raised inside one must be its child — `getProject` gathers its
+   * contents with `getSubtasks`. A `?project=` link was tried instead and the
+   * task simply vanished from the project it was created in: it had a
+   * `projectId` and no parent, and nothing reads the former.
+   *
+   * A FOLDER parent is therefore not a subtask relationship. `isFolder` makes
+   * that distinction, which is why a task in a project is not asked to claim a
+   * completion requirement while a genuine break-down still is.
+   *
+   * The parent must have RESOLVED. `getTask` answers null for an id that is not
+   * a task — a PROJECT id, which the project page's "New task" link was passing
+   * as `?parent=` — and `parent?.task.isFolder !== true` is `true` for a null
+   * parent, so the form decided it was a subtask of something that did not
+   * exist. Submit then demanded a requirement claim that could never be made,
+   * and the button stayed dead with nothing on screen explaining why.
+   */
+  const isSubtask =
+    !!presetParentTaskId && !!parent && parent.task.isFolder !== true;
   /**
    * How much of the parent is already somebody's, and what is left.
    *
@@ -529,6 +592,16 @@ export function NewTaskForm({
   const tasks = useQuery(
     (r) => r.listTasks({ scope: "all" }).then((p) => p.items),
     [],
+  );
+  /* Outputs of OTHER tasks — the only things a new task's output can wait for.
+     Read from the task list rather than a dedicated call, so this costs nothing
+     on a form that was already loading it. */
+  const outputCandidates = (tasks.data ?? []).flatMap((t) =>
+    (t.task.outputs ?? []).map((o) => ({
+      id: o.id,
+      label: o.label,
+      taskTitle: t.task.title,
+    })),
   );
 
   /* A self task keeps its own type. It is standard-SHAPED — same fields — but
@@ -992,6 +1065,131 @@ export function NewTaskForm({
                   Add
                 </Button>
               </div>
+            </div>
+
+            {/**
+              * Outputs — optional, and a different question from the criteria
+              * above.
+              *
+              * A criterion says when THIS task is done. An output says what
+              * somebody else receives, and is the thing another task can wait
+              * for. Most tasks declare none and behave exactly as they always
+              * have; a task that hands work over one piece at a time declares
+              * them here so it does not have to be revisited after creation.
+              */}
+            <div className="mt-6">
+              <div className="flex items-baseline gap-2">
+                <h2 className="text-sm font-medium text-ink">Outputs</h2>
+                <span className="text-xs text-ink-faint">Optional</span>
+                {outputDrafts.length > 0 && (
+                  <span className="ml-auto text-xs text-ink-faint" data-figure>
+                    {outputDrafts.length} declared
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 max-w-[64ch] text-[12px] text-ink-muted">
+                Things this task hands over, each reviewed on its own — so
+                whoever needs the first does not wait for all of them. Leave it
+                empty and the task behaves exactly as any other.
+              </p>
+
+              {/**
+                * One field, many outputs.
+                *
+                * Ten properties added one at a time is ten rounds of type,
+                * click, re-focus — which is the shape this is actually for, and
+                * it was the slowest possible way to do it. Commas and newlines
+                * both split, so a list pasted from anywhere lands in one go.
+                */}
+              <div className="mt-3">
+                <textarea
+                  value={outputDraft}
+                  rows={2}
+                  onChange={(e) => setOutputDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    /* Enter adds; Shift+Enter keeps a newline, so a pasted list
+                       can still be edited before it is committed. */
+                    if (e.key !== "Enter" || e.shiftKey) return;
+                    e.preventDefault();
+                    addOutputDrafts(outputDraft);
+                  }}
+                  placeholder={"Gopalpur, Puri, Konark\nor one per line"}
+                  className="w-full rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-sm text-ink placeholder:text-ink-faint"
+                />
+                <div className="mt-1.5 flex flex-wrap items-center gap-2">
+                  <Button
+                    disabled={!outputDraft.trim()}
+                    onClick={() => addOutputDrafts(outputDraft)}
+                  >
+                    Add
+                  </Button>
+                  <span className="text-[11px] text-ink-faint">
+                    Separate with commas or new lines. Enter adds them.
+                  </span>
+                </div>
+              </div>
+
+              {outputDrafts.length > 0 && (
+                <ul className="mt-3 divide-y divide-hairline border-t border-hairline">
+                  {outputDrafts.map((o, i) => (
+                    <li
+                      key={i}
+                      className="flex flex-wrap items-center gap-x-3 gap-y-1.5 py-2"
+                    >
+                      <span
+                        className="w-5 shrink-0 text-[11px] text-ink-faint"
+                        data-figure
+                      >
+                        {i + 1}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                        {o.label}
+                      </span>
+                      {/* Only where there is something to point at. Offering an
+                          empty picker on every row is noise on the common case,
+                          which is a task nothing waits on. */}
+                      {outputCandidates.length > 0 && (
+                        <label className="flex items-center gap-1.5">
+                          <span className="text-[11px] text-ink-faint">
+                            waits for
+                          </span>
+                          <Select
+                            value={o.needsOutputId}
+                            onChange={(e) =>
+                              setOutputDrafts((list) =>
+                                list.map((x, j) =>
+                                  j === i
+                                    ? { ...x, needsOutputId: e.target.value }
+                                    : x,
+                                ),
+                              )
+                            }
+                          >
+                            <option value="">nothing</option>
+                            {outputCandidates.map((c) => (
+                              <option key={c.id} value={c.id}>
+                                {c.taskTitle} &middot; {c.label}
+                              </option>
+                            ))}
+                          </Select>
+                        </label>
+                      )}
+                      <button
+                        type="button"
+                        aria-label={`Remove ${o.label}`}
+                        className="rounded-full px-2 py-1 text-[13px] text-ink-faint hover:text-ink"
+                        onClick={() =>
+                          setOutputDrafts((list) =>
+                            list.filter((_, j) => j !== i),
+                          )
+                        }
+                      >
+                        &times;
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
 
             {/* The spelling/grammar pass — see `grammarChecked` above and
@@ -1642,6 +1840,19 @@ export function NewTaskForm({
               onClick={async () => {
                 const r = await create();
                 if (!r.ok) return;
+                /* Outputs, once there is a task to hang them on. A failure here
+                   does NOT discard the task — it is already real, and losing it
+                   over a second write would be worse than the person adding the
+                   outputs again on its own page. */
+                if (outputDrafts.length) {
+                  await repo.setOutputs({
+                    taskId: r.data.id,
+                    outputs: outputDrafts.map((o) => ({
+                      label: o.label,
+                      needsOutputIds: o.needsOutputId ? [o.needsOutputId] : [],
+                    })),
+                  });
+                }
                 /*
                  * Files go up AFTER the task exists.
                  *

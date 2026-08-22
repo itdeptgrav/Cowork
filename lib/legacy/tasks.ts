@@ -91,6 +91,7 @@ export interface LegacyTaskDoc {
 
   /** Numeric rank per assignee queue. 1 = highest. */
   priority?: number;
+  effectivePriority?: number;
   /** Legacy's drag tie-break, `(index + 1) * 1000`. Written beside the rank. */
   order?: number;
 
@@ -138,6 +139,16 @@ export interface LegacyTaskDoc {
 
   
   satisfiesRequirementIds?: unknown;
+  /**
+   * What this task hands over, and what each handover waits for.
+   *
+   * Absent on every document written before outputs existed, which is every
+   * task today — read defensively rather than assumed, exactly like
+   * `satisfiesRequirementIds` above.
+   */
+  outputs?: unknown;
+  /** Per-output submissions, keyed by output id. See `outputs`. */
+  outputSubmissions?: unknown;
   /** Marks a doc as forward-created, so its parent chain can be hidden. */
   isForwardedTask?: boolean;
 
@@ -215,6 +226,73 @@ export type LegacyTaskKind =
  * exist in legacy data. They are surfaced rather than hidden — a task the UI
  * cannot render is better shown as unsupported than silently dropped.
  */
+/**
+ * `outputSubmissions` off a Firestore document, defensively.
+ *
+ * A map rather than an array because the engine keys it by output id, so a
+ * submission cannot drift onto the wrong output when the list is reordered.
+ * Anything unreadable is dropped rather than rendered as a half-state — a
+ * submission with no submitter tells a reviewer nothing they can act on.
+ */
+function readOutputSubmissions(
+  raw: unknown,
+): Record<
+  string,
+  {
+    submittedBy: string;
+    submittedByName: string;
+    message: string;
+    submittedAt: string | null;
+    attempt: number;
+    review: {
+      reviewedBy: string;
+      reviewedByName: string;
+      approved: boolean;
+      note: string;
+      reviewedAt: string | null;
+    } | null;
+  }
+> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, NonNullable<ReturnType<typeof one>>> = {};
+  for (const [outputId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const mapped = one(value);
+    if (mapped) out[outputId] = mapped;
+  }
+  return out;
+
+  function one(value: unknown) {
+    if (!value || typeof value !== "object") return null;
+    const v = value as Record<string, unknown>;
+    const submittedBy = typeof v.submittedBy === "string" ? v.submittedBy : "";
+    if (!submittedBy) return null;
+    const r = (v.review ?? null) as Record<string, unknown> | null;
+    return {
+      submittedBy,
+      submittedByName:
+        typeof v.submittedByName === "string" ? v.submittedByName : "",
+      message: typeof v.message === "string" ? v.message : "",
+      submittedAt: typeof v.submittedAt === "string" ? v.submittedAt : null,
+      attempt: typeof v.attempt === "number" ? v.attempt : 1,
+      review:
+        r && typeof r === "object"
+          ? {
+              reviewedBy: typeof r.reviewedBy === "string" ? r.reviewedBy : "",
+              reviewedByName:
+                typeof r.reviewedByName === "string" ? r.reviewedByName : "",
+              /* Only an explicit `true` approves. Anything else — false,
+                 missing, a string — is a decision that did not release work,
+                 and guessing otherwise would hand somebody unapproved input. */
+              approved: r.approved === true,
+              note: typeof r.note === "string" ? r.note : "",
+              reviewedAt:
+                typeof r.reviewedAt === "string" ? r.reviewedAt : null,
+            }
+          : null,
+    };
+  }
+}
+
 export function readKind(doc: LegacyTaskDoc): LegacyTaskKind {
   if (doc.isFolder) return "folder";
   if (doc.isGoal) return "goal";
@@ -257,6 +335,16 @@ export interface LegacyTask {
   isCrossDepartment: boolean;
   approverId: string | null;
   priority: number | null;
+  /**
+   * The position this task actually HOLDS in its assignee's queue, written by
+   * the engine's `rechainQueueFor`.
+   *
+   * Distinct from `priority`/`assigneePriorities`, which is the rank somebody
+   * SET and which nothing in the dependency feature ever overwrites. A blocked
+   * task keeps its stored 1 and holds position 2, and this is that 2 — the same
+   * figure the deadline chain laid the dates out in.
+   */
+  effectivePriority: number | null;
   /**
    * The drag handler's tie-break, `(index + 1) * 1000`.
    *
@@ -437,6 +525,43 @@ export interface LegacyTask {
    * not close a requirement.
    */
   satisfiesRequirementIds: string[];
+  /**
+   * What this task hands over, in declared order.
+   *
+   * An output is the task's INTERFACE — what somebody else receives — as
+   * distinct from `requirements`, which say when this task itself is done. A
+   * task may carry both, and most carry neither.
+   */
+  outputs: {
+    id: string;
+    label: string;
+    order: number;
+    needsOutputIds: string[];
+  }[];
+  /**
+   * Where each output has got to, keyed by output id.
+   *
+   * The same object the engine writes for a task-level submission, plus the
+   * decision on it. `review` is null while it is with a reviewer, and its
+   * `approved` flag is what releases whatever was waiting.
+   */
+  outputSubmissions: Record<
+    string,
+    {
+      submittedBy: string;
+      submittedByName: string;
+      message: string;
+      submittedAt: string | null;
+      attempt: number;
+      review: {
+        reviewedBy: string;
+        reviewedByName: string;
+        approved: boolean;
+        note: string;
+        reviewedAt: string | null;
+      } | null;
+    }
+  >;
   /** Created by a forward. Its parent chain stays hidden from the list. */
   isForwardedTask: boolean;
   /** Approver ids on a held task. Empty when the task is not gated. */
@@ -538,6 +663,8 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     assignedById: doc.assignedBy ?? doc.createdBy ?? null,
     approverId: doc.approverId ?? null,
     priority: typeof doc.priority === "number" ? doc.priority : null,
+    effectivePriority:
+      typeof doc.effectivePriority === "number" ? doc.effectivePriority : null,
     order: typeof doc.order === "number" ? doc.order : null,
     /*
      * The acceptance criteria, as the engine actually stores them.
@@ -760,6 +887,30 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
           (id): id is string => typeof id === "string" && id !== "",
         )
       : [],
+    outputs: Array.isArray(doc.outputs)
+      ? doc.outputs
+          .map((raw, i) => {
+            const o = (raw ?? {}) as Record<string, unknown>;
+            const id = typeof o.id === "string" ? o.id : "";
+            const label = typeof o.label === "string" ? o.label.trim() : "";
+            /* An entry with no id or no label cannot be pointed at or read out,
+               so it is dropped rather than rendered as a blank row. */
+            if (!id || !label) return null;
+            return {
+              id,
+              label,
+              order: typeof o.order === "number" ? o.order : i,
+              needsOutputIds: Array.isArray(o.needsOutputIds)
+                ? o.needsOutputIds.filter(
+                    (x): x is string => typeof x === "string" && x !== "",
+                  )
+                : [],
+            };
+          })
+          .filter((o): o is NonNullable<typeof o> => o !== null)
+          .sort((a, b) => a.order - b.order)
+      : [],
+    outputSubmissions: readOutputSubmissions(doc.outputSubmissions),
     isForwardedTask: doc.isForwardedTask === true,
     /**
      * Did this task cross a department boundary?
@@ -966,6 +1117,35 @@ export async function checkPriorityConflict(input: {
     method: "POST",
     token: input.token,
     body: input.body,
+  });
+}
+
+/**
+ * `POST /cowork/employee/:id/restore-blocked-deadlines`.
+ *
+ * Hands back deadlines this rule pushed out while their inputs were missing.
+ * Safe to call whenever: it only ever gives time BACK, only touches tasks the
+ * block-cascade moved, and writes nothing when everything is already correct.
+ */
+export async function restoreBlockedDeadlines(input: {
+  token: string;
+  employeeId: string;
+  /**
+   * What is ACTUALLY first, from the derived queue.
+   *
+   * The engine cannot work this out: `workableFirst` promotes past a blocked
+   * task for DISPLAY without touching a stored rank, so the documents alone
+   * still say the blocked one is P1. Sending it is what lets the engine
+   * announce a P1 change without deriving the queue a second time and risking
+   * a different answer.
+   */
+  effectiveP1TaskId?: string | null;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/employee/${encodeURIComponent(input.employeeId)}/restore-blocked-deadlines`,
+    method: "POST",
+    token: input.token,
+    body: { effectiveP1TaskId: input.effectiveP1TaskId ?? null },
   });
 }
 

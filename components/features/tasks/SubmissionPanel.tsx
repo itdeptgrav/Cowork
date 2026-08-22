@@ -69,11 +69,39 @@ export function SubmissionPanel({
    */
   const holds = viewerHolds({ viewerId: me, assignments: view.assignments });
   const isAssignee = holds === "yes";
-  const canSubmit = isAssignee && view.task.status === "in_progress";
+  /**
+   * A task that declares outputs is delivered output by output.
+   *
+   * It completes when they are all approved, so a whole-task submission would
+   * ask a reviewer to approve work the same chain is approving one piece at a
+   * time — and would flip the task to `in_review` while its assignee still has
+   * outputs to write. The engine refuses it; this stops the form being offered
+   * at all, because a control that exists only to be refused is worse than no
+   * control.
+   */
+  const deliversByOutput = view.task.outputs.length > 0;
+  const canSubmit =
+    isAssignee && !deliversByOutput && view.task.status === "in_progress";
   const latest = submissions.data?.[0];
 
   return (
     <div className="flex flex-col gap-4">
+      {deliversByOutput && (
+        <Panel>
+          <h2 className="text-sm font-medium text-ink">
+            Delivered output by output
+          </h2>
+          <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
+            This task hands over {view.task.outputs.length} outputs, each
+            submitted and reviewed on its own. It completes when all of them are
+            approved — there is no separate submission for the task itself.
+          </p>
+          <p className="mt-2 text-[12px] text-ink-faint" data-figure>
+            {view.outputs.filter((o) => o.state === "approved").length} of{" "}
+            {view.task.outputs.length} approved. Submit them from Overview.
+          </p>
+        </Panel>
+      )}
       {reworks.data && reworks.data.length > 0 && (
         <Panel>
           <div className="flex flex-wrap items-center gap-2">

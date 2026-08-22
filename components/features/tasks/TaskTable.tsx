@@ -1,7 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { formatRankDisplay, rankFor } from "@/lib/rules/tasks/priorityDisplay";
+import {
+  formatRankDisplay,
+  rankFor,
+  rankTitle,
+} from "@/lib/rules/tasks/priorityDisplay";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
@@ -965,10 +969,20 @@ function Row({
   /* Prefer the derived, gap-free position where the caller supplied one — a
      completed task in the queue no longer leaves a hole the reader has to
      explain. Fall back to the stored figure everywhere else. */
+  const rankDisplay = rankFor(view, rankSubject);
   const rankText =
-    displayRank !== null
-      ? `P${displayRank}`
-      : formatRankDisplay(rankFor(view, rankSubject));
+    displayRank !== null ? `P${displayRank}` : formatRankDisplay(rankDisplay);
+  /**
+   * **Why the number is what it is, where the number is.**
+   *
+   * A blocked task shows the position it actually holds — P2 rather than the
+   * P1 somebody set — and on this screen the only tooltips were "Change
+   * priority" and "Your priority is set by your manager". Neither says a word
+   * about a demotion, so the reader saw a rank move with no explanation
+   * anywhere they were looking. `rankTitle` already writes the sentence; it was
+   * simply wired to two other surfaces and not to the list.
+   */
+  const blockedNote = rankDisplay.isBlocked ? rankTitle(rankDisplay) : null;
   /* Priority is only real once the time budget is settled. In an assignee group
      the parent already works this out (`notInQueueReason`); everywhere else,
      catch the budget-still-in-negotiation case here so no grouping shows a
@@ -1092,7 +1106,7 @@ function Row({
           title={
             conflicted
               ? "Rank conflict — more than one task holds this rank"
-              : "Change priority"
+              : (blockedNote ?? "Change priority")
           }
           className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] transition-colors ${
             conflicted
@@ -1107,7 +1121,7 @@ function Row({
           title={
             conflicted
               ? "Rank conflict — more than one task holds this rank"
-              : "Your priority is set by your manager"
+              : (blockedNote ?? "Your priority is set by your manager")
           }
           className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] ${
             conflicted
@@ -1411,6 +1425,8 @@ function NarrowRow({ view }: { view: TaskView }) {
       <div className="flex items-start gap-2">
         <span
           data-figure
+          /* Same sentence as the table, on the card that shows the same chip. */
+          title={rankTitle(rankFor(view, viewerId))}
           className="mt-0.5 shrink-0 rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-muted"
         >
           {formatRankDisplay(rankFor(view, viewerId))}
