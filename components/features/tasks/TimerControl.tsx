@@ -551,6 +551,24 @@ export function TimerControl({
     nowMs,
     isActionable: startable,
   });
+  /**
+   * Nothing on this task can be started, because every output is waiting.
+   *
+   * Derived here so the CONTROL can say so, rather than the press being
+   * refused after the fact. A button that looks live and then returns an error
+   * banner teaches people that the product is unreliable; a disabled button
+   * with a reason teaches them what the product is waiting for.
+   *
+   * Pausing stays available regardless — a session started before an input was
+   * withdrawn has to be stoppable.
+   */
+  const noWorkableOutput =
+    (view.outputs ?? []).length > 0 &&
+    !(view.outputs ?? []).some((o) => o.isWorkable);
+  const waitingLabel =
+    (view.outputs ?? []).find((o) => o.waitingOn.length > 0)?.waitingOn[0]
+      ?.label ?? null;
+
   const pending =
     startState.isPending || pauseState.isPending || beginState.isPending;
   /**
@@ -1052,8 +1070,13 @@ export function TimerControl({
       <button
         type="button"
         onClick={toggle}
+        disabled={!running && noWorkableOutput}
         title={
-          running
+          !running && noWorkableOutput
+            ? waitingLabel
+              ? `Waiting on “${waitingLabel}”`
+              : "Nothing on this task can be started yet"
+            : running
             ? `Pause — ${formatTimer(elapsed)} on the clock`
             : other
               ? `Start — this will pause “${other.taskTitle}”`
@@ -1108,7 +1131,18 @@ export function TimerControl({
       <button
         type="button"
         onClick={toggle}
-        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[15px] font-medium transition-colors disabled:opacity-50 ${endAction} ${
+        disabled={!running && noWorkableOutput}
+        title={
+          !running && noWorkableOutput
+            ? waitingLabel
+              ? `Waiting on “${waitingLabel}”`
+              : "Every output is waiting on work that has not been approved"
+            : undefined
+        }
+        /* `${endAction}` is kept from this branch: the bar variant lays its
+           parts out with `order-1..5`, and a button without its order class
+           jumps to the front of that row. */
+        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[15px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${endAction} ${
           running
             ? "bg-ink text-[var(--body-bg)]"
             : "bg-[var(--control)] text-ink hover:bg-[var(--control-hover)]"
@@ -1192,7 +1226,26 @@ export function TimerControl({
         </div>
       )}
 
-      {error && (
+      {/* A quiet line, not an alarm. Waiting on somebody is the ordinary state
+          of dependent work — it is not a fault, nothing has gone wrong, and
+          nobody needs to act on it. The red banner below is for things that
+          actually failed.
+
+          `order-5` on both this and the banner, kept from this branch: they are
+          mutually exclusive — the banner is suppressed while the line shows —
+          so they occupy one slot in the bar's ordered row rather than two. */}
+      {!running && noWorkableOutput && (
+        <p className="order-5 w-full text-[12px] text-ink-muted">
+          {waitingLabel
+            ? `Nothing to start yet — waiting on “${waitingLabel}”.`
+            : "Nothing to start yet — every output is waiting on work that has not been approved."}
+        </p>
+      )}
+
+      {/* Suppressed while the task is waiting: the engine's refusal says the
+          same thing the line above already says, and saying it twice — once
+          quietly and once in red — reads as two problems. */}
+      {error && !(noWorkableOutput && !running) && (
         <div className="order-5 w-full">
           <InlineError
             message={error}

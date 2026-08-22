@@ -53,6 +53,7 @@ function task(over: Partial<Task> = {}): Task {
     meetings: { firstStartedAt: null, lastEndedAt: null, totalSecs: 0 },
     isFolder: false,
     isCrossDepartment: false,
+    outputs: [],
     id: "t-1",
     reference: "CW-1",
     type: "standard",

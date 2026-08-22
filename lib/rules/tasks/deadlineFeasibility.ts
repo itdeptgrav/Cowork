@@ -432,16 +432,26 @@ export function calculateDeadlineFeasibility(input: {
   const mine = chained.find((c) => c.taskId === subject.taskId) ?? null;
   const completion = mine?.dueDate ?? null;
 
-  /* Start is where the task ahead of it lands — or now, at the front. */
   const ahead = simulated
     .slice(0, simulatedIndex)
     .filter((t) => windowSecsFor(t) > 0);
-  const lastAhead = ahead.length
-    ? (chained.find((c) => c.taskId === ahead[ahead.length - 1].taskId) ?? null)
-    : null;
-  const estimatedStartTime = lastAhead
-    ? lastAhead.dueDate
-    : new Date(input.nowMs).toISOString();
+
+  /**
+   * **The start the CHAIN used, not a second guess at it.**
+   *
+   * This used to read "where the task ahead lands — or now, at the front", and
+   * that second clause was the bug: the completion beside it comes from
+   * `chainDeadlines`, which anchors at the office opening and floors each task
+   * at its own `createdAtMs`. "Now" is neither. Reported on a real placement —
+   * start 13:25, completion 17:21, four minutes apart on a four-hour budget,
+   * because the two numbers were computed from different anchors.
+   *
+   * The chain already knew; it simply was not returning it. Reading
+   * `startsAt` makes the pair correspond by construction rather than by
+   * coincidence, and a task at the FRONT now reports the moment it could
+   * genuinely begin instead of the moment somebody happened to open a dialog.
+   */
+  const estimatedStartTime = mine?.startsAt ?? null;
 
   const blockingTasks: BlockingTask[] = ahead.map((t) => ({
     taskId: String(t.taskId),
@@ -537,12 +547,16 @@ export function calculateDeadlineFeasibility(input: {
     affectedTasks,
     completion,
     deadline: input.committedDeadline,
-    calendarSteps: input.explainWorkingSecs
-      ? input.explainWorkingSecs(
-          Date.parse(estimatedStartTime),
-          Math.max(0, Math.round(input.estimatedWorkSeconds)),
-        )
-      : [],
+    /* No start means the chain never scheduled this task — a zero window, or
+       excluded from the queue — so there is no walk to explain. An empty trace
+       is honest where a trace from an invented start would not be. */
+    calendarSteps:
+      input.explainWorkingSecs && estimatedStartTime
+        ? input.explainWorkingSecs(
+            Date.parse(estimatedStartTime),
+            Math.max(0, Math.round(input.estimatedWorkSeconds)),
+          )
+        : [],
   });
 
   /* No committed deadline is not an infeasible one. It is a task nobody has

@@ -155,6 +155,41 @@ export interface CompletionRequirement {
 }
 
 /**
+ * One thing a task hands over.
+ *
+ * **An output is an interface; a requirement is a definition of done.** They
+ * are deliberately different concepts and a task may carry both. "Every tariff
+ * table is checked" is a requirement — it says when this task is finished.
+ * "Google Doc — Gopalpur" is an output — it says what somebody else receives,
+ * and it is the thing another task can wait for.
+ *
+ * Overloading requirements for this was considered and rejected: it would have
+ * made the acceptance criteria double as the contract with other people, so
+ * every task that wanted a handoff would have had its definition of done
+ * rewritten to suit its consumers.
+ *
+ * Outputs are optional everywhere. A task that declares none behaves exactly as
+ * it does today, and nothing about the hierarchy, subtasks, submissions or
+ * reviews changes for it.
+ */
+export interface TaskOutput {
+  id: string;
+  /** What the receiver gets, in their words. "Google Doc — Gopalpur". */
+  label: string;
+  order: number;
+  /**
+   * Outputs of OTHER tasks that must be approved before this one can be worked
+   * on. Empty for an output that depends on nothing.
+   *
+   * The edge runs output → output rather than task → task, and that is the
+   * whole point: Umang's "Figma — Gopalpur" needs Anant's "Google Doc —
+   * Gopalpur" and nothing else, so she starts Gopalpur while he writes Puri.
+   * A task-level edge could only ever mean "wait for all of it".
+   */
+  needsOutputIds: string[];
+}
+
+/**
  * A task's meeting history, in three numbers.
  *
  * `firstStartedAt` is never overwritten and `lastEndedAt` always is, so the two
@@ -254,6 +289,16 @@ export interface Task {
    * all of them are satisfied.
    */
   requirements: CompletionRequirement[];
+
+  /**
+   * What this task hands over, and what each handover waits for.
+   *
+   * Empty on ordinary work. When non-empty, each output submits and is reviewed
+   * on its own through the SAME chain a task uses — see
+   * `TaskSubmission.outputId` — and the task completes when every one of them
+   * is approved rather than through a second review of its own.
+   */
+  outputs: TaskOutput[];
 
   /**
    * Parent requirements this task is delegated to satisfy.
@@ -495,6 +540,20 @@ export interface TaskAttachment {
 export interface TaskSubmission {
   id: string;
   taskId: TaskId;
+  /**
+   * The output this submission delivers, or null for the whole task.
+   *
+   * **The one field the per-output flow needed.** Null is today's behaviour
+   * exactly, so every existing submission and every task without outputs is
+   * unaffected.
+   *
+   * It is also what finally lets `attempt` mean what it was always for.
+   * Numbering runs per (task, output), so attempt 2 on Gopalpur is a second try
+   * at GOPALPUR — not a different property sharing a counter with it. The same
+   * goes for `supersededById`: a resubmission supersedes the earlier attempt at
+   * the same output, and nothing else.
+   */
+  outputId: string | null;
   attempt: number;
   submittedById: EmployeeId;
   submittedAt: string;

@@ -324,6 +324,21 @@ export function earliestClockStartMs(queue: readonly QueueTask[]): number | null
 export interface ChainedDeadline {
   taskId: string;
   dueDate: string;
+  /**
+   * The instant this task was scheduled to BEGIN — the anchor the chain
+   * actually used, after the office opening, this task's own `createdAtMs`,
+   * and whatever sits ahead of it have all had their say.
+   *
+   * Returned because it was already computed and throwing it away forced every
+   * caller to guess it back. `deadlineFeasibility` guessed "now" for a task at
+   * the front of the queue, so its panel showed a start of 13:25 beside a
+   * completion of 17:21 — four minutes apart on a four-hour budget, because the
+   * two numbers came from different anchors. A start and a completion that do
+   * not correspond are worse than no start at all.
+   *
+   * `dueDate === addWorkingSecs(startsAt, occupies)` holds by construction.
+   */
+  startsAt: string;
 }
 
 /**
@@ -358,6 +373,37 @@ export function chainDeadlines(input: {
   budget?: "remaining" | "full";
 }): ChainedDeadline[] {
   const out: ChainedDeadline[] = [];
+
+  /**
+   * **One start per person, not per task.** OWNER RULE, 21 Aug 2026.
+   *
+   * The floor below anchors every task at its own `createdAtMs`, so the head of
+   * a queue started whenever it happened to be raised — and the queue's start
+   * moved every time a different task led it. Reported: Cowork meet leading
+   * showed 12:28:55, Dev leading showed 13:21:24, same person, same queue.
+   *
+   * So the HEAD is anchored where this person became available to the queue at
+   * all: the day's opening, floored at the EARLIEST task in the queue. Whichever
+   * task leads, the number is the same. Everything below it still chains from
+   * the one above, and still cannot start before it was raised.
+   *
+   * The floor is what stops this handing out time — without it a queue would
+   * start at an opening hours before any of its work existed. The converse is
+   * real and deliberate: a task raised later than the queue's start IS charged
+   * from that start, because the person was available and the queue was
+   * running. That is the cost of one shared number.
+   *
+   * Matches `rechainQueueFor`'s `queueAnchorMs` exactly. These two compute the
+   * same queue and must not disagree — a preview that promises one date while
+   * applying writes another is worse than either date alone.
+   */
+  const createdTimes = input.queue
+    .map((t) => startedAtMs(t.createdAtMs))
+    .filter((n): n is number => n !== null);
+  const queueStartMs = createdTimes.length
+    ? Math.max(input.anchorMs, Math.min(...createdTimes))
+    : input.anchorMs;
+  let isHead = true;
   let anchorMs = input.anchorMs;
 
   /**
@@ -435,8 +481,13 @@ export function chainDeadlines(input: {
      * P3 is the case this line exists for: the queue was free at 12:30, but the
      * work did not exist yet.
      */
-    const createdMs = startedAtMs(task.createdAtMs);
-    if (createdMs !== null && createdMs > anchorMs) anchorMs = createdMs;
+    if (isHead) {
+      /* The queue's own start, not this task's. See `queueStartMs` above. */
+      anchorMs = queueStartMs;
+    } else {
+      const createdMs = startedAtMs(task.createdAtMs);
+      if (createdMs !== null && createdMs > anchorMs) anchorMs = createdMs;
+    }
 
     const windowSecs = windowSecsFor(task);
     /* Already excluded by `queueFor`, and re-checked because this function is
@@ -455,7 +506,14 @@ export function chainDeadlines(input: {
     const occupies =
       input.budget === "full" ? windowSecs : remainingWorkSecs(task);
     const dueDate = input.addWorkingSecs(anchorMs, occupies);
-    out.push({ taskId: task.taskId, dueDate });
+    /* Only once a task has actually been scheduled — a zero-window task is
+       skipped above and does not consume the head position. */
+    isHead = false;
+    out.push({
+      taskId: task.taskId,
+      dueDate,
+      startsAt: new Date(anchorMs).toISOString(),
+    });
     /* **Each task starts when the one before it finishes.** This line is the
        chain — without it every task in the queue would get the same date. */
     anchorMs = new Date(dueDate).getTime();

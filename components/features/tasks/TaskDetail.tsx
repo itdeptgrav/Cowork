@@ -15,6 +15,7 @@ import { statusMeta, nextAction } from "./statusMeta";
 import { meetingFirstHint } from "@/lib/rules/meetings/meetingFirst";
 import { ProjectPanel, requirementsFooterVisible } from "./ProjectPanel";
 import { ResponsibilityPanel } from "./ResponsibilityPanel";
+import { OutputsPanel } from "./OutputsPanel";
 import { RelatedMeetings } from "@/components/features/meetings/RelatedMeetings";
 import { TaskMeetingPanel } from "./TaskMeetingPanel";
 import { GoalRoadmapPanel } from "./GoalRoadmapPanel";
@@ -620,7 +621,15 @@ export function TaskDetail({
             </Panel>
           )}
 
-          {tab === "overview" && <Overview view={v} />}
+          {tab === "overview" && (
+            <Overview
+              view={v}
+              onChange={() => {
+                refetch();
+                subtasks.refetch();
+              }}
+            />
+          )}
           {/* Guarded as well as untabbed: the tab is gone from the bar, and
               `/tasks/:id/deadline` is still a URL somebody can hold open from
               before the task was broken down. */}
@@ -1051,7 +1060,25 @@ function TimePanel({ view }: { view: import("@/lib/repositories").TaskView }) {
 
 /* ── Overview ─────────────────────────────────────────────────────────────── */
 
-function Overview({ view }: { view: import("@/lib/repositories").TaskView }) {
+function Overview({
+  view,
+  onChange,
+}: {
+  view: import("@/lib/repositories").TaskView;
+  /* Requirement and subtask changes have to refetch BOTH the task and its
+     children — satisfaction is derived from the pair, so refreshing one leaves
+     the panel showing a count the other half no longer supports.
+
+     `subtasks` came with this prop on the incoming branch, for the
+     `ProjectPanel` it rendered here. That panel is mounted at the top of the
+     tab on this branch instead, so the list would have been an unread
+     argument — the callback is what `OutputsPanel` actually needs. */
+  onChange: () => void;
+}) {
+  /* Read here rather than threaded down: the outputs panel is the only part of
+     Overview that needs it, and who may declare or submit an output resolves
+     from the acting employee. */
+  const viewerId = useViewerId();
   return (
     <>
       {/* The Time panel used to sit here, between the brief and the subtasks.
@@ -1078,7 +1105,16 @@ function Overview({ view }: { view: import("@/lib/repositories").TaskView }) {
       {/* The brief and the completion requirements used to be here, at the
           bottom of the column. They are now `BriefPanel` and `ProjectPanel`,
           rendered at the TOP — what the task is has to be readable before any
-          decision about it, and it was sitting under a dozen cards. */}
+          decision about it, and it was sitting under a dozen cards.
+
+          **Only the outputs panel is drawn here.** The incoming branch also
+          rendered a Brief panel and a second `ProjectPanel` in this spot, which
+          was correct on that branch and is a duplicate on this one: both are
+          already mounted above (`BriefPanel` and `ProjectPanel` at the top of
+          the overview tab). Two Brief cards, and two requirement checklists of
+          which only one could be ticked, is what taking that side wholesale
+          would have produced. */}
+      <OutputsPanel view={view} viewerId={viewerId} onChange={onChange} />
 
       {/* Daily reports used to be the last card here, and only when at least
           one existed — so on the task where somebody wondered where the

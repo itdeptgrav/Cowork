@@ -82,26 +82,43 @@ test("a clock that appears to run backwards reports no negative work", () => {
   assert.equal(elapsedSecs(Date.now() + 5000, Date.now()), 0);
 });
 
+/**
+ * One method's body, bounded by the next method rather than by a character
+ * count.
+ *
+ * The slices here were fixed windows — `slice(0, 1600)` — which asserted "this
+ * rule appears near the top of the function" when the intent was "this rule is
+ * enforced in this function". Adding a guard above them pushed the real checks
+ * out of the window and failed a test about code that had not changed. Bounding
+ * on the next `async` member cannot drift as the method grows.
+ */
+function methodBody(src: string, name: string): string {
+  const start = src.indexOf(`async ${name}(`);
+  if (start === -1) return "";
+  const next = src.indexOf("\n  async ", start + 1);
+  return next === -1 ? src.slice(start) : src.slice(start, next);
+}
+
 /* ── Single active timer ──────────────────────────────────────────────────── */
 
 test("starting a second task pauses the first", () => {
   /* Enforced at the write, so it holds however the button was reached. */
-  const fn = code(REPO).slice(code(REPO).indexOf("async startTimer("));
-  assert.match(fn.slice(0, 1600), /getActiveTimer\(\)/);
-  assert.match(fn.slice(0, 1600), /active\.taskId !== id/);
-  assert.match(fn.slice(0, 1600), /pauseTimer\(active\.taskId/);
+  const fn = methodBody(code(REPO), "startTimer");
+  assert.match(fn, /getActiveTimer\(\)/);
+  assert.match(fn, /active\.taskId !== id/);
+  assert.match(fn, /pauseTimer\(active\.taskId/);
 });
 
 test("the accumulator survives a restart", () => {
   /* `startTimer` reads the existing total and writes it back, so a resume adds
      to the record rather than replacing it. */
-  const fn = code(REPO).slice(code(REPO).indexOf("async startTimer("));
-  assert.match(fn.slice(0, 2000), /totalSeconds: accumulated/);
+  const fn = methodBody(code(REPO), "startTimer");
+  assert.match(fn, /totalSeconds: accumulated/);
 });
 
 test("pausing banks time from timestamps, not from a tick", () => {
-  const fn = code(REPO).slice(code(REPO).indexOf("async pauseTimer("));
-  assert.match(fn.slice(0, 1600), /lastStartTime/);
+  const fn = methodBody(code(REPO), "pauseTimer");
+  assert.match(fn, /lastStartTime/);
 });
 
 /* ── Permissions ──────────────────────────────────────────────────────────── */

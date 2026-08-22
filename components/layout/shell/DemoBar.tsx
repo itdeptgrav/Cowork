@@ -1,11 +1,16 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { getRepository } from "@/lib/repositories";
 import { notifyRepositoryChanged } from "@/lib/repositories/events";
 import type { SimulatedFailure } from "@/lib/repositories";
 import { openDecisionCount } from "@/lib/config/provisional";
+import type { Employee } from "@/lib/domain";
+import {
+  PROFILE_STORAGE_KEY,
+  PROFILE_SWITCHER_ENABLED,
+} from "@/lib/config/profileSwitcher";
 
 /**
  * Prototype controls: reset the demo data and force the failure states every
@@ -19,6 +24,45 @@ export function DemoBar() {
   const [failure, setFailure] = useState<SimulatedFailure>("none");
   const [busy, setBusy] = useState(false);
   const router = useRouter();
+
+  /**
+   * Everybody the prototype can act as.
+   *
+   * `profileSwitcher.ts` has carried the storage key and both safety gates
+   * since it was written, but nothing ever offered a way to SET it and nothing
+   * applied it to the repository — so the thing the prototype exists for,
+   * walking a flow whose steps belong to different people, could not be done.
+   *
+   * Switching people, not roles: department, reporting line, permissions,
+   * tasks and approvals all follow from the acting employee already.
+   */
+  const [people, setPeople] = useState<Employee[]>([]);
+  const [actingId, setActingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!PROFILE_SWITCHER_ENABLED) return;
+    let live = true;
+    void getRepository()
+      .listEmployees()
+      .then((list) => {
+        if (!live) return;
+        setPeople(list);
+        setActingId(window.localStorage.getItem(PROFILE_STORAGE_KEY));
+      });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  function actAs(employeeId: string | null) {
+    if (employeeId) window.localStorage.setItem(PROFILE_STORAGE_KEY, employeeId);
+    else window.localStorage.removeItem(PROFILE_STORAGE_KEY);
+    getRepository().setActingEmployee?.(employeeId);
+    /* A reload, not a refetch. Identity is read once and threaded into every
+       hook below it, so re-running the queries alone would leave half the
+       screen answering as the previous person. */
+    window.location.reload();
+  }
 
   const modes: { id: SimulatedFailure; label: string }[] = [
     { id: "none", label: "Normal" },
@@ -82,6 +126,27 @@ export function DemoBar() {
                 );
               })}
             </div>
+            {PROFILE_SWITCHER_ENABLED && people.length > 0 && (
+              <>
+                <span className="h-4 w-px bg-hairline" />
+                <label className="flex items-center gap-1.5">
+                  <span className="text-xs text-ink-faint">Acting as</span>
+                  <select
+                    value={actingId ?? ""}
+                    onChange={(e) => actAs(e.target.value || null)}
+                    aria-label="Act as another person"
+                    className="rounded-full bg-[var(--surface-sunken)] px-2.5 py-1 text-xs text-ink"
+                  >
+                    <option value="">Seed default</option>
+                    {people.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.displayName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </>
+            )}
             <span className="h-4 w-px bg-hairline" />
             <a
               href="/admin/scoring-rules"

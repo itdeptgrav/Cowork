@@ -101,16 +101,21 @@ test("no called path 404s against the running engine", async (t) => {
        method as well as path, so a route answers 404 to the wrong verb — a fact
        about the probe, not about the route. Three real endpoints were false
        positives until this asked with each: `change-password` is POST-only,
-       `edit-details` is PATCH, and deleting a task is DELETE. */
+       `edit-details` is PATCH, and deleting a task is DELETE.
+
+       PUT was missing from this list and made a fourth: declaring a task's
+       outputs is PUT-only, so all four other verbs 404'd and a live route
+       reported as dead. The list has to be EVERY verb the app actually uses,
+       or this test invents the failures it exists to catch. */
     let dead404 = true;
-    for (const method of ["GET", "POST", "PATCH", "DELETE"] as const) {
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"] as const) {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 4000);
         const res = await fetch(url, {
           method,
           signal: controller.signal,
-          ...(method === "POST" || method === "PATCH"
+          ...(method === "POST" || method === "PATCH" || method === "PUT"
             ? { headers: { "Content-Type": "application/json" }, body: "{}" }
             : {}),
         });

@@ -16,10 +16,15 @@ test("a task inside a project is NOT treated as a subtask", () => {
    * …" and a requirements picker in front of somebody who only wanted a task
    * in a folder — and on a folder there are no requirements to pick, so the
    * panel could only ever say there was nothing to choose.
+   *
+   * **The parent must also have RESOLVED.** The same symptom returned by
+   * another route: a project id arriving as `?parent=` resolves to no task, and
+   * `parent?.task.isFolder !== true` is true for a null parent — so the form
+   * demanded a requirement claim against a parent that did not exist.
    */
   assert.match(
     code,
-    /const isSubtask = !!presetParentTaskId && parent\?\.task\.isFolder !== true;/,
+    /const isSubtask = !!presetParentTaskId && !!parent && parent\.task\.isFolder !== true;/,
   );
 });
 

@@ -184,6 +184,36 @@ export function actionableFor(
       href: `/tasks/${id}/review`,
     };
 
+  /**
+   * An OUTPUT waiting on this reviewer.
+   *
+   * A separate branch rather than a widening of the one above, so the existing
+   * task-level rule is provably untouched. It has to exist because an output
+   * submission deliberately leaves the task `in_progress` — its assignee is
+   * still working on the rest — and the branch above would therefore never fire
+   * for one, leaving per-output reviews in a queue nobody was ever shown.
+   */
+  /* `?? []` because a caller may hand over a partial view — the field is
+     required on `TaskView`, but fixtures and narrowed reads build objects
+     without it, and absent means "no open submission is known", never a
+     crash. */
+  const openOutput = (view.openSubmissions ?? []).find(
+    (sub) =>
+      sub.outputId !== null &&
+      mayReview({
+        chain: sub.reviewChain,
+        currentStage: sub.currentStage,
+        viewerId,
+        submittedById: sub.submittedById,
+      }),
+  );
+  if (openOutput)
+    return {
+      reason: "review",
+      label: "Review submission",
+      href: `/tasks/${id}/review`,
+    };
+
   /* 3 — deadline decisions. Every branch here has somebody waiting on the
      other side of it: a proposal needs a verdict, a counter needs an answer,
      an offered window is held open, and an unset deadline stops the task
