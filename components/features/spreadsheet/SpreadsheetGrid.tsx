@@ -656,6 +656,13 @@ export function SpreadsheetGrid({
           setLinkEditor(null);
           setCommentAt(null);
           onSearchOpen(false);
+          return;
+        }
+        /* Nothing else open: dismiss a pending copy/cut block, as in Excel —
+           the dashed border disappears and a disarmed cut clears nothing. */
+        if (controller.clipboard) {
+          claim(e);
+          controller.clearClipboard();
         }
         return;
       case "ArrowUp":
@@ -843,6 +850,10 @@ export function SpreadsheetGrid({
   }
 
   function onEditorKeyDown(e: ReactKeyboardEvent) {
+    /* An IME's Enter/Escape confirms or cancels the COMPOSITION, not the cell
+       edit — acting on it would commit mid-word for Japanese/Chinese/Korean
+       input. */
+    if (e.nativeEvent.isComposing) return;
     if (e.key === "Enter") {
       e.preventDefault();
       controller.commitEdit(e.shiftKey ? "up" : "down");
@@ -1195,7 +1206,7 @@ export function SpreadsheetGrid({
               style={{ left: actX, top: actY, width: actW, height: actH, boxShadow: "inset 0 0 0 2px var(--ink)" }}
             />
 
-            {clipBox && (
+            {clipBox && !controller.clipboard?.cut && (
               <div
                 className="pointer-events-none absolute"
                 style={{
@@ -1207,6 +1218,34 @@ export function SpreadsheetGrid({
                   opacity: 0.7,
                 }}
               />
+            )}
+            {/* A CUT gets marching ants, distinct from a copy's static dashes:
+                its border marks a pending destructive move, and needs to read
+                as "armed" until the paste (or Escape) resolves it. */}
+            {clipBox && controller.clipboard?.cut && (
+              <svg
+                className="pointer-events-none absolute"
+                style={{
+                  left: clipBox.left,
+                  top: clipBox.top,
+                  width: clipBox.width,
+                  height: clipBox.height,
+                  overflow: "visible",
+                }}
+                aria-hidden="true"
+              >
+                <rect
+                  x="0.75"
+                  y="0.75"
+                  width={Math.max(0, clipBox.width - 1.5)}
+                  height={Math.max(0, clipBox.height - 1.5)}
+                  fill="none"
+                  stroke="var(--ink)"
+                  strokeWidth="1.5"
+                  strokeDasharray="6 4"
+                  className="sheet-marching-ants"
+                />
+              </svg>
             )}
             {fillBox && (
               <div

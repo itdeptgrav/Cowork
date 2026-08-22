@@ -2,9 +2,11 @@
  * The parser — tokens to an AST, by precedence climbing.
  *
  * Precedence and associativity follow the spreadsheet, including its quirks:
- * comparison binds loosest, then `+ -`, then `* /`, then `^`; `%` is a postfix
- * (`50%` is 0.5); and unary minus binds TIGHTER than `^`, so `-2^2` is `(-2)^2`
- * = 4, as Excel computes it. A range `A1:B2` is two refs joined by `:`.
+ * comparison binds loosest, then `&` concatenation, then `+ -`, then `* /`,
+ * then `^`; `%` is a postfix (`50%` is 0.5); and unary minus binds TIGHTER than
+ * `^`, so `-2^2` is `(-2)^2` = 4, as Excel computes it. A range `A1:B2` is two
+ * refs joined by `:`. An omitted argument slot (`SUM(1,,2)`, `IF(x,y,)`) parses
+ * as a blank argument, as in Sheets and Excel.
  */
 
 import type { BinaryOp, Node, RefNode } from "./ast";
@@ -20,11 +22,13 @@ const BINARY_PRECEDENCE: Record<string, number> = {
   ">": 1,
   "<=": 1,
   ">=": 1,
-  "+": 2,
-  "-": 2,
-  "*": 3,
-  "/": 3,
-  "^": 4,
+  /* Excel: & binds looser than arithmetic, tighter than comparison. */
+  "&": 2,
+  "+": 3,
+  "-": 3,
+  "*": 4,
+  "/": 4,
+  "^": 5,
 };
 
 const REF_SHAPE = /^(\$?)([A-Za-z]+)(\$?)(\d+)$/;
@@ -151,9 +155,11 @@ class Parser {
       }
       case "name": {
         const upper = t.value.toUpperCase();
+        /* A name followed by `(` is a call — including TRUE()/FALSE(), which
+           are real zero-argument functions in Sheets and Excel. */
+        if (this.peek()?.type === "lparen") return this.parseCall(upper);
         if (upper === "TRUE") return { type: "boolean", value: true };
         if (upper === "FALSE") return { type: "boolean", value: false };
-        if (this.peek()?.type === "lparen") return this.parseCall(upper);
         /* A bare word that is neither a function nor a boolean is #NAME? — a
            parse failure the engine surfaces as that error. */
         throw new ParseError(`Unknown name ${t.value}`);
@@ -167,14 +173,22 @@ class Parser {
     this.expect("lparen");
     const args: Node[] = [];
     if (this.peek()?.type !== "rparen") {
-      args.push(this.parseExpression(0));
+      args.push(this.parseArgument());
       while (this.peek()?.type === "comma") {
         this.next();
-        args.push(this.parseExpression(0));
+        args.push(this.parseArgument());
       }
     }
     this.expect("rparen");
     return { type: "call", name, args };
+  }
+
+  /** One call argument. An empty slot — the caret sitting on a `,` or `)` —
+      is a legal omitted argument and parses as a blank, per Sheets/Excel. */
+  private parseArgument(): Node {
+    const t = this.peek();
+    if (!t || t.type === "comma" || t.type === "rparen") return { type: "blank" };
+    return this.parseExpression(0);
   }
 }
 

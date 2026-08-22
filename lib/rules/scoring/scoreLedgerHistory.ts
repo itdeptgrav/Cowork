@@ -153,6 +153,37 @@ export function totalsOf(entries: readonly LedgerEntryLike[]): LedgerTotals {
   return { earned: round(earned), deducted: round(deducted), net: round(earned - deducted) };
 }
 
+/**
+ * The newest entries, newest first.
+ *
+ * For the Score tab, which leads with what has just been earned or lost rather
+ * than with an explanation of the model. A plain `slice` cannot do this: the
+ * ledger arrives grouped by filing year, so the first entries in the array are
+ * whichever year the provider happened to send first — on a record with two
+ * years in it, "recent" would show 2025.
+ *
+ * Undated entries sort LAST rather than first, for the reason `groupLedger`
+ * lifts the empty case out: `""` compares before every real date, so an entry
+ * the engine forgot to stamp would otherwise head the panel. They are still
+ * eligible for the slice — an entry that moved somebody's score is not withheld
+ * from them over a missing stamp — but only once the dated ones are placed.
+ */
+export function recentEntries(
+  entries: readonly LedgerEntryLike[],
+  limit: number,
+): LedgerEntryLike[] {
+  if (limit <= 0) return [];
+  return [...entries]
+    .sort((a, b) => {
+      const [x, y] = [a.effectiveDate || "", b.effectiveDate || ""];
+      if (x === y) return 0;
+      if (x === "") return 1;
+      if (y === "") return -1;
+      return y.localeCompare(x);
+    })
+    .slice(0, limit);
+}
+
 export interface LedgerDay {
   /** `YYYY-MM-DD`, or `""` for entries the engine dated nothing. */
   date: string;

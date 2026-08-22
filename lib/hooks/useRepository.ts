@@ -101,6 +101,43 @@ export function preloadQuery(
 }
 
 /**
+ * Drop the TTL cache for one repository method, everywhere it is cached.
+ *
+ * **Why a stale-time cache needs this at all.** `staleResultCache` is keyed on
+ * the fetcher's source plus its deps and deliberately NOT on the repository
+ * version — that is the point of `staleTime`, so an unrelated write does not
+ * re-run an expensive read. The cost is that a write which genuinely
+ * invalidates a cached list has no way to say so, and
+ * `notifyRepositoryChanged()` sails straight past it.
+ *
+ * That is survivable while the reader stays on the page: their own hook holds
+ * the last good answer, and `refetch()` is forced past the TTL. It is NOT
+ * survivable across a navigation, because the next page mounts a NEW hook at
+ * nonce 0 — nothing about it is "forced" — so the TTL answers it with a list
+ * recorded before the write. The screen then reports the world as it stood up
+ * to `staleTime` ago, and the reader is told the thing they just created does
+ * not exist.
+ *
+ * So: call this in the mutation's success path, before navigating.
+ *
+ *   invalidateQuery("listConversations");
+ *   router.push(`/messages/${id}`);
+ *
+ * Matched on `.method(` against the fetcher source — the same property-access
+ * text `METHOD_STALE_DEFAULTS` is resolved from, and minifiers leave property
+ * names alone. Every deps variant of the method goes, which is the intended
+ * blast radius: a caller knows the method it invalidated, not the argument
+ * lists every mounted component happened to call it with.
+ */
+export function invalidateQuery(methodName: string): void {
+  const needle = `.${methodName}(`;
+  for (const key of [...staleResultCache.keys()])
+    if (key.includes(needle)) staleResultCache.delete(key);
+  for (const key of [...preloadCache.keys()])
+    if (key.startsWith(methodName + "[")) preloadCache.delete(key);
+}
+
+/**
  * Default stale times for repository methods whose data changes rarely
  * compared to how often mutations fire.
  *

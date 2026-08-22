@@ -264,6 +264,20 @@ export function FileMenu({
     return () => document.removeEventListener("mousedown", onDown, true);
   }, [open]);
 
+  /* "Saving…" is a claim about a write in progress; when the persistence state
+     settles, the text shown settles with it — it used to stick at "Saving…"
+     forever while the chip beside it said "Saved". Derived at render (no
+     effect, no second state): the stored status is the REQUEST, the shown
+     status folds in where the save actually got to. */
+  const shownStatus =
+    status === "Saving…"
+      ? persistence.state === "saved"
+        ? "Saved."
+        : persistence.state === "saving" || persistence.state === "loading"
+          ? status
+          : null // an error state — the chip and its message take over
+      : status;
+
   const choose = (fn: () => void) => () => {
     setOpen(false);
     fn();
@@ -405,9 +419,9 @@ export function FileMenu({
         onChange={onFile}
       />
 
-      {status && (
-        <span className="ml-1 truncate text-[11px] text-ink-muted" title={status}>
-          {status}
+      {shownStatus && (
+        <span className="ml-1 truncate text-[11px] text-ink-muted" title={shownStatus}>
+          {shownStatus}
         </span>
       )}
 

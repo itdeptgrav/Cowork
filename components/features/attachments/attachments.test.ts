@@ -478,10 +478,20 @@ test("the files surface is mounted for every viewer of a task", () => {
   const tabsAt = detail.indexOf("const tabs = [");
   const bar = detail.slice(tabsAt, detail.indexOf("];", tabsAt));
   const filesEntry = bar.indexOf('id: "files"');
-  assert.ok(filesEntry > bar.indexOf("...(isContainer"), "Files is inside the tabs list");
-  assert.ok(
-    filesEntry > bar.indexOf('id: "chat"'),
-    "Files sits outside the project-only exclusion, after Chat",
+  assert.ok(filesEntry > 0, "Files is missing from the tabs list");
+  /* **The property, not the position.**
+     These two used to assert Files came AFTER the container exclusion and
+     after Chat, as a proxy for "Files is not inside the exclusion". Files and
+     Reports were later swapped in the bar; the proxy broke and the property it
+     stood for did not. Read the spread and check Files is not in it, which is
+     the thing that actually matters — a project must keep its files. */
+  const spreadAt = bar.indexOf("...(isContainer");
+  const exclusion =
+    spreadAt < 0 ? "" : bar.slice(spreadAt, bar.indexOf("]),", spreadAt));
+  assert.equal(
+    exclusion.includes('id: "files"'),
+    false,
+    "Files is inside the project-only exclusion — a project would lose it",
   );
 });
 

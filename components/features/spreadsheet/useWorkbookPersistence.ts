@@ -141,6 +141,14 @@ export function useWorkbookPersistence(
       setTitle(made.title);
       setState("saved");
       onCreated?.(made.id);
+      /* Edits typed WHILE the create round-trip was in flight never reached the
+         autosaver (the change effect early-returns during creation). Push once
+         now: if nothing changed since the serialize above, it settles as a
+         no-op; if something did, it is saved rather than waiting for the next
+         keystroke that might never come. */
+      if (autosaverRef.current?.pushLazy(() => controllerRef.current.serialize())) {
+        setState("saving");
+      }
     } catch (e) {
       creatingRef.current = false;
       handleError(e);
@@ -174,11 +182,18 @@ export function useWorkbookPersistence(
     if (!workbookId) {
       /* A draft starts blank and already-settled — there is nothing to fetch, and
          "Loading…" would be a lie. Deferred a tick so the flag is not written
-         synchronously inside the effect. */
+         synchronously inside the effect. The bookkeeping is reset too: reaching
+         a draft from an open workbook must not leave the old id behind with
+         saving disarmed. */
+      meta.current = { id: null, revision: 0, ready: false };
+      creatingRef.current = false;
       const t = setTimeout(() => setState("saved"), 0);
       return () => {
         clearTimeout(t);
         cancelled = true;
+        /* A pending draft edit may be mid-debounce when the surface closes —
+           flush it (fire-and-forget) before the timer is dropped. */
+        void autosaver.flush();
         autosaver.cancel();
       };
     }
@@ -202,13 +217,37 @@ export function useWorkbookPersistence(
 
     return () => {
       cancelled = true;
-      /* Stop the outgoing workbook's autosave AND close the gate, so a render
-         between two workbooks cannot push the old sheet's content at the new
-         one's id. */
+      /* Save what the debounce was still holding — leaving the sheet inside
+         the one-second window silently dropped the last edits. The flush reads
+         its ids synchronously, so it still targets the OUTGOING workbook. */
+      void autosaver.flush();
+      /* Then stop the outgoing workbook's autosave AND close the gate, so a
+         render between two workbooks cannot push the old sheet's content at
+         the new one's id. */
       meta.current.ready = false;
       autosaver.cancel();
     };
   }, [workbookId]);
+
+  /* Leaving the page (not just the surface) inside the debounce window, or
+     while a save is on the wire, would drop the burst with no warning — the
+     one loss autosave cannot catch up from. The browser shows its generic
+     "leave site?" prompt while anything is still unsaved. The mirror is
+     written in an effect (never during render), and the listener reads it so
+     the guard needs no re-subscription per state change. */
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    const guard = (e: BeforeUnloadEvent) => {
+      if (stateRef.current === "saving" || stateRef.current === "offline") {
+        e.preventDefault();
+      }
+    };
+    window.addEventListener("beforeunload", guard);
+    return () => window.removeEventListener("beforeunload", guard);
+  }, []);
 
   /* Autosave when the workbook changes. The payload is built LAZILY — serializing
      on every keystroke costs ~49 ms on a large workbook, and the whole point of
@@ -281,7 +320,13 @@ export function useWorkbookPersistence(
   }
 
   function retry(): void {
-    meta.current.ready = meta.current.id !== null;
+    /* A draft that failed to CREATE has nothing in the autosaver to flush —
+       pushes are gated on an id — so retry must retry the creation itself. */
+    if (!meta.current.id) {
+      void ensureRecord();
+      return;
+    }
+    meta.current.ready = true;
     void autosaverRef.current?.flush();
   }
 

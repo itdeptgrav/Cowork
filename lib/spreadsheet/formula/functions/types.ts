@@ -126,8 +126,12 @@ export function wildcardToRegExp(pattern: string): RegExp {
 /**
  * Whether a value satisfies a criterion, the COUNTIF/SUMIF language:
  *  · a bare number or text is an equality test (text is case-insensitive and may
- *    use `*` and `?` wildcards);
- *  · a leading `>`, `<`, `>=`, `<=`, `=`, `<>` is a comparison.
+ *    use `*` and `?` wildcards — which match TEXT cells only, never a
+ *    stringified number or boolean);
+ *  · a leading `>`, `<`, `>=`, `<=`, `=`, `<>` is a comparison. A NUMERIC
+ *    right-hand side compares against numeric cells only — text and boolean
+ *    cells simply never match (no lexicographic fallback), the Sheets/Excel
+ *    rule that keeps `">5"` from counting "apple".
  *
  * Regular expressions are not supported; only the two wildcards are.
  */
@@ -146,16 +150,19 @@ export function matchesCriteria(value: ScalarValue, criterion: ScalarValue): boo
     const equal =
       rhsNum !== null && typeof value === "number"
         ? value === rhsNum
-        : /[*?]/.test(rhs) && !/[<>]/.test(op)
-          ? wildcardToRegExp(rhs).test(asText(value))
+        : /[*?]/.test(rhs)
+          ? typeof value === "string" && wildcardToRegExp(rhs).test(value)
           : asText(value).toUpperCase() === rhs.toUpperCase();
     return op === "<>" ? !equal : equal;
   }
 
-  /* A comparison. Numbers compare numerically; otherwise text order. */
+  /* An ordered comparison. A numeric criterion sees only numbers; a text one
+     compares case-insensitive text order. */
   let c: number;
-  if (rhsNum !== null && typeof value === "number") c = value < rhsNum ? -1 : value > rhsNum ? 1 : 0;
-  else {
+  if (rhsNum !== null) {
+    if (typeof value !== "number") return false;
+    c = value < rhsNum ? -1 : value > rhsNum ? 1 : 0;
+  } else {
     const a = asText(value).toUpperCase();
     const b = rhs.toUpperCase();
     c = a < b ? -1 : a > b ? 1 : 0;

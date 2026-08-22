@@ -68,6 +68,11 @@ export function TasksArea() {
     (r) => r.listTasks({ scope: "team" }).then((p) => p.total),
     [],
   );
+  /* These two counted the two scopes the filter no longer offers. They are left
+     in place, and reporting as unused, on purpose: this pass moves and prunes
+     markup and is not permitted to add, remove or reorder a hook, because the
+     source-reading tests assert on where hooks sit. Removing them is a separate,
+     deliberate change — see the note beside `scopeOptions`. */
   const out = useQuery(
     (r) => r.listTasks({ scope: "assigned_out" }).then((p) => p.total),
     [],
@@ -145,8 +150,27 @@ export function TasksArea() {
     [],
   );
 
+  /**
+   * Whose work — and only that. Two options, or three at organisation scope.
+   *
+   * "Assigned out", "Self tasks" and "Submitted" are no longer offered here.
+   * Nothing about them changed in the engine — `assigned_out`, `self_assigned`
+   * and `submitted` are still real scopes, `listTasks` still answers them, and
+   * every task they held still exists and behaves the same way. What changed is
+   * that this row no longer offers them, so it reads as a short answer to
+   * "whose work am I looking at" rather than as a list of every relationship a
+   * person can have to a task.
+   *
+   * Submitted went last, and it was the odd one of the three: it named a STATE
+   * rather than a person, which is the question the filter beside it now
+   * answers. Submitted work is not lost — it is open work awaiting a decision,
+   * so it sits under All and under Open, with "Awaiting review" on the row.
+   *
+   * "Everyone" is kept. It is organisation-scope only, so it is absent for
+   * almost everybody and was not on the row this replaces.
+   */
   const scopeOptions = [
-    { id: "mine" as const, label: "Mine", count: mine.data ?? undefined },
+    { id: "mine" as const, label: "My tasks", count: mine.data ?? undefined },
     ...(viewScope === "direct_reports" ||
     viewScope === "hierarchy" ||
     viewScope === "organisation"
@@ -158,25 +182,6 @@ export function TasksArea() {
           },
         ]
       : []),
-    {
-      id: "assigned_out" as const,
-      label: "Assigned out",
-      count: out.data ?? undefined,
-    },
-    /* Legacy's own last two tabs (`page.js:7077-7078`). Unlike "My team" and
-       "Everyone" these carry no role condition — the old app shows both to
-       every role, because each is defined by the viewer's own relationship to
-       the task rather than by reach over other people. */
-    {
-      id: "self_assigned" as const,
-      label: "Self tasks",
-      count: selfAssigned.data ?? undefined,
-    },
-    {
-      id: "submitted" as const,
-      label: "Submitted",
-      count: submitted.data ?? undefined,
-    },
     ...(viewScope === "organisation"
       ? [
           {
@@ -188,36 +193,50 @@ export function TasksArea() {
       : []),
   ];
 
+  /**
+   * The scope switch, built here and rendered DOWN in the list's own toolbar.
+   *
+   * It sat on the tab row, one line above the filter beside it — two controls
+   * that answer the same shape of question, "whose work" and "which of it",
+   * split across two rows with a navigation strip between them. They belong on
+   * the same line, at the end of it, beside the count of what they resolve to.
+   *
+   * Built here rather than in the table because the state is here: `scope`
+   * feeds the query in both layouts, so the control cannot move down into one
+   * of them without the other losing it. It is handed to the table as a node
+   * and rendered above the board, which has no toolbar of its own.
+   */
+  const scopeControl =
+    view === "tasks" ? (
+      <Segmented
+        data-help="task-scope-switch"
+        label="Task scope"
+        size="sm"
+        value={scope}
+        onChange={setScope}
+        /* Scopes appear only where the viewer's `task.view` actually reaches.
+           An individual contributor sees "Mine" and "Assigned out"; a manager
+           gains "My team"; only organisation scope gains "Everyone". Offering a
+           scope that resolves to nothing would look like an empty team rather
+           than an absent permission. */
+        options={scopeOptions}
+      />
+    ) : null;
+
   return (
     <>
       <WorkspaceHead
         title="Tasks"
-        count={
-          <>
-            <span data-figure>{mine.data ?? 0}</span> assigned to you
-            {(team.data ?? 0) > 0 && (
-              <>
-                {" · "}
-                <span data-figure>{team.data}</span> across your team
-              </>
-            )}
-          </>
-        }
-        scope={
-          <Segmented
-            data-help="task-scope-switch"
-            label="Task scope"
-            size="sm"
-            value={scope}
-            onChange={setScope}
-            /* Scopes appear only where the viewer's `task.view` actually
-               reaches. An individual contributor sees "Mine" and "Assigned
-               out"; a manager gains "My team"; only organisation scope gains
-               "Everyone". Offering a scope that resolves to nothing would look
-               like an empty team rather than an absent permission. */
-            options={scopeOptions}
-          />
-        }
+        /* The inline count is gone. It restated, in a sentence, the two figures
+           the scope row was already carrying as badges — "8 assigned to you"
+           beside a "My tasks 8" pill — so the title line read the same number
+           twice in two shapes. The badges keep it. */
+        /* On the tab row, always — there is no other row left.
+           With the page heading gone the title line held nothing but this
+           button, so every tab except Overview drew a 32px band above the tabs
+           to float one control in. The tab row carries it on all of them now,
+           beside the filter where the filter exists. */
+        actionPlacement="tabs"
         action={
           <Button tone="primary" size="sm" data-help="new-task-button">
             <Link href="/tasks/new" className="flex items-center gap-1.5">
@@ -250,9 +269,18 @@ export function TasksArea() {
       {view === "overview" && <TasksOverview scope={scope} />}
       {view === "tasks" &&
         (layout === "list" ? (
-          <TaskTable scope={scope} />
+          <TaskTable scope={scope} scopeControl={scopeControl} />
         ) : (
-          <TaskBoard scope={scope} />
+          /* The board has no toolbar row of its own and its loading, error and
+             empty branches return before any chrome — so the control is placed
+             around it rather than inside it. A scope you cannot leave because
+             it happens to be empty is the state that would create. */
+          <>
+            <div className="mb-2 flex flex-wrap items-center gap-1.5">
+              {scopeControl}
+            </div>
+            <TaskBoard scope={scope} />
+          </>
         ))}
       {view === "timeline" && <TasksTimeline />}
       {view === "approvals" && <Approvals />}

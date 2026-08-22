@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "components/features/workspace/DocumentEditor.tsx"
+        ],
+        "createdAt": "2026-08-17T16:06:11.727Z",
+        "reason": "User confirmed: the only match is the characters <img> inside a code comment explaining the allowBase64 parse fix; the file contains no JSX image element"
+      }
+    ]
+  }
+}

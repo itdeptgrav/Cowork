@@ -29,6 +29,7 @@ export * from "./search";
 export * from "./hyperlink";
 export * from "./comments";
 export * from "./datatools";
+export * from "./templates";
 export * from "./csvio";
 export * from "./jsonio";
 /* Note: `xlsxio` is intentionally NOT re-exported — it pulls in the ~1 MB

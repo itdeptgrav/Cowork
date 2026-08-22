@@ -85,12 +85,19 @@ export function readCsv(text: string): string[][] {
   let row: string[] = [];
   let field = "";
   let inQuotes = false;
+  /* Whether the current field has been STARTED — set the moment a quote opens,
+     so a field whose whole content is `""` (a quoted empty string) is
+     distinguishable from no field at all. Plain characters make `field`
+     non-empty, which already marks the field as real; only a quoted empty
+     leaves no other trace. */
+  let fieldStarted = false;
   let i = 0;
   const n = text.length;
 
   const endField = () => {
     row.push(field);
     field = "";
+    fieldStarted = false;
   };
   const endRow = () => {
     endField();
@@ -117,6 +124,7 @@ export function readCsv(text: string): string[][] {
     }
     if (ch === '"') {
       inQuotes = true;
+      fieldStarted = true;
       i++;
     } else if (ch === ",") {
       endField();
@@ -133,9 +141,12 @@ export function readCsv(text: string): string[][] {
     }
   }
   /* A trailing field/row not yet closed by a line break — the common case of
-     a file with no final newline. Nothing to flush when the text ended
-     exactly on a row break (both `field` and `row` are already empty then). */
-  if (field !== "" || row.length > 0) endRow();
+     a file with no final newline. RFC 4180 makes `""` a one-field record, so
+     `fieldStarted` matters here: after consuming a quoted empty field both
+     `field` and `row` are empty, exactly as they are after a row break, and
+     only the flag tells the two apart. Nothing to flush when the text ended
+     exactly on a row break. */
+  if (fieldStarted || field !== "" || row.length > 0) endRow();
 
   return rows;
 }

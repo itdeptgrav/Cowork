@@ -49,7 +49,7 @@ export function SignatureGraph() {
   return (
     <section
       aria-label={team ? "Team workload flow" : "Workload flow"}
-      className="frost-panel relative isolate flex min-h-[300px] flex-col overflow-hidden rounded-card"
+      className="frost-panel relative isolate flex h-full min-h-[300px] flex-col overflow-hidden rounded-card"
     >
       {/* THE PLATE, as the card's own ground — edge to edge, behind everything,
           exactly as the reference's hero carries its gradient. Nothing sits in

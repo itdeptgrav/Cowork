@@ -19,7 +19,7 @@
  */
 
 import { cellRef } from "./coordinates";
-import { applyCellWrites, type CellWrite, type Worksheet } from "./model";
+import { applyCellWrites, type CellWrite, type Workbook, type Worksheet } from "./model";
 
 /**
  * One cell's transition inside a command. Value and style are recorded
@@ -77,7 +77,23 @@ export interface StructuralCommand {
   after: Worksheet;
 }
 
-export type Command = CellCommand | StructuralCommand;
+/**
+ * A structural mutation whose formula rewrites reach BEYOND the edited sheet —
+ * inserting or deleting rows/columns also rewrites references to that sheet
+ * from every other sheet. Only the worksheets that actually changed are
+ * recorded (the workbook ops return untouched sheets as the same object, so
+ * they are identity-diffed away): an untouched sheet costs nothing, keeping
+ * requirement 11's spirit even though each changed sheet is a snapshot.
+ */
+export interface WorkbookStructuralCommand {
+  kind: "workbookStructural";
+  label: string;
+  /** The sheet the reshape happened on — where the selection lives. */
+  sheetId: string;
+  sheets: { before: Worksheet; after: Worksheet }[];
+}
+
+export type Command = CellCommand | StructuralCommand | WorkbookStructuralCommand;
 
 /* Applying and reverting go through ONE batched write (`applyCellWrites`) rather
    than a per-cell `setCellValue`. The per-cell form copies the whole sparse map
@@ -169,6 +185,23 @@ export function structuralCommand(
   return { kind: "structural", label, sheetId: before.id, before, after };
 }
 
+/** A workbook-structural command from the workbook before and after the
+    reshape, recording only the worksheets that changed (identity-diffed —
+    the workbook-level ops return untouched sheets as the same object). */
+export function workbookStructuralCommand(
+  label: string,
+  sheetId: string,
+  before: Workbook,
+  after: Workbook,
+): WorkbookStructuralCommand {
+  const sheets: { before: Worksheet; after: Worksheet }[] = [];
+  for (const b of before.worksheets) {
+    const a = after.worksheets.find((s) => s.id === b.id);
+    if (a && a !== b) sheets.push({ before: b, after: a });
+  }
+  return { kind: "workbookStructural", label, sheetId, sheets };
+}
+
 /**
  * The two-stack undo history. `past` holds applied commands newest-last; `undo`
  * moves the newest to `future`; `redo` moves it back. Recording a fresh command
@@ -178,10 +211,12 @@ export class History {
   private past: Command[] = [];
   private future: Command[] = [];
 
-  /** Record a just-applied command. An empty cell command is ignored, and
-      recording clears any redo branch. */
+  /** Record a just-applied command. A command that changed nothing — no cell
+      changes, no reshaped sheets — is ignored, and recording clears any redo
+      branch. */
   record(command: Command): void {
     if (command.kind === "cells" && command.changes.length === 0) return;
+    if (command.kind === "workbookStructural" && command.sheets.length === 0) return;
     this.past.push(command);
     this.future.length = 0;
   }

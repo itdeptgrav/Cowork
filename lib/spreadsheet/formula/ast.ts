@@ -15,6 +15,7 @@ export type BinaryOp =
   | "*"
   | "/"
   | "^"
+  | "&"
   | "="
   | "<>"
   | "<"
@@ -46,6 +47,9 @@ export type Node =
   | { type: "number"; value: number }
   | { type: "string"; value: string }
   | { type: "boolean"; value: boolean }
+  /** An omitted argument slot — the middle of `SUM(1,,2)` or the tail of
+      `IF(x,y,)`. Evaluates to a blank, exactly like an empty cell. */
+  | { type: "blank" }
   /** A literal error, e.g. the `#REF!` a deleted reference leaves behind. */
   | { type: "error"; code: ErrorCode }
   | RefNode

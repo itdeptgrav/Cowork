@@ -17,13 +17,22 @@
  * the engine parses and evaluates, so the broken formula survives as a formula
  * that reports the error rather than silently mis-evaluating.
  *
- * Like `references.ts` this works at the token level, so only references change
- * and everything else is re-emitted verbatim.
+ * Which references move is decided by the optional CONTEXT naming the sheet the
+ * edit is on. A sheet-qualified reference whose name matches the edited sheet
+ * (case-insensitively) is rewritten exactly like a bare one — `=Sheet1!A5`
+ * written ON Sheet1 names the same cell as `=A5`, and a formula on ANOTHER
+ * sheet saying `=Sheet1!A5` follows Sheet1's rows too. Bare references are
+ * rewritten only when the formula lives on the edited sheet (`onEditedSheet`),
+ * because a bare ref points at the formula's OWN sheet. Without a context the
+ * legacy behaviour holds: bare refs move, qualified refs do not.
+ *
+ * Like `references.ts` this works at the token level over source slices, so
+ * only the rewritten references change and everything else — spacing included —
+ * is re-emitted exactly as the author wrote it.
  */
 
 import { columnIndex, columnLabel } from "../coordinates";
-import { renderSheetPrefix } from "./sheets";
-import { tokenize, type Token } from "./tokenizer";
+import { tokenizeSpanned, type SpannedToken } from "./tokenizer";
 
 export type StructuralAxis = "row" | "col";
 export type StructuralMode = "insert" | "delete";
@@ -34,6 +43,17 @@ export interface StructuralOp {
   at: number;
   count: number;
   mode: StructuralMode;
+}
+
+/** Which sheet a structural rewrite is FOR — see the module header. */
+export interface RewriteContext {
+  /** The name of the sheet the structural edit is happening on. A qualified
+      reference naming it (case-insensitively) is rewritten like a bare one. */
+  editedSheet: string;
+  /** Whether the formula being rewritten lives ON the edited sheet (default
+      true). When false — the formula is on another sheet — its bare references
+      point at that other sheet and are left untouched. */
+  onEditedSheet?: boolean;
 }
 
 const REF_SHAPE = /^(\$?)([A-Za-z]+)(\$?)(\d+)$/;
@@ -166,12 +186,6 @@ function rangeInBand(a: ParsedRef, b: ParsedRef, op: RegionShiftOp): boolean {
   return lo >= op.rect.top && hi <= op.rect.bottom;
 }
 
-/** Re-emit a non-reference token exactly (re-quoting strings). */
-function renderToken(token: Token): string {
-  if (token.type === "string") return `"${token.value.replace(/"/g, '""')}"`;
-  return token.value;
-}
-
 /**
  * How one transform answers for a reference. `null` means the target is gone
  * (`#REF!`); `undefined` means "leave this reference exactly as written".
@@ -185,84 +199,127 @@ interface RefHandlers {
  * Walk a formula's tokens and rewrite only its references.
  *
  * Shared by both transforms below so they cannot drift on the things that are
- * easy to get subtly different: cross-sheet qualifiers pass through untouched,
- * a range is consumed as one unit rather than two endpoints, an unparseable
- * reference is emitted verbatim, and every other token is re-emitted exactly.
+ * easy to get subtly different: which sheet-qualified references move (see the
+ * module header), a range consumed as one unit rather than two endpoints, an
+ * unparseable reference emitted verbatim, and everything untouched re-emitted
+ * from its source slice — spacing and spellings exactly as written.
  */
-function transformRefs(raw: string, h: RefHandlers): string {
+function transformRefs(raw: string, h: RefHandlers, ctx?: RewriteContext): string {
   if (!raw.startsWith("=")) return raw;
-  let tokens: Token[];
+  const body = raw.slice(1);
+  let tokens: SpannedToken[];
   try {
-    tokens = tokenize(raw.slice(1));
+    tokens = tokenizeSpanned(body);
   } catch {
     return raw;
   }
+  const rewriteBare = !ctx || ctx.onEditedSheet !== false;
+  const editedSheet = ctx?.editedSheet.toLowerCase();
+
   let out = "=";
+  let pos = 0; // everything in body[pos..] not yet emitted flows out verbatim
+
+  /** Replace body[from..to) with `text`, emitting the verbatim gap before it. */
+  const replace = (from: number, to: number, text: string): void => {
+    out += body.slice(pos, from) + text;
+    pos = to;
+  };
+
   let i = 0;
   while (i < tokens.length) {
     const t = tokens[i];
+
     if (t.type === "sheet") {
-      /* A cross-sheet reference belongs to another sheet — an edit on THIS sheet
-         leaves it untouched. Emit the qualifier and the ref (or range) that
-         follows it verbatim. */
-      out += renderSheetPrefix(t.value);
+      /* A qualified reference. It follows this edit only when it names the
+         edited sheet; any other sheet's cells did not move, so it is left
+         exactly as written. */
       i += 1;
-      if (tokens[i]?.type === "ref") {
-        out += tokens[i].value;
-        i += 1;
-        if (tokens[i]?.type === "colon" && tokens[i + 1]?.type === "ref") {
-          out += `:${tokens[i + 1].value}`;
-          i += 2;
+      if (tokens[i]?.type !== "ref") continue; // stray qualifier — verbatim
+      const startTok = tokens[i];
+      const isRange = tokens[i + 1]?.type === "colon" && tokens[i + 2]?.type === "ref";
+      const endTok = isRange ? tokens[i + 2] : startTok;
+      const matches = editedSheet !== undefined && t.value.toLowerCase() === editedSheet;
+      if (matches) {
+        const a = parseRef(startTok.value);
+        if (isRange) {
+          const b = parseRef(endTok.value);
+          const mapped = a && b ? h.range(a, b) : undefined;
+          /* A dead target loses its qualifier too — `Sheet1!#REF!` would not
+             parse, and there is nothing left on that sheet to point at. */
+          if (mapped === null) replace(t.start, endTok.end, "#REF!");
+          else if (mapped !== undefined) {
+            replace(startTok.start, endTok.end, `${refText(mapped[0])}:${refText(mapped[1])}`);
+          }
+        } else {
+          const mapped = a ? h.single(a) : undefined;
+          if (mapped === null) replace(t.start, endTok.end, "#REF!");
+          else if (mapped !== undefined) replace(startTok.start, endTok.end, refText(mapped));
         }
       }
+      i += isRange ? 3 : 1;
       continue;
     }
-    if (t.type === "ref") {
+
+    if (t.type === "ref" && rewriteBare) {
       const isRange = tokens[i + 1]?.type === "colon" && tokens[i + 2]?.type === "ref";
-      const a = parseRef(t.value);
       if (isRange) {
-        const b = parseRef(tokens[i + 2].value);
+        const endTok = tokens[i + 2];
+        const a = parseRef(t.value);
+        const b = parseRef(endTok.value);
         const mapped = a && b ? h.range(a, b) : undefined;
-        if (mapped === undefined) out += `${t.value}:${tokens[i + 2].value}`;
-        else if (mapped === null) out += "#REF!";
-        else out += `${refText(mapped[0])}:${refText(mapped[1])}`;
+        if (mapped === null) replace(t.start, endTok.end, "#REF!");
+        else if (mapped !== undefined) {
+          replace(t.start, endTok.end, `${refText(mapped[0])}:${refText(mapped[1])}`);
+        }
         i += 3;
         continue;
       }
+      const a = parseRef(t.value);
       const mapped = a ? h.single(a) : undefined;
-      if (mapped === undefined) out += t.value;
-      else if (mapped === null) out += "#REF!";
-      else out += refText(mapped);
+      if (mapped === null) replace(t.start, t.end, "#REF!");
+      else if (mapped !== undefined) replace(t.start, t.end, refText(mapped));
       i += 1;
       continue;
     }
-    out += renderToken(t);
+
     i += 1;
   }
+  out += body.slice(pos);
   return out;
 }
 
 /**
  * Rewrite a raw formula's references for a row/column insertion or deletion.
- * A non-formula or an untokenizable string is returned untouched.
+ * `ctx` names the sheet the edit is on (and whether this formula lives there),
+ * deciding which qualified/bare references move — see the module header. A
+ * non-formula or an untokenizable string is returned untouched.
  */
-export function transformStructural(raw: string, op: StructuralOp): string {
-  return transformRefs(raw, {
-    single: (r) => mapSingle(r, op),
-    range: (a, b) => mapRange(a, b, op),
-  });
+export function transformStructural(raw: string, op: StructuralOp, ctx?: RewriteContext): string {
+  return transformRefs(
+    raw,
+    {
+      single: (r) => mapSingle(r, op),
+      range: (a, b) => mapRange(a, b, op),
+    },
+    ctx,
+  );
 }
 
 /**
  * Rewrite a raw formula's references for a cell-block shift.
  *
  * Only references inside the shifted band move; everything else — including a
- * range that straddles the band's edge — is left exactly as written.
+ * range that straddles the band's edge — is left exactly as written. `ctx`
+ * plays the same role as in `transformStructural`.
  */
-export function transformRegionShift(raw: string, op: RegionShiftOp): string {
+export function transformRegionShift(raw: string, op: RegionShiftOp, ctx?: RewriteContext): string {
   const line = lineOp(op);
-  return transformRefs(raw, {
-    single: (r) => (inBand(r, op) ? mapSingle(r, line) : undefined),
-    range: (a, b) => (rangeInBand(a, b, op) ? mapRange(a, b, line) : undefined),
-  });
+  return transformRefs(
+    raw,
+    {
+      single: (r) => (inBand(r, op) ? mapSingle(r, line) : undefined),
+      range: (a, b) => (rangeInBand(a, b, op) ? mapRange(a, b, line) : undefined),
+    },
+    ctx,
+  );
 }

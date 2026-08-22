@@ -21,47 +21,46 @@ const IF: Fn = (args, ctx) => {
   return args.length === 3 ? ctx.eval(args[2]) : false;
 };
 
-function booleanReduce(
-  args: Node[],
-  ctx: FnContext,
-  combine: (acc: boolean, next: boolean) => boolean,
-  seed: boolean,
-): ScalarValue {
-  let acc = seed;
-  let sawAny = false;
+/**
+ * The booleans AND/OR/XOR actually see. A RANGE contributes its boolean and
+ * numeric cells; blanks are skipped, and text cells that do not read as
+ * TRUE/FALSE are IGNORED rather than erroring — the Sheets rule for logical
+ * aggregation over a range. A DIRECT argument is coerced strictly, so a text
+ * literal that is not TRUE/FALSE is still #VALUE!. The first error propagates.
+ */
+function booleanArgs(args: Node[], ctx: FnContext): boolean[] | ScalarValue {
+  const out: boolean[] = [];
   for (const arg of args) {
-    const vals = arg.type === "range" ? ctx.collect(arg) : [ctx.eval(arg)];
+    const fromRange = arg.type === "range";
+    const vals = fromRange ? ctx.collect(arg) : [ctx.eval(arg)];
     for (const v of vals) {
       if (isError(v)) return v;
       if (isBlank(v)) continue;
       const b = toBoolean(v);
-      if (isError(b)) return b;
-      sawAny = true;
-      acc = combine(acc, b);
+      if (isError(b)) {
+        if (fromRange && typeof v === "string") continue; // text in a range is skipped
+        return b;
+      }
+      out.push(b);
     }
   }
-  return sawAny ? acc : VALUE;
+  return out.length === 0 ? VALUE : out;
 }
 
-const AND: Fn = (args, ctx) => booleanReduce(args, ctx, (a, b) => a && b, true);
-const OR: Fn = (args, ctx) => booleanReduce(args, ctx, (a, b) => a || b, false);
+const AND: Fn = (args, ctx) => {
+  const bools = booleanArgs(args, ctx);
+  return Array.isArray(bools) ? bools.every(Boolean) : bools;
+};
+const OR: Fn = (args, ctx) => {
+  const bools = booleanArgs(args, ctx);
+  return Array.isArray(bools) ? bools.some(Boolean) : bools;
+};
 
 /** True when an ODD number of arguments are true. */
 const XOR: Fn = (args, ctx) => {
-  let trues = 0;
-  let sawAny = false;
-  for (const arg of args) {
-    const vals = arg.type === "range" ? ctx.collect(arg) : [ctx.eval(arg)];
-    for (const v of vals) {
-      if (isError(v)) return v;
-      if (isBlank(v)) continue;
-      const b = toBoolean(v);
-      if (isError(b)) return b;
-      sawAny = true;
-      if (b) trues += 1;
-    }
-  }
-  return sawAny ? trues % 2 === 1 : VALUE;
+  const bools = booleanArgs(args, ctx);
+  if (!Array.isArray(bools)) return bools;
+  return bools.filter(Boolean).length % 2 === 1;
 };
 
 const NOT: Fn = (args, ctx) => {
@@ -71,11 +70,13 @@ const NOT: Fn = (args, ctx) => {
   return isError(b) ? b : !b;
 };
 
+/** The fallback is optional: IFERROR(x) shows empty text when x errors. */
 const IFERROR: Fn = (args, ctx) => {
-  const bad = argCount(args, 2);
+  const bad = argCount(args, 1, 2);
   if (bad) return bad;
   const v = ctx.eval(args[0]);
-  return isError(v) ? ctx.eval(args[1]) : v;
+  if (!isError(v)) return v;
+  return args.length === 2 ? ctx.eval(args[1]) : "";
 };
 
 /** Pairs of (condition, value); the first true condition's value, else #N/A. */
@@ -107,6 +108,12 @@ const SWITCH: Fn = (args, ctx) => {
   return i < args.length ? ctx.eval(args[i]) : NA;
 };
 
+/* TRUE() and FALSE() are real zero-argument functions in Sheets and Excel
+   (exported XLSX files spell the literals this way), so the parser routes
+   `TRUE()` here while a bare `TRUE` stays a literal. */
+const TRUE_FN: Fn = (args) => argCount(args, 0) ?? true;
+const FALSE_FN: Fn = (args) => argCount(args, 0) ?? false;
+
 export const LOGICAL_FUNCTIONS: Record<string, Fn> = {
   IF,
   AND,
@@ -116,4 +123,6 @@ export const LOGICAL_FUNCTIONS: Record<string, Fn> = {
   IFERROR,
   IFS,
   SWITCH,
+  TRUE: TRUE_FN,
+  FALSE: FALSE_FN,
 };

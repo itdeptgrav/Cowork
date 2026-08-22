@@ -2,6 +2,11 @@ import type { TaskView } from "@/lib/repositories";
 import type { ProjectView } from "@/lib/repositories";
 import type { Employee, Notification } from "@/lib/domain";
 import { nextAction } from "@/components/features/tasks/statusMeta";
+import {
+  notificationHref,
+  notificationTarget,
+} from "@/lib/rules/notifications/target";
+import type { IconName } from "@/components/ui/Icons";
 
 /**
  * What the dashboard knows, separated from how it is drawn.
@@ -30,8 +35,25 @@ export interface Signal {
    * inside the brief at the top of the page.
    */
   label: string;
-  /** How many. Rendered as a figure, so it must be a real count. */
-  count: number;
+  /**
+   * How many. Rendered as a figure, so it must be a real count.
+   *
+   * **Absent where the row IS one thing.** A message row is a single message
+   * — stamping "1" on three of them in a column says nothing three times and
+   * reads as a quantity the reader has to check. Those rows carry an `icon`
+   * instead.
+   */
+  count?: number;
+  /** Shown in place of the count. Only meaningful where `count` is absent. */
+  icon?: IconName;
+  /**
+   * The label to use when several rows of this kind are summarised together.
+   *
+   * The brief at the top of the page groups the urgent rows by label and sums
+   * them, so a kind that can appear more than once needs its plural or the
+   * sentence reads "2 task waiting on your approval".
+   */
+  pluralLabel?: string;
   /** The verb that resolves it. */
   action: string;
   href: string;
@@ -40,6 +62,41 @@ export interface Signal {
   title?: string;
   /** Why it matters: how long, what it blocks, who is waiting. */
   detail?: string;
+}
+
+/**
+ * The order the card reads its rows in.
+ *
+ * Until now this was whatever order the pushes below happened to run in — which
+ * was ROUGHLY right and guaranteed nothing: a signal added in the wrong place
+ * would have sorted itself wherever its `out.push` landed, and the card would
+ * have shown it there without complaint. With the list capped, ordering decides
+ * what is SEEN, so it is written down rather than left to the sequence of
+ * statements in a function.
+ *
+ * Three bands:
+ *
+ *   0. **Urgent.** Work that is stopped, late, or blocked on a decision from
+ *      you. Somebody is waiting on the other side of every one of these.
+ *   1. **Unread notifications.** Ranked above the softer work rows on purpose:
+ *      notifications are how everything else on this list first reached you,
+ *      so a card that pushes them below its own long tail can bury the news of
+ *      the next urgent thing behind the last un-urgent one.
+ *   2. Everything else, by urgency.
+ *
+ * The sort is stable, so rows within a band keep the order they were built in
+ * — which is the order the pushes express and which is deliberate: conflicts
+ * before approvals before overdue.
+ */
+/** How many recent messages the card shows in place of an unread count. */
+const RECENT_MESSAGES = 3;
+
+const BAND: Record<Urgency, number> = { critical: 0, attention: 2, steady: 3 };
+
+export function orderSignals(signals: Signal[]): Signal[] {
+  const band = (s: Signal) =>
+    s.urgency === "critical" ? 0 : s.id.startsWith("unread") ? 1 : BAND[s.urgency];
+  return [...signals].sort((a, b) => band(a) - band(b));
 }
 
 /* No module-level viewer. This was `const viewerId = "e-01"` — the seeded id —
@@ -118,6 +175,7 @@ export function attentionSignals({
   reviewQueue,
   projects,
   notifications,
+  approvals = [],
 }: {
   viewerId: string;
   tasks: TaskView[];
@@ -125,6 +183,21 @@ export function attentionSignals({
   reviewQueue: TaskView[];
   projects: ProjectView[];
   notifications: Notification[];
+  /**
+   * Tasks whose next decision is addressed to this reader BY NAME.
+   *
+   * Supplied separately because it cannot be derived from `tasks`. That list
+   * is `scope: "mine"` — work assigned to or pending for the viewer — and a
+   * task waiting on your approval is by definition somebody ELSE’s: on the
+   * cross-department path it is not assigned to you, not created by you, and
+   * parked against the person you manage. It was therefore in no list this
+   * card read, and the card could not have known it existed.
+   *
+   * The caller passes what `listActionable` returns, which is the repository
+   * deciding membership — the same source the Actionable tab renders, so the
+   * two cannot drift.
+   */
+  approvals?: TaskView[];
 }): Signal[] {
   const open = tasks.filter((v) => isOpen(v));
   const overdue = open.filter((v) => v.isOverdue);
@@ -147,6 +220,11 @@ export function attentionSignals({
     (p) => p.progress.health !== "on_track",
   );
   const unread = notifications.filter((n) => !n.readAt);
+  /* Deduped against `decisions`, which can name the same task where the
+     viewer is both its assignee and its approver — two rows for one
+     obligation reads as two obligations. */
+  const decidedIds = new Set(decisions.map((v) => v.task.id));
+  const pendingApprovals = approvals.filter((v) => !decidedIds.has(v.task.id));
 
   const out: Signal[] = [];
 
@@ -159,6 +237,33 @@ export function attentionSignals({
       detail: `Two tasks hold P${conflicts[0].rank}`,
       action: "Resolve",
       href: "/tasks?view=tasks",
+      urgency: "critical",
+    });
+
+  /* Before overdue, and critical, because it is the only row here where
+     somebody ELSE is stopped. Your own overdue task is late; a task waiting
+     on your hours estimate has not reached the person it is for at all — they
+     cannot see it, start it or ask about it, and nothing about their day says
+     it is coming. */
+  /* **One row per task, never a group.** These were rolled into a single row
+     carrying a count and the FIRST task’s title, which made the others
+     unnameable: two decisions on two different people’s work read as "2
+     tasks waiting on your approval: embroidery", and the second task — a
+     different task, for a different person, from a different sender — was
+     invisible behind the number. A count is the right shape for "4 tasks
+     overdue", which is one condition holding of four things; it is the wrong
+     shape for a decision, because each one is a separate act with a separate
+     person waiting on the other side of it. */
+  for (const v of pendingApprovals)
+    out.push({
+      id: `approval:${v.task.id}`,
+      label: "task waiting on your approval",
+      pluralLabel: "tasks waiting on your approval",
+      count: 1,
+      title: v.task.title,
+      detail: waitingOnYou(v),
+      action: "Open",
+      href: `/tasks/${v.task.id}`,
       urgency: "critical",
     });
 
@@ -249,18 +354,61 @@ export function attentionSignals({
       urgency: "attention",
     });
 
-  if (unread.length)
+  /* **The three most recent, not a tally of fifty.**
+
+     "50 unread notifications" is a number you can do nothing with: it names a
+     backlog rather than anything in it, and the one thing a reader wants from
+     this row — what the newest one SAYS — was the one thing it withheld. The
+     total has not been lost; the bell in the shell still carries it, which is
+     where a count belongs.
+
+     `listNotifications` is ordered `createdAt desc`, so the head of this list
+     is genuinely the most recent — no sort here, and none should be added: a
+     second opinion about recency is how two surfaces come to disagree about
+     which message is newest. */
+  for (const n of unread.slice(0, RECENT_MESSAGES))
     out.push({
-      id: "unread",
-      label:
-        unread.length === 1 ? "unread notification" : "unread notifications",
-      count: unread.length,
+      id: `unread:${n.id}`,
+      label: n.title,
+      detail: n.body,
+      icon: "chat",
       action: "Open",
-      href: "/notifications",
+      /* Where the message is ABOUT, falling back to the notification list.
+         `notificationHref` answers null where it does not know, rather than
+         guessing a route that would 404 — and a 404 reads as "the record is
+         gone" rather than "we never knew where it was". */
+      href:
+        notificationHref(notificationTarget(n.type, n.data)) ?? "/notifications",
       urgency: "steady",
     });
 
-  return out;
+  return orderSignals(out);
+}
+
+/**
+ * Who is stopped by a decision sitting with you.
+ *
+ * Named rather than counted: "Krishna Behera cannot start until you do" is a
+ * consequence somebody acts on, where "1 approval" is a statistic. On a
+ * budget-gated task the person is in `pendingAssignees` and not `assignees` —
+ * that is the whole state: they have not been given the work yet.
+ *
+ * **One task, because the row is now one task.** These were briefly rolled into
+ * a single counted row, and the sentence then described the first decision
+ * while the figure beside it counted several — so a task that was present read
+ * as missing, because nothing on screen named it. Both ends are named here:
+ * who is held up, and who sent it, because a decision row is about work moving
+ * between two people and naming one leaves the reader guessing which.
+ */
+function waitingOnYou(v: TaskView): string {
+  const who = v.pendingAssignees[0] ?? v.assignees[0] ?? null;
+  const from = v.owner?.displayName ?? null;
+  if (!who) return from ? `From ${from}` : "Nobody can start it until you do";
+  /* Both ends of the handover, because a decision row is about a task moving
+     between two people and naming only one leaves the reader guessing which. */
+  return from
+    ? `${who.displayName} cannot start until you do · from ${from}`
+    : `${who.displayName} cannot start until you do`;
 }
 
 /* ── What to work on ─────────────────────────────────────────────────────── */
@@ -624,5 +772,5 @@ export function interventionSignals({
       urgency: "steady",
     });
 
-  return out;
+  return orderSignals(out);
 }

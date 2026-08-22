@@ -7,7 +7,10 @@ import { useListReorder } from "@/lib/hooks/useListReorder";
 import { PriorityConfirmDialog } from "./PriorityConfirmDialog";
 import type { QueueSnapshotRow } from "@/lib/rules/tasks/priorityPreview";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
-import type { Feasibility, SimulatedEntry } from "@/lib/rules/tasks/deadlineFeasibility";
+import type {
+  Feasibility,
+  SimulatedEntry,
+} from "@/lib/rules/tasks/deadlineFeasibility";
 
 /**
  * Will this land in time if it goes here?
@@ -65,7 +68,7 @@ export function FeasibilityPreview({
   committedDeadline,
   selectable = false,
   subjectTitle,
-  onBudgetChange,
+  budgetControl,
 }: {
   /** Whose week this is measured against — the assignee, never the viewer. */
   employeeId: string | null;
@@ -88,12 +91,23 @@ export function FeasibilityPreview({
    */
   subjectTitle?: string;
   /**
-   * Lets the panel drive the budget too.
+   * The budget selector, rendered by whoever owns the number.
    *
-   * The parent keeps ownership — this reports a choice rather than holding one,
-   * so the dropdown above and the chips here can never show different numbers.
+   * **A slot rather than a callback, because there is now exactly ONE budget
+   * control.** This panel used to draw its own row of hour chips while the form
+   * above it drew a dropdown — two controls for one value, kept in step by
+   * wiring both to the same `hours`. They could not disagree, but a reader had
+   * no way to know that: two controls side by side is a promise that they do
+   * different things. The set they offered was not even the same (`1 2 4 8 12
+   * 16` against `1 2 3 4 6 8 12 16 24 40`), so the dropdown could show a number
+   * no chip could reach.
+   *
+   * Passing the control in means the panel cannot grow a second one. It renders
+   * where the decision belongs — beside the dates the choice moves — and the
+   * priority dialog, which changes an order rather than an estimate, simply
+   * passes nothing.
    */
-  onBudgetChange?: (seconds: number) => void;
+  budgetControl?: React.ReactNode;
   taskId?: string;
   /**
    * Where the reader is CONSIDERING putting it, 1-based.
@@ -136,9 +150,10 @@ export function FeasibilityPreview({
      beside a dropdown reading twelve — so the answer carries the question it
      answers, and anything else reads as "still checking". */
   const key = `${employeeId}|${position}|${estimatedWorkSeconds}|${committedDeadline}|${order?.join(",") ?? ""}`;
-  const [answer, setAnswer] = useState<{ key: string; result: Feasibility } | null>(
-    null,
-  );
+  const [answer, setAnswer] = useState<{
+    key: string;
+    result: Feasibility;
+  } | null>(null);
   const [failedKey, setFailedKey] = useState<string | null>(null);
   const [showTrace, setShowTrace] = useState(false);
 
@@ -266,11 +281,19 @@ export function FeasibilityPreview({
 
   const failed = failedKey === key;
 
+  /* **Both waiting states still carry the budget control.** It is the one thing
+     on this card that is not a preview: dropping it while the engine is thinking
+     would take the form's only input away for the length of a round trip, and
+     dropping it on failure would strand a reader who has just been told the
+     preview is the part that is broken. */
   if (failed) {
     return (
-      <p className="mt-3 text-[12px] text-ink-faint">
-        The deadline preview is unavailable. You can still set the priority.
-      </p>
+      <div className="mt-3 rounded-inset border border-[var(--hairline)] bg-[var(--surface-sunken)] px-3.5 py-3">
+        <p className="text-[12px] text-ink-faint">
+          The deadline preview is unavailable. You can still set the priority.
+        </p>
+        {budgetControl && <div className="mt-3">{budgetControl}</div>}
+      </div>
     );
   }
 
@@ -279,9 +302,10 @@ export function FeasibilityPreview({
        order-dependent figures as recomputing — see `stale`. Emptying the card on
        every drop is what made this feel slow. */
     return (
-      <p className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3.5 py-3 text-[12px] text-ink-faint">
-        Checking deadline impact…
-      </p>
+      <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3.5 py-3">
+        <p className="text-[12px] text-ink-faint">Checking deadline impact…</p>
+        {budgetControl && <div className="mt-3">{budgetControl}</div>}
+      </div>
     );
   }
 
@@ -325,10 +349,49 @@ export function FeasibilityPreview({
     ...result.simulatedQueue.map((e) => e.estimatedDuration),
   );
 
+  /* Whether there is a right-hand half at all. With no queue to place the task
+     into, a two-column grid would be one column of content beside a hole. */
+  const hasQueue = result.simulatedQueue.length > 0;
+
+  /**
+   * The left half's facts, in the order somebody reads them: when it starts,
+   * when it lands, and what it has to beat.
+   *
+   * Built as data rather than three near-identical blocks so the row markup —
+   * label left, figure right, hairline between — is written once and cannot
+   * drift between the three.
+   */
+  const facts: { label: string; value: string; lead?: boolean }[] = [
+    ...(result.estimatedStartTime
+      ? [
+          {
+            label: "Estimated start",
+            value: formatStamp(result.estimatedStartTime),
+          },
+        ]
+      : []),
+    ...(result.estimatedCompletionTime
+      ? [
+          {
+            label: "Estimated completion",
+            value: formatStamp(result.estimatedCompletionTime),
+            /* The one figure the budget actually moves, so it carries full ink
+               while the other two stay muted context. */
+            lead: true,
+          },
+        ]
+      : []),
+    ...(result.deadline
+      ? [{ label: "Required deadline", value: formatStamp(result.deadline) }]
+      : []),
+  ];
+
   return (
     <div
       data-help="feasibility-preview"
-      className="mt-3 rounded-inset border border-[var(--hairline)] bg-[var(--surface-sunken)] px-3.5 py-3"
+      /* `@container` so the split below measures THIS panel rather than the
+         window — see the grid's own note. */
+      className="@container mt-3 rounded-inset border border-[var(--hairline)] bg-[var(--surface-sunken)] px-3.5 py-3"
     >
       <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
         Deadline feasibility
@@ -338,153 +401,200 @@ export function FeasibilityPreview({
           different department, and "based on the workload" without a name
           invites them to assume it is their own. */}
       <p className="mt-0.5 text-[12px] text-ink-faint">
-        Based on {employeeName ? `${employeeName}\u2019s` : "the assignee\u2019s"}{" "}
+        Based on{" "}
+        {employeeName ? `${employeeName}\u2019s` : "the assignee\u2019s"}{" "}
         workload · queue position{" "}
         <span data-figure>P{result.simulatedPosition}</span>
       </p>
 
-      <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1.5">
-        {result.estimatedStartTime && (
-          <div>
-            <dt className="text-[11px] text-ink-faint">Estimated start</dt>
-            <dd data-figure className="text-[12px] text-ink-muted">
-              {formatStamp(result.estimatedStartTime)}
-            </dd>
-          </div>
-        )}
-        {result.estimatedCompletionTime && (
-          <div>
-            <dt className="text-[11px] text-ink-faint">Estimated completion</dt>
-            <dd data-figure className="text-[12px] text-ink">
-              {formatStamp(result.estimatedCompletionTime)}
-            </dd>
-          </div>
-        )}
-        {result.deadline && (
-          <div>
-            <dt className="text-[11px] text-ink-faint">Required deadline</dt>
-            <dd data-figure className="text-[12px] text-ink-muted">
-              {formatStamp(result.deadline)}
-            </dd>
-          </div>
-        )}
-      </dl>
-
-      <div className="mt-2 border-t border-[var(--hairline)] pt-2">
-        <Verdict result={result} />
-      </div>
-
       {/*
-        THE ASSIGNEE'S REAL QUEUE, in the order this placement would produce.
-        Straight from `simulatedQueue`, which the engine built from
-        `assigneePriorities[employeeId]` through the same builder production
-        sorts on — no second list is assembled here, and none could be, because
-        the component never sees a raw task.
+        The two halves.
 
-        This is the context the decision actually needs: a buffer figure says
-        whether it fits, and only the queue says what it displaces.
+        LEFT is the commitment: the dates this budget produces, the verdict on
+        them, and the budget control itself. RIGHT is the placement: the
+        assignee's real queue and where this task sits in it.
+
+        That is the actual seam in the decision — set a number and read its
+        consequence on one side, decide what it displaces on the other. Before
+        this the two were stacked in a single ribbon down the middle of a panel
+        twice as wide as it needed, so the question and its context could not be
+        held in one glance.
+
+        **The split is a CONTAINER query, not a viewport one.** This same panel
+        is mounted inside `PriorityDialog` at ~512px, where two columns would be
+        two cramped ones. `@3xl` measures the panel's OWN width, so the dialog
+        stays a single column and the detail page splits — neither has to be told
+        which it is.
       */}
-      {result.simulatedQueue.length > 0 && (
-        <div className="mt-2 border-t border-[var(--hairline)] pt-2">
-          <p className="text-[11px] text-ink-faint">
-            {employeeName ? `${employeeName}\u2019s queue` : "Priority queue"}
-          </p>
+      <div
+        className={`mt-3 grid items-start gap-x-6 gap-y-5 ${
+          hasQueue ? "@3xl:grid-cols-2" : ""
+        }`}
+      >
+        <section>
+          {/* Label left, figure right, hairline between — the house's own
+              separation language, and it stands all three figures on one
+              optical edge so they can be compared by eye rather than hunted
+              for. */}
+          {facts.length > 0 && (
+            <dl className="divide-y divide-[var(--hairline)] border-y border-[var(--hairline)]">
+              {facts.map((f) => (
+                <div
+                  key={f.label}
+                  className="flex items-baseline justify-between gap-4 py-1.5"
+                >
+                  <dt className="text-[11px] text-ink-faint">{f.label}</dt>
+                  <dd
+                    data-figure
+                    className={`text-[12px] ${f.lead ? "text-ink" : "text-ink-muted"}`}
+                  >
+                    {f.value}
+                  </dd>
+                </div>
+              ))}
+            </dl>
+          )}
 
-          <ol
-            /* `relative`, because the insertion line is positioned inside it.
+          <div className="mt-2.5">
+            <Verdict result={result} />
+          </div>
+
+          {/* The budget sits UNDER its own consequence, not above it. The dates
+              and the verdict are what the number is for, and a control placed
+              after them reads as "and this is how you change that". */}
+          {budgetControl && (
+            <div className="mt-4 border-t border-[var(--hairline)] pt-3">
+              {budgetControl}
+            </div>
+          )}
+        </section>
+
+        {/*
+          THE ASSIGNEE'S REAL QUEUE, in the order this placement would produce.
+          Straight from `simulatedQueue`, which the engine built from
+          `assigneePriorities[employeeId]` through the same builder production
+          sorts on — no second list is assembled here, and none could be, because
+          the component never sees a raw task.
+
+          This is the context the decision actually needs: a buffer figure says
+          whether it fits, and only the queue says what it displaces.
+        */}
+        {hasQueue && (
+          <section
+            /* A hairline rule, and only once the columns are actually side by
+             side — stacked, the gap already separates them and a line across
+             the panel would read as a divider between sections. */
+            className="@3xl:border-s @3xl:border-[var(--hairline)] @3xl:ps-6"
+          >
+            <p className="text-[11px] text-ink-faint">
+              {employeeName ? `${employeeName}\u2019s queue` : "Priority queue"}
+            </p>
+
+            <ol
+              /* `relative`, because the insertion line is positioned inside it.
                The line is OUT OF FLOW on purpose: the version this replaces
                pushed the rows apart with a real element, which moved the very
                rows whose measurements decided where it should be drawn — so it
                chased itself and stalled. Nothing moves during a drag now. */
-            className="relative mt-1.5 space-y-1"
-            ref={setListNode}
-            {...dragListProps}
-          >
-            <div
-              aria-hidden
-              /* Written to imperatively by the hook. Do NOT give this a `style`
+              className="relative mt-1.5 space-y-1"
+              ref={setListNode}
+              {...dragListProps}
+            >
+              <div
+                aria-hidden
+                /* Written to imperatively by the hook. Do NOT give this a `style`
                  prop — it would silently fight those writes. */
-              ref={setIndicatorNode}
-              className="drop-line pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 -mt-px rounded-full bg-ink/45"
-            />
-            {rows.map((e, i) => {
-              const isThis = e.taskId === subjectId;
-              const width = longest > 0 ? (e.estimatedDuration / longest) * 100 : 0;
-              const dragging = dragId === e.taskId;
-              return (
-                <li key={e.taskId} ref={setRowNode(e.taskId)} className="flip-row">
-                  <div
-                    {...itemProps(e.taskId)}
-                    className={`rounded-[6px] px-1.5 py-1 transition-opacity duration-150 ${
-                      isThis ? "bg-[var(--control)]" : ""
-                    } ${dragging ? "opacity-40" : ""} ${
-                      reorderable ? "cursor-grab active:cursor-grabbing" : ""
-                    }`}
+                ref={setIndicatorNode}
+                className="drop-line pointer-events-none absolute inset-x-0 top-0 z-10 h-0.5 -mt-px rounded-full bg-ink/45"
+              />
+              {rows.map((e, i) => {
+                const isThis = e.taskId === subjectId;
+                const width =
+                  longest > 0 ? (e.estimatedDuration / longest) * 100 : 0;
+                const dragging = dragId === e.taskId;
+                return (
+                  <li
+                    key={e.taskId}
+                    ref={setRowNode(e.taskId)}
+                    className="flip-row"
                   >
-                    <div className="flex flex-wrap items-baseline gap-x-2">
-                      {reorderable && (
-                        <span
-                          aria-hidden
-                          className="w-2 shrink-0 self-center text-[11px] leading-none text-ink-faint/60 select-none"
-                        >
-                          {"\u22ee\u22ee"}
-                        </span>
-                      )}
-                      <span
-                        data-figure
-                        className={`w-7 shrink-0 text-[11px] ${
-                          isThis ? "text-ink" : "text-ink-faint"
-                        }`}
-                      >
-                        P{i + 1}
-                      </span>
-                      <span
-                        className={`min-w-0 flex-1 truncate text-[12px] ${
-                          isThis ? "text-ink" : "text-ink-muted"
-                        }`}
-                      >
-                        {isThis ? "This task" : e.title}
-                      </span>
-                      <span data-figure className="text-[11px] text-ink-faint">
-                        {formatDurationTimer(e.estimatedDuration)}
-                      </span>
-                    </div>
-
                     <div
-                      className={`mt-0.5 flex flex-wrap items-center gap-x-2 ${
-                        reorderable
-                          ? "pl-[calc(2.25rem+1rem)]"
-                          : "pl-[calc(1.75rem+0.5rem)]"
+                      {...itemProps(e.taskId)}
+                      className={`rounded-[6px] px-1.5 py-1 transition-opacity duration-150 ${
+                        isThis ? "bg-[var(--control)]" : ""
+                      } ${dragging ? "opacity-40" : ""} ${
+                        reorderable ? "cursor-grab active:cursor-grabbing" : ""
                       }`}
                     >
-                      {/* Effort as a bar, so the queue reads as a shape rather
+                      <div className="flex flex-wrap items-baseline gap-x-2">
+                        {reorderable && (
+                          <span
+                            aria-hidden
+                            className="w-2 shrink-0 self-center text-[11px] leading-none text-ink-faint/60 select-none"
+                          >
+                            {"\u22ee\u22ee"}
+                          </span>
+                        )}
+                        <span
+                          data-figure
+                          className={`w-7 shrink-0 text-[11px] ${
+                            isThis ? "text-ink" : "text-ink-faint"
+                          }`}
+                        >
+                          P{i + 1}
+                        </span>
+                        <span
+                          className={`min-w-0 flex-1 truncate text-[12px] ${
+                            isThis ? "text-ink" : "text-ink-muted"
+                          }`}
+                        >
+                          {isThis ? "This task" : e.title}
+                        </span>
+                        <span
+                          data-figure
+                          className="text-[11px] text-ink-faint"
+                        >
+                          {formatDurationTimer(e.estimatedDuration)}
+                        </span>
+                      </div>
+
+                      <div
+                        className={`mt-0.5 flex flex-wrap items-center gap-x-2 ${
+                          reorderable
+                            ? "pl-[calc(2.25rem+1rem)]"
+                            : "pl-[calc(1.75rem+0.5rem)]"
+                        }`}
+                      >
+                        {/* Effort as a bar, so the queue reads as a shape rather
                           than a column of numbers. Scaled rather than resized:
                           animating `width` re-lays out the whole list for the
                           length of the transition, and a transform composites. */}
-                      <span
-                        aria-hidden
-                        className="h-1 w-[45%] max-w-[45%] overflow-hidden rounded-full"
-                      >
                         <span
-                          className={`block h-full w-full origin-left rounded-full transition-transform duration-200 ${
-                            isThis ? "bg-ink/70" : "bg-ink/20"
-                          }`}
-                          style={{ transform: `scaleX(${Math.max(0.04, width / 100)})` }}
-                        />
-                      </span>
-                      {/* WHEN it lands — the column the table was missing.
+                          aria-hidden
+                          className="h-1 w-[45%] max-w-[45%] overflow-hidden rounded-full"
+                        >
+                          <span
+                            className={`block h-full w-full origin-left rounded-full transition-transform duration-200 ${
+                              isThis ? "bg-ink/70" : "bg-ink/20"
+                            }`}
+                            style={{
+                              transform: `scaleX(${Math.max(0.04, width / 100)})`,
+                            }}
+                          />
+                        </span>
+                        {/* WHEN it lands — the column the table was missing.
                           Dimmed while the engine is recomputing for an order the
                           reader has just built, because a date is the one figure
                           here that the order changes. */}
-                      {e.completionTime && (
-                        <span
-                          data-figure
-                          className={`text-[11px] text-ink-faint ${stale ? "opacity-45" : ""}`}
-                        >
-                          {formatStamp(e.completionTime)}
-                        </span>
-                      )}
-                      {/* Said either way: "no change" is the reassurance a reader
+                        {e.completionTime && (
+                          <span
+                            data-figure
+                            className={`text-[11px] text-ink-faint ${stale ? "opacity-45" : ""}`}
+                          >
+                            {formatStamp(e.completionTime)}
+                          </span>
+                        )}
+                        {/* Said either way: "no change" is the reassurance a reader
                           weighing a placement is actually looking for.
 
                           Worded "delayed", because the figure is WALL-CLOCK slip
@@ -493,171 +603,155 @@ export function FeasibilityPreview({
                           and resumes next morning. That is the honest answer, but
                           a bare "+21:00:00" beside a four-hour task reads as the
                           budget having tripled. */}
-                      {isThis ? (
-                        <span className="text-[11px] text-ink-faint/70">
-                          Added here
-                        </span>
-                      ) : (
-                        <span
-                          data-figure
-                          className={`text-[11px] ${stale ? "opacity-45" : ""} ${
-                            e.movedLaterSeconds > 0
-                              ? "text-[var(--danger,#c4553d)]"
-                              : "text-ink-faint/70"
-                          }`}
-                        >
-                          {e.movedLaterSeconds > 0
-                            ? `delayed +${formatDurationTimer(e.movedLaterSeconds)}`
-                            : "no change"}
-                        </span>
-                      )}
+                        {isThis ? (
+                          <span className="text-[11px] text-ink-faint/70">
+                            Added here
+                          </span>
+                        ) : (
+                          <span
+                            data-figure
+                            className={`text-[11px] ${stale ? "opacity-45" : ""} ${
+                              e.movedLaterSeconds > 0
+                                ? "text-[var(--danger,#c4553d)]"
+                                : "text-ink-faint/70"
+                            }`}
+                          >
+                            {e.movedLaterSeconds > 0
+                              ? `delayed +${formatDurationTimer(e.movedLaterSeconds)}`
+                              : "no change"}
+                          </span>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                </li>
-              );
-            })}
-          </ol>
+                  </li>
+                );
+              })}
+            </ol>
 
-          {/* Said once, under the list, rather than as a spinner over it. The
+            {/* Said once, under the list, rather than as a spinner over it. The
               order on screen is the reader's own and is never wrong; only the
               dates hanging off it are being redone. */}
-          {stale && (
-            <p aria-live="polite" className="mt-1 text-[11px] text-ink-faint">
-              Recomputing the dates for this order…
-            </p>
-          )}
+            {stale && (
+              <p aria-live="polite" className="mt-1 text-[11px] text-ink-faint">
+                Recomputing the dates for this order…
+              </p>
+            )}
 
-          {selectable && (
-            <div className="mt-2 space-y-1.5">
-              {result.simulatedQueue.length > 1 && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="w-14 shrink-0 text-[11px] text-ink-faint">
-                    Priority
-                  </span>
-                  {result.simulatedQueue.map((_, i) => {
-                    const p = i + 1;
-                    return (
-                      <button
-                        key={p}
-                        type="button"
-                        onClick={() => moveSubjectTo(p)}
-                        data-figure
-                        /* Lit from the ENGINE's answer, not from `position` —
+            {selectable && (
+              <div className="mt-2 space-y-1.5">
+                {result.simulatedQueue.length > 1 && (
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="w-14 shrink-0 text-[11px] text-ink-faint">
+                      Priority
+                    </span>
+                    {result.simulatedQueue.map((_, i) => {
+                      const p = i + 1;
+                      return (
+                        <button
+                          key={p}
+                          type="button"
+                          onClick={() => moveSubjectTo(p)}
+                          data-figure
+                          /* Lit from the ENGINE's answer, not from `position` —
                            which is null until somebody chooses, and would
                            otherwise leave every chip dark on a task that
                            plainly sits somewhere. */
-                        className={`rounded-full px-2 py-0.5 text-[11px] transition-colors ${
-                          result.simulatedPosition === p
-                            ? "bg-ink text-[var(--body-bg)]"
-                            : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)]"
-                        }`}
-                      >
-                        P{p}
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+                          className={`rounded-full px-2 py-0.5 text-[11px] transition-colors ${
+                            result.simulatedPosition === p
+                              ? "bg-ink text-[var(--body-bg)]"
+                              : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)]"
+                          }`}
+                        >
+                          P{p}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
 
-              {/* Budget beside position, because the two trade off against each
-                  other and a planner testing one without the other is guessing
-                  at half the problem. */}
-              {onBudgetChange && (
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="w-14 shrink-0 text-[11px] text-ink-faint">
-                    Budget
-                  </span>
-                  {[1, 2, 4, 8, 12, 16].map((h) => (
-                    <button
-                      key={h}
-                      type="button"
-                      onClick={() => onBudgetChange(h * 3600)}
-                      data-figure
-                      className={`rounded-full px-2 py-0.5 text-[11px] transition-colors ${
-                        estimatedWorkSeconds === h * 3600
-                          ? "bg-ink text-[var(--body-bg)]"
-                          : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)]"
-                      }`}
-                    >
-                      {h}h
-                    </button>
-                  ))}
-                </div>
-              )}
+                {/* **The budget chips that used to sit here are gone.** They were
+                  a second control for a number the form above already had a
+                  dropdown for — one value, two widgets, and two different sets
+                  of offered hours. The single control now lives in the left
+                  column as `budgetControl`, beside the dates it moves. */}
 
-              {/* Nothing above this line has been saved. The panel is a
+                {/* Nothing above this line has been saved. The panel is a
                   "what if" — and a planner who has just rearranged somebody's
                   week needs telling which of the two states they are in. */}
-              {reorderable && (
-                <div className="mt-1 border-t border-[var(--hairline)] pt-2">
-                  {changed ? (
-                    <>
-                      <p className="text-[12px] text-ink-muted">
-                        This order is a preview.{" "}
-                        {employeeName ? `${employeeName}\u2019s` : "The"} real
-                        queue is unchanged until you apply it.
-                      </p>
-                      {applyError && (
-                        <div className="mt-2">
-                          <InlineError message={applyError} />
-                        </div>
-                      )}
-                      {applied ? (
-                        <p className="mt-2 text-[12px] text-ink">
-                          {"\u2713"} Priority applied.
+                {reorderable && (
+                  <div className="mt-1 border-t border-[var(--hairline)] pt-2">
+                    {changed ? (
+                      <>
+                        <p className="text-[12px] text-ink-muted">
+                          This order is a preview.{" "}
+                          {employeeName ? `${employeeName}\u2019s` : "The"} real
+                          queue is unchanged until you apply it.
                         </p>
-                      ) : (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {/* Opens the confirmation. It writes NOTHING — the
+                        {applyError && (
+                          <div className="mt-2">
+                            <InlineError message={applyError} />
+                          </div>
+                        )}
+                        {applied ? (
+                          <p className="mt-2 text-[12px] text-ink">
+                            {"\u2713"} Priority applied.
+                          </p>
+                        ) : (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {/* Opens the confirmation. It writes NOTHING — the
                               reason and the write both live in the dialog, which
                               is where legacy put them too, so nobody reorders
                               somebody else's week without first seeing what it
                               does to their dates. */}
-                          <Button
-                            tone="primary"
-                            size="sm"
-                            data-help="feasibility-apply-order"
-                            disabled={applying}
-                            onClick={() => setConfirming(true)}
-                          >
-                            Apply this priority
-                          </Button>
-                          <Button
-                            size="sm"
-                            disabled={applying}
-                            onClick={() => {
-                              setOrder(null);
-                              setTryPosition(null);
-                              setReason("");
-                            }}
-                          >
-                            Reset
-                          </Button>
-                        </div>
-                      )}
-                    </>
-                  ) : (
-                    <p className="text-[12px] text-ink-faint">
-                      Drag a row to try a different order. Nothing is saved
-                      until you apply it.
-                    </p>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
+                            <Button
+                              tone="primary"
+                              size="sm"
+                              data-help="feasibility-apply-order"
+                              disabled={applying}
+                              onClick={() => setConfirming(true)}
+                            >
+                              Apply this priority
+                            </Button>
+                            <Button
+                              size="sm"
+                              disabled={applying}
+                              onClick={() => {
+                                setOrder(null);
+                                setTryPosition(null);
+                                setReason("");
+                              }}
+                            >
+                              Reset
+                            </Button>
+                          </div>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-[12px] text-ink-faint">
+                        Drag a row to try a different order. Nothing is saved
+                        until you apply it.
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
 
       {/* Named consequences, because a reader deciding between P1 and P3 is
           weighing exactly this. Kept as a sentence rather than only the "+4h"
-          markers above, which are easy to miss while scanning. */}
+          markers above, which are easy to miss while scanning. Full width under
+          both halves: it is a sentence about the placement AND the budget. */}
       {result.affectedTasks.length > 0 && (
         <p className="mt-2 text-[12px] text-ink-muted">
           Placing it at P{result.simulatedPosition} delays{" "}
           {result.affectedTasks
             .slice(0, 3)
-            .map((t) => `${t.title} +${formatDurationTimer(t.movedLaterSeconds)}`)
+            .map(
+              (t) => `${t.title} +${formatDurationTimer(t.movedLaterSeconds)}`,
+            )
             .join(", ")}
           {result.affectedTasks.length > 3 &&
             ` and ${result.affectedTasks.length - 3} more`}

@@ -26,6 +26,7 @@ export function Card({
   className = "",
   headerRight,
   padded = true,
+  bare = false,
 }: {
   title: string;
   /** Where the card's subject lives in full. */
@@ -36,36 +37,65 @@ export function Card({
   /** Extra controls on the title row, left of the link. */
   headerRight?: ReactNode;
   padded?: boolean;
+  /**
+   * Drop the title ROW and let the body own the whole card.
+   *
+   * For the one shape the standard header cannot make: a card whose content is
+   * a single tall object beside a column, where a full-width title bar across
+   * the top steals the height the object wants and leaves a band of empty card
+   * next to it. The card still carries `title` — it is the accessible name of
+   * the section, and dropping that would leave a landmark called nothing — so a
+   * bare card MUST render the heading itself somewhere in its body. `CardTitle`
+   * and `CardLink` are that header taken apart, so a card that rearranges the
+   * pieces does not also redraw them.
+   */
+  bare?: boolean;
 }) {
   return (
     <section
       aria-label={title}
       className={`frost-panel flex flex-col rounded-card ${className}`}
     >
-      <div className="flex items-center gap-3 px-5 pt-4 pb-3">
-        <h2 className="min-w-0 truncate text-[17px] leading-none font-medium tracking-[-0.02em] text-ink">
-          {title}
-        </h2>
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          {headerRight}
-          {href && (
-            <Link
-              href={href}
-              aria-label={hrefLabel ?? `Open ${title}`}
-              title={hrefLabel ?? `Open ${title}`}
-              className="grid h-7 w-7 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink"
-            >
-              <Icon.chevronRight className="h-3.5 w-3.5" />
-            </Link>
-          )}
+      {!bare && (
+        <div className="flex items-center gap-3 px-5 pt-4 pb-3">
+          <CardTitle>{title}</CardTitle>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
+            {headerRight}
+            {href && (
+              <CardLink href={href} label={hrefLabel ?? `Open ${title}`} />
+            )}
+          </div>
         </div>
-      </div>
+      )}
       <div
-        className={`flex min-h-0 flex-1 flex-col ${padded ? "px-5 pb-4" : "pb-4"}`}
+        className={`flex min-h-0 flex-1 flex-col ${padded ? "px-5 pb-4" : "pb-4"} ${bare ? "pt-4" : ""}`}
       >
         {children}
       </div>
     </section>
+  );
+}
+
+/** The card heading, at the one size and weight every card uses. */
+export function CardTitle({ children }: { children: ReactNode }) {
+  return (
+    <h2 className="min-w-0 truncate text-[17px] leading-none font-medium tracking-[-0.02em] text-ink">
+      {children}
+    </h2>
+  );
+}
+
+/** The way out of a card — the reference's `…` slot, as a named link. */
+export function CardLink({ href, label }: { href: string; label: string }) {
+  return (
+    <Link
+      href={href}
+      aria-label={label}
+      title={label}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink"
+    >
+      <Icon.chevronRight className="h-3.5 w-3.5" />
+    </Link>
   );
 }
 

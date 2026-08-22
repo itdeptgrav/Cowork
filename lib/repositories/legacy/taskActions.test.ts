@@ -724,13 +724,59 @@ test("the approval trail can name who the task is for", () => {
 });
 
 test("the gated task stays visible to the sender and both approvers", () => {
-  /* The receiving half must not have displaced the other three parties. */
+  /* The receiving half must not have displaced the other three parties.
+
+     CHANGED ON PURPOSE — the anchor was the early-return shape
+     `if (t.status !== "pending_department_approval") return true;`, which
+     stopped existing when a SECOND gate joined the same filter. The rule is
+     unchanged and is what this test is for. */
   const block = source.slice(
-    source.indexOf('if (t.status !== "pending_department_approval") return true;'),
+    source.indexOf('if (t.status === "pending_department_approval") {'),
   );
   assert.match(block.slice(0, 400), /t\.createdById === viewerId/);
   assert.match(block.slice(0, 400), /t\.pendingAssigneeId === viewerId/);
   assert.match(block.slice(0, 400), /departmentApproverIds\.includes\(viewerId\)/);
+});
+
+test("the budget gate is fetched at all, and scoped when it is", () => {
+  /* A task held at `pending_tl_hours` matches none of the ordinary queries:
+     `assigneeIds` is empty by construction, `assignedBy` names the sender in
+     another department, and the person who must act is recorded NOWHERE on the
+     document — the engine authorises a rule and never writes the name. So it
+     reached its approver as a notification and nothing else: no list, no
+     inbox, no tab. Dismiss the notification and the work was unreachable. */
+  assert.match(
+    source,
+    /where\("status", "==", "pending_tl_hours"\)/,
+    "the budget gate is unfetchable again",
+  );
+
+  /* That query is ORG-WIDE, so the scoping below it is a permission boundary
+     rather than a tidy-up. */
+  const block = source.slice(
+    source.indexOf('if (t.status === "pending_tl_hours") {'),
+  );
+  const clause = block.slice(0, 1200);
+  assert.match(clause, /t\.createdById === viewerId/);
+  assert.match(clause, /t\.pendingAssigneeId === viewerId/);
+  assert.match(clause, /t\.assigneeIds\.includes\(viewerId\)/);
+  assert.match(clause, /departmentApproverIds\.includes\(viewerId\)/);
+  /* The clause that is the whole fix: the manager of the person it is for. */
+  assert.match(
+    clause,
+    /budgetManagerByTarget\.get\(budgetTargetOf\(t\)\) === viewerId/,
+    "the one person who can clear the gate cannot see it again",
+  );
+});
+
+test("the list path supplies the budget owner, or the inbox stays inert", () => {
+  /* `pendingApprovalsFor` produces the `effort_estimate` approval only when it
+     is handed the assignee's manager, and `actionableFor` decides membership of
+     the Actionable inbox by reading exactly that approval. Fetching the row
+     without this makes it visible and inert — present in the table, absent from
+     every inbox. */
+  assert.match(source, /budgetOwner:/);
+  assert.match(source, /budgetManagerByTarget\.get\(budgetTargetOf\(legacy\)\)/);
 });
 
 test("nothing in the client decides the cross-department gate", () => {

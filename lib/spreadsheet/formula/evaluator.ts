@@ -5,13 +5,17 @@
  * stays independent of the workbook and the UI (the engine supplies the
  * context). Errors are values: an error in an operand propagates unless a
  * function catches it. Comparison follows the spreadsheet's cross-type ordering
- * (number < text < boolean), with blanks taking the other side's type.
+ * (number < text < boolean), with blanks taking the other side's type. `&`
+ * concatenates via text coercion (blank → "", numbers/booleans by their display
+ * text). Arithmetic that overflows to a non-finite number is #NUM!, and unary
+ * `+` is an identity that passes any operand through untouched — both as Sheets
+ * and Excel define them.
  */
 
 import type { BinaryOp, Node } from "./ast";
 import { DIV0, FormulaError, NAME, NUM, VALUE, isError } from "./errors";
 import type { ErrorCode } from "./errors";
-import { isArray, isBlank, toNumber, type ScalarValue } from "./value";
+import { BLANK, isArray, isBlank, toNumber, toText, type ScalarValue } from "./value";
 import { FUNCTIONS } from "./functions/index";
 
 /** How the evaluator reaches cells — one at a time, on a named sheet or (when
@@ -33,14 +37,23 @@ export interface FnContext {
   matrix(node: Node): ScalarValue[][];
 }
 
+/** A finite number passes; overflow to ±Infinity (or NaN) is #NUM!. */
+function finite(n: number): number | FormulaError {
+  return Number.isFinite(n) ? n : NUM;
+}
+
 export function evaluate(node: Node, ctx: EvalContext): ScalarValue {
   switch (node.type) {
     case "number":
-      return node.value;
+      /* A literal too large for a double (`=1E309`) is already #NUM!. */
+      return finite(node.value);
     case "string":
       return node.value;
     case "boolean":
       return node.value;
+    case "blank":
+      /* An omitted argument — a blank, exactly like an empty cell. */
+      return BLANK;
     case "error":
       return new FormulaError(node.code as ErrorCode);
     case "ref":
@@ -49,9 +62,14 @@ export function evaluate(node: Node, ctx: EvalContext): ScalarValue {
       /* A range only means something as a function argument. */
       return VALUE;
     case "unary": {
-      const v = toNumber(evaluate(node.operand, ctx));
+      const v = evaluate(node.operand, ctx);
       if (isError(v)) return v;
-      return node.op === "-" ? -v : v;
+      /* Unary + is an identity: it returns its operand untouched, whatever the
+         type — `=+"abc"` is "abc", `=+TRUE` is TRUE (Sheets/Excel). */
+      if (node.op === "+") return v;
+      const n = toNumber(v);
+      if (isError(n)) return n;
+      return finite(-n);
     }
     case "percent": {
       const v = toNumber(evaluate(node.operand, ctx));
@@ -107,23 +125,30 @@ function evalBinary(op: BinaryOp, leftNode: Node, rightNode: Node, ctx: EvalCont
     if (isError(right)) return right;
     return compare(op, left, right);
   }
+  if (op === "&") {
+    /* Concatenation coerces both sides to text: blank → "", numbers and
+       booleans by their display text. Errors propagate left-to-right. */
+    const a = toText(evaluate(leftNode, ctx));
+    if (isError(a)) return a;
+    const b = toText(evaluate(rightNode, ctx));
+    if (isError(b)) return b;
+    return a + b;
+  }
   const a = toNumber(evaluate(leftNode, ctx));
   if (isError(a)) return a;
   const b = toNumber(evaluate(rightNode, ctx));
   if (isError(b)) return b;
   switch (op) {
     case "+":
-      return a + b;
+      return finite(a + b);
     case "-":
-      return a - b;
+      return finite(a - b);
     case "*":
-      return a * b;
+      return finite(a * b);
     case "/":
-      return b === 0 ? DIV0 : a / b;
-    case "^": {
-      const r = Math.pow(a, b);
-      return Number.isFinite(r) ? r : NUM;
-    }
+      return b === 0 ? DIV0 : finite(a / b);
+    case "^":
+      return finite(Math.pow(a, b));
   }
   return VALUE;
 }

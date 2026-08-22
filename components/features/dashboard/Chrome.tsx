@@ -93,7 +93,7 @@ export function DashboardChrome() {
     failed: !!(tasks.error ?? conflicts.error ?? reviews.error),
     urgent: signals.filter((s) => s.urgency === "critical"),
     waiting: signals.reduce(
-      (n, s) => n + (s.urgency === "steady" ? 0 : s.count),
+      (n, s) => n + (s.urgency === "steady" ? 0 : (s.count ?? 1)),
       0,
     ),
     open: (tasks.data ?? []).filter(isOpen).length,
@@ -195,7 +195,7 @@ function briefOf({
   team: boolean;
   loading: boolean;
   failed: boolean;
-  urgent: { label: string; count: number }[];
+  urgent: { label: string; count?: number; pluralLabel?: string }[];
   waiting: number;
   open: number;
   running: string | null;
@@ -210,10 +210,30 @@ function briefOf({
   const parts: string[] = [];
 
   if (urgent.length) {
+    /* **Grouped by label before it is counted.**
+
+       The urgent rows became one-per-task rather than one-per-kind, so two
+       approvals now arrive as two rows carrying the same words — and this read
+       them straight out, producing "1 task waiting on your approval and 1 task
+       waiting on your approval". The card is right to list them separately,
+       because each is a different task for a different person; a one-line
+       brief is right to add them up. `pluralLabel` is what lets the sum say
+       "2 tasks" rather than "2 task". */
+    const byLabel = new Map<string, { n: number; one: string; many: string }>();
+    for (const u of urgent) {
+      const at = byLabel.get(u.label);
+      if (at) at.n += u.count ?? 1;
+      else
+        byLabel.set(u.label, {
+          n: u.count ?? 1,
+          one: u.label,
+          many: u.pluralLabel ?? u.label,
+        });
+    }
     parts.push(
-      urgent
+      [...byLabel.values()]
         .slice(0, 2)
-        .map((u) => `${u.count} ${u.label}`)
+        .map((u) => `${u.n} ${u.n === 1 ? u.one : u.many}`)
         .join(" and "),
     );
   } else if (waiting > 0) {

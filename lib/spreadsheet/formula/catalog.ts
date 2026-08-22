@@ -89,6 +89,8 @@ export const FUNCTION_HELP: Record<string, FunctionHelp> = {
   NOT: { name: "NOT", category: "Logical", args: [req("logical")], summary: "Reverses a logical value — TRUE becomes FALSE and back.", example: "NOT(A1>0)" },
   IFERROR: { name: "IFERROR", category: "Logical", args: [req("value"), opt("value_if_error")], summary: "Returns a fallback value when a formula would evaluate to an error.", example: "IFERROR(A1/B1, 0)" },
   IFS: { name: "IFS", category: "Logical", args: [req("condition1"), req("value1"), rep("condition2"), rep("value2")], signature: "IFS(condition1, value1, [condition2, value2, …])", summary: "Returns the value for the first condition that is TRUE.", example: 'IFS(A1>90, "A", A1>80, "B")' },
+  TRUE: { name: "TRUE", category: "Logical", args: [], summary: "Returns the logical value TRUE.", example: "TRUE()" },
+  FALSE: { name: "FALSE", category: "Logical", args: [], summary: "Returns the logical value FALSE.", example: "FALSE()" },
   SWITCH: { name: "SWITCH", category: "Logical", args: [req("expression"), req("case1"), req("value1"), rep("case2"), rep("value2"), opt("default")], signature: "SWITCH(expression, case1, value1, [case2, value2, …], [default])", summary: "Compares an expression against cases and returns the matching value.", example: 'SWITCH(A1, 1, "One", 2, "Two", "Other")' },
 
   /* ── Date ─────────────────────────────────────────────────────────────── */

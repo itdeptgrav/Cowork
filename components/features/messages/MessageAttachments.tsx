@@ -17,7 +17,7 @@
  * their own one-click download so seeing it small is never the only option.
  */
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
 import { DriveImage } from "@/components/ui/DriveImage";
@@ -95,6 +95,100 @@ export function formatBytes(n: number): string {
 
 /** Files carried by a paste — a screenshot, a copied image, a copied file. Empty
  *  for a plain-text paste, so a caller can let that through untouched. */
+/**
+ * A whole surface that accepts dropped files.
+ *
+ * **The target is the room, not the letterbox.** The composer alone took a
+ * drop, which asked somebody to aim at a two-line box at the bottom of a
+ * scrolling thread — and a miss is not nothing, it is the browser opening the
+ * file. Anywhere over the conversation is now the target, and while a file is
+ * over it the surface says so rather than leaving you to guess whether it will
+ * be caught.
+ *
+ * **Depth-counted, because `dragleave` lies.** Moving over a child fires leave
+ * on the parent and enter on the child, so a flag set from the events alone
+ * flickers the overlay on every message the pointer crosses. Counting enters
+ * against leaves means the state changes only at the real boundary.
+ *
+ * Renders nothing of its own where the surface cannot upload — no wrapper, no
+ * listeners, so a file behaves exactly as it did before rather than being
+ * swallowed by a room with nowhere to put it.
+ */
+export function FileDropZone({
+  canUpload,
+  onFiles,
+  hint,
+  className,
+  children,
+}: {
+  canUpload: boolean;
+  onFiles: (files: File[]) => void;
+  /** What the surface says while a file is over it. */
+  hint: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
+  const [over, setOver] = useState(false);
+  /* A ref, not state: it changes several times per pointer move and nothing
+     renders from it directly. */
+  const depth = useRef(0);
+
+  /* Only file drags. A task row being dragged into a new priority carries
+     `text/plain`, and catching that would break the reorder. */
+  const isFiles = (e: React.DragEvent) =>
+    Boolean(e.dataTransfer?.types?.includes("Files"));
+
+  if (!canUpload) return <>{children}</>;
+
+  return (
+    <div
+      className={`relative ${className ?? ""}`}
+      onDragEnter={(e) => {
+        if (!isFiles(e)) return;
+        e.preventDefault();
+        depth.current += 1;
+        setOver(true);
+      }}
+      onDragOver={(e) => {
+        /* Required, or the drop never fires at all. */
+        if (isFiles(e)) e.preventDefault();
+      }}
+      onDragLeave={(e) => {
+        if (!isFiles(e)) return;
+        depth.current -= 1;
+        if (depth.current <= 0) {
+          depth.current = 0;
+          setOver(false);
+        }
+      }}
+      onDrop={(e) => {
+        if (!isFiles(e)) return;
+        /* Required as well as the one above: without it the browser opens the
+           file after this handler has run. */
+        e.preventDefault();
+        depth.current = 0;
+        setOver(false);
+        const files = filesFromClipboard(e.dataTransfer);
+        if (files.length) onFiles(files);
+      }}
+    >
+      {children}
+      {over && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-30 grid place-items-center rounded-panel border border-dashed border-ink/40 bg-[var(--surface-raised)]/85"
+        >
+          <span className="flex items-center gap-2 text-[13px] text-ink">
+            <Icon.attach className="h-4 w-4" />
+            {hint}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 export function filesFromClipboard(data: DataTransfer | null): File[] {
   if (!data) return [];
   const fromFiles = data.files ? Array.from(data.files) : [];

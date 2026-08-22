@@ -90,7 +90,7 @@ export function NextCard() {
   return (
     <section
       aria-label="What is next"
-      className="relative isolate flex min-h-[190px] flex-col overflow-hidden rounded-card bg-slab"
+      className="relative isolate flex h-full min-h-[190px] flex-col overflow-hidden rounded-card bg-slab"
     >
       {/* The iridescence. Fixed washes from the field palette — the page's own
           field is what drifts; this one holds still so it never competes. */}

@@ -17,6 +17,7 @@ import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { formatDateTime } from "@/lib/utils/format";
 import {
   MessageAttachments,
+  FileDropZone,
   filesFromClipboard,
   formatBytes,
   mediaUrl,
@@ -119,6 +120,14 @@ export function ChatPanel({
   const composerReadOnly = started && thread === "draft";
 
   return (
+    /* The whole discussion is the drop target — see `FileDropZone`. Aiming at
+       the two-line composer at the foot of a scrolling thread was the ask, and
+       a miss opened the file instead of attaching it. */
+    <FileDropZone
+      canUpload={canUpload}
+      onFiles={(files) => void handleFiles(files)}
+      hint="Drop files to attach them to this discussion"
+    >
     <Panel padded={false}>
       <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-5 py-3">
         <h2 className="text-sm font-medium text-ink">Discussion</h2>
@@ -360,5 +369,6 @@ export function ChatPanel({
         </div>
       )}
     </Panel>
+    </FileDropZone>
   );
 }

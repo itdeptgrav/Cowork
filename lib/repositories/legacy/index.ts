@@ -111,7 +111,7 @@ import {
   approveDeadline as approveDeadlineRequest,
 } from "../../legacy/taskWrites.ts";
 import { listMembers } from "../../legacy/employees.ts";
-import { toHierarchyId } from "../../legacy/identityMap.ts";
+import { fromHierarchyId, toHierarchyId } from "../../legacy/identityMap.ts";
 import {
   buildReportingTree,
   fetchMyManagers,
@@ -1087,11 +1087,79 @@ export class LegacyRepository {
      * the sender, the approvers, and the person it is being assigned to. The
      * old page reaches the same set (`page.js:6932`) by filtering the same
      * org-wide listener. */
+    /**
+     * Who manages the person each BUDGET-gated task is for.
+     *
+     * Resolved before the filter because the scoping below needs it and a
+     * `filter` cannot await. One memoised tree read and then map lookups —
+     * `#assigneeManagerId` is the product’s source of truth for who manages
+     * whom, and the same relationship `budgetOwner` is built from, so the row
+     * a manager can see and the approval they are offered cannot disagree.
+     */
+    const budgetTargetOf = (t: {
+      pendingAssigneeId: string | null;
+      assigneeIds: string[];
+    }) => t.pendingAssigneeId ?? t.assigneeIds[0] ?? "";
+    /**
+     * A tree manager id, back in COWORK id space.
+     *
+     * `ReportingNode.managerId` is the HR record’s `biometricId`, which for
+     * fifteen of sixteen people is also their Cowork id — and for the CEO is
+     * not: they sign in as `E000` and HR calls them `GR0000`, two records in
+     * two stores sharing no key. Comparing the raw value against `viewerId`
+     * would therefore hide a budget-gated task from precisely one person: the
+     * one who manages somebody reporting to the top of the company. Same trap
+     * `getViewer` documents, resolved the same way rather than left to the
+     * fifteen cases where it happens not to matter.
+     */
+    const toCoworkId = (hierarchyId: string | null): string | null => {
+      if (!hierarchyId) return null;
+      if (employeesById.has(hierarchyId)) return hierarchyId;
+      return fromHierarchyId(hierarchyId)[0] ?? null;
+    };
+    const budgetManagerByTarget = new Map<string, string | null>();
+    await Promise.all(
+      [...new Set(
+        legacyTasks
+          .filter((t) => t.status === "pending_tl_hours")
+          .map(budgetTargetOf)
+          .filter((id) => id !== ""),
+      )].map(async (id) =>
+        budgetManagerByTarget.set(
+          id,
+          toCoworkId(await this.#assigneeManagerId(id)),
+        ),
+      ),
+    );
+
     legacyTasks = legacyTasks.filter((t) => {
-      if (t.status !== "pending_department_approval") return true;
-      if (t.createdById === viewerId) return true;
-      if (t.pendingAssigneeId === viewerId) return true;
-      return t.departmentApproverIds.includes(viewerId);
+      if (t.status === "pending_department_approval") {
+        if (t.createdById === viewerId) return true;
+        if (t.pendingAssigneeId === viewerId) return true;
+        return t.departmentApproverIds.includes(viewerId);
+      }
+      /* The BUDGET gate, scoped for the same reason as the one above — its
+         query is org-wide because the responsible person is recorded nowhere
+         on the document — and to the same people, PLUS the one who can
+         actually clear it: the manager of the person the work is for. That
+         last clause is the whole fix. Everyone else already had a route to
+         the task and they had none, which is why it reached them only as a
+         notification.
+
+         Visibility here is the reporting relationship; the ACTION is narrower
+         and stays where it was — `pendingApprovalsFor` offers the form only to
+         the assignee’s own manager, and the engine 403s anybody else. */
+      if (t.status === "pending_tl_hours") {
+        if (t.createdById === viewerId) return true;
+        /* The person it is FOR, by either route: the gate parks them in
+           `pendingAssigneeId`, but a task created straight into this state
+           can carry them in `assigneeIds`. */
+        if (t.pendingAssigneeId === viewerId) return true;
+        if (t.assigneeIds.includes(viewerId)) return true;
+        if (t.departmentApproverIds.includes(viewerId)) return true;
+        return budgetManagerByTarget.get(budgetTargetOf(t)) === viewerId;
+      }
+      return true;
     });
 
     /* The old task page's own tab predicates, from `page.js:6016-6040`.
@@ -1287,15 +1355,37 @@ export class LegacyRepository {
         }
       }
 
-      legacyTasks = [...byId.values()].filter((t) =>
-        canManagerViewTask(
-          viewerId,
-          {
-            assigneeIds: t.assigneeIds,
-            pendingAssigneeIds: t.pendingAssigneeId ? [t.pendingAssigneeId] : [],
-          },
-          tree,
-        ),
+      /*
+       * **May-I-see-it and is-it-my-team's are different questions.**
+       *
+       * This filtered on `canManagerViewTask` alone, and that predicate reads
+       * `reportingSubtree`, which seeds itself with the manager — correctly, for
+       * a permission check: a manager may of course view their own task. Used as
+       * the SCOPE filter it also let their own assignments into "My team", so a
+       * manager looking at what their reports are carrying found their own work
+       * in the list, and on the grouped view, a group under their own name.
+       *
+       * Permission is still the first test, unchanged. The second says the task
+       * is somebody else's: at least one of the people holding it is not the
+       * viewer. A task held jointly by a manager and a report stays — it is
+       * genuinely the report's work too.
+       */
+      const heldByAnother = (t: { assigneeIds: string[]; pendingAssigneeId?: string | null }) =>
+        [...t.assigneeIds, ...(t.pendingAssigneeId ? [t.pendingAssigneeId] : [])]
+          .some((id) => String(id) !== viewerId);
+
+      legacyTasks = [...byId.values()].filter(
+        (t) =>
+          canManagerViewTask(
+            viewerId,
+            {
+              assigneeIds: t.assigneeIds,
+              pendingAssigneeIds: t.pendingAssigneeId
+                ? [t.pendingAssigneeId]
+                : [],
+            },
+            tree,
+          ) && heldByAnother(t),
       );
     } else if (q.scope === "mine") {
       legacyTasks = legacyTasks.filter((t) => {
@@ -1422,6 +1512,20 @@ export class LegacyRepository {
            Falls back to undefined (→ stored rank) only when unresolved. */
         queue: (subjectId && queuesBySubject.get(subjectId)) || undefined,
         viewerLegacyRole: this.#ctx.legacyRole,
+        /* **Supplied on the list path too, not only on the detail page.**
+           `pendingApprovalsFor` produces the `effort_estimate` approval only
+           when it is handed the assignee’s manager, so without this the row
+           reached the viewer and still carried no obligation — the Actionable
+           inbox, whose membership is decided by `actionableFor` reading exactly
+           that approval, stayed empty on a task plainly waiting for them.
+           Resolved above from the memoised tree, so this costs no round trip
+           per row. */
+        budgetOwner:
+          legacy.status === "pending_tl_hours"
+            ? (employeesById.get(
+                budgetManagerByTarget.get(budgetTargetOf(legacy)) ?? "",
+              ) ?? null)
+            : null,
       });
     });
 
@@ -11165,6 +11269,30 @@ export class LegacyRepository {
      * need another composite index for a set that is small by construction —
      * only tasks actively waiting on a decision are ever in it. */
     queries.push(query(ref, where("status", "==", "pending_department_approval"), limit(100)));
+
+    /* Tasks held at the BUDGET gate — `pending_tl_hours`.
+     *
+     * Invisible to every query above for exactly the same reason the gate
+     * query exists: when the last department approval lands on a task with no
+     * timer, the engine sets `pending_tl_hours` and deliberately LEAVES the
+     * person in `pendingAssigneeId` (`taskForward.js:1083`) rather than
+     * assigning them — so `assigneeIds` is still empty and `array-contains`
+     * cannot match. `assignedBy` names the SENDER, who is in another
+     * department. And the person who must act — the assignee’s manager — is
+     * recorded nowhere on the document at all: the engine authorises a RULE
+     * ("only the assignee’s manager may set hours"), finds that person once
+     * to send a notification, and never persists them.
+     *
+     * The result was a task whose only trace for its approver was that
+     * notification. It appeared in no list, no inbox and no tab — reported
+     * 19 Aug 2026 as "not visible anywhere to approve beside the notification".
+     * Dismiss the notification and the work was unreachable.
+     *
+     * Queried by status alone and scoped on the returned documents, the same
+     * trade — and the same reason for carrying no `orderBy` — as the gate
+     * query above: the set is small by construction, because only tasks
+     * actively waiting on a budget decision are ever in it. */
+    queries.push(query(ref, where("status", "==", "pending_tl_hours"), limit(100)));
 
     /* Folder parents, backfilled for employees only (`page.js:3872-3910`).
      *

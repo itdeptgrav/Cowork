@@ -13,7 +13,12 @@ import {
   SkeletonRows,
   Textarea,
 } from "@/components/ui/Primitives";
-import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import {
+  invalidateQuery,
+  useAction,
+  useQuery,
+  useRepo,
+} from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { NewChatDialog } from "./NewChatDialog";
 import { GroupSettings } from "./GroupSettings";
@@ -24,6 +29,7 @@ import {
 } from "./MessageContextMenu";
 import {
   MessageAttachments,
+  FileDropZone,
   filesFromClipboard,
   formatBytes,
   mediaUrl,
@@ -105,6 +111,44 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
 
   function openCreated(id: string) {
     setNewChat(null);
+    /**
+     * **Invalidate before navigating, not merely refetch.**
+     *
+     * `listConversations` carries a 30s `staleTime`, and that TTL cache is
+     * keyed without the repository version — so the write that just created
+     * this conversation does not clear it. The `refetch()` below only forces
+     * THIS hook past the TTL, and this hook is about to unmount: pushing to
+     * `/messages/[conversationId]` is a different route segment, so the page
+     * remounts and its new hook starts at nonce 0 with nothing forced. It was
+     * then served the list as it stood BEFORE the conversation existed, found
+     * no match for the id in the URL, and fell through to the "Nothing open"
+     * empty state — offering to start a conversation the reader had just
+     * finished starting. Taking that offer created a second one.
+     *
+     * The refetch stays: it warms the inflight entry at the new version, so
+     * the remounted page joins that read instead of opening its own.
+     */
+    invalidateQuery("listConversations");
+    conversations.refetch();
+    router.push(`/messages/${id}`);
+  }
+
+  /**
+   * A message was forwarded into another conversation — open it.
+   *
+   * Forwarding used to leave you where you stood with only a one-line toast, so
+   * the copy you had just sent was somewhere you could not see and the
+   * destination's row in the list kept its old preview. Opening the thread is
+   * the confirmation: you land in it and watch the message arrive.
+   *
+   * The invalidate-then-refetch is the same dance `openCreated` documents — the
+   * list carries a 30s TTL keyed without the repository version, so the write
+   * that just landed cannot clear it on its own. `refetch()` forces THIS hook
+   * past the TTL so the left pane's preview updates the moment we return to it,
+   * and `invalidateQuery` clears the entry every other reader shares.
+   */
+  function openForwarded(id: string) {
+    invalidateQuery("listConversations");
     conversations.refetch();
     router.push(`/messages/${id}`);
   }
@@ -177,11 +221,15 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
                 viewerId={viewerId}
                 onRead={() => conversations.refetch()}
                 onSent={() => conversations.refetch()}
+                onForwarded={openForwarded}
               />
             ) : (
               <NoThread
                 loading={conversations.isLoading}
                 empty={all.length === 0}
+                /* The URL names a thread this list does not contain. That is
+                   never an invitation to start another one — see `NoThread`. */
+                missing={Boolean(conversationId)}
                 onDirect={() => setNewChat("direct")}
                 onGroup={() => setNewChat("group")}
               />
@@ -393,21 +441,31 @@ function ConversationRow({
 /* ── Right pane ───────────────────────────────────────────────────────────── */
 
 /**
- * The empty and unselected states, which are the same panel with different
- * words.
+ * The empty, unselected and not-found states — one panel, three sets of words.
  *
- * Both carry the two actions, because the answer to "there is nothing here" and
- * to "nothing is open" is the same in a messaging product: start something. A
- * dead end with no control on it is what this surface had.
+ * The first two carry the two actions, because the answer to "there is nothing
+ * here" and to "nothing is open" is the same in a messaging product: start
+ * something. A dead end with no control on it is what this surface had.
+ *
+ * **The third carries neither, and that is the point.** When the URL names a
+ * conversation this list does not contain, the reader has not failed to choose
+ * a thread — they are looking at one that did not arrive. Offering "Start a
+ * conversation" there answers a question nobody asked and does real damage if
+ * taken: for a group it writes a second group with the same name and members
+ * every time it is pressed, since `createConversation` only deduplicates direct
+ * pairs. That is precisely how a stale list turned into duplicate chats.
  */
 function NoThread({
   loading,
   empty,
+  missing,
   onDirect,
   onGroup,
 }: {
   loading: boolean;
   empty: boolean;
+  /** The route names a conversation, and it is not in the list. */
+  missing: boolean;
   onDirect: () => void;
   onGroup: () => void;
 }) {
@@ -426,23 +484,32 @@ function NoThread({
             <Icon.chat className="h-6 w-6" />
           </span>
           <p className="text-[17px] leading-tight font-medium tracking-[-0.02em] text-ink">
-            {empty ? "No conversations yet" : "Nothing open"}
+            {missing
+              ? "This conversation could not be opened"
+              : empty
+                ? "No conversations yet"
+                : "Nothing open"}
           </p>
           <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-            {empty
-              ? "Direct messages and group chats live here. You can reach anyone in the organisation — there is no request to send first."
-              : "Choose a conversation from the list, or start a new one."}
+            {missing
+              ? "It is not in your list — it may have been removed, or you may no longer be in it. Pick another from the list on the left."
+              : empty
+                ? "Direct messages and group chats live here. You can reach anyone in the organisation — there is no request to send first."
+                : "Choose a conversation from the list, or start a new one."}
           </p>
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-            <Button tone="primary" size="sm" onClick={onDirect}>
-              <Icon.chat className="h-3.5 w-3.5" />
-              Start a conversation
-            </Button>
-            <Button size="sm" onClick={onGroup}>
-              <Icon.team className="h-3.5 w-3.5" />
-              Create a group
-            </Button>
-          </div>
+          {/* No create controls on the not-found state — see the note above. */}
+          {!missing && (
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
+              <Button tone="primary" size="sm" onClick={onDirect}>
+                <Icon.chat className="h-3.5 w-3.5" />
+                Start a conversation
+              </Button>
+              <Button size="sm" onClick={onGroup}>
+                <Icon.team className="h-3.5 w-3.5" />
+                Create a group
+              </Button>
+            </div>
+          )}
         </div>
       )}
     </Panel>
@@ -454,11 +521,15 @@ function Thread({
   viewerId,
   onRead,
   onSent,
+  onForwarded,
 }: {
   conversation: ConversationView;
   viewerId: string | null;
   onRead: () => void;
   onSent: () => void;
+  /** A message was forwarded out of this thread into conversation `id` — open
+   *  it so the sender sees the copy land. */
+  onForwarded: (id: string) => void;
 }) {
   const repo = useRepo();
   const [text, setText] = useState("");
@@ -871,6 +942,13 @@ function Thread({
   }
 
   return (
+    /* The whole conversation is the drop target — see `FileDropZone`. */
+    <FileDropZone
+      canUpload={canUpload}
+      onFiles={(files: File[]) => void handleFiles(files)}
+      hint="Drop files to attach them to this conversation"
+      className="flex h-full flex-col"
+    >
     <Panel padded={false} label="Conversation" className="flex h-full flex-col">
       <header className="flex items-center gap-3 border-b border-hairline px-4 py-3">
         <Link
@@ -1238,7 +1316,10 @@ function Thread({
           message={forwarding}
           fromConversationId={c.id}
           onClose={() => setForwarding(null)}
-          onForwarded={(where) => setMessageNotice(`Forwarded to ${where}.`)}
+          /* Opening the destination is the confirmation — no toast, because a
+             toast set here would be lost the instant the navigation remounts
+             this thread anyway. You land in the conversation and see the copy. */
+          onForwarded={onForwarded}
         />
       )}
 
@@ -1251,6 +1332,7 @@ function Thread({
         </div>
       )}
     </Panel>
+    </FileDropZone>
   );
 }
 

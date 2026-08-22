@@ -297,6 +297,9 @@ import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
 import { previewOfHtml } from "@/lib/rules/documents/preview";
 import { pageSetupRefusal } from "@/lib/rules/documents/pageSetup";
 import { emergencyCompensationMs } from "@/lib/rules/tasks/emergency";
+/* "Everybody beneath this person, never including themselves" — the one
+   definition of a team, shared with every other team-scoped surface. */
+import { peopleUnder } from "@/lib/rules/team/visibility";
 import { storedPictureRefusal } from "@/lib/rules/people/profilePicture";
 import {
   canManage as canManageDocument,
@@ -748,10 +751,23 @@ export class MockRepository implements CoworkRepository {
     if (q.scope === "mine") {
       list = list.filter((t) => assignedTo(t.id, viewer.employeeId));
     } else if (q.scope === "team") {
-      // Hierarchy-scoped. Legacy let any TL see everyone (D10 reverses that).
-      list = list.filter((t) =>
-        viewer.hierarchyIds.some((id) => assignedTo(t.id, id)),
-      );
+      /*
+       * **The team is the people UNDER you, and you are not one of them.**
+       *
+       * This read `viewer.hierarchyIds` directly, and the closure "includes the
+       * viewer in some responses and not others" — `visibility.test.ts` says so
+       * in as many words, which is why `managesAnyone` never reads it raw. So
+       * "My team" showed the manager their own assignments mixed in with their
+       * reports', and on the grouped list that meant a group headed with their
+       * own name. A manager asking what their team is carrying is not asking
+       * about themselves; their own work is what "My tasks" is for.
+       *
+       * `peopleUnder` is the product's existing answer to exactly this, tested,
+       * and used by every other team surface. Hierarchy-scoped either way —
+       * legacy let any TL see everyone, and D10 reverses that.
+       */
+      const under = peopleUnder(viewer);
+      list = list.filter((t) => under.some((id) => assignedTo(t.id, id)));
     } else if (q.scope === "assigned_out") {
       list = list.filter(
         (t) =>
