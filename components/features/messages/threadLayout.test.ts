@@ -241,7 +241,32 @@ test("opened is true only when the route names the conversation", () => {
 test("the layout's fallback to the first conversation is still there", () => {
   /* The fix must not be "stop defaulting", which would leave a blank pane
      beside a full list — the thing the default exists to prevent. */
-  assert.match(code(), /conversationId \?\? \(all\.length \? all\[0\]\.id : undefined\)/);
+  /* `[^]` rather than `.` with the `s` flag, which this tsconfig target
+     refuses. */
+  assert.match(code(), /conversationId \?\? \([^]*?all\[0\]\.id/);
+  assert.match(code(), /!all\.length \? undefined/, "an empty list still has no default");
+});
+
+test("the default yields once the reader has closed a thread", () => {
+  /* The other half, and the bug it fixes: Escape navigated away correctly and
+     the default put the reader straight back into the thread they had just
+     closed — on a wide screen the newest conversation is both `all[0]` and,
+     usually, the one they were reading, so Escape looked broken.
+
+     `closed` must be part of the condition, and it must come from the URL: the
+     two routes are separate segments, so a `useState` flag is discarded on the
+     way out and cannot carry the intent across. */
+  assert.match(code(), /conversationId \?\? \(closed \|\| !all\.length \? undefined/);
+  assert.match(
+    code(),
+    /router\.push\("\/messages\?closed=1"\)/,
+    "closing does not record that it was deliberate",
+  );
+  assert.doesNotMatch(
+    code(),
+    /useState\(false\);\s*[^]*?setDismissed/,
+    "the intent is held in component state, which the segment change discards",
+  );
 });
 
 test("opened is a dependency, so clicking the default thread marks it read", () => {

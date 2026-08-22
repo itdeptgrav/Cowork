@@ -718,6 +718,24 @@
     }
   }
 
+  /* A backdrop coming up under `.snap-in`. Opacity only — a scrim that moves
+     is a scrim you can see the edge of. Its own class rather than a JS state
+     flip on mount, because `requestAnimationFrame` does not run while a tab is
+     not compositing, and an entrance that never starts leaves the overlay
+     invisible with the page behind it already locked. */
+  .fade-in {
+    animation: fade-in 150ms var(--ease-deck) both;
+  }
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
   @keyframes rise {
     from {
       opacity: 0;

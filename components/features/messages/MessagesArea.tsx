@@ -39,6 +39,12 @@ import {
 } from "@/lib/rules/messages/messageStatus";
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { isPinned } from "@/lib/rules/messages/pins";
+import { escapeAction } from "@/lib/rules/messages/escapeLadder";
+import {
+  dragCarriesFiles,
+  dragDepth,
+  isDropActive,
+} from "@/lib/rules/messages/fileDrop";
 import { searchThread } from "@/lib/rules/messages/threadSearch";
 import { clearDraft, readDraft, saveDraft } from "./draftStorage";
 import {
@@ -82,7 +88,31 @@ import type {
 
 type ConversationView = Conversation & { participants: Employee[] };
 
-export function MessagesPage({ conversationId }: { conversationId?: string }) {
+export function MessagesPage({
+  conversationId,
+  closed = false,
+}: {
+  conversationId?: string;
+  /**
+   * The reader deliberately LEFT a thread, rather than never opening one.
+   *
+   * **Why this is in the URL and not in state.** The right pane defaults to the
+   * first conversation because an empty pane beside a full list reads as a
+   * loading failure — right on arrival, wrong afterwards. Escape navigated to
+   * `/messages` correctly and the default then put the reader straight back
+   * into the thread they had just closed: on a wide screen the newest
+   * conversation is both `all[0]` and, usually, the one they were reading. So
+   * Escape appeared to do nothing at all.
+   *
+   * A `useState` flag cannot fix that. `/messages` and `/messages/[id]` are
+   * separate route segments, so leaving a thread swaps which page component
+   * renders and any state here is discarded on the way. The intent has to
+   * survive the navigation, and the URL is the one thing that does — which is
+   * also what this file already claims as its source of truth. Opening any
+   * conversation navigates to `/messages/[id]` and drops the flag naturally.
+   */
+  closed?: boolean;
+}) {
   const router = useRouter();
   const viewerId = useViewerId();
   const conversations = useQuery((r) => r.listConversations(), []);
@@ -112,9 +142,10 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
   }, [all, search, viewerId]);
 
   /* The route is the source of truth for what is open; the first conversation
-     is only a default for the wide layout, where an empty right pane beside a
-     full list reads as a loading failure. */
-  const active = conversationId ?? (all.length ? all[0].id : undefined);
+     is only a default, and only until the reader has said otherwise — see
+     `closed`. */
+  const active =
+    conversationId ?? (closed || !all.length ? undefined : all[0].id);
   const activeConversation = all.find((c) => c.id === active) ?? null;
 
   /**
@@ -251,11 +282,22 @@ export function MessagesPage({ conversationId }: { conversationId?: string }) {
                 opened={openedDeliberately}
                 onRead={() => conversations.refetch()}
                 onSent={() => conversations.refetch()}
+                /* `?closed=1` carries the intent across the segment change.
+                   Without it the wide layout re-defaults straight back into
+                   this very thread; on a narrow screen the navigation alone is
+                   the whole of the change, since the list is what shows when
+                   there is no `conversationId`. */
+                onClose={() => router.push("/messages?closed=1")}
               />
             ) : (
               <NoThread
                 loading={conversations.isLoading}
                 empty={all.length === 0}
+                /* Capped at five each. This pane is a way back in, not a second
+                   copy of the list — which is already on screen beside it. */
+                waiting={all.filter((c) => c.unreadCount > 0).slice(0, 5)}
+                recent={all.slice(0, 5)}
+                viewerId={viewerId}
                 onDirect={() => setNewChat("direct")}
                 onGroup={() => setNewChat("group")}
               />
@@ -477,25 +519,62 @@ function ConversationRow({
  * Both carry the two actions, because the answer to "there is nothing here" and
  * to "nothing is open" is the same in a messaging product: start something. A
  * dead end with no control on it is what this surface had.
+ *
+ * **"Nothing open" is not the same as "nothing to do".** Closing a thread used
+ * to leave an icon and the sentence "Choose a conversation from the list" — a
+ * caption for the list already on screen, which told the reader nothing they
+ * could not see. Where there ARE conversations, this pane now answers the
+ * question somebody actually has at that moment: who is waiting on me. Only the
+ * genuinely empty workspace keeps the plain placeholder, because there it is
+ * true.
  */
 function NoThread({
   loading,
   empty,
+  waiting,
+  recent,
+  viewerId,
   onDirect,
   onGroup,
 }: {
   loading: boolean;
   empty: boolean;
+  /** Conversations carrying unread messages, most recent first. */
+  waiting: ConversationView[];
+  /** The latest threads, for when nothing is unread. */
+  recent: ConversationView[];
+  viewerId: string | null;
   onDirect: () => void;
   onGroup: () => void;
 }) {
-  return (
-    <Panel label="No conversation open" className="grid h-full place-items-center">
-      {loading ? (
+  const actions = (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button tone="primary" size="sm" onClick={onDirect}>
+        <Icon.chat className="h-3.5 w-3.5" />
+        Start a conversation
+      </Button>
+      <Button size="sm" onClick={onGroup}>
+        <Icon.team className="h-3.5 w-3.5" />
+        Create a group
+      </Button>
+    </div>
+  );
+
+  if (loading)
+    return (
+      <Panel label="No conversation open" className="grid h-full place-items-center">
         <div className="w-full max-w-[360px]">
           <SkeletonRows rows={3} />
         </div>
-      ) : (
+      </Panel>
+    );
+
+  /* Nothing to be useful ABOUT. A first-run workspace gets the plain invitation
+     it always had — inventing a summary of nothing would be worse than the
+     placeholder it replaces. */
+  if (empty)
+    return (
+      <Panel label="No conversation open" className="grid h-full place-items-center">
         <div className="max-w-[44ch] px-6 py-10 text-center">
           <span
             aria-hidden="true"
@@ -504,25 +583,53 @@ function NoThread({
             <Icon.chat className="h-6 w-6" />
           </span>
           <p className="text-[17px] leading-tight font-medium tracking-[-0.02em] text-ink">
-            {empty ? "No conversations yet" : "Nothing open"}
+            No conversations yet
           </p>
           <p className="mt-2 text-sm leading-relaxed text-ink-muted">
-            {empty
-              ? "Direct messages and group chats live here. You can reach anyone in the organisation — there is no request to send first."
-              : "Choose a conversation from the list, or start a new one."}
+            Direct messages and group chats live here. You can reach anyone in
+            the organisation — there is no request to send first.
           </p>
-          <div className="mt-5 flex flex-wrap items-center justify-center gap-2">
-            <Button tone="primary" size="sm" onClick={onDirect}>
-              <Icon.chat className="h-3.5 w-3.5" />
-              Start a conversation
-            </Button>
-            <Button size="sm" onClick={onGroup}>
-              <Icon.team className="h-3.5 w-3.5" />
-              Create a group
-            </Button>
-          </div>
+          <div className="mt-5 flex justify-center">{actions}</div>
         </div>
-      )}
+      </Panel>
+    );
+
+  const unreadTotal = waiting.reduce((s, c) => s + c.unreadCount, 0);
+  /* Unread leads where there is any, because it is the only part of this that
+     is actionable. Recent threads are a way back in, not a task. */
+  const rows = waiting.length ? waiting : recent;
+
+  return (
+    <Panel label="No conversation open" className="h-full overflow-y-auto">
+      <div className="mx-auto flex h-full max-w-[46ch] flex-col justify-center px-6 py-10">
+        <p className="text-[17px] leading-tight font-medium tracking-[-0.02em] text-ink">
+          {waiting.length
+            ? `${unreadTotal} message${unreadTotal === 1 ? "" : "s"} waiting on you`
+            : "You are up to date"}
+        </p>
+        <p className="mt-2 text-sm leading-relaxed text-ink-muted">
+          {waiting.length
+            ? `Across ${waiting.length} conversation${waiting.length === 1 ? "" : "s"}. Nothing else is unanswered.`
+            : "Nothing unread. Pick up where you left off, or start something new."}
+        </p>
+
+        <ul className="mt-4 space-y-0.5 border-t border-hairline pt-3">
+          {rows.map((c) => (
+            /* The list row itself, not a second design of one — the same
+               avatars, the same unread badge, the same timestamp, so this pane
+               and the list beside it cannot describe one thread differently. */
+            <li key={c.id}>
+              <ConversationRow
+                conversation={c}
+                viewerId={viewerId}
+                active={false}
+              />
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-5 border-t border-hairline pt-4">{actions}</div>
+      </div>
     </Panel>
   );
 }
@@ -533,6 +640,7 @@ function Thread({
   opened,
   onRead,
   onSent,
+  onClose,
 }: {
   conversation: ConversationView;
   viewerId: string | null;
@@ -544,6 +652,14 @@ function Thread({
   opened: boolean;
   onRead: () => void;
   onSent: () => void;
+  /**
+   * Leave the conversation — the last rung of the Escape ladder.
+   *
+   * Optional so a caller that has nowhere to go back TO simply does not pass
+   * it, and Escape then stops at the rung above rather than appearing to do
+   * nothing.
+   */
+  onClose?: () => void;
 }) {
   const repo = useRepo();
   /**
@@ -621,6 +737,9 @@ function Thread({
      it, and which match is current. The position is stored WITH the query it
      was reached in (`searchNav`), so typing on simply reads as "not yet
      navigated" rather than needing an effect to reset anything. */
+  /* Counted, not a boolean — `dragenter`/`dragleave` fire per child, so a flag
+     strobes as the pointer crosses message bubbles. See `dragDepth`. */
+  const [dragDepthState, setDragDepthState] = useState(0);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [starFilter, setStarFilter] = useState(false);
@@ -1220,6 +1339,76 @@ function Thread({
     setSearchNav(null);
   }
 
+  /**
+   * Escape backs out of one thing at a time, innermost first.
+   *
+   * **The order is the whole feature.** Escape already meant something here —
+   * it closes the search bar — and it means something in the image and video
+   * lightboxes, which listen on `document` exactly as this does. A handler that
+   * simply left the conversation would fire alongside those: pressing Escape to
+   * dismiss a photo would dismiss the photo AND the thread behind it, and the
+   * reader would be looking at their conversation list wondering what happened.
+   *
+   * So the rungs, in order:
+   *
+   *  1. **A modal is open** — do nothing at all. The lightboxes and dialogs mark
+   *     themselves `aria-modal="true"` and run their own Escape; asking the DOM
+   *     rather than tracking them here means one added later is covered without
+   *     anybody remembering to come back to this list.
+   *  2. **A menu, a forward dialog, group settings, a reply being composed, a
+   *     message being edited** — cancel that. Each is a thing the reader
+   *     deliberately started and would expect Escape to undo first.
+   *  3. **The search bar** — close it. Its own handler only fires while the
+   *     input has focus, so this is what makes Escape work after clicking away.
+   *  4. **Otherwise** — leave the conversation.
+   *
+   * Text typed into the composer is deliberately NOT a rung. Escape does not
+   * discard it, and closing the thread does not lose it: the draft is kept per
+   * conversation, so coming back finds it exactly as it was.
+   *
+   * The ordering itself is `escapeAction`, so it can be asserted rather than
+   * merely written down — see `lib/rules/messages/escapeLadder.ts`.
+   */
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Escape" || e.defaultPrevented) return;
+
+      const action = escapeAction({
+        /* Asked of the DOM, not tracked here: the lightboxes mark themselves
+           and so does any dialog added later. */
+        modalOpen: document.querySelector('[aria-modal="true"]') !== null,
+        menuOpen: menu !== null,
+        forwarding: forwarding !== null,
+        groupSettingsOpen: showGroupSettings,
+        editing: editingId !== null,
+        replying: replyingTo !== null,
+        searchOpen,
+        canClose: typeof onClose === "function",
+      });
+
+      switch (action) {
+        case "close-menu":
+          return setMenu(null);
+        case "close-forward":
+          return setForwarding(null);
+        case "close-group-settings":
+          return setShowGroupSettings(false);
+        case "cancel-edit":
+          return setEditingId(null);
+        case "cancel-reply":
+          return setReplyingTo(null);
+        case "close-search":
+          return closeSearch();
+        case "close-thread":
+          return onClose?.();
+        case "none":
+          return;
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  });
+
   async function react(m: Message, emoji: string) {
     if (!repo.toggleMessageReaction) return;
     const r = await repo.toggleMessageReaction(c.id, m.id, emoji);
@@ -1463,7 +1652,59 @@ function Thread({
   }
 
   return (
-    <Panel padded={false} label="Conversation" className="flex h-full flex-col">
+    <Panel
+      padded={false}
+      label="Conversation"
+      className="relative flex h-full flex-col"
+      /**
+       * Files dropped anywhere on the conversation attach to it.
+       *
+       * **The whole panel, not the composer.** A one-line text box is a small
+       * target to hit with a file, and the thing somebody is looking at while
+       * they drag is the conversation. Pasting already worked across the whole
+       * composer; this is the same idea given the area it deserves.
+       *
+       * Every handler is a no-op for a drag that is not carrying files, so
+       * dragging a selected sentence or a link across the thread behaves
+       * exactly as it did before.
+       */
+      onDragEnter={(e) => {
+        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        setDragDepthState((d) => dragDepth(d, "enter"));
+      }}
+      onDragOver={(e) => {
+        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        /* Without this the browser refuses the drop and then NAVIGATES to the
+           file — the tab is replaced by the image somebody meant to send. */
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        setDragDepthState((d) => dragDepth(d, "leave"));
+      }}
+      onDrop={(e) => {
+        if (!canUpload || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        e.preventDefault();
+        setDragDepthState((d) => dragDepth(d, "drop"));
+        const dropped = filesFromClipboard(e.dataTransfer);
+        if (dropped.length) void handleFiles(dropped);
+      }}
+    >
+      {/* The overlay is `pointer-events-none` on purpose: an element that
+          swallowed the pointer would fire `dragleave` on the panel the instant
+          it appeared, hiding itself and cancelling the drag under it. */}
+      {isDropActive(dragDepthState) && (
+        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-panel bg-[color-mix(in_srgb,var(--body-bg)_78%,transparent)] backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-2 rounded-panel border border-dashed border-ink/40 px-8 py-6">
+            <Icon.attach className="h-5 w-5 text-ink-muted" />
+            <p className="text-sm font-medium text-ink">Drop to attach</p>
+            <p className="text-[11px] text-ink-faint">
+              Any file, up to {MAX_ATTACHMENTS} at a time
+            </p>
+          </div>
+        </div>
+      )}
       {/* Tighter on a phone at every edge: the header carries an avatar, two
           lines of text and up to three controls, and desktop gutters spent 32
           of the ~336px a 360px screen has on nothing. */}

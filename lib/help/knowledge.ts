@@ -2504,9 +2504,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why is a conversation still unread when I can see it?",
     ],
     answer:
-      "Messages, then New message. Direct message reaches one person; Group takes two or more and a name. You can reach anyone in the organisation — there is no permission on messaging and no request to send first, the same principle as assignment, where anyone may raise work for anyone. If you already have a direct thread with somebody, choosing them reopens it rather than starting a second one beside it, because two threads with the same person makes it impossible to tell which one they will read. Opening a conversation clears its unread count, and the count in the list is a number rather than a dot so you can see how much is waiting. Opening it means choosing it from the list: on a wide screen the newest conversation is shown beside the list so the right-hand side is never blank, and that one is NOT counted as read — its badge stays until you click it. The count also survives a message arriving in a thread you already have open in a background tab or another window; it clears when you come back to it.",
+      "Messages, then New message. Direct message reaches one person; Group takes two or more and a name. You can reach anyone in the organisation — there is no permission on messaging and no request to send first, the same principle as assignment, where anyone may raise work for anyone. If you already have a direct thread with somebody, choosing them reopens it rather than starting a second one beside it, because two threads with the same person makes it impossible to tell which one they will read. Opening a conversation clears its unread count, and the count in the list is a number rather than a dot so you can see how much is waiting. Opening it means choosing it from the list: on a wide screen the newest conversation is shown beside the list so the right-hand side is never blank, and that one is NOT counted as read — its badge stays until you click it. The count also survives a message arriving in a thread you already have open in a background tab or another window; it clears when you come back to it. **Closing a conversation** — press Escape — leaves that side showing what is actually waiting on you rather than an empty panel: how many messages are unread and across how many conversations, with those conversations listed so you can go straight to one. With nothing unread it says you are up to date and lists your most recent threads instead. A workspace with no conversations at all still gets the plain invitation to start one, because there is nothing there to summarise.",
     related: ["general-group-chat-vs-group", "general-what-is-cowork"],
-    source: "createConversation dedupes direct pairs; markConversationRead",
+    source:
+      "createConversation dedupes direct pairs; markConversationRead; NoThread in MessagesArea takes waiting/recent and shows the unread summary — the plain placeholder survives only for empty={all.length === 0}",
   },
   {
     id: "general-sync-button",
@@ -2535,6 +2536,33 @@ export const HELP_ARTICLES: HelpArticle[] = [
     source: "refreshEverything in lib/repositories/events.ts; SyncButton in TopBar",
   },
   {
+    id: "general-support-shortcut",
+    category: "general",
+    title: "Asking for support — Ctrl S",
+    keywords: [
+      "support",
+      "help desk",
+      "contact support",
+      "raise a ticket",
+      "report a problem",
+      "ctrl s",
+      "cannot sign in",
+      "something is broken",
+    ],
+    examples: [
+      "How do I contact support?",
+      "How do I report a bug?",
+      "What does Ctrl S do?",
+      "I cannot sign in, how do I get help?",
+      "Why did Ctrl S not save my document?",
+    ],
+    answer:
+      "Press Ctrl and S together — Cmd and S on a Mac — anywhere in Cowork, and a Support panel opens over whatever you are looking at. It works before you have signed in, which is the point: if you cannot get past the sign-in screen, that is exactly when you need to reach somebody, and the panel does not require an account. It also opens while Cowork is still signing you in, and on the screen shown when signing in did not finish. Tell it what the problem is about, give it a one-line summary and a description, say where to reply and how urgent it is. The page you were on is included automatically, since nobody can recite their own address. Escape closes it, and so does clicking outside it or the ×; what you had typed is still there when you open it again, and closing Cowork's Support panel never loses what you were doing underneath — the panel sits over the page rather than replacing it. **Support is a preview at the moment: nothing is sent and no record is kept.** The panel says so above the Send button and again after you press it, and the reference it shows you is an example rather than a real one — so please keep raising anything urgent the way you do today. One exception to the shortcut: inside Workspace, Ctrl S still saves your document or sheet, because that is what it has always meant there and your work comes first. Everywhere else the browser's own “Save page as…” dialog no longer appears.",
+    related: ["general-what-is-cowork", "general-sync-button"],
+    source:
+      "lib/rules/support/shortcut.ts (opensSupport, SAVE_OWNING_ROUTES); components/features/support/SupportShortcut.tsx mounted on both ShellFrame branches; SupportPanel is front-end only and sends nothing",
+  },
+  {
     id: "general-message-files-and-history",
     category: "general",
     title: "Sending files, and reading back through a conversation",
@@ -2543,6 +2571,11 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "upload failed",
       "attach a file",
       "attachment",
+      "drag and drop",
+      "drop a file",
+      "drag files into chat",
+      "paste a file",
+      "drop to attach",
       "big file",
       "send a video",
       "video file",
@@ -2562,6 +2595,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
     ],
     examples: [
       "Why did my file fail to upload?",
+      "Can I drag and drop a file into a chat?",
       "Can I send large files?",
       "Can I send a video in chat?",
       "How do I watch a video someone sent?",
@@ -2573,10 +2607,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why does the chat only show the last 50 messages?",
     ],
     answer:
-      "Attach a file with the paperclip beside the message box. It uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. **Any type of file, and no size limit.** Video, audio, documents, spreadsheets, archives, anything: nothing is refused for being the wrong kind or for being too big. The same is true in a task's Discussion thread, which uses the same composer. **A video opens where you are.** It arrives as a card with a play symbol; clicking it opens the video over the page, the same way clicking an image opens it full size — you are never sent off to Google Drive and back. Escape closes it, so does clicking outside it, and there is a download button in the corner. The player itself is Drive's, because the video is streamed from Drive directly to you rather than through Cowork: that is what makes seeking and quality work on a large file, and it is why a video uploaded moments ago can say it is still processing for a few minutes before it will play. Audio plays inline in the message. Images show as thumbnails you can click to see full size, PDFs and everything else show as a row you click to open. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
+      "Three ways to attach a file, all of which do the same thing: the paperclip beside the message box, **dragging files onto the conversation** from your desktop or a folder, or pasting them with Ctrl+V. Dropping works anywhere on the conversation rather than only on the message box — the whole panel dims and says “Drop to attach” while you are over it — and you can drag several at once. Dragging selected text or a link onto a conversation is untouched by this and behaves as it always did. The same three ways work in a task's Discussion thread, except a negotiation thread that closed when the task was confirmed: that one has no message box, so nothing can be attached to it. However it arrives, a file uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. **Any type of file, and no size limit.** Video, audio, documents, spreadsheets, archives, anything: nothing is refused for being the wrong kind or for being too big. The same is true in a task's Discussion thread, which uses the same composer. **A video opens where you are.** It arrives as a card with a play symbol; clicking it opens the video over the page, the same way clicking an image opens it full size — you are never sent off to Google Drive and back. Escape closes it, so does clicking outside it, and there is a download button in the corner. The player itself is Drive's, because the video is streamed from Drive directly to you rather than through Cowork: that is what makes seeking and quality work on a large file, and it is why a video uploaded moments ago can say it is still processing for a few minutes before it will play. Audio plays inline in the message. Images show as thumbnails you can click to see full size, PDFs and everything else show as a row you click to open. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
     related: ["general-message-drafts", "general-start-conversation"],
     source:
-      "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts; attachmentKind in lib/rules/messages/attachmentKind.ts; the file inputs in MessagesArea.tsx and ChatPanel.tsx carry no accept filter, and no size cap exists anywhere — the browser opens a resumable Drive session and the engine never handles the bytes (routes/task_routes/mediaUpload.js); video plays through VideoLightbox.tsx, which frames drivePreviewUrl rather than pointing a <video> at the byte proxy, because GET /cowork/media/view/:fileId answers no Range request so a native player cannot seek and Safari will not start",
+      "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts; attachmentKind in lib/rules/messages/attachmentKind.ts; the file inputs in MessagesArea.tsx and ChatPanel.tsx carry no accept filter, and no size cap exists anywhere — the browser opens a resumable Drive session and the engine never handles the bytes (routes/task_routes/mediaUpload.js); video plays through VideoLightbox.tsx, which frames drivePreviewUrl rather than pointing a <video> at the byte proxy, because GET /cowork/media/view/:fileId answers no Range request so a native player cannot seek and Safari will not start; drag-and-drop is dragCarriesFiles/dragDepth in lib/rules/messages/fileDrop.ts, wired onto the Panel in both MessagesArea and ChatPanel, where ChatPanel additionally requires !composerReadOnly",
   },
   {
     id: "general-message-drafts",
@@ -2665,6 +2699,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "delete a message",
       "edit a message",
       "delete someone else's message",
+      "escape key",
+      "close the chat",
+      "go back to conversations",
+      "keyboard shortcut chat",
     ],
     examples: [
       "How do I forward a message?",
@@ -2672,9 +2710,11 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "How do I reply to one particular message?",
       "Where are the message options?",
       "How do I get the message menu on my phone?",
+      "How do I close a chat with the keyboard?",
+      "What does the Escape key do in a chat?",
     ],
     answer:
-      "Right-click any message — yours or somebody else's — and a menu opens with what you can do with it: Reply, Forward, Copy text, Star, Pin, and Delete, with a row of emoji across the top for reacting. On a phone or tablet, press and hold the message instead — the same menu opens under your finger. The same actions appear as small links beside a message when you hover over it, which is also how you reach them from the keyboard: tab to the message and they appear. Reply quotes that one message above the box you type in, and the person reading it can click the quote to jump to the original — on a touch screen you can also swipe the message to the left and reply mode opens on its own. Forward asks which conversation to send it to and writes a copy there — the original stays where it is, the copy carries the same text and the same attachments, and it is sent as a new message from you rather than labelled as forwarded. Copy text puts the words on your clipboard; it is unavailable on a message that is only attachments, because there is nothing to copy and quietly replacing what you had on your clipboard would be worse. Star keeps the message as a personal bookmark and Pin holds it at the top of the conversation for everyone. Edit is offered on your own messages and re-stamps the message as edited, which everyone in the thread can see. Delete works on your own messages only — on somebody else's it is shown but greyed, with the reason, because a missing option reads as a fault where a stated rule does not. Deleting is a soft delete: the message keeps its place in the thread and reads as deleted, so a conversation never silently loses a line and nobody is left wondering what was said. Every action is greyed on a message that has already been deleted, each saying “This message was deleted.” — you can still see where it was, but there is nothing left to reply to, forward or copy. There is no way to delete a message for everybody except your own, and no way to remove one from your own view alone.",
+      "Right-click any message — yours or somebody else's — and a menu opens with what you can do with it: Reply, Forward, Copy text, Star, Pin, and Delete, with a row of emoji across the top for reacting. On a phone or tablet, press and hold the message instead — the same menu opens under your finger. The same actions appear as small links beside a message when you hover over it, which is also how you reach them from the keyboard: tab to the message and they appear. Reply quotes that one message above the box you type in, and the person reading it can click the quote to jump to the original — on a touch screen you can also swipe the message to the left and reply mode opens on its own. Forward asks which conversation to send it to and writes a copy there — the original stays where it is, the copy carries the same text and the same attachments, and it is sent as a new message from you rather than labelled as forwarded. Copy text puts the words on your clipboard; it is unavailable on a message that is only attachments, because there is nothing to copy and quietly replacing what you had on your clipboard would be worse. Star keeps the message as a personal bookmark and Pin holds it at the top of the conversation for everyone. Edit is offered on your own messages and re-stamps the message as edited, which everyone in the thread can see. Delete works on your own messages only — on somebody else's it is shown but greyed, with the reason, because a missing option reads as a fault where a stated rule does not. Deleting is a soft delete: the message keeps its place in the thread and reads as deleted, so a conversation never silently loses a line and nobody is left wondering what was said. Every action is greyed on a message that has already been deleted, each saying “This message was deleted.” — you can still see where it was, but there is nothing left to reply to, forward or copy. There is no way to delete a message for everybody except your own, and no way to remove one from your own view alone. **Escape backs out of one thing at a time.** It closes whatever you most recently opened, and only leaves the conversation once there is nothing left to close — so a picture you opened full size closes without also closing the chat behind it, and the same for the message menu, a forward, group info, an edit you had started, a reply you were writing, and the search bar. Press it once more with nothing open and you are back at the conversation list. It never discards what you have typed: the draft is kept for that conversation, so opening it again finds your message exactly as you left it.",
     related: [
       "general-start-conversation",
       "general-group-chat-vs-group",
@@ -2683,7 +2723,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "general-pinned-messages",
     ],
     source:
-      "MessageContextMenu items built by menuFor() in MessagesArea; long-press and swipe handlers in MessageList (onRowTouchStart/Move/End); deleteMessage refuses another sender with \"You can only delete your own messages.\"; ForwardDialog sends text + attachments through sendMessage; soft delete keeps the tombstone (Message.isDeleted)",
+      "MessageContextMenu items built by menuFor() in MessagesArea; long-press and swipe handlers in MessageList (onRowTouchStart/Move/End); deleteMessage refuses another sender with \"You can only delete your own messages.\"; ForwardDialog sends text + attachments through sendMessage; soft delete keeps the tombstone (Message.isDeleted); the Escape order is escapeAction in lib/rules/messages/escapeLadder.ts, and Thread only receives onClose when a conversation was deliberately opened, so the wide layout's defaulted right pane is never \"closed\" into itself",
   },
   {
     id: "general-message-reactions",

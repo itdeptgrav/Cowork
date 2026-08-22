@@ -16,6 +16,7 @@ export function Panel({
   style,
   padded = true,
   label,
+  ...drag
 }: {
   children: ReactNode;
   className?: string;
@@ -30,12 +31,25 @@ export function Panel({
    * heading; the value should match that heading.
    */
   label?: string;
-}) {
+} & /**
+ * Drag-and-drop only, rather than the whole of `HTMLAttributes`.
+ *
+ * A panel is sometimes a drop target — a conversation takes files dropped
+ * anywhere on it — and that needs four handlers on the `<section>` itself.
+ * Spreading every DOM attribute instead would quietly turn this primitive into
+ * a `div` with a border, and the constraint that it renders a LABELLED
+ * `<section>` is the reason it exists.
+ */
+Pick<
+    React.HTMLAttributes<HTMLElement>,
+    "onDragEnter" | "onDragOver" | "onDragLeave" | "onDrop"
+  >) {
   return (
     <section
       aria-label={label}
       className={`frost-panel rounded-card ${padded ? "px-5 py-4" : ""} ${className}`}
       style={style}
+      {...drag}
     >
       {children}
     </section>

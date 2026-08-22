@@ -315,6 +315,16 @@ export const Icon = {
       <path d="M8 13.2S2.4 10 2.4 6.3A2.9 2.9 0 0 1 8 5.1a2.9 2.9 0 0 1 5.6 1.2c0 3.7-5.6 6.9-5.6 6.9Z" />
     </S>
   ),
+  /** SUPPORT — a lifebuoy. Asking a person for help, not reading a manual:
+   *  the question mark belongs to the help assistant, which answers from the
+   *  knowledge base and never reaches anybody. */
+  support: (p: P) => (
+    <S {...p}>
+      <circle cx="8" cy="8" r="5.6" />
+      <circle cx="8" cy="8" r="2.4" />
+      <path d="M4.05 4.05l2.25 2.25M9.7 9.7l2.25 2.25M11.95 4.05L9.7 6.3M6.3 9.7l-2.25 2.25" />
+    </S>
+  ),
   /** STARRED — a personal bookmark; filled by the caller when active. */
   star: (p: P) => (
     <S {...p}>

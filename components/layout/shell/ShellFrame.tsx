@@ -12,6 +12,7 @@ import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
 import { NewAssignmentGate } from "@/components/features/tasks/NewAssignmentGate";
 import { NotificationPrompt } from "@/components/features/notifications/NotificationPrompt";
 import { GlobalCommandPalette } from "./GlobalCommandPalette";
+import { SupportShortcut } from "@/components/features/support/SupportShortcut";
 import { SessionProvider, useSession } from "@/components/features/auth/SessionProvider";
 
 
@@ -123,6 +124,10 @@ export function ShellFrame({ children }: { children: ReactNode }) {
         <main id="main" className="min-h-dvh">
           {children}
         </main>
+        {/* Ctrl+S reaches support from the sign-in screen too — the one place
+            somebody may be unable to get any further, and the reason this is
+            mounted on BOTH branches rather than inside the workspace. */}
+        <SupportShortcut />
       </SessionProvider>
     );
   }
@@ -130,6 +135,10 @@ export function ShellFrame({ children }: { children: ReactNode }) {
   return (
     <SessionProvider>
       <WorkspaceShell>{children}</WorkspaceShell>
+      {/* A SIBLING of the workspace shell, not a child: the shell renders only
+          a sentence while a session is resolving or has stalled, and those are
+          exactly the moments support has to be reachable. */}
+      <SupportShortcut />
     </SessionProvider>
   );
 }

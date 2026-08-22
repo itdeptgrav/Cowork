@@ -16,6 +16,11 @@ import {
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { formatDateTime } from "@/lib/utils/format";
 import {
+  dragCarriesFiles,
+  dragDepth,
+  isDropActive,
+} from "@/lib/rules/messages/fileDrop";
+import {
   MessageAttachments,
   filesFromClipboard,
   formatBytes,
@@ -66,6 +71,8 @@ export function ChatPanel({
   const [pending, setPending] = useState<MessageAttachment[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  /* Counted, not a boolean — see dragDepth. */
+  const [dragDepthState, setDragDepthState] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   /* The attach control only appears where the backend actually accepts uploads;
      the in-memory prototype omits `uploadMessageAttachment`, so it stays off
@@ -117,9 +124,51 @@ export function ChatPanel({
   }
 
   const composerReadOnly = started && thread === "draft";
+  /* A closed negotiation thread renders no composer at all, so a file dropped
+     on it would upload and then have nowhere to go — staged into a box that is
+     not on screen and can never be sent. */
+  const canDrop = canUpload && !composerReadOnly;
 
   return (
-    <Panel padded={false}>
+    <Panel
+      padded={false}
+      className="relative"
+      /* The same drop behaviour as the message thread, and for the same
+         reason — this panel already shares that composer's paste handler, its
+         upload path and its attachment rendering. */
+      onDragEnter={(e) => {
+        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        setDragDepthState((d) => dragDepth(d, "enter"));
+      }}
+      onDragOver={(e) => {
+        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        /* Or the browser navigates to the file instead of dropping it. */
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        setDragDepthState((d) => dragDepth(d, "leave"));
+      }}
+      onDrop={(e) => {
+        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+        e.preventDefault();
+        setDragDepthState((d) => dragDepth(d, "drop"));
+        const dropped = filesFromClipboard(e.dataTransfer);
+        if (dropped.length) void handleFiles(dropped);
+      }}
+    >
+      {isDropActive(dragDepthState) && (
+        <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-card bg-[color-mix(in_srgb,var(--body-bg)_78%,transparent)] backdrop-blur-[2px]">
+          <div className="flex flex-col items-center gap-2 rounded-panel border border-dashed border-ink/40 px-8 py-6">
+            <Icon.attach className="h-5 w-5 text-ink-muted" />
+            <p className="text-sm font-medium text-ink">Drop to attach</p>
+            <p className="text-[11px] text-ink-faint">
+              Any file, up to {MAX_ATTACHMENTS} at a time
+            </p>
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-5 py-3">
         <h2 className="text-sm font-medium text-ink">Discussion</h2>
         {/* The working thread appears only once the task has been confirmed —
