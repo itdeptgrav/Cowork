@@ -293,6 +293,34 @@ export function officeOpenMsFor(
   return open.getTime();
 }
 
+/**
+ * When this person's queue could first have been worked at all.
+ *
+ * The earliest `clockStartsAt` in the queue, or null where nothing carries one
+ * (every task written before the stamp existed, and anything not yet accepted).
+ *
+ * **Why the minimum and not the leader's.** The engine stamps `clockStartsAt`
+ * as `max(personal availability, end of the queue ahead)`, so every stamp
+ * except the first task's is inflated by the work that happened to be in front
+ * of it when it was accepted. The smallest one is the reading with the least
+ * of that in it, and — the property the chain actually needs — it is the same
+ * number whichever order the tasks are in. A floor that changed with the order
+ * would let a reorder move the queue's finish, which is the one thing a
+ * reorder must never do.
+ *
+ * Exported so the fault has a name a test can hold, rather than living inside
+ * the loop as an index nobody would think to question.
+ */
+export function earliestClockStartMs(queue: readonly QueueTask[]): number | null {
+  let earliest: number | null = null;
+  for (const task of queue) {
+    const ms = startedAtMs(task.clockStartsAtMs);
+    if (ms === null) continue;
+    if (earliest === null || ms < earliest) earliest = ms;
+  }
+  return earliest;
+}
+
 export interface ChainedDeadline {
   taskId: string;
   dueDate: string;
@@ -359,9 +387,37 @@ export function chainDeadlines(input: {
    * Not `startedAt`: pressing play must never move a date — see `anchorMsFor`.
    * `clockStartsAt` is stamped once when the budget is accepted and never moves,
    * so reading it here cannot reintroduce that.
+   *
+   * **And taken from the EARLIEST stamp in the queue, never from whichever task
+   * happens to lead it.** That distinction is the whole of the reordering
+   * fault, and it is a feedback loop rather than an off-by-one:
+   *
+   * `clockStartsAt` is stamped by the engine as `max(personal availability,
+   * end of the queue ahead of this task)` — see `resolveAcceptanceAnchor` in
+   * `officeDeadline.service.js`. So a task accepted while something was ahead
+   * of it carries a stamp that ENCODES ITS OWN QUEUE POSITION. Reading the
+   * leader's stamp therefore feeds a position-derived value back in as the
+   * floor for recomputing positions, and promoting a task moves the whole
+   * queue later by exactly the work that used to precede it:
+   *
+   *   T1 clock 15:59, 30m    T2 clock 16:29 (= T1's finish), 30m
+   *   before   T1 -> 16:29   T2 -> 16:59      leader stamp 15:59 ✓
+   *   swapped  T2 -> 16:59   T1 -> 17:29      leader stamp 16:29 ✗
+   *
+   * Nobody gained work and the person did not become available later, yet the
+   * queue finished half an hour after it did before — and T1 was left reading
+   * "Counted from 15:59" against a 17:29 deadline, a ninety-minute slot for a
+   * thirty-minute budget.
+   *
+   * The minimum is the least contaminated reading available: the task that was
+   * actually first had nothing ahead of it, so its stamp is the person's own
+   * availability and nothing else. It is also invariant under reordering,
+   * which is the property the chain needs — swapping two ranks must exchange
+   * two dates and move nothing else.
    */
-  const leaderClockMs = startedAtMs(input.queue[0]?.clockStartsAtMs);
-  if (leaderClockMs !== null && leaderClockMs > anchorMs) anchorMs = leaderClockMs;
+  const earliestClockMs = earliestClockStartMs(input.queue);
+  if (earliestClockMs !== null && earliestClockMs > anchorMs)
+    anchorMs = earliestClockMs;
 
   for (const task of input.queue) {
     /**
