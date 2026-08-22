@@ -1,4 +1,5 @@
 import type { TaskAttachment } from "@/lib/domain/tasks";
+import { fileGlyph } from "@/components/features/attachments/attachmentRules";
 
 /**
  * The files on submitted work, as openable links.
@@ -13,14 +14,13 @@ import type { TaskAttachment } from "@/lib/domain/tasks";
  * such submission is noise.
  */
 
-function fileGlyph(type: string, name: string): string {
-  const t = `${type} ${name}`.toLowerCase();
-  if (/(png|jpe?g|gif|webp|avif|heic|image)/.test(t)) return "🖼️";
-  if (/pdf/.test(t)) return "📄";
-  if (/(docx?|word)/.test(t)) return "📝";
-  if (/(xlsx?|sheet|csv)/.test(t)) return "📊";
-  return "📎";
-}
+/*
+ * The icon comes from `attachmentRules`, which every other file list already
+ * uses. This file had its OWN copy — a third one — and it knew nothing about
+ * video, audio or archives, so a submitted clip, a recording and a zip all
+ * showed the same paperclip. Two implementations of one rule is two places to
+ * forget; the copy is gone rather than extended.
+ */
 
 export function SubmittedFiles({
   files,

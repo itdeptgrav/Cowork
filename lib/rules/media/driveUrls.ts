@@ -102,6 +102,37 @@ export function driveViewUrl(fileId: string): string {
 }
 
 /**
+ * Drive's own player, for embedding in an `<iframe>`.
+ *
+ * ## Why a video is not simply given to `<video src>`
+ *
+ * Our byte proxy cannot stream. `GET /cowork/media/view/:fileId` fetches the
+ * whole file from Drive and pipes it: it never reads the `Range` request
+ * header, never answers `206`, and never sets `Accept-Ranges`. A native player
+ * pointed at it therefore cannot SEEK, downloads the entire file to show three
+ * seconds of it, and on Safari — which requires byte-range support for media
+ * and probes with `Range: bytes=0-1` — commonly refuses to play at all. With no
+ * size cap on what may be sent, that is not a corner case.
+ *
+ * Drive already solves this. It streams with ranges, makes lower-resolution
+ * renditions, and costs this deployment nothing: the bytes go from Google to
+ * the viewer without passing through our backend, which a range-capable proxy
+ * of our own would not — one 500 MB clip watched five times would be 2.5 GB of
+ * egress through a server whose whole design is to never touch file bytes.
+ *
+ * The trade is Google's player chrome rather than ours, and a few minutes of
+ * processing after upload before a fresh video will preview.
+ *
+ * **Only for files that are public**, exactly as `driveViewUrl` — chat and
+ * message attachments are granted `role: reader, type: anyone` by
+ * `finalizeDriveFile`. **Task attachments are private and must not use this**;
+ * they would show Google's "you need access" page inside the frame.
+ */
+export function drivePreviewUrl(fileId: string): string {
+  return `https://drive.google.com/file/d/${fileId}/preview`;
+}
+
+/**
  * The Drive file id inside a URL, or null.
  *
  * Every shape the two systems have ever stored, because the field they are read

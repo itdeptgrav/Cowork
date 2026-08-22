@@ -22,9 +22,11 @@ import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
 import { DriveImage } from "@/components/ui/DriveImage";
 import { ImageLightbox, downloadFile } from "@/components/ui/ImageLightbox";
+import { VideoLightbox } from "@/components/ui/VideoLightbox";
 import {
   driveFileIdFrom,
   driveImageSrc,
+  drivePreviewUrl,
   driveProxySrc,
   driveViewUrl,
 } from "@/lib/rules/media/driveUrls";
@@ -193,6 +195,52 @@ function Thumbnail({
   );
 }
 
+/** The Drive id a video can be played from, or null if there is none. */
+function playingId(a: MessageAttachment): string | null {
+  return a.fileId ?? driveFileIdFrom(a.url);
+}
+
+/**
+ * The generic row: a name, a size, and a link that opens the thing.
+ *
+ * Extracted because a video with no derivable Drive id falls back to it — there
+ * is no player to open without an id, and a dead Play button is worse than an
+ * honest link.
+ */
+function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
+  return (
+    <a
+      /* Drive's own page, not the byte proxy: this is a link a person
+         follows, and Drive reads a PDF better than a raw stream does.
+         The `<audio>` above keeps `src` because it needs bytes. */
+      href={mediaOpenUrl(a)}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`flex w-full items-center gap-2.5 rounded-[10px] p-2 ${
+        mine ? "bg-white/15 hover:bg-white/25" : "bg-[var(--control)] hover:opacity-90"
+      }`}
+    >
+      <span
+        className={`grid h-9 w-9 shrink-0 place-items-center rounded-[7px] ${
+          mine ? "bg-white/20" : "bg-[var(--surface-raised)]"
+        }`}
+      >
+        <Icon.attach className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs">
+          {a.name ?? (a.kind === "pdf" ? "Document.pdf" : "File")}
+        </span>
+        {a.sizeBytes ? (
+          <span className="block text-[11px] opacity-60">
+            {formatBytes(a.sizeBytes)}
+          </span>
+        ) : null}
+      </span>
+    </a>
+  );
+}
+
 export function MessageAttachments({
   items,
   mine,
@@ -204,6 +252,9 @@ export function MessageAttachments({
      only one lightbox can be open regardless of how many threads or bubbles
      are on screen. */
   const [zoomed, setZoomed] = useState<MessageAttachment | null>(null);
+  /* The one video currently open, for the same reason as `zoomed` — and kept
+     separate from it so the two lightboxes can never both be mounted. */
+  const [playing, setPlaying] = useState<MessageAttachment | null>(null);
   const images = items.filter((a) => a.kind === "image");
   const rest = items.filter((a) => a.kind !== "image");
   const grid = images.length > 1;
@@ -248,59 +299,51 @@ export function MessageAttachments({
               className="w-full"
             />
           );
-        if (a.kind === "video")
-          return (
-            /* `preload="none"` is doing real work here, not tidiness. There is
-               no size limit on what can be sent, so a thread can hold several
-               half-gigabyte clips — preloading even their metadata would have
-               the browser open a connection per video the moment the thread
-               scrolls past. Nothing is fetched until somebody presses play.
+        if (a.kind === "video") {
+          /* A card that OPENS a player, not a player.
 
-               `playsInline` so iOS plays it in the bubble instead of throwing
-               it into the system fullscreen player, which loses the thread. */
-            <video
+             This was briefly an inline `<video src={src}>`, which does not
+             work: `src` is our byte proxy, and it cannot stream — no `Range`
+             support means no seeking, a whole file pulled down to show any of
+             it, and nothing at all on Safari. See `drivePreviewUrl`.
+
+             Embedding Drive's player inline instead would be worse again: one
+             cross-origin frame per video, all loading as soon as the thread
+             scrolls past them. So the thread holds a cheap card, and the
+             player is built once, on demand, in the lightbox. */
+          const id = a.fileId ?? driveFileIdFrom(a.url);
+          if (!id) return <FileRow key={i} a={a} mine={mine} />;
+          return (
+            <button
               key={i}
-              src={src}
-              controls
-              preload="none"
-              playsInline
-              className="max-h-[280px] w-full rounded-[10px] bg-black"
-            />
-          );
-        return (
-          <a
-            key={i}
-            /* Drive's own page, not the byte proxy: this is a link a person
-               follows, and Drive reads a PDF better than a raw stream does.
-               The `<audio>` above keeps `src` because it needs bytes. */
-            href={mediaOpenUrl(a)}
-            target="_blank"
-            rel="noopener noreferrer"
-            className={`flex w-full items-center gap-2.5 rounded-[10px] p-2 ${
-              mine
-                ? "bg-white/15 hover:bg-white/25"
-                : "bg-[var(--control)] hover:opacity-90"
-            }`}
-          >
-            <span
-              className={`grid h-9 w-9 shrink-0 place-items-center rounded-[7px] ${
-                mine ? "bg-white/20" : "bg-[var(--surface-raised)]"
+              type="button"
+              onClick={() => setPlaying(a)}
+              aria-label={`Play ${a.name ?? "video"}`}
+              className={`flex w-full items-center gap-2.5 rounded-[10px] p-2 text-left ${
+                mine
+                  ? "bg-white/15 hover:bg-white/25"
+                  : "bg-[var(--control)] hover:opacity-90"
               }`}
             >
-              <Icon.attach className="h-4 w-4" />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className="block truncate text-xs">
-                {a.name ?? (a.kind === "pdf" ? "Document.pdf" : "File")}
+              <span
+                className={`grid h-9 w-9 shrink-0 place-items-center rounded-[7px] ${
+                  mine ? "bg-white/20" : "bg-[var(--surface-raised)]"
+                }`}
+              >
+                <Icon.play className="h-4 w-4" />
               </span>
-              {a.sizeBytes ? (
-                <span className="block text-[11px] opacity-60">
-                  {formatBytes(a.sizeBytes)}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs">
+                  {a.name ?? "Video"}
                 </span>
-              ) : null}
-            </span>
-          </a>
-        );
+                <span className="block text-[11px] opacity-60">
+                  {a.sizeBytes ? `${formatBytes(a.sizeBytes)} · ` : ""}Tap to play
+                </span>
+              </span>
+            </button>
+          );
+        }
+        return <FileRow key={i} a={a} mine={mine} />;
       })}
 
       {zoomed && (
@@ -312,6 +355,23 @@ export function MessageAttachments({
           downloadUrl={mediaUrl(zoomed)}
           downloadName={zoomed.name ?? "image.jpg"}
           onClose={() => setZoomed(null)}
+        />
+      )}
+
+      {playing && playingId(playing) && (
+        <VideoLightbox
+          previewUrl={drivePreviewUrl(playingId(playing)!)}
+          /* `?download=1` makes the proxy answer with
+             `Content-Disposition: attachment`, which is what actually saves
+             the file — see `VideoLightbox`. Null where no proxy can be built,
+             so the button is simply absent rather than broken. */
+          downloadUrl={
+            mediaProxyUrl(playing)
+              ? `${mediaProxyUrl(playing)}?download=1`
+              : null
+          }
+          name={playing.name ?? "Video"}
+          onClose={() => setPlaying(null)}
         />
       )}
     </span>

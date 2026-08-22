@@ -23,6 +23,7 @@ import type {
   PinnedMessage,
 } from "../../domain/work.ts";
 import { driveFileIdFrom } from "../../rules/media/driveUrls.ts";
+import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
 
 export const DM_COLLECTION = "cowork_direct_messages";
 export const GROUP_COLLECTION = "cowork_groups";
@@ -108,14 +109,34 @@ export function readAttachment(a: unknown): MessageAttachment | null {
   const url = typeof o.url === "string" ? o.url : "";
   if (!url) return null;
   const t = typeof o.type === "string" ? o.type : "";
+  const name = typeof o.name === "string" ? o.name : null;
+  /**
+   * The stored type where it says something, the filename where it does not.
+   *
+   * **Two bugs met here.** `video` was missing from this list, so the kind the
+   * upload path had just worked out was read straight back as `file` and every
+   * clip rendered as a paperclip row — the player it was written for could
+   * never be reached.
+   *
+   * And the kind is FROZEN at send time: `type` is written into the message
+   * document, so every video sent before that existed is stored as `file` for
+   * good. Whitelisting `video` alone would fix nothing already in a thread.
+   *
+   * So `file` gets a second look. It is the fallback bucket rather than a
+   * positive claim — nothing ever meant "this is definitely not a video" by
+   * writing it — whereas `image`, `pdf`, `voice` and `video` were each decided
+   * deliberately and are taken at their word.
+   */
+  const stated =
+    t === "image" || t === "pdf" || t === "voice" || t === "video" ? t : null;
   const kind: MessageAttachment["kind"] =
-    t === "image" || t === "pdf" || t === "voice" ? t : "file";
+    stated ?? attachmentKind(name, null);
   const fileId =
     driveFileId(url) ?? (typeof o.fileId === "string" ? o.fileId : null);
   return {
     url,
     kind,
-    name: typeof o.name === "string" ? o.name : null,
+    name,
     sizeBytes:
       typeof o.bytes === "number"
         ? o.bytes

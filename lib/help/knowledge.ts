@@ -2546,6 +2546,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "big file",
       "send a video",
       "video file",
+      "play a video",
+      "watch a video",
+      "video still processing",
+      "video will not play",
       "send audio",
       "what file types can i send",
       "file type not allowed",
@@ -2560,6 +2564,8 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why did my file fail to upload?",
       "Can I send large files?",
       "Can I send a video in chat?",
+      "How do I watch a video someone sent?",
+      "Why does a video say it is still processing?",
       "What kinds of file can I attach?",
       "Is there a size limit on attachments?",
       "My upload failed, do I have to pick the file again?",
@@ -2567,10 +2573,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why does the chat only show the last 50 messages?",
     ],
     answer:
-      "Attach a file with the paperclip beside the message box. It uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. **Any type of file, and no size limit.** Video, audio, documents, spreadsheets, archives, anything: nothing is refused for being the wrong kind or for being too big. The same is true in a task's Discussion thread, which uses the same composer. Video and audio get a player in the message itself rather than a download link — press play and it streams; nothing is fetched until you do, so scrolling past a thread full of large clips costs nothing. Images show as thumbnails you can click to see full size, PDFs and everything else show as a row you click to open. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
+      "Attach a file with the paperclip beside the message box. It uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. **Any type of file, and no size limit.** Video, audio, documents, spreadsheets, archives, anything: nothing is refused for being the wrong kind or for being too big. The same is true in a task's Discussion thread, which uses the same composer. **A video opens where you are.** It arrives as a card with a play symbol; clicking it opens the video over the page, the same way clicking an image opens it full size — you are never sent off to Google Drive and back. Escape closes it, so does clicking outside it, and there is a download button in the corner. The player itself is Drive's, because the video is streamed from Drive directly to you rather than through Cowork: that is what makes seeking and quality work on a large file, and it is why a video uploaded moments ago can say it is still processing for a few minutes before it will play. Audio plays inline in the message. Images show as thumbnails you can click to see full size, PDFs and everything else show as a row you click to open. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
     related: ["general-message-drafts", "general-start-conversation"],
     source:
-      "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts; attachmentKind in lib/rules/messages/attachmentKind.ts; the file inputs in MessagesArea.tsx and ChatPanel.tsx carry no accept filter, and no size cap exists anywhere — the browser opens a resumable Drive session and the engine never handles the bytes (routes/task_routes/mediaUpload.js)",
+      "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts; attachmentKind in lib/rules/messages/attachmentKind.ts; the file inputs in MessagesArea.tsx and ChatPanel.tsx carry no accept filter, and no size cap exists anywhere — the browser opens a resumable Drive session and the engine never handles the bytes (routes/task_routes/mediaUpload.js); video plays through VideoLightbox.tsx, which frames drivePreviewUrl rather than pointing a <video> at the byte proxy, because GET /cowork/media/view/:fileId answers no Range request so a native player cannot seek and Safari will not start",
   },
   {
     id: "general-message-drafts",
