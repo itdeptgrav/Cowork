@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { anchorMsFor, chainDeadlines, officeOpenMsFor } from "./priorityDeadline.ts";
+import {
+  anchorMsFor,
+  chainDeadlines,
+  earliestClockStartMs,
+  officeOpenMsFor,
+} from "./priorityDeadline.ts";
 
 /**
  * The projection anchor must not depend on the instant it is asked for.
@@ -338,4 +343,124 @@ test("the leader's clock still floors the queue", () => {
     addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
   });
   assert.equal(chained[0].dueDate, "2026-08-21T08:47:00.000Z"); // 14:17 IST
+});
+
+/* ── The reorder feedback loop ─────────────────────────────────────────────── */
+
+/**
+ * REPORTED, in the owner's own numbers. Two 30-minute tasks for one person:
+ *
+ *   before   T1 P1 -> 16:29     T2 P2 -> 16:59
+ *   after    T1 P2 -> 17:29     T2 P1 -> 16:59      ← both half an hour late
+ *
+ * The swap gained nobody any work, and the person did not become available
+ * later — yet the queue finished at 17:29 instead of 16:59, and T1 was left
+ * reading "Counted from 15:59" against a 17:29 deadline: a ninety-minute slot
+ * for a thirty-minute budget.
+ *
+ * The cause is a feedback loop rather than arithmetic. The engine stamps
+ * `clockStartsAt` as `max(personal availability, end of the queue ahead)`, so
+ * T2's 16:29 stamp EXISTS ONLY BECAUSE T2 USED TO BE SECOND — it is T1's old
+ * finish. The chain then floored itself on whichever task led, so promoting T2
+ * fed its own former position back in as the queue's new start.
+ *
+ * The tests below hold both halves: the dates exchange, and the queue's finish
+ * does not move.
+ */
+const CLOCK_T1 = at("2026-08-22T10:29:00.000Z"); // 15:59 IST — duty session start
+const CLOCK_T2 = at("2026-08-22T10:59:00.000Z"); // 16:29 IST — T1's old finish
+const HALF_HOUR = 1800;
+/* Both created before the queue starts, so `createdAtMs` never clamps and the
+   clock floor is the only thing under test. */
+const CREATED = at("2026-08-22T10:00:00.000Z");
+const OPEN_0930 = at("2026-08-22T04:00:00.000Z"); // 09:30 IST
+
+function reorderQueue(order: readonly { id: string; clock: number }[]) {
+  return chainDeadlines({
+    queue: order.map((t, i) => ({
+      taskId: t.id,
+      assigneeIds: ["E1"],
+      assigneePriorities: { E1: i + 1 },
+      agreedWindowSecs: HALF_HOUR,
+      createdAtMs: CREATED,
+      clockStartsAtMs: t.clock,
+    })),
+    anchorMs: OPEN_0930,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+}
+
+const T1 = { id: "T1", clock: CLOCK_T1 };
+const T2 = { id: "T2", clock: CLOCK_T2 };
+
+test("before the swap: 15:59 -> 16:29, then 16:29 -> 16:59", () => {
+  const before = reorderQueue([T1, T2]);
+  assert.equal(before[0].dueDate, "2026-08-22T10:59:00.000Z"); // 16:29 IST
+  assert.equal(before[1].dueDate, "2026-08-22T11:29:00.000Z"); // 16:59 IST
+});
+
+test("swapping the two ranks exchanges the two dates, and nothing else moves", () => {
+  const after = reorderQueue([T2, T1]);
+  const byId = new Map(after.map((d) => [d.taskId, d.dueDate]));
+  assert.equal(byId.get("T2"), "2026-08-22T10:59:00.000Z"); // 16:29 IST
+  assert.equal(
+    byId.get("T1"),
+    "2026-08-22T11:29:00.000Z", // 16:59 IST — not 17:29
+    "the demoted task was pushed past the queue's own finish",
+  );
+});
+
+test("the queue's finish is the same whichever order it is worked in", () => {
+  /* The invariant behind the case: same person, same two budgets, so the line
+     ends at the same moment. A reorder that moves the finish is a reorder that
+     handed somebody an extension nobody approved. */
+  const before = reorderQueue([T1, T2]);
+  const after = reorderQueue([T2, T1]);
+  assert.equal(
+    after[after.length - 1].dueDate,
+    before[before.length - 1].dueDate,
+  );
+});
+
+test("the floor is the earliest stamp, not the leading task's", () => {
+  /* Stated directly, because reading it off `queue[0]` is the shape the fault
+     had and it looks correct in every fixture where the stamps are equal. */
+  assert.equal(earliestClockStartMs([{ taskId: "a", clockStartsAtMs: CLOCK_T2 }, { taskId: "b", clockStartsAtMs: CLOCK_T1 }]), CLOCK_T1);
+  assert.equal(earliestClockStartMs([{ taskId: "a", clockStartsAtMs: CLOCK_T1 }, { taskId: "b", clockStartsAtMs: CLOCK_T2 }]), CLOCK_T1);
+});
+
+test("a queue with no stamps at all still has no floor", () => {
+  assert.equal(earliestClockStartMs([{ taskId: "a" }, { taskId: "b" }]), null);
+});
+
+test("a task that genuinely did not exist yet still holds the queue back", () => {
+  /* The clock floor is now order-invariant; `createdAtMs` deliberately is not.
+     Promoting work that only arrived at 16:29 cannot start it at 15:59, and
+     that clamp must survive this fix rather than be swept up in it. */
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "LATE",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HALF_HOUR,
+        createdAtMs: CLOCK_T2, // 16:29 IST
+        clockStartsAtMs: CLOCK_T2,
+      },
+      {
+        taskId: "EARLY",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 2 },
+        agreedWindowSecs: HALF_HOUR,
+        createdAtMs: CREATED,
+        clockStartsAtMs: CLOCK_T1,
+      },
+    ],
+    anchorMs: OPEN_0930,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-22T11:29:00.000Z"); // 16:59 IST
+  assert.equal(chained[1].dueDate, "2026-08-22T11:59:00.000Z"); // 17:29 IST
 });
