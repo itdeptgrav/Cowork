@@ -67,6 +67,8 @@ export type FileKind =
   | "slides"
   | "archive"
   | "voice"
+  /** Any moving picture. `voice` remains the name for every audio file. */
+  | "video"
   | "other";
 
 /** How the bytes are reached. The component switches on this; nothing else does. */
@@ -127,6 +129,17 @@ const BY_EXTENSION: Record<string, FileKind> = {
   "7z": "archive",
   gz: "archive",
   tar: "archive",
+  mp4: "video",
+  m4v: "video",
+  mov: "video",
+  mkv: "video",
+  avi: "video",
+  wmv: "video",
+  flv: "video",
+  mpg: "video",
+  mpeg: "video",
+  "3gp": "video",
+  ogv: "video",
 };
 
 /**
@@ -141,6 +154,7 @@ const BY_EXTENSION: Record<string, FileKind> = {
 export function fileKind(mimeType: string | null, name: string | null): FileKind {
   const type = (mimeType ?? "").toLowerCase();
   if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
   if (type.startsWith("audio/")) return "voice";
   if (type === "application/pdf") return "pdf";
   if (type.includes("spreadsheet") || type === "text/csv") return "sheet";
@@ -157,7 +171,14 @@ export function fileKind(mimeType: string | null, name: string | null): FileKind
        `application/octet-stream` on a `.png` is still a picture. */
     if (["png", "jpg", "jpeg", "gif", "webp", "svg", "heic", "avif"].includes(ext))
       return "image";
-    if (["mp3", "wav", "m4a", "ogg", "webm", "aac"].includes(ext)) return "voice";
+    /* `.webm` is listed here as VIDEO, not audio. It can carry either, but a
+       webm holding only audio arrives with an `audio/webm` type and is caught
+       by the mime branch long before this — so the extension alone, with no
+       type at all, is far more often a clip. It used to say voice, which gave
+       every silent webm an audio icon and a voice-note label. */
+    if (["mp3", "wav", "m4a", "ogg", "oga", "aac", "flac", "opus", "wma"].includes(ext))
+      return "voice";
+    if (["webm", "mts", "m2ts", "ts", "vob"].includes(ext)) return "video";
   }
   return "other";
 }
@@ -388,6 +409,7 @@ export function countByKind(files: readonly TaskFile[]): Record<FileKind, number
     slides: 0,
     archive: 0,
     voice: 0,
+    video: 0,
     other: 0,
   };
   for (const f of files) counts[f.kind] += 1;
@@ -439,7 +461,11 @@ export const KIND_LABEL: Record<FileKind, string> = {
   sheet: "Sheets",
   slides: "Slides",
   archive: "Archives",
-  voice: "Voice",
+  /* "Audio", not "Voice": the kind is named `voice` for historical reasons but
+     it now holds every audio file, and a chip reading "Voice" over a filter
+     containing somebody's uploaded music track is simply wrong. */
+  voice: "Audio",
+  video: "Video",
   other: "Other",
 };
 

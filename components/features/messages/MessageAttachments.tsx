@@ -248,6 +248,25 @@ export function MessageAttachments({
               className="w-full"
             />
           );
+        if (a.kind === "video")
+          return (
+            /* `preload="none"` is doing real work here, not tidiness. There is
+               no size limit on what can be sent, so a thread can hold several
+               half-gigabyte clips — preloading even their metadata would have
+               the browser open a connection per video the moment the thread
+               scrolls past. Nothing is fetched until somebody presses play.
+
+               `playsInline` so iOS plays it in the bubble instead of throwing
+               it into the system fullscreen player, which loses the thread. */
+            <video
+              key={i}
+              src={src}
+              controls
+              preload="none"
+              playsInline
+              className="max-h-[280px] w-full rounded-[10px] bg-black"
+            />
+          );
         return (
           <a
             key={i}

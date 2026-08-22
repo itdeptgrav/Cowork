@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Avatar, AvatarStack } from "@/components/ui/Avatar";
+import { Avatar, AvatarStack, ZoomableAvatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import {
   Button,
@@ -1488,11 +1488,15 @@ function Thread({
           />
         ) : (
           others[0] && (
-            <Avatar
+            /* Clickable, so the person you are talking to can be seen properly
+               rather than as a 40px disc. Falls back to a plain avatar by
+               itself where they have set no picture — see `ZoomableAvatar`. */
+            <ZoomableAvatar
               initials={others[0].initials}
               hue={others[0].hue}
               src={others[0].profilePictureUrl}
               name={others[0].displayName}
+              zoomLabel={others[0].displayName}
               size="md"
             />
           )
@@ -1949,7 +1953,13 @@ function Thread({
           <input
             ref={fileRef}
             type="file"
-            accept="image/*,application/pdf,audio/*"
+            /* No `accept`, deliberately. It was
+               `image/*,application/pdf,audio/*`, which hid every video, every
+               document and every archive behind "All files" in the picker — and
+               on some platforms made them unselectable outright. Nothing
+               downstream ever cared: the upload goes straight to Drive, and
+               `attachmentKind` files whatever arrives. A filter that refuses
+               work people legitimately need to send is not a safeguard. */
             multiple
             hidden
             onChange={(e) => {
@@ -1970,7 +1980,7 @@ function Thread({
             aria-label="Attach a file"
             title={
               canUpload
-                ? "Attach an image, PDF, or audio file"
+                ? "Attach a file — any type, any size"
                 : "Attachments are not available here"
             }
             className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-faint"

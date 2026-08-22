@@ -207,6 +207,7 @@ import {
   readPinnedMessages,
   readReactions,
 } from "./messaging.ts";
+import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
 import { reactionChanges } from "../../rules/messages/reactions.ts";
 import { withPin, withoutPin } from "../../rules/messages/pins.ts";
 import {
@@ -14308,14 +14309,10 @@ export class LegacyRepository {
     file: File,
     onProgress?: (fraction: number) => void,
   ): Promise<ActionResult<MessageAttachment>> {
-    const mime = file.type || "";
-    const kind: MessageAttachment["kind"] = mime.startsWith("image/")
-      ? "image"
-      : mime.startsWith("audio/")
-        ? "voice"
-        : mime === "application/pdf"
-          ? "pdf"
-          : "file";
+    /* Name AND type, because `File.type` is empty for plenty of real files —
+       see `attachmentKind`. Deciding on the type alone filed videos as generic
+       attachments, which render as a paperclip row instead of a player. */
+    const kind = attachmentKind(file.name, file.type);
 
     const r = await this.uploadDriveFile(file, onProgress);
     if (!r.ok) return r;

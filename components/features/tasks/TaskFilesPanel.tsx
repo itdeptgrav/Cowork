@@ -44,6 +44,23 @@ import {
 } from "@/lib/rules/tasks/taskFiles";
 
 /**
+ * A mime type per kind, purely to pick an icon.
+ *
+ * The kind was worked out once already, from the type and the name together —
+ * handing `fileGlyph` a bare filename would make it guess a second time, and
+ * disagree whenever the two disagreed. Only the kinds whose icon cannot be
+ * reached from a filename alone need an entry; the rest fall through to the
+ * name, which is what `fileGlyph` is good at.
+ */
+const GLYPH_TYPE: Partial<Record<FileKind, string>> = {
+  image: "image/png",
+  video: "video/mp4",
+  voice: "audio/mpeg",
+  pdf: "application/pdf",
+  archive: "application/zip",
+};
+
+/**
  * Every file on one task, in one place.
  *
  * ## Why this is a tab and not another card on Overview
@@ -259,7 +276,12 @@ function Thumb({ file }: { file: TaskFile }) {
       aria-hidden="true"
       className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-[var(--surface-sunken)] text-[15px]"
     >
-      {fileGlyph(file.kind === "voice" ? "audio/x" : "", file.name)}
+      {/* A synthetic mime type from the kind we already classified, rather
+          than making `fileGlyph` re-derive it from the name. This passed
+          `"audio/x"` for voice and `""` for everything else — and there was no
+          audio branch to receive it, so the special case did nothing and every
+          non-image row showed the same paperclip. */}
+      {fileGlyph(GLYPH_TYPE[file.kind] ?? "", file.name)}
     </span>
   );
 }

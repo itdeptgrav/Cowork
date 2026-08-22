@@ -32,7 +32,7 @@ const MAX_ATTACHMENTS = 10;
  * `chat` is the working thread, `draft` is the pre-start negotiation thread
  * where deadline proposals and timer decisions are discussed.
  *
- * The working thread carries real attachments — image, PDF, voice, or any file
+ * The working thread carries real attachments — image, video, PDF, audio or any file
  * — the same way the message thread does: each file uploads first, stages in
  * the composer, and rides ONE message document on send, so a failed upload
  * never leaves a half-sent message. The send goes through the engine (not a
@@ -294,7 +294,11 @@ export function ChatPanel({
                 <input
                   ref={fileRef}
                   type="file"
-                  accept="image/*,application/pdf,audio/*"
+                  /* No `accept` — the same change as the Messages composer, and
+                     for the same reason. This panel renders through
+                     `MessageAttachments` too, so leaving the filter here would
+                     have meant a video plays in a task thread but cannot be
+                     picked in one. */
                   multiple
                   hidden
                   onChange={(e) => {
@@ -316,7 +320,7 @@ export function ChatPanel({
                   onClick={() => fileRef.current?.click()}
                   disabled={uploading || state.isPending}
                   aria-label="Attach a file"
-                  title="Attach an image, PDF, or audio file"
+                  title="Attach a file — any type, any size"
                   className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
                 >
                   <Icon.attach className="h-4 w-4" />

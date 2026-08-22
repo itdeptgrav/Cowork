@@ -37,8 +37,17 @@ export function ImageLightbox({
   apiBase?: string | null;
   width?: number;
   alt: string;
-  downloadUrl: string;
-  downloadName: string;
+  /**
+   * Where to save it from, and what to call it. **Optional together:** omit
+   * both and no download button is drawn.
+   *
+   * A chat attachment is a file somebody sent you, and saving it is the point.
+   * A profile picture is not — it is somebody's face, shown so you can see who
+   * you are talking to. Offering "download" on it invites an action nobody
+   * asked for and implies the picture is yours to keep.
+   */
+  downloadUrl?: string;
+  downloadName?: string;
   /** The backend byte proxy, tried when the direct URL refuses a fetch. */
   proxyUrl?: string | null;
   onClose: () => void;
@@ -86,6 +95,7 @@ export function ImageLightbox({
       />
 
       <div className="absolute top-4 right-4 flex items-center gap-2">
+        {downloadUrl && downloadName && (
         <button
           type="button"
           aria-label={`Download ${downloadName}`}
@@ -110,6 +120,7 @@ export function ImageLightbox({
         >
           <Icon.download className="h-4 w-4" />
         </button>
+        )}
         <button
           type="button"
           aria-label="Close"

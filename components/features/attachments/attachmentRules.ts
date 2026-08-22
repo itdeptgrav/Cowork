@@ -39,10 +39,37 @@ export function isPdf(type: string): boolean {
   return type === "application/pdf";
 }
 
+/**
+ * The icon for a file in a list.
+ *
+ * Matches on the type AND the name together, because neither is reliable
+ * alone — `File.type` is empty for plenty of real files, and a name may have no
+ * extension at all.
+ *
+ * **Video, audio and archives were missing**, so every one of them fell through
+ * to the paperclip. That mattered once any file type could be attached: a
+ * submission holding a clip, a voice recording and a zip showed three identical
+ * rows, distinguishable only by reading the filenames. Audio was worse than
+ * missing — `TaskFilesPanel` passed a synthetic `"audio/x"` type specifically to
+ * get an audio icon, and there was no branch to catch it, so the special case
+ * did nothing at all.
+ *
+ * Order matters where the vocabularies overlap. Video is tested before audio
+ * (`.m4v` would otherwise never be reached past `m4a`-style matching), and both
+ * before the document branches, since "presentation" and `.pptx` share no
+ * ground with media but `mp4` sits inside `mpeg` patterns.
+ */
 export function fileGlyph(type: string, name = ""): string {
   const t = `${type} ${name}`.toLowerCase();
-  if (isPreviewableImage(type) || /(png|jpe?g|webp|gif)/.test(t)) return "🖼";
+  if (isPreviewableImage(type) || /(png|jpe?g|webp|gif|bmp|svg|heic|avif|tiff?)/.test(t))
+    return "🖼";
   if (isPdf(type) || /pdf/.test(t)) return "📄";
+  if (/^video\//.test(type) || /\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|mpe?g|3gp|ogv)\b/.test(t))
+    return "🎬";
+  if (/^audio\//.test(type) || /\.(mp3|wav|ogg|oga|m4a|aac|flac|wma|opus|amr)\b/.test(t))
+    return "🎵";
+  if (/(zip|compressed|x-tar|x-7z|x-rar|gzip)/.test(type) || /\.(zip|rar|7z|tar|gz|bz2|xz)\b/.test(t))
+    return "🗜";
   if (/(sheet|excel|xlsx?|csv)/.test(t)) return "📊";
   if (/(presentation|powerpoint|pptx?)/.test(t)) return "📽";
   if (/(word|docx?)/.test(t)) return "📝";

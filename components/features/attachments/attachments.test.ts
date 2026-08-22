@@ -68,6 +68,21 @@ test("a file's kind is shown from its type, then its name", () => {
   assert.equal(fileGlyph("", "deck.pptx"), "📽");
   assert.equal(fileGlyph("", "notes.docx"), "📝");
   assert.equal(fileGlyph("application/x-thing", "unknown.bin"), "📎");
+
+  /* Video, audio and archives fell through to the paperclip, so a submission
+     holding a clip, a recording and a zip showed three identical rows. */
+  assert.equal(fileGlyph("video/mp4", "clip.mp4"), "🎬");
+  assert.equal(fileGlyph("", "recording.mov"), "🎬");
+  assert.equal(fileGlyph("", "screen.webm"), "🎬");
+  assert.equal(fileGlyph("audio/mpeg", "track.mp3"), "🎵");
+  assert.equal(fileGlyph("", "note.m4a"), "🎵");
+  assert.equal(fileGlyph("application/zip", "deliverable.zip"), "🗜");
+  assert.equal(fileGlyph("", "source.7z"), "🗜");
+
+  /* A video must not be mistaken for a document because "mpeg" and "mpg"
+     share letters with nothing here, but `.m4v` and `.m4a` differ by one. */
+  assert.equal(fileGlyph("", "movie.m4v"), "🎬");
+  assert.equal(fileGlyph("", "song.m4a"), "🎵");
 });
 
 test("only formats a browser can render inline are previewed", () => {

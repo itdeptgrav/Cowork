@@ -269,7 +269,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "What happens after I submit?",
     ],
     answer:
-      "Submitting moves the task to in review and starts the approval chain configured for your organisation. You cannot approve your own submission — that is blocked outright, and it is the single most serious defect carried over from the previous system, where any signed-in employee could approve any task including their own. **Whatever you attach goes with it.** Use the Attachments box on the submission form — pick your files there, write the note, then press Submit for review. The files upload once the submission exists, which is why they are chosen before you submit and sent immediately after; if one fails you are told which, and the work is still submitted rather than being thrown away with it. What you attached then appears in three places, and it is the same file rather than three uploads: on the Review tab under the covering note, which is the copy the reviewer decides against; on the Submission tab, so you can check what you sent; and on the Files tab under Attempt 1, 2 and so on, so it can be found later without remembering which screen it arrived through. Files attached this way are private — stored by the engine and streamed only to somebody it will already show the task to — and they are not posted into the task chat. Work submitted from the older application behaves differently: it carried file addresses rather than uploads, and those were posted into the chat thread, so they are marked link-accessible on the Files tab because anybody holding the address can open one. Both kinds show up together wherever a submission is displayed.",
+      "Submitting moves the task to in review and starts the approval chain configured for your organisation. You cannot approve your own submission — that is blocked outright, and it is the single most serious defect carried over from the previous system, where any signed-in employee could approve any task including their own. **Whatever you attach goes with it.** Use the Attachments box on the submission form — pick your files there, write the note, then press Submit for review. **Any type of file, and no size limit** — video, audio, archives, design files, anything: nothing is refused for being the wrong kind or too big, and the same is true of the reference files on a new task, of a reviewer's correction files, and of the task's Discussion thread. The files upload once the submission exists, which is why they are chosen before you submit and sent immediately after; if one fails you are told which, and the work is still submitted rather than being thrown away with it. What you attached then appears in three places, and it is the same file rather than three uploads: on the Review tab under the covering note, which is the copy the reviewer decides against; on the Submission tab, so you can check what you sent; and on the Files tab under Attempt 1, 2 and so on, so it can be found later without remembering which screen it arrived through. The Files tab groups everything on the task by what it is — Images, Video, Audio, PDFs, Documents, Sheets, Slides, Archives, Other — so a submitted clip can be found without scrolling past every document on the task. Files attached this way are private — stored by the engine and streamed only to somebody it will already show the task to — and they are not posted into the task chat. Work submitted from the older application behaves differently: it carried file addresses rather than uploads, and those were posted into the chat thread, so they are marked link-accessible on the Files tab because anybody holding the address can open one. Both kinds show up together wherever a submission is displayed.",
     related: [
       "approvals-what-happens",
       "approvals-who-approves",
@@ -277,7 +277,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "task-daily-reports",
     ],
     source:
-      "submitCompletion, reviewSubmission self-approval guard (spec defect P1); the engine stores files on completionSubmission.imageUrls/pdfAttachments and posts the same set to task chat (taskForward.service.js submitCompletionRequest), read by readSubmissionAttachments in lib/rules/tasks/submissionFiles.ts and rendered by SubmittedFiles.tsx on ReviewPanel and SubmissionPanel; the Files tab pools them via fromSubmissionRecord, marked access link",
+      "submitCompletion, reviewSubmission self-approval guard (spec defect P1); the engine stores files on completionSubmission.imageUrls/pdfAttachments and posts the same set to task chat (taskForward.service.js submitCompletionRequest), read by readSubmissionAttachments in lib/rules/tasks/submissionFiles.ts and rendered by SubmittedFiles.tsx on ReviewPanel and SubmissionPanel; the Files tab pools them via fromSubmissionRecord, marked access link; ACCEPT is \"\" and MAX_BYTES is null in components/features/attachments/attachmentRules.ts, so the picker filters nothing and no size is refused; fileKind and KIND_LABEL in lib/rules/tasks/taskFiles.ts name the Files tab groups",
   },
   {
     id: "task-daily-reports",
@@ -2544,6 +2544,12 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "attach a file",
       "attachment",
       "big file",
+      "send a video",
+      "video file",
+      "send audio",
+      "what file types can i send",
+      "file type not allowed",
+      "size limit",
       "retry upload",
       "older messages",
       "message history",
@@ -2553,14 +2559,18 @@ export const HELP_ARTICLES: HelpArticle[] = [
     examples: [
       "Why did my file fail to upload?",
       "Can I send large files?",
+      "Can I send a video in chat?",
+      "What kinds of file can I attach?",
+      "Is there a size limit on attachments?",
       "My upload failed, do I have to pick the file again?",
       "How do I see older messages?",
       "Why does the chat only show the last 50 messages?",
     ],
     answer:
-      "Attach a file with the paperclip beside the message box. It uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
+      "Attach a file with the paperclip beside the message box. It uploads straight away, with a progress bar, and stays attached to the message until you send — up to 10 files at a time. **Any type of file, and no size limit.** Video, audio, documents, spreadsheets, archives, anything: nothing is refused for being the wrong kind or for being too big. The same is true in a task's Discussion thread, which uses the same composer. Video and audio get a player in the message itself rather than a download link — press play and it streams; nothing is fetched until you do, so scrolling past a thread full of large clips costs nothing. Images show as thumbnails you can click to see full size, PDFs and everything else show as a row you click to open. Large files are expected to work: the upload goes from your browser directly to storage rather than through Cowork, and it RESUMES rather than restarting if your connection drops part-way. A blip at 95% costs the last 5%, not the whole file. If a step does fail, it is tried again a few times on its own before you are told anything. When an upload really does fail, **the file is not thrown away** — the message box keeps it and offers Retry, so you press a button rather than going back to find the file again. Retrying only re-sends what failed: anything that already uploaded is left alone, so you never end up with two copies. Discard removes it if you have changed your mind. Anything you had typed stays exactly where it was throughout. Reading back: a conversation opens showing the most recent 50 messages, and scrolling up loads the previous 50 each time you reach the top, so a long thread does not have to be fetched all at once. Your place is kept as the older messages appear above you — the view does not jump — and new messages arriving while you are reading back still land normally at the bottom. When you reach the beginning of the conversation it simply stops offering more. A conversation with fewer than 50 messages shows all of them and never offers to load more.",
     related: ["general-message-drafts", "general-start-conversation"],
-    source: "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts",
+    source:
+      "lib/legacy/driveUpload.ts; lib/rules/messages/pagination.ts; attachmentKind in lib/rules/messages/attachmentKind.ts; the file inputs in MessagesArea.tsx and ChatPanel.tsx carry no accept filter, and no size cap exists anywhere — the browser opens a resumable Drive session and the engine never handles the bytes (routes/task_routes/mediaUpload.js)",
   },
   {
     id: "general-message-drafts",
@@ -2838,6 +2848,10 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "upload photo",
       "initials",
       "monogram",
+      "see picture bigger",
+      "zoom profile picture",
+      "click avatar",
+      "view someone's photo",
     ],
     examples: [
       "How do I add a profile picture?",
@@ -2845,12 +2859,14 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "Why do I see initials instead of faces?",
       "Can I remove my profile picture?",
       "Why can't my colleague see my new picture yet?",
+      "How do I see someone's profile picture bigger?",
+      "Why can't I click on some avatars?",
     ],
     answer:
-      "Open Profile and click your own avatar — it is the control. Choose an image and it is saved straight away; Remove underneath puts your initials back. Until you set one you have a monogram, coloured from your employee id, and so does everybody who has not set one: nothing generates a face for anybody. You can only change your own. There is no screen for setting somebody else's, because the engine has no way to decide who would be allowed to. Three things are refused, in these words: a file that is not an image gets \u201CPlease select an image file.\u201D, anything over ten megabytes gets \u201CImage must be under 10MB.\u201D, and an empty file gets \u201CThat file is empty.\u201D What is stored is not the file you chose: the picture is cropped to a square from its middle, scaled to 160 pixels and saved as a JPEG, which is around ten kilobytes \u2014 and what you see the moment you choose it is that finished square, not a preview of the original, so nothing changes appearance after saving. A photograph taken on a phone held sideways is rotated the right way up. This is the same picture the old Cowork application uses, because it is the same field on the same record: set it in either and it appears in both. Your own screens update immediately. Colleagues may keep seeing your old picture, or your initials, for a few minutes \u2014 the server keeps its staff list for five minutes and nothing can ask it to forget sooner. A few places always show initials rather than a photograph, and that is deliberate rather than missing: mail shows the sender as an address, and a video room shows whoever the meeting service reports, and in neither case is there an employee record to take a picture from.",
+      "Open Profile and click your own avatar — it is the control. Choose an image and it is saved straight away; Remove underneath puts your initials back. Until you set one you have a monogram, coloured from your employee id, and so does everybody who has not set one: nothing generates a face for anybody. You can only change your own. There is no screen for setting somebody else's, because the engine has no way to decide who would be allowed to. Three things are refused, in these words: a file that is not an image gets \u201CPlease select an image file.\u201D, anything over ten megabytes gets \u201CImage must be under 10MB.\u201D, and an empty file gets \u201CThat file is empty.\u201D What is stored is not the file you chose: the picture is cropped to a square from its middle, scaled to 160 pixels and saved as a JPEG, which is around ten kilobytes \u2014 and what you see the moment you choose it is that finished square, not a preview of the original, so nothing changes appearance after saving. A photograph taken on a phone held sideways is rotated the right way up. This is the same picture the old Cowork application uses, because it is the same field on the same record: set it in either and it appears in both. Your own screens update immediately. Colleagues may keep seeing your old picture, or your initials, for a few minutes \u2014 the server keeps its staff list for five minutes and nothing can ask it to forget sooner. A few places always show initials rather than a photograph, and that is deliberate rather than missing: mail shows the sender as an address, and a video room shows whoever the meeting service reports, and in neither case is there an employee record to take a picture from. **Seeing somebody else's picture properly:** at the top of a direct conversation, click the other person's avatar and their picture opens full size over the page. Escape closes it, so does clicking anywhere outside it or the ✕ in the corner. There is no download button on it — it is shown so you can see who you are talking to, not handed over as a file. This only appears where there is something to enlarge: somebody still showing a monogram has an avatar that is not clickable at all, rather than a button that opens a screen with two letters on it. Group conversations show a stack of several people at the top and are not clickable for the same reason — it would be ambiguous whose picture was meant.",
     related: ["general-what-is-cowork", "people-unplaced"],
     source:
-      "lib/rules/people/profilePicture.ts; lib/people/encodeProfilePicture.ts; LegacyRepository.setMyProfilePicture; cowork_employees.profilePicUrl",
+      "lib/rules/people/profilePicture.ts; lib/people/encodeProfilePicture.ts; LegacyRepository.setMyProfilePicture; cowork_employees.profilePicUrl; ZoomableAvatar in components/ui/Avatar.tsx renders a plain Avatar with no button when src is absent, and opens ImageLightbox without downloadUrl so no download control is drawn",
   },
   {
     id: "general-documents",

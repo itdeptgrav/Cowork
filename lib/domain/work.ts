@@ -260,7 +260,12 @@ export function directConversationKey(participantIds: EmployeeId[]): string {
  */
 export interface MessageAttachment {
   url: string;
-  kind: "image" | "pdf" | "voice" | "file";
+  /**
+   * `voice` is every audio file, not only a recorded note — the name is
+   * historical and is written into every message ever stored, so it stays.
+   * See `attachmentKind` for how one is chosen.
+   */
+  kind: "image" | "pdf" | "voice" | "video" | "file";
   name: string | null;
   sizeBytes: number | null;
   /** Length of a voice note in seconds, where one is recorded. */

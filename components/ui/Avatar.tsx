@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ImageLightbox } from "./ImageLightbox";
 
 /**
  * Avatars: a monogram by default, a photograph when the person supplied one.
@@ -125,5 +126,52 @@ export function AvatarStack({ people, overflow = 0 }: AvatarStackProps) {
         </span>
       )}
     </div>
+  );
+}
+
+/**
+ * An avatar you can click to see the photograph full size.
+ *
+ * **Only when there is a photograph.** Somebody showing a monogram has nothing
+ * to enlarge, and a button that opens a black screen with two letters on it is
+ * worse than no button — so with no `src` this renders exactly what `Avatar`
+ * renders, no button, no pointer, no hover state. The affordance appears only
+ * where it leads somewhere, which is why a caller can use this unconditionally
+ * without checking first.
+ *
+ * No download control. See the note on `ImageLightbox`'s `downloadUrl`: a face
+ * is shown so you know who you are talking to, not handed over as a file.
+ */
+export function ZoomableAvatar({
+  zoomLabel,
+  ...props
+}: AvatarProps & {
+  /** Whose picture this is, for the button and the dialog. */
+  zoomLabel?: string;
+}) {
+  const [zoomed, setZoomed] = useState(false);
+  const who = zoomLabel ?? props.name ?? "this person";
+
+  if (!props.src) return <Avatar {...props} />;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setZoomed(true)}
+        aria-label={`View ${who}'s profile picture`}
+        title={`View ${who}'s profile picture`}
+        className="shrink-0 cursor-zoom-in rounded-full transition-opacity hover:opacity-85 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--color-ink)]"
+      >
+        <Avatar {...props} />
+      </button>
+      {zoomed && (
+        <ImageLightbox
+          url={props.src}
+          alt={`${who}'s profile picture`}
+          onClose={() => setZoomed(false)}
+        />
+      )}
+    </>
   );
 }

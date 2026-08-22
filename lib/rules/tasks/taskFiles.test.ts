@@ -259,7 +259,37 @@ test("counts cover every source and kind, including the empty ones", () => {
   const k = countByKind(SET);
   assert.equal(k.image, 2);
   assert.equal(k.voice, 0);
-  assert.equal(Object.keys(k).length, 8);
+  assert.equal(k.video, 0);
+  assert.equal(Object.keys(k).length, 9);
+});
+
+test("a video is its own kind rather than “other”", () => {
+  /* Once any file type can be attached, a submitted clip landing in "Other"
+     alongside unrecognised binaries makes the filter useless for finding it. */
+  assert.equal(fileKind("video/mp4", "clip.mp4"), "video");
+  assert.equal(fileKind(null, "recording.mov"), "video");
+  assert.equal(fileKind("", "screen.mkv"), "video");
+  assert.equal(fileKind("application/octet-stream", "capture.avi"), "video");
+});
+
+test("a bare .webm is a video, not a voice note", () => {
+  /* It can carry either, but audio-only webm arrives as `audio/webm` and is
+     caught by the mime branch first — so an extension with no type behind it
+     is far more often a clip. It used to classify as voice. */
+  assert.equal(fileKind(null, "clip.webm"), "video");
+  assert.equal(fileKind("audio/webm", "note.webm"), "voice");
+});
+
+test("audio files other than voice notes are still the voice kind", () => {
+  /* The name is historical and written into stored documents; the chip that
+     labels it now says "Audio", which is what people are actually sending. */
+  assert.equal(fileKind("audio/mpeg", "track.mp3"), "voice");
+  assert.equal(fileKind(null, "interview.flac"), "voice");
+});
+
+test("archives are recognised from the extension alone", () => {
+  assert.equal(fileKind(null, "deliverable.zip"), "archive");
+  assert.equal(fileKind("", "source.7z"), "archive");
 });
 
 test("a total size says how many files it actually covers", () => {
