@@ -17,9 +17,12 @@ import { test } from "node:test";
  */
 
 const AREA = "components/features/messages/MessagesArea.tsx";
+/* The component moved out of the thread so the task discussion could draw the
+   same ticks — see MessageTicks.tsx. The three tests below read it there. */
+const TICKS = "components/features/messages/MessageTicks.tsx";
 
-function code(): string {
-  return readFileSync(AREA, "utf8")
+function code(path: string = AREA): string {
+  return readFileSync(path, "utf8")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^[^\S\n]*\/\/.*$/gm, "");
 }
@@ -89,7 +92,7 @@ test("the read tick uses the one token reserved for it", () => {
   /* The Four Channels Rule keeps saturated colour for score components. The
      read tick has its own token defined per theme rather than a raw hex, so it
      cannot drift from the palette or break in one theme. */
-  assert.match(code(), /var\(--state-read\)/);
+  assert.match(code(TICKS), /var\(--state-read\)/);
   const css = readFileSync("app/globals.css", "utf8");
   const light = css.match(/--state-read:\s*#[0-9a-f]{6}/gi) ?? [];
   assert.equal(light.length, 2, "--state-read must be defined once per theme");
@@ -98,9 +101,8 @@ test("the read tick uses the one token reserved for it", () => {
 test("delivered and sent are told apart by tick COUNT, not by colour", () => {
   /* Two greys against one grey is a difference of quantity, which reads without
      a legend. A second colour would make the reader learn a palette. */
-  const src = code();
-  const at = src.indexOf("function MessageTicks");
-  const body = src.slice(at, src.indexOf("function MessageList", at));
+  /* The whole file is the component now. */
+  const body = code(TICKS);
   assert.match(body, /const read = status === "read"/);
   assert.match(body, /const double = status !== "sent"/);
   assert.match(body, /\{double && <path/, "the second tick is not conditional");
@@ -109,9 +111,15 @@ test("delivered and sent are told apart by tick COUNT, not by colour", () => {
 test("every tick state carries an accessible label", () => {
   /* A tick is meaningless to a screen reader without one, and this is the only
      place the message's status is expressed at all. */
-  const src = code();
-  const at = src.indexOf("function MessageTicks");
-  const body = src.slice(at, src.indexOf("function MessageList", at));
-  assert.match(body, /aria-label=\{label\}/);
-  assert.match(body, /status === "read" \? "Read" : status === "delivered" \? "Delivered" : "Sent"/);
+  const body = code(TICKS);
+  assert.match(body, /aria-label=\{said\}/);
+  assert.match(body, /title=\{said\}/);
+  /* The direct-message wording is the DEFAULT, not the only option: the task
+     discussion draws the same ticks and supplies its own words, because
+     "Delivered" is a claim about a device that a task thread cannot make. */
+  assert.match(
+    body,
+    /status === "read" \? "Read" : status === "delivered" \? "Delivered" : "Sent"/,
+  );
+  assert.match(body, /label \?\?/, "the wording can no longer be overridden");
 });

@@ -239,6 +239,47 @@ export function getAssignmentActions(
  * dates — and duplicating it is what hid the control in the first place. Its
  * refusal is actionable and is shown as it arrives.
  */
+/**
+ * Should accepting the time budget also accept the assignment?
+ *
+ * ## The two-click problem this answers
+ *
+ * Settling the budget and taking on the work are separate writes —
+ * `acceptBudgetProposal` on the engine sets `budgetNegotiation.state` and
+ * re-derives the deadline, and deliberately touches neither `status` nor
+ * `confirmedBy`. So an assignee pressed "Accept 02:00:00", watched that card
+ * disappear, and was immediately shown "Accept task" asking what felt like the
+ * same question again.
+ *
+ * `getAssignmentActions` already hides the second control WHILE a budget is
+ * unsettled, for exactly this reason. It cannot help once the budget settles,
+ * because at that moment acceptance genuinely is the outstanding step — the
+ * card is not wrong, it is just the second half of one decision.
+ *
+ * ## Why it is a predicate rather than an unconditional chain
+ *
+ * **The person accepting a budget is not always the assignee.** A counter hands
+ * the turn to the assignor, and a self-assigned task's budget is settled by the
+ * assignee's MANAGER. Confirming the assignment on their behalf would accept
+ * work for somebody else — and on a task given to three people, one of them
+ * accepting a budget must not confirm the other two.
+ *
+ * So: only where this viewer is themselves among the people who owe acceptance,
+ * and only where acceptance is actually the outstanding step. Everyone else
+ * settles the budget and nothing more, exactly as before.
+ *
+ * Asked BEFORE the budget write, because afterwards the view has moved on and
+ * the caller would be reading a state it had just caused.
+ */
+export function budgetAcceptAlsoConfirms(
+  viewerId: string | null,
+  view: TaskView,
+): boolean {
+  if (!viewerId) return false;
+  if (!awaitingAcceptance(view)) return false;
+  return pendingAccepters(view).includes(viewerId);
+}
+
 export function acceptanceRefusal(input: {
   viewerId: string | null;
   view: TaskView;

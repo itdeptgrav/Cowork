@@ -5,6 +5,7 @@ import {
   canDecideMrf,
   mrfApprovalStats,
   mrfStats,
+  readMrfApprovalStats,
   validateNewMrf,
   type NewMrfInput,
 } from "./lifecycle.ts";
@@ -110,4 +111,58 @@ test("approval stats count the approver's queue", () => {
     request({ status: "rejected" }),
   ]);
   assert.deepEqual(s, { awaiting: 2, approved: 1, rejected: 1, total: 4 });
+});
+
+test("served counts rename pending to awaiting", () => {
+  assert.deepEqual(
+    readMrfApprovalStats({ total: 9, pending: 4, approved: 3, rejected: 2 }),
+    { awaiting: 4, approved: 3, rejected: 2, total: 9 },
+  );
+});
+
+test("served counts survive an aggregate that omits a status", () => {
+  /* A queue that has never had a rejection: the key is absent, not zero. */
+  assert.deepEqual(readMrfApprovalStats({ total: 4, pending: 4 }), {
+    awaiting: 4,
+    approved: 0,
+    rejected: 0,
+    total: 4,
+  });
+});
+
+test("served counts ignore keys the queue counts do not use", () => {
+  /* The aggregate also carries `issued`, which belongs to the store, not to
+     the approver's queue. */
+  const s = readMrfApprovalStats({
+    total: 5,
+    pending: 1,
+    approved: 3,
+    rejected: 1,
+    issued: 2,
+  });
+  assert.deepEqual(s, { awaiting: 1, approved: 3, rejected: 1, total: 5 });
+});
+
+test("served counts are refused when the payload is not counts", () => {
+  for (const raw of [null, undefined, "12", 12, [], {}, { pending: 3 }, { total: 3 }])
+    assert.equal(readMrfApprovalStats(raw), null, JSON.stringify(raw) ?? "undefined");
+});
+
+test("served counts are refused when a count is not a whole count", () => {
+  /* Broken, not small — falling back to counting the page beats rendering it. */
+  assert.equal(readMrfApprovalStats({ total: 4, pending: -1 }), null);
+  assert.equal(readMrfApprovalStats({ total: 4, pending: 1.5 }), null);
+  assert.equal(readMrfApprovalStats({ total: 4, pending: "2" }), null);
+  assert.equal(readMrfApprovalStats({ total: NaN, pending: 2 }), null);
+});
+
+test("a served zero is kept, not treated as missing", () => {
+  /* The difference the fallback must not swallow: an empty queue the server
+     counted, against a server that sent nothing. */
+  assert.deepEqual(readMrfApprovalStats({ total: 0, pending: 0 }), {
+    awaiting: 0,
+    approved: 0,
+    rejected: 0,
+    total: 0,
+  });
 });

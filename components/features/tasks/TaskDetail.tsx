@@ -144,6 +144,21 @@ export function TaskDetail({
     void repo.markTaskTabSeen(taskId, tab).catch(() => {});
   }, [repo, taskId, tab]);
   const [priorityOpen, setPriorityOpen] = useState(false);
+  /**
+   * A budget accept is finishing the assignment behind it.
+   *
+   * **The gap this closes.** Settling a budget and taking on the work are two
+   * writes, and `acceptBudget` calls `notifyRepositoryChanged()` the moment the
+   * first lands — so the view refetches BETWEEN them. For the second or two the
+   * confirm is in flight, the task reads "budget agreed, not yet accepted",
+   * which is exactly the state `AssignmentConfirmationCard` exists to answer.
+   * It appeared, offered "Accept task", and vanished again on its own.
+   *
+   * Owned here rather than in either card because it is the seam between them:
+   * one card starts the work and a different card must stay quiet until it is
+   * done. Neither can see the other.
+   */
+  const [finishingAcceptance, setFinishingAcceptance] = useState(false);
   /* Whether there is anybody's priority this viewer may change on this task.
      Priority is now set by whoever manages you, so for most people on most
      tasks the answer is nobody — and a control that is always refused is worse
@@ -375,6 +390,10 @@ export function TaskDetail({
                     <span data-figure>{formatRankDisplay(rankFor(v, me))}</span>
                   </span>
                 ))}
+              {/* A label, and only a label — see `Task.isImportant`. It leads
+                  the row because it is the one thing here somebody set by hand
+                  to be noticed. */}
+              {v.task.isImportant && <Chip tone="overdue">Important</Chip>}
               {v.task.isBlocked && <Chip tone="blocked">Blocked</Chip>}
               {v.reworkCount > 0 && (
                 <Chip tone="rework">{v.reworkCount} rework</Chip>
@@ -467,13 +486,31 @@ export function TaskDetail({
           {/* **Accepting the work itself**, before any of the negotiations below.
               It renders only where acceptance is the outstanding step and decides
               for itself whether this viewer is the person who owes it. */}
-          {tab === "overview" && (
-            <AssignmentConfirmationCard
-              view={v}
-              viewerId={me}
-              onChange={refetch}
-            />
-          )}
+          {/* Held shut while a budget accept is confirming behind it — see
+              `finishingAcceptance`. In its place, one line saying what is
+              happening, so the pause reads as work rather than as a gap. */}
+          {tab === "overview" &&
+            (finishingAcceptance ? (
+              <Panel>
+                <p
+                  role="status"
+                  className="flex items-center gap-2 text-sm text-ink-muted"
+                >
+                  <span className="flex gap-0.5" aria-hidden>
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-200ms]" />
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint [animation-delay:-100ms]" />
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-ink-faint" />
+                  </span>
+                  Taking on the task…
+                </p>
+              </Panel>
+            ) : (
+              <AssignmentConfirmationCard
+                view={v}
+                viewerId={me}
+                onChange={refetch}
+              />
+            ))}
 
           {/* An assignee's request for MORE time, answered in hours before
               anybody is asked about a date. It renders only where there is such
@@ -510,7 +547,15 @@ export function TaskDetail({
               for both parties: two cards each with their own conditions is how
               an assignee came to be offered an accept over their own proposal. */}
           {tab === "overview" && (
-            <BudgetNegotiationCard view={v} viewerId={me} onChange={refetch} />
+            <BudgetNegotiationCard
+              view={v}
+              viewerId={me}
+              onChange={refetch}
+              /* Raised for the whole of the chained confirm, so the card above
+                 stays shut across the refetch that lands between the two
+                 writes. */
+              onFinishingAcceptance={setFinishingAcceptance}
+            />
           )}
 
           {/* Both extension conversations in the order they happened, each in

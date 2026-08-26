@@ -497,6 +497,8 @@ export async function sendTaskChat(input: {
   taskId: string;
   message: string;
   attachments?: unknown[];
+  /** The message this one answers, quoted onto it. */
+  replyTo?: { messageId: string; senderName: string; text: string } | null;
 }): Promise<LegacyResult<unknown>> {
   const hasAttachments = Array.isArray(input.attachments) && input.attachments.length > 0;
   return legacyFetch({
@@ -506,6 +508,9 @@ export async function sendTaskChat(input: {
       text: input.message,
       message: input.message,
       ...(hasAttachments ? { attachments: input.attachments } : {}),
+      /* Omitted entirely when absent rather than sent as null, so a message
+         with no reply gains no field — the engine writes what it is given. */
+      ...(input.replyTo ? { replyTo: input.replyTo } : {}),
     },
     token: input.token,
   });

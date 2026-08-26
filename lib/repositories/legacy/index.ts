@@ -1,7 +1,12 @@
 import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
-import { mrfApprovalStats, mrfStats, type NewMrfInput } from "@/lib/rules/mrf/lifecycle";
+import {
+  mrfApprovalStats,
+  mrfStats,
+  readMrfApprovalStats,
+  type NewMrfInput,
+} from "@/lib/rules/mrf/lifecycle";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
 import { presenceIdentityFor } from "../../integrations/livekit/identity.ts";
 import {
@@ -208,6 +213,7 @@ import {
   readReactions,
 } from "./messaging.ts";
 import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
+import { readTaskChatMessage } from "./taskChat.ts";
 import { reactionChanges } from "../../rules/messages/reactions.ts";
 import { withPin, withoutPin } from "../../rules/messages/pins.ts";
 import {
@@ -2100,6 +2106,10 @@ export class LegacyRepository {
           body: {
             title: input.title,
             description: input.description ?? "",
+            /* The tag, stored as given. Sent always rather than only when true
+               so the field exists on the document and can be turned off again
+               by writing `false` — see `Task.isImportant`. */
+            isImportant: input.isImportant === true,
             notes: "",
             requirements: input.requirements ?? [],
             assigneeIds,
@@ -2749,6 +2759,7 @@ export class LegacyRepository {
     thread: "chat" | "draft",
     text: string,
     attachments: MessageAttachment[] = [],
+    replyTo: MessageReply | null = null,
   ): Promise<ActionResult<never>> {
     if (thread === "draft") {
       return {
@@ -2780,11 +2791,266 @@ export class LegacyRepository {
           taskId: id,
           message: text,
           attachments: wire,
+          replyTo,
         }),
       () => id,
     );
     return result as unknown as ActionResult<never>;
   }
+
+  /* ── Task chat, beyond sending ──────────────────────────────────────────
+   *
+   * Reply, edit, delete, react, star, pin and read receipts, so a task's
+   * discussion behaves the way the message thread does rather than being a
+   * send-only log.
+   *
+   * **All of it writes to the SAME subcollection the older application reads**
+   * — `cowork_tasks/{taskId}/chat` — using fields it does not know about.
+   * Every one is additive: a document without them reads exactly as it always
+   * did, and the other application ignores what it cannot see rather than
+   * breaking on it. Nothing already stored is migrated or rewritten.
+   *
+   * `#taskChatRef` is the one place the path is built, so a rename cannot leave
+   * half these methods writing somewhere else.
+   */
+
+  async #taskChatRef(taskId: TaskId, messageId: string) {
+    const { collection, doc, getDocs, query, where, limit } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const chat = collection(legacyDb(), "cowork_tasks", String(taskId), "chat");
+
+    /* The id a message is KNOWN by is `messageId`, a field — legacy writes it
+       and the document id is whatever Firestore generated. So the document is
+       found by query first, and only falls back to treating the id as the
+       document's own when no row carries it. Skipping this wrote every edit to
+       a document that did not exist. */
+    const found = await getDocs(query(chat, where("messageId", "==", messageId), limit(1)));
+    if (!found.empty) return found.docs[0].ref;
+    return doc(chat, messageId);
+  }
+
+  /**
+   * Change the text of your own task-chat message.
+   *
+   * Text only. An edit that could add or remove files would let the record of
+   * what was handed over change after the fact, which on a task is the thing
+   * people argue about.
+   */
+  async editTaskChat(
+    taskId: TaskId,
+    messageId: string,
+    text: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    const body = text.trim();
+    if (!body)
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "A message cannot be emptied by editing — delete it instead.",
+        field: "text",
+      };
+    try {
+      const { getDoc, setDoc } = await import("firebase/firestore");
+      const ref = await this.#taskChatRef(taskId, messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const data = snap.data() as Record<string, unknown>;
+      if (String(data.senderId ?? "") !== me)
+        return {
+          ok: false,
+          code: "permission_denied",
+          message: "You can only edit your own messages.",
+        };
+      if (data.isDeleted === true)
+        return {
+          ok: false,
+          code: "invalid_state",
+          message: "This message was deleted.",
+        };
+      await setDoc(
+        ref,
+        { text: body, editedAt: new Date().toISOString() },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listTaskChat");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[editTaskChat]", e);
+      return { ok: false, code: "offline", message: "The edit could not be saved." };
+    }
+  }
+
+  /**
+   * Delete your own task-chat message — softly.
+   *
+   * The row keeps its place and reads as deleted. A working thread that
+   * silently loses a line leaves everybody wondering what was said, and on a
+   * task that line may be the only record of an instruction.
+   */
+  async deleteTaskChat(
+    taskId: TaskId,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { getDoc, setDoc } = await import("firebase/firestore");
+      const ref = await this.#taskChatRef(taskId, messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const data = snap.data() as Record<string, unknown>;
+      if (String(data.senderId ?? "") !== me)
+        return {
+          ok: false,
+          code: "permission_denied",
+          message: "You can only delete your own messages.",
+        };
+      await setDoc(
+        ref,
+        { isDeleted: true, deletedAt: new Date().toISOString() },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listTaskChat");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[deleteTaskChat]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The message could not be deleted.",
+      };
+    }
+  }
+
+  /**
+   * Add or change your reaction. One per person, as in a direct message.
+   *
+   * `setDoc` + merge rather than `updateDoc`: an emoji is not a valid segment
+   * in an `updateDoc` field path, and merge applies the whole map at once.
+   * Which emoji move is `reactionChanges` — the same rule the message thread
+   * uses, so the two cannot disagree about what "one per person" means.
+   */
+  async toggleTaskChatReaction(
+    taskId: TaskId,
+    messageId: string,
+    emoji: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { arrayRemove, arrayUnion, getDoc, setDoc } = await import(
+        "firebase/firestore"
+      );
+      const ref = await this.#taskChatRef(taskId, messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const current = readReactions(
+        (snap.data() as Record<string, unknown>).reactions,
+      );
+      const changes = reactionChanges(current, emoji, me);
+      const patch: Record<string, unknown> = {};
+      for (const [e, move] of Object.entries(changes))
+        patch[e] = move === "add" ? arrayUnion(me) : arrayRemove(me);
+      await setDoc(ref, { reactions: patch }, { merge: true });
+      notifyRepositoryChanged("listTaskChat");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[toggleTaskChatReaction]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The reaction could not be saved.",
+      };
+    }
+  }
+
+  /** Star a task-chat message for yourself alone. Nobody else sees it. */
+  async toggleTaskChatStar(
+    taskId: TaskId,
+    messageId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { arrayRemove, arrayUnion, getDoc, setDoc } = await import(
+        "firebase/firestore"
+      );
+      const ref = await this.#taskChatRef(taskId, messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const data = snap.data() as Record<string, unknown>;
+      const starred =
+        Array.isArray(data.starredBy) && data.starredBy.includes(me);
+      await setDoc(
+        ref,
+        { starredBy: starred ? arrayRemove(me) : arrayUnion(me) },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listTaskChat");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[toggleTaskChatStar]", e);
+      return { ok: false, code: "offline", message: "The star could not be saved." };
+    }
+  }
+
+  /**
+   * Mark every task-chat message read by this viewer.
+   *
+   * **A task thread is not a direct message.** A DM has one other person, so
+   * "read" is one fact; a task carries an assignor, its assignees and a
+   * reviewer, so this appends the viewer to a SET and the tick is decided from
+   * who is in it — see `messageStatus`.
+   *
+   * Own messages are skipped: a sender reading their own line is not a receipt,
+   * and writing it would make every message instantly "read by everyone" for an
+   * audience of one.
+   */
+  async markTaskChatRead(taskId: TaskId): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { arrayUnion, collection, getDocs, query, where, writeBatch } =
+        await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const db = legacyDb();
+      const chat = collection(db, "cowork_tasks", String(taskId), "chat");
+      /* Only what somebody else sent, and only what this viewer has not
+         already been recorded on — otherwise every open of the tab rewrites
+         every row and the live listener answers its own write for ever. */
+      const snap = await getDocs(query(chat, where("senderId", "!=", me)));
+      const unread = snap.docs.filter((d) => {
+        const by = (d.data() as Record<string, unknown>).readBy;
+        return !Array.isArray(by) || !by.includes(me);
+      });
+      if (!unread.length) return { ok: true, data: undefined };
+
+      const batch = writeBatch(db);
+      for (const d of unread) batch.set(d.ref, { readBy: arrayUnion(me) }, { merge: true });
+      await batch.commit();
+      notifyRepositoryChanged("listTaskChat");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[markTaskChatRead]", e);
+      /* Not surfaced: a receipt that does not land costs somebody else's tick a
+         few seconds and is not worth an error in front of the reader. */
+      return { ok: true, data: undefined };
+    }
+  }
+
 
   /* ── Deadline negotiation ───────────────────────────────────────────────
    *
@@ -7213,92 +7479,16 @@ export class LegacyRepository {
       ),
     );
 
-    return snap.docs.map((d) => {
-      const m = d.data() as Record<string, unknown>;
-      const type = typeof m.messageType === "string" ? m.messageType : "text";
-
-      /* Attachments live inline on the message, in one of two shapes: the array
-         the task thread writes (`attachments: [{ type, url, name, fileId, … }]`),
-         or the flat `mediaUrl`/`pdfUrl` fields a message written by the older
-         single-media path carries. Normalise both to `MessageAttachment` so the
-         reader is blind to which wrote it. */
-      const raw: Record<string, unknown>[] = Array.isArray(m.attachments)
-        ? (m.attachments as unknown[]).filter(
-            (a): a is Record<string, unknown> => !!a && typeof a === "object",
-          )
-        : [];
-      if (
-        !raw.length &&
-        (typeof m.mediaUrl === "string" || typeof m.pdfUrl === "string")
-      ) {
-        if (typeof m.mediaUrl === "string")
-          raw.push({
-            type: type === "voice" ? "voice" : "image",
-            url: m.mediaUrl,
-            voiceDuration: m.voiceDuration,
-          });
-        if (typeof m.pdfUrl === "string")
-          raw.push({
-            type: "pdf",
-            url: m.pdfUrl,
-            name: m.pdfFileName,
-            fileId: m.pdfFileId,
-          });
-      }
-      const parsed: MessageAttachment[] = raw
-        .map((o) => {
-          const rawType = typeof o.type === "string" ? o.type : "file";
-          const kind: MessageAttachment["kind"] =
-            rawType === "image" || rawType === "pdf" || rawType === "voice"
-              ? rawType
-              : "file";
-          return {
-            url: typeof o.url === "string" ? o.url : "",
-            kind,
-            name: typeof o.name === "string" ? o.name : null,
-            sizeBytes: typeof o.sizeBytes === "number" ? o.sizeBytes : null,
-            durationSecs:
-              typeof o.durationSecs === "number"
-                ? o.durationSecs
-                : typeof o.voiceDuration === "number"
-                  ? o.voiceDuration
-                  : null,
-            fileId:
-              typeof o.fileId === "string"
-                ? o.fileId
-                : typeof o.pdfFileId === "string"
-                  ? o.pdfFileId
-                  : null,
-          } satisfies MessageAttachment;
-        })
-        .filter((a) => a.url || a.fileId);
-
-      return {
-        id: typeof m.messageId === "string" ? m.messageId : d.id,
-        taskId: id as TaskId,
-        thread: "chat" as const,
-        senderId:
-          type === "system"
-            ? ("system" as const)
-            : ((typeof m.senderId === "string" ? m.senderId : "") as EmployeeId),
-        senderName: typeof m.senderName === "string" ? m.senderName : "",
-        text: typeof m.text === "string" ? m.text : "",
-        /* The url is the only stable handle there is, so it stands in as the id
-           for callers that just want a flat list — there is no attachment
-           collection to point at. */
-        attachmentIds: parsed.map((a) => a.url).filter(Boolean),
-        attachments: parsed.length ? parsed : undefined,
-        messageType:
-          type === "system"
-            ? ("system" as const)
-            : parsed.length
-              ? ("attachment" as const)
-              : ("text" as const),
-        createdAt: readInstant(m.createdAt)
-          ? new Date(readInstant(m.createdAt)!).toISOString()
+    return snap.docs.map((d) =>
+      readTaskChatMessage(
+        id as TaskId,
+        d.id,
+        d.data() as Record<string, unknown>,
+        readInstant((d.data() as Record<string, unknown>).createdAt)
+          ? new Date(readInstant((d.data() as Record<string, unknown>).createdAt)!).toISOString()
           : "",
-      };
-    });
+      ),
+    );
   }
 
   /**
@@ -12533,7 +12723,10 @@ export class LegacyRepository {
         : status === "pending"
           ? "PENDING"
           : status.toUpperCase();
-    const r = await legacyFetch<{ mrfs?: Record<string, unknown>[] }>({
+    const r = await legacyFetch<{
+      mrfs?: Record<string, unknown>[];
+      stats?: unknown;
+    }>({
       path: "/api/cowork/mrf/approvals",
       query: { status: legacyStatus },
       token,
@@ -12543,7 +12736,13 @@ export class LegacyRepository {
           .map((m) => this.#readMrf(m))
           .filter((m): m is MrfRequest => m !== null)
       : [];
-    return { requests, stats: mrfApprovalStats(requests) };
+    /* The counts come from the server, not from `requests`. That list is one
+       page of the queue, already narrowed to `legacyStatus` — counting it
+       would make the tiles and the tab badge describe the page rather than the
+       queue. `readMrfApprovalStats` explains the failure modes; the fallback
+       keeps an older backend approximately right rather than empty. */
+    const served = r.ok ? readMrfApprovalStats(r.data.stats) : null;
+    return { requests, stats: served ?? mrfApprovalStats(requests) };
   }
 
   async getMrf(id: string): Promise<MrfRequest | null> {
@@ -15209,6 +15408,65 @@ export class LegacyRepository {
           },
           () => {
             /* Quietly stop; the thread still works from its own read. */
+          },
+        );
+        cleanup = () => {
+          un();
+          bump.cancel();
+        };
+      } catch {
+        /* No live thread — the query still answers on its own. */
+      }
+    })();
+    return () => {
+      disposed = true;
+      cleanup?.();
+    };
+  }
+
+  /**
+   * Live updates for one task's discussion.
+   *
+   * **Why the task thread needed its own.** A message thread has had
+   * `watchConversationMessages` for as long as it has existed, so a message
+   * from the other side appears on its own. The task discussion had nothing —
+   * it read once on mount and again after each of the viewer's own writes, so
+   * a colleague's reply simply did not arrive until something else happened to
+   * refetch. Two people on one task were each looking at their own half of the
+   * conversation.
+   *
+   * Direct on Firestore, like every other listener here: the document lives in
+   * `cowork_tasks/{taskId}/chat`, the browser already reads it, and a live
+   * channel through the engine would be a second delivery path for records the
+   * client can already see.
+   *
+   * The first snapshot is skipped — it is the state the caller has just read,
+   * and bumping on it would make every open of the tab refetch itself. And it
+   * is debounced: a batch of read receipts is one write per message, which
+   * without this is one refetch per message.
+   */
+  watchTaskChat(taskId: TaskId): () => void {
+    let cleanup: (() => void) | null = null;
+    let disposed = false;
+    void (async () => {
+      try {
+        const { collection, onSnapshot } = await import("firebase/firestore");
+        const { legacyDb } = await import("../../legacy/firebase.ts");
+        if (disposed) return;
+        const bump = debounce(() => notifyRepositoryChanged("listTaskChat"), 200);
+        let first = true;
+        const un = onSnapshot(
+          collection(legacyDb(), "cowork_tasks", String(taskId), "chat"),
+          () => {
+            if (first) {
+              first = false;
+              return;
+            }
+            bump();
+          },
+          () => {
+            /* Rules or connectivity. The thread still works from its own read;
+               realtime is an enhancement, never the only route to the data. */
           },
         );
         cleanup = () => {

@@ -180,6 +180,8 @@ export interface LegacyTaskDoc {
 
   /* Variant flags — legacy models every task type as a boolean on one shape. */
   isFolder?: boolean;
+  /** Set by hand to mark a task important. A label only — see `Task.isImportant`. */
+  isImportant?: boolean;
   isRepeat?: boolean;
   isThirdParty?: boolean;
   isGoal?: boolean;
@@ -228,6 +230,8 @@ export interface LegacyTask {
   id: string;
   title: string;
   description: string | null;
+  /** Set by hand to mark a task important. A label only — see `Task.isImportant`. */
+  isImportant?: boolean;
   kind: LegacyTaskKind;
   /** Raw, both axes, exactly as stored. */
   status: string | null;
@@ -750,6 +754,9 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     pendingAssigneeId: doc.pendingAssigneeId ?? null,
     parentTaskId: doc.parentTaskId ?? null,
     isFolder: doc.isFolder === true,
+    /* Carried through as stored. Nothing here decides it and nothing derives
+       anything from it — see `Task.isImportant`. */
+    isImportant: doc.isImportant === true,
     subtaskIds: Array.isArray(doc.subtaskIds)
       ? doc.subtaskIds.filter(
           (id): id is string => typeof id === "string" && id !== "",

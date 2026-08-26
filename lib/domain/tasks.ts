@@ -8,7 +8,7 @@
  */
 
 import type { EmployeeId } from "./identity";
-import type { MessageAttachment } from "./work";
+import type { MessageAttachment, MessageReply } from "./work";
 
 export type TaskId = string;
 
@@ -297,6 +297,19 @@ export interface Task {
    * because work got broken down.
    */
   isFolder: boolean;
+
+  /**
+   * Somebody marked this task important, and it says so on screen.
+   *
+   * **A label and nothing else.** It changes no ordering, no priority, no
+   * deadline, no score and no permission — it is not the priority rank, which
+   * is `order`, and it is not Emergency mode, which has its own machinery. If
+   * this ever starts deciding something, it has stopped being this field.
+   *
+   * Optional because every task stored before it existed has no such field, and
+   * absent means the ordinary case: not marked.
+   */
+  isImportant?: boolean;
 
   estimatedEffortSecs: number | null;
   deadline: TaskDeadline;
@@ -767,6 +780,43 @@ export interface TaskChatMessage {
   attachments?: MessageAttachment[];
   messageType: "text" | "system" | "attachment";
   createdAt: string;
+
+  /* ── Parity with the message thread ─────────────────────────────────────
+   *
+   * Every field below is OPTIONAL, and that is the migration plan rather than
+   * laziness: the task thread has years of stored documents that carry none of
+   * them, and the older Cowork application still reads and writes the same
+   * subcollection. An optional field is invisible to a reader that does not
+   * know it and absent on a document that predates it, so nothing already
+   * written has to be touched and nothing already reading it breaks.
+   */
+
+  /** The message this one answers, by id. */
+  replyToId?: string | null;
+  /** That message denormalised, so a reply renders without a second read. */
+  replyTo?: MessageReply | null;
+  /** Set when the text was changed after sending. Shown as “edited”. */
+  editedAt?: string | null;
+  /**
+   * Soft deleted: the row keeps its place and reads as deleted.
+   *
+   * A thread that silently loses a line leaves everybody wondering what was
+   * said — the same reason the message thread tombstones rather than removes.
+   */
+  isDeleted?: boolean;
+  /**
+   * Who has read it.
+   *
+   * **A task thread is not a direct message, and this means something different
+   * here.** A DM has one other person, so “read” is a single fact. A task can
+   * carry an assignor, several assignees and a reviewer, so this is a SET and
+   * the tick is shown once everybody who is not the sender appears in it.
+   */
+  readBy?: EmployeeId[];
+  /** Emoji → the people who chose it. One reaction per person, as in a DM. */
+  reactions?: Record<string, EmployeeId[]>;
+  /** Personal bookmarks. Not shared: each person sees only their own. */
+  starredBy?: EmployeeId[];
 }
 
 /**

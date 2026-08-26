@@ -1272,6 +1272,9 @@ export class MockRepository implements CoworkRepository {
       parentTaskId: input.parentTaskId ?? null,
       /* The prototype has no folders — every task it makes is work. */
       isFolder: false,
+      /* Carried as given, so the tag works on the prototype too. Nothing here
+         reads it — see `Task.isImportant`. */
+      isImportant: input.isImportant === true,
       projectId: input.projectId ?? null,
       groupId: null,
       estimatedEffortSecs: input.estimatedEffortSecs ?? null,
@@ -5661,6 +5664,7 @@ export class MockRepository implements CoworkRepository {
     thread: "chat" | "draft",
     text: string,
     attachments: MessageAttachment[],
+    replyTo: MessageReply | null = null,
   ): Promise<ActionResult<TaskChatMessage>> {
     const g = guard();
     if (g) return g;
@@ -5680,9 +5684,116 @@ export class MockRepository implements CoworkRepository {
       attachments: attachments.length ? attachments : undefined,
       messageType: attachments.length ? "attachment" : "text",
       createdAt: nowIso(),
+      replyToId: replyTo?.messageId ?? null,
+      replyTo,
     };
     s.chat.push(m);
     return delay(ok(m));
+  }
+
+  /* ── Task chat, beyond sending ──────────────────────────────────────────
+   *
+   * Implemented here as well as on the engine, so the prototype is not a
+   * SHORTER product than the real one. A surface asks the repository whether a
+   * method exists and hides the control where it does not — leaving these out
+   * would mean the task discussion silently lost its menu whenever anybody ran
+   * against the in-memory store, and a reviewer would report the feature as
+   * missing rather than as unimplemented.
+   */
+
+  async editTaskChat(taskId: TaskId, messageId: string, text: string) {
+    const g = guard();
+    if (g) return g;
+    const body = text.trim();
+    if (!body)
+      return fail(
+        "validation_failed",
+        "A message cannot be emptied by editing — delete it instead.",
+        "text",
+      );
+    const m = getStore().chat.find((c) => c.taskId === taskId && c.id === messageId);
+    if (!m) return fail("not_found", "That message is gone.");
+    if (m.senderId !== actingId())
+      return fail("permission_denied", "You can only edit your own messages.");
+    if (m.isDeleted) return fail("invalid_state", "This message was deleted.");
+    tick();
+    m.text = body;
+    m.editedAt = nowIso();
+    return delay(ok(undefined));
+  }
+
+  async deleteTaskChat(taskId: TaskId, messageId: string) {
+    const g = guard();
+    if (g) return g;
+    const m = getStore().chat.find((c) => c.taskId === taskId && c.id === messageId);
+    if (!m) return fail("not_found", "That message is gone.");
+    if (m.senderId !== actingId())
+      return fail("permission_denied", "You can only delete your own messages.");
+    tick();
+    /* Soft, as everywhere else: the row keeps its place and reads as deleted. */
+    m.isDeleted = true;
+    m.text = "";
+    m.attachments = undefined;
+    m.attachmentIds = [];
+    m.reactions = undefined;
+    m.replyTo = null;
+    return delay(ok(undefined));
+  }
+
+  async toggleTaskChatReaction(taskId: TaskId, messageId: string, emoji: string) {
+    const g = guard();
+    if (g) return g;
+    const m = getStore().chat.find((c) => c.taskId === taskId && c.id === messageId);
+    if (!m) return fail("not_found", "That message is gone.");
+    tick();
+    /* One per person — the same rule the engine applies, from the same module,
+       so the two cannot disagree about what happens to a previous choice.
+       `toggleReaction` returns the whole next map and drops emptied emoji, so
+       an unreacted message has no `reactions` key at all rather than a map of
+       empty lists. */
+    const next = toggleReaction(m.reactions, emoji, actingId());
+    m.reactions = Object.keys(next).length ? next : undefined;
+    return delay(ok(undefined));
+  }
+
+  async toggleTaskChatStar(taskId: TaskId, messageId: string) {
+    const g = guard();
+    if (g) return g;
+    const m = getStore().chat.find((c) => c.taskId === taskId && c.id === messageId);
+    if (!m) return fail("not_found", "That message is gone.");
+    tick();
+    const me = actingId();
+    const held = m.starredBy ?? [];
+    m.starredBy = held.includes(me)
+      ? held.filter((id) => id !== me)
+      : [...held, me];
+    return delay(ok(undefined));
+  }
+
+  /**
+   * No live channel to open — the store is in this tab's memory.
+   *
+   * Present rather than omitted so the panel's subscription is exercised on the
+   * prototype too: a call that quietly does nothing proves the wiring, where an
+   * absent method means that line never runs and a mistake in it is only found
+   * against the real engine.
+   */
+  watchTaskChat(_taskId: TaskId): () => void {
+    return () => {};
+  }
+
+  async markTaskChatRead(taskId: TaskId) {
+    const me = actingId();
+    let touched = false;
+    for (const m of getStore().chat) {
+      if (m.taskId !== taskId || m.senderId === me) continue;
+      const by = m.readBy ?? [];
+      if (by.includes(me)) continue;
+      m.readBy = [...by, me];
+      touched = true;
+    }
+    if (touched) tick();
+    return delay(ok(undefined));
   }
 
   async listTaskEvents(taskId: TaskId) {

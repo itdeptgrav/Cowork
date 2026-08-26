@@ -13,6 +13,7 @@ import {
   budgetTurn,
   waitingOnLabel,
 } from "@/lib/rules/tasks/budgetNegotiation";
+import { budgetAcceptAlsoConfirms } from "@/lib/rules/tasks/assignmentAcceptance";
 import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
 import { DurationField } from "./DurationField";
 import type { TaskView } from "@/lib/repositories";
@@ -37,10 +38,21 @@ export function BudgetNegotiationCard({
   view,
   viewerId,
   onChange,
+  onFinishingAcceptance,
 }: {
   view: TaskView;
   viewerId: string | null;
   onChange: () => void;
+  /**
+   * Raised while this card is confirming the assignment behind a budget accept.
+   *
+   * The caller renders both cards and uses it to keep the assignment card shut
+   * across the gap — `acceptBudget` refetches the view the moment the first
+   * write lands, so without it "Accept task" appears for a second or two and
+   * then removes itself. Optional: a caller that renders this card alone (the
+   * Deadline tab) passes nothing and nothing changes.
+   */
+  onFinishingAcceptance?: (inFlight: boolean) => void;
 }) {
   const [countering, setCountering] = useState(false);
   const [reason, setReason] = useState("");
@@ -57,6 +69,8 @@ export function BudgetNegotiationCard({
   );
 
   const [accept, acceptState] = useAction((r) => r.acceptBudget(view.task.id));
+  /* The second half of the same decision — see the Accept button below. */
+  const [confirmTask] = useAction((r) => r.confirmTask(view.task.id));
   const [counter, counterState] = useAction((r) =>
     r.counterBudget(view.task.id, secs, reason || undefined),
   );
@@ -170,8 +184,43 @@ export function BudgetNegotiationCard({
               disabled={busy}
               data-help="budget-accept"
               onClick={async () => {
+                /* Asked BEFORE the write: afterwards the view has moved on and
+                   this would be reading a state it had just caused. */
+                const alsoConfirm = budgetAcceptAlsoConfirms(viewerId, view);
+                /* Raised BEFORE the first write, not between them. The refetch
+                   that reveals the assignment card is triggered by the budget
+                   write itself, so a flag set afterwards is already too late. */
+                if (alsoConfirm) onFinishingAcceptance?.(true);
+
                 const r = await accept();
-                if (r.ok) onChange();
+                if (!r.ok) {
+                  onFinishingAcceptance?.(false);
+                  return;
+                }
+
+                /**
+                 * **One decision, one press.**
+                 *
+                 * Settling the budget and taking on the work are separate
+                 * writes and the engine chains neither — so an assignee pressed
+                 * this, watched the card go, and was immediately asked "Accept
+                 * task" for what felt like the same question.
+                 *
+                 * Only for somebody who owes the acceptance themselves; see
+                 * `budgetAcceptAlsoConfirms`. An assignor or a manager settling
+                 * a budget confirms nothing on anybody's behalf.
+                 *
+                 * Failure is deliberately quiet. The budget IS settled — that
+                 * write succeeded — and the assignment card is about to render
+                 * with its own button and its own error. Raising something here
+                 * would report a failure of the thing that worked.
+                 */
+                if (alsoConfirm) await confirmTask().catch(() => {});
+                /* Refetch FIRST, then lower the flag. Lowering it before the
+                   view has caught up would show the assignment card against
+                   stale data — the very frame this exists to prevent. */
+                onChange();
+                if (alsoConfirm) onFinishingAcceptance?.(false);
               }}
             >
               Accept {formatDurationTimer(turn.currentSecs)}

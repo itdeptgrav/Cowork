@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { readFileSync } from "node:fs";
 import {
   acceptanceRefusal,
+  budgetAcceptAlsoConfirms,
   getAssignmentActions,
   pendingAccepters,
   refuseTermsRefusal,
@@ -482,4 +483,105 @@ test("the acceptance sentence addresses whoever owes it", () => {
   assert.match(flow, /: "The assignee has not accepted it yet\."/);
   /* Pointing at where the action is, not just stating the fact. */
   assert.match(flow, /accept it above to start work/);
+});
+
+/* ── Accepting a budget also accepts the assignment ───────────────────────── */
+
+test("the assignee accepting a budget takes on the work in the same press", () => {
+  /* The two-click complaint. Settling the budget and taking the work on are
+     separate engine writes — `acceptBudgetProposal` touches neither `status`
+     nor `confirmedBy` — so pressing "Accept 02:00:00" put "Accept task" on
+     screen immediately after, asking what reads as the same question. */
+  assert.equal(budgetAcceptAlsoConfirms(UMUNG, view()), true);
+});
+
+test("an assignor settling a budget accepts nothing on the assignee's behalf", () => {
+  /* A counter hands the turn back to the assignor, so they are the one pressing
+     Accept. Confirming there would take on work for somebody else. */
+  assert.equal(budgetAcceptAlsoConfirms(RISHEE, view()), false);
+});
+
+test("a manager settling a self-task's budget accepts nothing either", () => {
+  /* The self-assigned case: the assignee proposes, and their MANAGER settles
+     it. The manager is not in `pendingAccepters`, so nothing is confirmed. */
+  assert.equal(budgetAcceptAlsoConfirms(STRANGER, view()), false);
+});
+
+test("one of several assignees accepting speaks only for themselves", () => {
+  /* `pendingAccepters` reads per assignment for exactly this reason. */
+  const shared = view({ assignees: [UMUNG, STRANGER] });
+  assert.equal(budgetAcceptAlsoConfirms(UMUNG, shared), true);
+  assert.equal(budgetAcceptAlsoConfirms(STRANGER, shared), true);
+  assert.equal(budgetAcceptAlsoConfirms(RISHEE, shared), false);
+});
+
+test("nothing is confirmed once acceptance is no longer the outstanding step", () => {
+  /* A budget renegotiated after the work started must not re-confirm a task
+     that is already confirmed, in progress or done. */
+  for (const status of ["confirmed", "in_progress", "in_review", "completed"] as const)
+    assert.equal(
+      budgetAcceptAlsoConfirms(UMUNG, view({ status })),
+      false,
+      status,
+    );
+});
+
+test("an assignee who has already accepted is not confirmed twice", () => {
+  assert.equal(
+    budgetAcceptAlsoConfirms(UMUNG, view({ confirmedAt: "2026-08-22T10:00:00Z" })),
+    false,
+  );
+});
+
+test("a signed-out viewer confirms nothing", () => {
+  assert.equal(budgetAcceptAlsoConfirms(null, view()), false);
+});
+
+test("somebody still behind a cross-department gate is included", () => {
+  /* They hold the work and have no assignment row yet — `pendingAccepters`
+     covers them, and this must follow it rather than reading assignees alone. */
+  const gated = view({ assignees: [], pending: [STRANGER] });
+  assert.equal(budgetAcceptAlsoConfirms(STRANGER, gated), true);
+});
+
+test("the chain is wired into the budget card, and guarded", () => {
+  /* An unconditional `confirmTask()` after every budget accept would take work
+     on for other people. The predicate is what makes it safe, so its presence
+     is asserted rather than assumed. */
+  const card = code("components/features/tasks/BudgetNegotiationCard.tsx");
+  assert.match(card, /budgetAcceptAlsoConfirms\(viewerId, view\)/);
+  assert.match(card, /if \(alsoConfirm\) await confirmTask\(\)/);
+  /* Read BEFORE the write: afterwards the view has moved on. */
+  assert.ok(
+    card.indexOf("budgetAcceptAlsoConfirms") < card.indexOf("await accept()"),
+    "the predicate is read after the budget write, when the state has changed",
+  );
+});
+
+test("the assignment card is held shut across the gap between the two writes", () => {
+  /* **The flash.** `acceptBudget` calls `notifyRepositoryChanged()` the moment
+     the budget write lands, so the view refetches BETWEEN the two writes. For
+     the second or two the confirm is in flight the task reads "budget agreed,
+     not yet accepted" — exactly what the assignment card exists to answer — so
+     it appeared, offered "Accept task", and removed itself again.
+
+     The flag closing that gap has to be raised BEFORE the first write and
+     lowered AFTER the refetch, or it misses the frame it exists for. */
+  const card = code("components/features/tasks/BudgetNegotiationCard.tsx");
+  const raise = card.indexOf("onFinishingAcceptance?.(true)");
+  const write = card.indexOf("await accept()");
+  const change = card.indexOf("onChange();");
+  const lower = card.lastIndexOf("onFinishingAcceptance?.(false)");
+
+  assert.ok(raise > 0, "nothing tells the caller a chained confirm has started");
+  assert.ok(raise < write, "the flag is raised after the write that reveals the card");
+  assert.ok(change < lower, "the flag is lowered before the view has caught up");
+
+  /* And a failed budget write must not leave it raised for ever. */
+  assert.match(card, /if \(!r\.ok\) \{[\s\S]{0,120}onFinishingAcceptance\?\.\(false\)/);
+
+  /* The caller actually suppresses the card, rather than merely receiving it. */
+  const detail = code("components/features/tasks/TaskDetail.tsx");
+  assert.match(detail, /finishingAcceptance \?/);
+  assert.match(detail, /onFinishingAcceptance=\{setFinishingAcceptance\}/);
 });

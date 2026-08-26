@@ -1630,7 +1630,50 @@ export interface CoworkRepository {
         ids: the task thread stores them inline on the message, mirroring the
         message thread. Pass `[]` for a text-only message. */
     attachments: MessageAttachment[],
+    /** The message this one answers, denormalised onto it as in a DM. */
+    replyTo?: MessageReply | null,
   ): Promise<ActionResult<TaskChatMessage>>;
+
+  /* ── Task chat, beyond sending ──────────────────────────────────────────
+   *
+   * Parity with the message thread, so a task's discussion is a conversation
+   * rather than a send-only log. Every one is OPTIONAL on the interface: the
+   * in-memory prototype implements what it can, and a surface that does not
+   * find a method hides the control rather than offering one that throws.
+   */
+
+  /** Change your own message's text. Text only — files are the record. */
+  editTaskChat?(
+    taskId: TaskId,
+    messageId: string,
+    text: string,
+  ): Promise<ActionResult<void>>;
+  /** Soft delete: the row keeps its place and reads as deleted. */
+  deleteTaskChat?(taskId: TaskId, messageId: string): Promise<ActionResult<void>>;
+  /** Add or change your reaction. One per person. */
+  toggleTaskChatReaction?(
+    taskId: TaskId,
+    messageId: string,
+    emoji: string,
+  ): Promise<ActionResult<void>>;
+  /** Bookmark a message for yourself alone. */
+  toggleTaskChatStar?(taskId: TaskId, messageId: string): Promise<ActionResult<void>>;
+  /**
+   * Record that this viewer has read the thread.
+   *
+   * Never fails outwards: a receipt that does not land costs somebody else's
+   * tick a few seconds and is not worth an error in front of the reader.
+   */
+  markTaskChatRead?(taskId: TaskId): Promise<ActionResult<void>>;
+  /**
+   * Live updates for one task's discussion; returns its own unsubscribe.
+   *
+   * Without it the thread reads once on mount and again only after the
+   * viewer's own writes — so a colleague's reply never arrives and two people
+   * on one task each see half the conversation.
+   */
+  watchTaskChat?(taskId: TaskId): () => void;
+
   listTaskEvents(taskId: TaskId): Promise<TaskEvent[]>;
   listAttachments(ids: string[]): Promise<Attachment[]>;
 
@@ -2771,6 +2814,8 @@ export interface CreateTaskInput {
   /** Owning department. Defaults to the creator's when omitted. */
   departmentId?: string | null;
   description?: string | null;
+  /** Just the tag — see `Task.isImportant`. Stored as given, read by nothing. */
+  isImportant?: boolean;
   requirements?: string[];
   type: Task["type"];
   assigneeIds: EmployeeId[];

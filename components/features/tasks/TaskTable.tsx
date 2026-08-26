@@ -1265,6 +1265,10 @@ function Row({
 
       <span className="min-w-0">
         <Chip tone={meta.tone}>{meta.label}</Chip>
+        {/* Here as well as on the task itself: the whole point of marking a
+            task important is being able to spot it in the list without
+            opening it. A label only — see `Task.isImportant`. */}
+        {view.task.isImportant && <Chip tone="overdue">Important</Chip>}
         <InReviewChip view={view} meta={meta} />
         {/* No next action on a container. `action`/`meta` read this document's
             own stored status — usually whatever it was mid-negotiation when it

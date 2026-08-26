@@ -187,6 +187,8 @@ export function NewTaskForm({
   const [uploadFailures, setUploadFailures] = useState<string[]>([]);
   const repo = useRepo();
   const [description, setDescription] = useState("");
+  /** Just the tag — see `Task.isImportant`. Nothing reads it but the label. */
+  const [isImportant, setIsImportant] = useState(false);
   const [requirements, setRequirements] = useState<string[]>([]);
   const [reqDraft, setReqDraft] = useState("");
   /**
@@ -630,6 +632,9 @@ export function NewTaskForm({
       : r.createTask({
           title,
           description: description || null,
+          /* Passed straight through, unconditionally. Nothing here decides it
+             and nothing downstream reads it for anything but the tag. */
+          isImportant,
           requirements,
           type,
           assigneeIds: effectiveAssignees,
@@ -927,6 +932,23 @@ export function NewTaskForm({
                 answered wrongly. Administrators can still file on another
                 department's behalf — that override lives in admin settings,
                 which is where filing work you are not part of belongs. */}
+
+            {/* A label, and only a label — see `Task.isImportant`. It sits
+                beside the title because that is where somebody decides how the
+                task should READ to other people, and nowhere near the priority
+                or deadline fields, which are the things it does not affect. */}
+            <label className="mt-3 flex cursor-pointer items-center gap-2.5">
+              <input
+                type="checkbox"
+                checked={isImportant}
+                onChange={(e) => setIsImportant(e.target.checked)}
+                className="h-4 w-4 shrink-0 accent-[var(--state-overdue-ink)]"
+              />
+              <span className="text-sm text-ink">Mark as important</span>
+              <span className="text-[11px] text-ink-faint">
+                Shows a tag on the task. Changes nothing else.
+              </span>
+            </label>
 
             <Field label="Description" className="mt-3">
               <div className="relative">

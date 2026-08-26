@@ -213,6 +213,9 @@ export function toTask(legacy: LegacyTask): Task {
     /* A container rather than work. Absent on every task saved before the
        field existed, which reads as false — those are all work. */
     isFolder: legacy.isFolder === true,
+    /* Read straight off the document, as written. Nothing derives it and
+       nothing else reads it — see `Task.isImportant`. */
+    isImportant: legacy.isImportant === true,
     /*
      * The task's time budget, from the task document.
      *

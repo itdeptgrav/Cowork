@@ -131,6 +131,61 @@ export function mrfApprovalStats(requests: MrfRequest[]): MrfApprovalStats {
   };
 }
 
+/**
+ * The approver-queue counts as the server counted them.
+ *
+ * ## Why the list cannot be counted instead
+ *
+ * `mrfApprovalStats` answers "how many of *these* requests are awaiting me",
+ * which is the right answer only when "these" is the whole queue. Over a list
+ * fetched from the server it is the wrong question twice over: that list is
+ * one page of at most twenty rows, and it has already been narrowed to the
+ * status the reader picked from the Queue filter. Counting it says "0 approved"
+ * to somebody filtering by Awaiting — not because they have approved nothing,
+ * but because approved requests were never fetched — and caps a queue of
+ * twenty-three at twenty.
+ *
+ * The badge on the Approvals tab is the sharpest case: it is read while the
+ * reader is on another tab, precisely so they can decide whether to switch. A
+ * number capped at the page size is a number that stops rising exactly when
+ * the queue is worth switching for.
+ *
+ * The server runs its own aggregate across the whole queue, unfiltered and
+ * unpaginated, and sends it alongside the page. This reads that.
+ *
+ * ## Why it can return null
+ *
+ * A backend that does not send counts is not an error — it is an older
+ * deployment. Null lets the caller fall back to counting the page, which is
+ * approximate but never zero. Reporting an empty queue to an approver who has
+ * work waiting is the one failure worth going out of the way to avoid.
+ */
+export function readMrfApprovalStats(raw: unknown): MrfApprovalStats | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  /* Whole counts only. A negative or fractional count is a broken aggregate,
+     not a small one, and falling back beats rendering it. */
+  const count = (v: unknown): number | null =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
+
+  /* The server's vocabulary is the status name, `pending`; ours is the
+     reader's word for it, `awaiting`. Renamed here so the difference stops at
+     this boundary. */
+  const awaiting = count(r.pending);
+  const total = count(r.total);
+  /* These two decide whether the payload is counts at all — without them there
+     is nothing worth showing. The other two default, because a queue that has
+     never had a rejection legitimately omits the key. */
+  if (awaiting === null || total === null) return null;
+
+  return {
+    awaiting,
+    approved: count(r.approved) ?? 0,
+    rejected: count(r.rejected) ?? 0,
+    total,
+  };
+}
+
 /** A short, human label for a status. */
 export function mrfStatusLabel(status: MrfRequest["status"]): string {
   switch (status) {

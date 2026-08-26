@@ -39,6 +39,7 @@ import {
 } from "@/lib/rules/messages/messageStatus";
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { isPinned } from "@/lib/rules/messages/pins";
+import { MessageTicks } from "./MessageTicks";
 import { escapeAction } from "@/lib/rules/messages/escapeLadder";
 import {
   dragCarriesFiles,
@@ -898,7 +899,7 @@ function Thread({
   /* The current match belongs to ONE query: a stored position only counts
      while the query it was reached in still stands, so editing the text drops
      back to "not yet navigated" with no state to reset. */
-  const searchKey = `${starFilter ? "*" : ""} ${searchQuery}`;
+  const searchKey = `${starFilter ? "*" : ""} ${searchQuery}`;
   const searchAt =
     searchNav && searchNav.key === searchKey ? searchNav.at : -1;
 
@@ -2357,38 +2358,6 @@ function Thread({
  * tick is a difference of quantity, which the eye counts; adding a second
  * colour for "delivered" would make the reader learn a palette instead.
  */
-function MessageTicks({ status }: { status: MessageStatus }) {
-  const read = status === "read";
-  const double = status !== "sent";
-  const label =
-    status === "read" ? "Read" : status === "delivered" ? "Delivered" : "Sent";
-  return (
-    <span
-      role="img"
-      aria-label={label}
-      title={label}
-      className="ms-1 inline-flex shrink-0 align-[-1px]"
-      style={{ color: read ? "var(--state-read)" : undefined }}
-    >
-      <svg
-        width={double ? 15 : 10}
-        height="10"
-        viewBox={double ? "0 0 15 10" : "0 0 10 10"}
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        aria-hidden
-      >
-        <path d="M1 5.5 L3.6 8.2 L8.8 1.8" />
-        {/* The second tick, set behind and to the right so the two read as a
-            pair rather than as one thick mark. */}
-        {double && <path d="M6.2 5.5 L8.8 8.2 L14 1.8" />}
-      </svg>
-    </span>
-  );
-}
 
 function MessageList({
   messages,
