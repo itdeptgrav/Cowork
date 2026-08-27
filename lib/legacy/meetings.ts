@@ -132,8 +132,12 @@ export async function setMeetParticipants(input: {
  * **Not a `status` write.** This route creates the actual LiveKit room, mints a
  * name, issues a join code and only then sets `status: "live"` — so setting the
  * status directly would mark a meeting live that has no room behind it, and
- * everyone joining would meet "the room is not open". CEO or TL only, which the
- * organiser of any meeting already is.
+ * everyone joining would meet "the room is not open".
+ *
+ * Open to any signed-in employee — `verifyEmployeeToken`. This said "CEO or TL
+ * only, which the organiser of any meeting already is", and both halves were
+ * wrong: the route has never carried `verifyCeoOrTL`, and since scheduling was
+ * opened up the organiser is routinely neither.
  *
  * Idempotent: called again on a live meeting it returns the existing room
  * rather than creating a second one.

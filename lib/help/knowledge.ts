@@ -834,6 +834,36 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "lib/rules/meetings/meetingCredit.ts — creditableSecs, creditTargets, settleSession; lib/rules/meetings/taskRoom.ts — taskJoinRefusal and the meet- room name the token route requires; TaskMeetingPanel.tsx; joinTaskMeeting/leaveTaskMeeting/endTaskMeeting in both repositories; credited deadline moves write to cowork_task_deadline_extensions like an absence or an extension",
   },
   {
+    id: "meetings-scheduling",
+    category: "general",
+    title: "Scheduling a meeting",
+    keywords: [
+      "schedule a meeting",
+      "book a meeting",
+      "create a meeting",
+      "new meeting",
+      "invite participants",
+      "cancel a meeting",
+      "edit a meeting",
+      "CEO or TL only",
+      "cannot schedule",
+      "meeting organiser",
+    ],
+    examples: [
+      "How do I schedule a meeting?",
+      "Can I book a meeting or only my manager?",
+      "It said “CEO or TL only” when I pressed Schedule.",
+      "How do I cancel a meeting I booked?",
+      "Why can't I cancel this meeting?",
+      "Can I change the time of a meeting?",
+    ],
+    answer:
+      "Anyone can schedule a meeting. Go to Meetings and press Schedule a meeting: give it a title, a start time, an agenda if it helps, and tick the people you want. You are always in your own meeting and cannot be removed from it. **This used to be refused.** Scheduling was restricted to a CEO or a TL, and the refusal only appeared after you had filled the whole form — the message read “CEO or TL only”. That restriction is gone: calling a meeting is a request for people's time, not authority over them, and they answer it by turning up or not. If you still see that message, the page is running against an older engine. **A meeting belongs to whoever booked it.** You can edit yours — its title, time, agenda and who is invited — and you can cancel it, and everybody invited is told. You cannot edit or cancel somebody else's, and the refusal says so plainly: “Only the meeting organiser can cancel it.” That is deliberate rather than a gap: a meeting disappearing from your calendar because a colleague tidied it away is worse than having to ask. Ask the organiser, or book your own. Starting the room, joining it and being recorded as present were already open to everyone, so nothing about being in a meeting depends on your role.",
+    related: ["task-meetings", "general-what-is-cowork"],
+    source:
+      "POST /cowork/schedule-meet/create takes verifyEmployeeToken in routes/task_routes/cowork.js — it was verifyCeoOrTL, which returned the 403 'CEO or TL only' the form surfaced through InlineError; the status, edit and cancel routes take verifyEmployeeToken too and their ownership check lives in cancelCoworkMeet / updateCoworkMeet / setCoworkMeetStatus in services/cowork.service.js, each refusing anybody who is not createdBy; livekit/start, /join and presence were always verifyEmployeeToken; NewMeetingForm in components/features/messages/CollabAreas.tsx applies no gate of its own",
+  },
+  {
     id: "task-timer-pause",
     category: "tasks",
     title: "The work timer, and when pause seems not to work",
