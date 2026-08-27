@@ -17,14 +17,12 @@ import {
   elapsedSecs,
   rebaseSecs,
   timerDisplayState,
+  TIMER_BANKABLE_GRACE_MS,
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
 import { blockedMessage, deadlineBlock } from "@/lib/rules/tasks/deadlineBlock";
 import { RequestMoreTime } from "./RequestMoreTime";
-import {
-  HEARTBEAT_INTERVAL_MS,
-  STALE_AFTER_MS,
-} from "@/lib/rules/presence/duty";
+import { HEARTBEAT_INTERVAL_MS } from "@/lib/rules/presence/duty";
 import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { TaskView } from "@/lib/repositories";
 
@@ -464,7 +462,24 @@ export function TimerControl({
              which `bankableRunSecs` reads as the full run. */
           heartbeatAtRealMs: session?.heartbeatAtRealMs ?? null,
           nowRealMs: runOrigin + ticked * 1000,
-          graceMs: STALE_AFTER_MS,
+          /* THE SAME GRACE THE ENGINE BANKS WITH, and the whole point of the
+             cap: a screen capped tighter than the credit is a screen that
+             disagrees with it, and every reconciliation then moves the figure.
+
+             This read `STALE_AFTER_MS` — 120 seconds — while `pauseTimer` and
+             `#closeGapAndKeepRunning` both banked with `TIMER_BANKABLE_GRACE_MS`
+             at fifteen minutes. `timer.ts` says in as many words that these two
+             answer different questions and must not be the same constant; the
+             engine was moved onto the new one and this call was left behind.
+             A beat is throttled past two minutes by any backgrounded tab, so
+             the cap bit constantly: the run froze at the last beat plus two
+             minutes, the engine credited thirteen minutes more, and the clock
+             lurched every time the two were reconciled.
+
+             Matching them makes reconciliation a no-op — the figure on screen
+             is already the figure being banked, so there is nothing to correct
+             and nothing to jump. */
+          graceMs: TIMER_BANKABLE_GRACE_MS,
         });
 
   /* `ticked` only re-renders; the FIGURE comes from the rule, so a throttled
