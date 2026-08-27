@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Avatar } from "@/components/ui/Avatar";
 import { Breadcrumb } from "@/components/ui/Workspace";
@@ -17,8 +17,11 @@ import {
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { canView, joinRefusal, manageRefusal } from "@/lib/rules/meetings/access";
-import { MeetingRoom, RoomClosed } from "./MeetingRoom";
+import { RoomClosed } from "./MeetingRoom";
+import { MeetingStage } from "./MeetingStage";
+import { useMeetingSession } from "./MeetingSessionContext";
 import { MeetingSummaryPanel } from "./MeetingSummaryPanel";
+import { RecordingsPanel } from "./RecordingsPanel";
 import { VerbatimTranscriptPanel } from "./VerbatimTranscriptPanel";
 import { PublicLinkPanel } from "./PublicLinkPanel";
 
@@ -35,6 +38,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
   /* Whether this reader has left the room. Opening the page joins; pressing
      Leave has to take you out and KEEP you out until you rejoin. */
   const [left, setLeft] = useState(false);
+  const meetingSession = useMeetingSession();
   const meeting = useQuery((r) => r.getMeeting(meetingId), [meetingId]);
   const viewer = useQuery((r) => r.getViewer(), []);
   const me = useQuery((r) => r.getCurrentEmployee(), []);
@@ -50,6 +54,58 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
       next: "waiting" | "live" | "completed" | "cancelled" | "archived",
     ) => r.setMeetingStatus(meetingId, next),
   );
+
+  /**
+   * Hand the meeting to the shell, which is what keeps it alive across
+   * navigation.
+   *
+   * Placed above the early returns below, because hooks run unconditionally —
+   * everything it needs is read from the queries directly and guarded inside
+   * rather than from the values computed further down.
+   *
+   * `open` is idempotent on the same meeting; the provider replaces the session
+   * object, and the engine keeps `MeetingRoom` at the same tree position, so no
+   * media is torn down by a re-open.
+   */
+  const openMeeting = meetingSession.open;
+  const closeMeeting = meetingSession.close;
+  const liveMeeting = meeting.data ?? null;
+  const viewerId = viewer.data?.employeeId ?? "";
+  const viewerHierarchy = viewer.data?.hierarchyIds ?? [];
+  const myName = me.data?.displayName ?? "";
+
+  useEffect(() => {
+    if (!liveMeeting || left) return;
+    /* The same refusal the room itself is gated on — a meeting somebody may
+       not join must not be started in the shell where no page is checking. */
+    if (
+      joinRefusal(liveMeeting, {
+        employeeId: viewerId,
+        seesOrganisation: false,
+        hierarchyIds: viewerHierarchy,
+      })
+    )
+      return;
+
+    openMeeting({
+      meeting: liveMeeting,
+      displayName: myName,
+      isOrganiser: liveMeeting.organiserId === viewerId,
+      onLeave: () => {
+        setLeft(true);
+        parts.refetch();
+      },
+    });
+    /* `parts` is a query object rebuilt on every render; depending on it would
+       re-open the session continuously. The callback closes over the current
+       one, which is the one that should be refetched. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveMeeting, left, viewerId, myName, openMeeting]);
+
+  /* Leaving takes the meeting down everywhere, not just off this page. */
+  useEffect(() => {
+    if (left) closeMeeting();
+  }, [left, closeMeeting]);
 
   if (meeting.isLoading || viewer.isLoading) return <SkeletonRows rows={8} />;
   if (meeting.error)
@@ -197,15 +253,19 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               </div>
             </Panel>
           ) : (
-            <MeetingRoom
-              meeting={m}
-              isOrganiser={isOrganiser}
-              displayName={me.data?.displayName ?? ""}
-              onLeave={() => {
-                setLeft(true);
-                parts.refetch();
-              }}
-            />
+            /**
+             * **The room is not rendered here any more — only its place is.**
+             *
+             * `MeetingEngine` mounts it once in the shell and draws it over
+             * this rectangle. That is what lets Back, a notification, or any
+             * link keep the meeting alive: the page stops publishing a place
+             * to draw and the meeting moves to the corner, instead of being
+             * unmounted mid-call with the recording unfinalised.
+             *
+             * `min-h-[520px]` matches what `RoomFrame` reserved when it was
+             * here, so the page's layout is unchanged.
+             */
+            <MeetingStage className="min-h-[520px] w-full rounded-card" />
           )}
         </div>
 
@@ -332,6 +392,19 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               meetStatus={m.status}
             />
           </Panel>
+
+          {/* **Whose audio was saved, beside the summary made from it.**
+              Everyone in the meeting sees it, not only the organiser: the
+              person most able to act on their own missing recording is the
+              person it belongs to, and the recovery — unsent clips kept in
+              their browser — happens in THEIR browser. */}
+          <RecordingsPanel
+            meetingId={meetingId}
+            participants={parts.data ?? []}
+            nameFor={(id) =>
+              people.data?.find((e) => e.id === id)?.displayName ?? id
+            }
+          />
 
           {isOrganiser && (
             <Panel>

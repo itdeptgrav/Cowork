@@ -17,6 +17,8 @@ import {
   emitParticipantStatus,
   emitRecordingStart,
   emitRecordingStop,
+  emitRecordingPause,
+  emitRecordingResume,
   getCoworkSocket,
   joinMeetingRoom,
   leaveMeetingRoom,
@@ -75,20 +77,78 @@ export interface PeerStatus {
   timestamp: number;
 }
 
-/** The widest MediaRecorder format this browser will encode audio into. */
-function getSupportedMimeType(): string {
+/**
+ * The format this browser will encode audio into, or null to let it choose.
+ *
+ * ## Why null is a real answer
+ *
+ * This used to fall back to `"audio/webm"` when nothing matched, and then hand
+ * that to `new MediaRecorder(stream, { mimeType })`. A browser that does not
+ * support the type does not ignore it — it throws `NotSupportedError`, so the
+ * fallback guaranteed a failure on exactly the browsers it was meant to
+ * rescue. Safari records `audio/mp4` and nothing else; passing it webm is fatal.
+ *
+ * Returning null means "construct without a `mimeType` and take whatever the
+ * browser picks", which every implementation supports. What it picked is then
+ * read back off the recorder — see `recorder.mimeType` at the call site —
+ * because the server derives the file extension from the type we send, and
+ * guessing there would write `.webm` over Ogg or MP4 bytes.
+ *
+ * The order is preference, not availability: Opus in WebM where it exists
+ * (Chrome, Edge, Brave, Firefox), MP4 for Safari, Ogg for older Firefox.
+ */
+function getSupportedMimeType(): string | null {
+  if (typeof MediaRecorder === "undefined") return null;
+  /* Present in every browser that has MediaRecorder except the oldest Safari,
+     where the only honest answer is to let it choose. */
+  if (typeof MediaRecorder.isTypeSupported !== "function") return null;
+
   const types = [
     "audio/webm;codecs=opus",
     "audio/webm",
-    "audio/mp4",
     "audio/ogg;codecs=opus",
     "audio/ogg",
+    "audio/mp4",
+    /* Deliberately NOT `audio/mpeg`: the engine derives a chunk's file
+       extension from this string and knows mp4, ogg and webm. An accepted type
+       it does not map would be written as `.webm` over MP3 bytes and produce a
+       file nothing can play — worse than not offering the format. Nothing in
+       practice records MPEG anyway. */
   ];
   for (const t of types) {
-    if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t))
-      return t;
+    try {
+      if (MediaRecorder.isTypeSupported(t)) return t;
+    } catch {
+      /* Some implementations throw on an unfamiliar type rather than
+         answering false. That is a "no", not a reason to stop looking. */
+    }
   }
-  return "audio/webm";
+  return null;
+}
+
+/**
+ * Why this browser cannot record, in words the person can act on — or null.
+ *
+ * Checked BEFORE asking for a microphone, because these failures are permanent
+ * and the retry loop would otherwise spend fifteen seconds rediscovering them
+ * and then report "unavailable after retries", which names neither the cause
+ * nor the fix.
+ */
+function recordingUnavailableReason(): string | null {
+  if (typeof navigator === "undefined") return "Recording needs a browser.";
+  /**
+   * **`mediaDevices` is undefined on an insecure origin, and that is the usual
+   * cause.** Browsers expose it only over https or on localhost, so opening
+   * Cowork by LAN address — `http://192.168.x.x:3000` — removes the microphone
+   * API entirely rather than denying permission. The old code read straight
+   * through it and threw a `TypeError`, which the retry loop treated as a
+   * transient fault and reported as "microphone unavailable".
+   */
+  if (!navigator.mediaDevices?.getUserMedia)
+    return "This browser cannot reach the microphone here. Open Cowork over https, or on localhost.";
+  if (typeof MediaRecorder === "undefined")
+    return "This browser cannot record audio. Chrome, Edge, Firefox or Safari 15+ can.";
+  return null;
 }
 
 /* ── Auth token cache ─────────────────────────────────────────────────────── */
@@ -260,6 +320,14 @@ async function finalizeRecording(args: {
   mimeType: string;
   isRejoin: boolean;
   speechIntervals: SpeechInterval[];
+  /**
+   * Every stretch the recording was paused for.
+   *
+   * Travels with the upload so the file can be read against the meeting's own
+   * clock: an hour of audio from a ninety-minute meeting is otherwise
+   * impossible to line up with anything that happened in it.
+   */
+  pauseIntervals: SpeechInterval[];
   guestSessionId?: string;
 }): Promise<FinalizeResult> {
   let url = `${BASE}/cowork/audio/finalize`;
@@ -270,6 +338,7 @@ async function finalizeRecording(args: {
     mimeType: args.mimeType,
     isRejoin: args.isRejoin,
     speechIntervals: args.speechIntervals || [],
+    pauseIntervals: args.pauseIntervals || [],
   };
   if (args.guestSessionId) {
     url = `${BASE}/cowork/audio/guest-finalize`;
@@ -331,6 +400,18 @@ export function useMeetingRecording({
   const isRejoinRef = useRef(false);
   const isFinalizedRef = useRef(false);
   const speechIntervalsRef = useRef<SpeechInterval[]>([]);
+  /**
+   * Recording paused — nothing captured, whatever the microphone is doing.
+   *
+   * Separate from `isMutedRef` on purpose: muting is about who can hear you and
+   * pausing is about what is kept, and one control answering both questions is
+   * why "was that recorded?" had no reliable answer.
+   */
+  const isPausedRef = useRef(false);
+  const [isPaused, setIsPaused] = useState(false);
+  const pauseStartedAtRef = useRef<number | null>(null);
+  /** Every paused stretch, so the file can be read against the meeting clock. */
+  const pauseIntervalsRef = useRef<SpeechInterval[]>([]);
   const currentSpeechStartRef = useRef<number | null>(null);
   const myUploadStateRef = useRef<UploadState>("idle");
 
@@ -385,26 +466,79 @@ export function useMeetingRecording({
         currentSpeechStartRef.current = null;
       }
 
-      const recorder = mediaRecorderRef.current;
-      if (!recorder) return;
-      if (muted && recorder.state === "recording") {
-        try {
-          recorder.pause();
-          if (isRecordingRef.current) broadcastStatus("paused");
-        } catch {
-          /* pause unsupported — the ondataavailable guard drops muted audio */
-        }
-      } else if (!muted && recorder.state === "paused") {
-        try {
-          recorder.resume();
-          if (isRecordingRef.current) broadcastStatus("recording");
-        } catch {
-          /* resume unsupported */
-        }
-      }
+      /**
+       * **Muting no longer pauses the recorder, and that is deliberate.**
+       *
+       * It used to: mute the microphone and the recording stopped with it. That
+       * made "is this being recorded" depend on a control that means something
+       * else entirely, and left no way to answer the actual question — stop
+       * recording the room, whether or not anybody is muted.
+       *
+       * Pause is now its own thing (`pauseRecording` below). Muting still marks
+       * the speech interval above, because who spoke when is what the summary
+       * orders by; it simply no longer decides what is captured.
+       */
     },
-    [broadcastStatus],
+    [],
   );
+
+  /**
+   * **Pause: stop recording the room, regardless of any microphone.**
+   *
+   * `recorder.pause()` stops the encoder, so nothing said between here and
+   * `resume` exists in the file at all — the paused stretch is absent rather
+   * than silent, which is what makes it a pause and not a mute.
+   *
+   * The instants are kept and travel with the upload, so the recording can be
+   * read against the meeting's own clock afterwards: an hour-long file from a
+   * ninety-minute meeting is otherwise impossible to line up with anything.
+   * The `ondataavailable` guard is belt-and-braces for a browser whose
+   * `MediaRecorder` does not implement pause — there, the encoder keeps running
+   * and the guard drops what it produces.
+   */
+  const pauseRecording = useCallback(() => {
+    if (isPausedRef.current) return;
+    isPausedRef.current = true;
+    pauseStartedAtRef.current = Date.now();
+    setIsPaused(true);
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === "recording") {
+      try {
+        recorder.pause();
+      } catch {
+        /* Unsupported — the guard in `ondataavailable` covers it. */
+      }
+    }
+    if (isRecordingRef.current) broadcastStatus("paused");
+  }, [broadcastStatus]);
+
+  const resumeRecording = useCallback(() => {
+    if (!isPausedRef.current) return;
+    isPausedRef.current = false;
+    setIsPaused(false);
+
+    const startedAt = pauseStartedAtRef.current;
+    pauseStartedAtRef.current = null;
+    if (startedAt !== null) {
+      const endMs = Date.now();
+      pauseIntervalsRef.current.push({
+        startMs: startedAt,
+        endMs,
+        durationMs: endMs - startedAt,
+      });
+    }
+
+    const recorder = mediaRecorderRef.current;
+    if (recorder && recorder.state === "paused") {
+      try {
+        recorder.resume();
+      } catch {
+        /* Unsupported — nothing was dropped, so nothing to restore. */
+      }
+    }
+    if (isRecordingRef.current) broadcastStatus("recording");
+  }, [broadcastStatus]);
 
   const flushChunks = useCallback(async () => {
     const toSend = [...pendingChunksRef.current, ...bufferedChunksRef.current];
@@ -479,32 +613,90 @@ export function useMeetingRecording({
       isRecordingRef.current = true;
       if (typeof window === "undefined") { isRecordingRef.current = false; return; }
       try {
+        /* Named before anything is attempted: these are permanent and the
+           retry loop would only rediscover them slowly and report them
+           vaguely. */
+        const blocked = recordingUnavailableReason();
+        if (blocked) {
+          isRecordingRef.current = false;
+          setUploadError(blocked);
+          myUploadStateRef.current = "idle";
+          broadcastStatus("failed");
+          return;
+        }
+
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: { echoCancellation: true, noiseSuppression: true, sampleRate: 16000 },
+          /**
+           * Plain values, not `exact`. A constraint the browser cannot meet is
+           * an `OverconstrainedError` and no recording at all — Firefox and
+           * Safari refuse sample rates Chrome accepts. As preferences these are
+           * honoured where possible and quietly ignored where not, which is the
+           * behaviour worth having on a microphone somebody is relying on.
+           */
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            sampleRate: { ideal: 16000 },
+          },
           video: false,
         });
-        const mimeType = getSupportedMimeType();
-        mimeTypeRef.current = mimeType;
+        const preferred = getSupportedMimeType();
         isRejoinRef.current = rejoin;
         isFinalizedRef.current = false;
         chunkIndexRef.current = 0;
         bufferedChunksRef.current = [];
         pendingChunksRef.current = [];
         speechIntervalsRef.current = [];
+        pauseIntervalsRef.current = [];
+        isPausedRef.current = false;
+        pauseStartedAtRef.current = null;
+        setIsPaused(false);
         currentSpeechStartRef.current = isMutedRef.current ? null : Date.now();
         myUploadStateRef.current = "idle";
 
-        const recorder = new MediaRecorder(stream, { mimeType });
+        /* No `mimeType` where none is supported: passing one a browser does
+           not know is a `NotSupportedError`, not a hint it can ignore. */
+        const recorder = preferred
+          ? new MediaRecorder(stream, { mimeType: preferred })
+          : new MediaRecorder(stream);
+        /**
+         * **What the browser ACTUALLY chose, not what we asked for.**
+         *
+         * The server derives the file extension from the type sent with each
+         * chunk, so a guess here writes `.webm` over Ogg or MP4 bytes and
+         * produces a file nothing will play. `recorder.mimeType` is the
+         * authoritative answer and is populated once the recorder exists.
+         */
+        const mimeType = recorder.mimeType || preferred || "audio/webm";
+        /* Carried on a ref because finalize, the page-hide beacon and the
+           replay-after-reload all run outside this closure and each has to tell
+           the server the same type these bytes were encoded in. */
+        mimeTypeRef.current = mimeType;
         recorder.ondataavailable = (e) => {
-          if (e.data && e.data.size > 0 && !isMutedRef.current)
+          /* Paused audio is never kept. The recorder is paused too, so this
+             only matters where a browser does not implement pause. */
+          if (e.data && e.data.size > 0 && !isPausedRef.current)
             bufferedChunksRef.current.push(e.data);
         };
         recorder.start(1000);
-        if (isMutedRef.current) {
+        /**
+         * **Start paused only if the RECORDING is paused — never because a
+         * microphone is muted.**
+         *
+         * This read `isMutedRef`, from when muting and pausing were one thing.
+         * Once everybody began joining muted by default, it meant every
+         * participant's recorder was paused the instant it started: it captured
+         * nothing, produced no chunks, and finalize answered "nothing to
+         * merge" — so their voice never reached Drive at all, while the room
+         * showed them as recording.
+         *
+         * Observed on M053: two people in the meeting, one file in the folder.
+         */
+        if (isPausedRef.current) {
           try {
             recorder.pause();
           } catch {
-            /* pause unsupported */
+            /* pause unsupported — the ondataavailable guard covers it */
           }
         }
         mediaRecorderRef.current = recorder;
@@ -515,7 +707,10 @@ export function useMeetingRecording({
         startChunkTimer();
         saveSession(meetIdRef.current, employeeIdRef.current, mimeType);
         void warmTokenCache();
-        broadcastStatus(isMutedRef.current ? "paused" : "recording");
+        /* The room is told what the RECORDER is doing. Keyed on mute, this
+           announced "Paused" for everybody who joined muted — over a recorder
+           that was, or should have been, running. */
+        broadcastStatus(isPausedRef.current ? "paused" : "recording");
       } catch (e) {
         isRecordingRef.current = false;
         const name = e instanceof Error ? e.name : "";
@@ -594,6 +789,7 @@ export function useMeetingRecording({
       mimeType: mimeTypeRef.current,
       isRejoin: isRejoinRef.current,
       speechIntervals: speechIntervalsRef.current,
+      pauseIntervals: pauseIntervalsRef.current,
       guestSessionId: guestSessionIdRef.current,
     };
     await putSession(marker);
@@ -607,18 +803,31 @@ export function useMeetingRecording({
         mimeType: marker.mimeType,
         isRejoin: marker.isRejoin,
         speechIntervals: marker.speechIntervals,
+        pauseIntervals: (marker.pauseIntervals ?? []) as SpeechInterval[],
         guestSessionId: marker.guestSessionId,
       });
       setUploadResult(result);
       setUploadDone(true);
-      myUploadStateRef.current = "uploaded";
+      /**
+       * **A file, or nothing — never both reported as "saved".**
+       *
+       * `skipped` means the engine found no chunks to merge, so no file was
+       * written and nothing reached Drive. Reporting that as `uploaded` is how
+       * a meeting came to show two people "saved" over a folder containing one
+       * recording: the panel was answering "did the server finish" when the
+       * only useful question is "is my audio there".
+       */
+      myUploadStateRef.current =
+        result.skipped === true || !result.driveFileId ? "none" : "uploaded";
       broadcastStatus("not_rec");
       await deleteSession(markerKey);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
       if (msg.includes("No audio") || msg.includes("skipped")) {
+        /* The same fact arriving as an error rather than a result: there was
+           nothing to upload. Not a failure to retry, and not a success. */
         setUploadDone(true);
-        myUploadStateRef.current = "uploaded";
+        myUploadStateRef.current = "none";
         broadcastStatus("not_rec");
         await deleteSession(markerKey);
       } else {
@@ -672,6 +881,7 @@ export function useMeetingRecording({
             mimeType: sess.mimeType,
             isRejoin: sess.isRejoin,
             speechIntervals: (sess.speechIntervals ?? []) as SpeechInterval[],
+            pauseIntervals: (sess.pauseIntervals ?? []) as SpeechInterval[],
             guestSessionId: sess.guestSessionId,
           });
           await deleteSession(sess.key);
@@ -776,6 +986,7 @@ export function useMeetingRecording({
         mimeType: mimeTypeRef.current,
         isRejoin: isRejoinRef.current,
         speechIntervals: speechIntervalsRef.current,
+        pauseIntervals: pauseIntervalsRef.current,
         guestSessionId: guestSessionIdRef.current,
       });
 
@@ -791,6 +1002,37 @@ export function useMeetingRecording({
     window.addEventListener("pagehide", handler);
     return () => window.removeEventListener("pagehide", handler);
   }, [stopChunkTimer]);
+
+  /**
+   * **Flush the moment the tab is hidden, because the timer is about to stop
+   * being a timer.**
+   *
+   * Capture is safe in a background tab: `MediaRecorder` is driven by the media
+   * pipeline, not by `setTimeout`, so audio keeps arriving at
+   * `ondataavailable` the whole time somebody is on another site.
+   *
+   * The UPLOAD is not. `startChunkTimer` uses `setInterval`, and a browser
+   * throttles interval timers in a hidden tab — Chrome to roughly once a
+   * minute, and harder the longer the tab stays hidden. So the clips pile up in
+   * `bufferedChunksRef` while nothing sends them: switch to another site for
+   * half an hour and half an hour of audio is sitting in memory, unsent, one
+   * crash or one closed laptop away from being lost. `pagehide` covers the
+   * closing tab and nothing covered the merely-hidden one.
+   *
+   * Flushing on `visibilitychange` empties the buffer at the last moment the
+   * page is still running at full speed, and again when it comes back — so what
+   * is at risk is a few seconds rather than the whole absence. It is a normal
+   * XHR upload, not `sendBeacon`: the page is not going away, and a beacon is
+   * capped at 64KB.
+   */
+  useEffect(() => {
+    const onVisibility = () => {
+      if (!isRecordingRef.current) return;
+      void flushChunks();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [flushChunks]);
 
   /* Resume a recording that was interrupted by a refresh, within four hours. */
   useEffect(() => {
@@ -808,8 +1050,26 @@ export function useMeetingRecording({
     if (!meetId || !employeeId) return;
     const socket = getCoworkSocket(employeeId);
 
-    const onStarted = () => void startRecording(false);
+    /**
+     * The room is recording — including the case where it is recording but
+     * PAUSED right now.
+     *
+     * The engine replays `recording_started` to anybody joining a live
+     * recording, and carries `paused` on that replay. Ignoring it would make a
+     * late joiner the only person capturing during a pause: everybody else
+     * stopped when the host pressed it, and this browser was not there to hear
+     * that event.
+     */
+    const onStarted = (p?: { paused?: boolean }) => {
+      void startRecording(false).then(() => {
+        if (p?.paused) pauseRecording();
+      });
+    };
     const onStopped = () => void stopRecording();
+    /* The host paused the room. Every participant stops capturing; nobody's
+       recording is finalised, so Resume picks the same file back up. */
+    const onPaused = () => pauseRecording();
+    const onResumed = () => resumeRecording();
     const onStatus = (p: {
       employeeId?: string;
       employeeName?: string;
@@ -832,6 +1092,8 @@ export function useMeetingRecording({
 
     socket.on("recording_started", onStarted);
     socket.on("recording_stopped", onStopped);
+    socket.on("recording_paused", onPaused);
+    socket.on("recording_resumed", onResumed);
     socket.on("participant_status", onStatus);
     joinMeetingRoom(meetId);
 
@@ -846,10 +1108,12 @@ export function useMeetingRecording({
       if (joinRetry.id) clearInterval(joinRetry.id);
       socket.off("recording_started", onStarted);
       socket.off("recording_stopped", onStopped);
+      socket.off("recording_paused", onPaused);
+      socket.off("recording_resumed", onResumed);
       socket.off("participant_status", onStatus);
       leaveMeetingRoom(meetId);
     };
-  }, [meetId, employeeId, startRecording, stopRecording]);
+  }, [meetId, employeeId, startRecording, stopRecording, pauseRecording, resumeRecording]);
 
   /**
    * Leaving the room, as opposed to closing the tab.
@@ -900,6 +1164,22 @@ export function useMeetingRecording({
     void startRecording(false);
   }, [isHost, meetId, employeeId, firstName, startRecording]);
 
+  /* The host's pause reaches everyone the same way start and stop do, and
+     pauses this browser too — the host is a participant with a microphone. */
+  const hostPauseRecording = useCallback(() => {
+    if (!isHost || !meetId || !employeeId) return;
+    getCoworkSocket(employeeId);
+    emitRecordingPause({ meetId, pausedBy: employeeId, pausedByName: firstName });
+    pauseRecording();
+  }, [isHost, meetId, employeeId, firstName, pauseRecording]);
+
+  const hostResumeRecording = useCallback(() => {
+    if (!isHost || !meetId || !employeeId) return;
+    getCoworkSocket(employeeId);
+    emitRecordingResume({ meetId, resumedBy: employeeId, resumedByName: firstName });
+    resumeRecording();
+  }, [isHost, meetId, employeeId, firstName, resumeRecording]);
+
   const hostStopRecording = useCallback(() => {
     if (!isHost || !meetId || !employeeId) return;
     getCoworkSocket(employeeId);
@@ -909,6 +1189,10 @@ export function useMeetingRecording({
 
   return {
     isRecording,
+    /** Recording is running but capturing nothing. Not the same as muted. */
+    isPaused,
+    pauseRecording,
+    resumeRecording,
     isUploading,
     uploadDone,
     uploadError,
@@ -920,6 +1204,8 @@ export function useMeetingRecording({
     stopRecording,
     hostStartRecording,
     hostStopRecording,
+    hostPauseRecording,
+    hostResumeRecording,
     participantStatuses,
   };
 }

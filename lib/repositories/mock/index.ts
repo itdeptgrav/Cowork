@@ -105,6 +105,7 @@ import type {
   Meeting,
   MeetingEventType,
   MeetingParticipant,
+  MeetingRecording,
   Message,
   MessageAttachment,
   MessageReply,
@@ -9174,6 +9175,20 @@ export class MockRepository implements CoworkRepository {
         .meetingEvents.filter((e) => e.meetingId === meetingId)
         .sort((a, b) => a.createdAt.localeCompare(b.createdAt)),
     );
+  }
+
+  /**
+   * Recorded audio per participant.
+   *
+   * Always empty. The prototype has no microphone, no chunk store and no
+   * Drive, so it has nothing to list — and inventing plausible rows would put
+   * a file name and a Drive link on a screen whose whole purpose is letting
+   * somebody confirm their audio really was saved. An empty list is the honest
+   * answer here and renders as "no recordings", which is exactly true.
+   */
+  async listMeetingRecordings(meetingId: string): Promise<MeetingRecording[]> {
+    void meetingId;
+    return delay([]);
   }
 
   /**

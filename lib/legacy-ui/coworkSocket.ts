@@ -22,7 +22,24 @@ const BASE =
   "http://localhost:5000";
 
 export type RecordingState = "recording" | "paused" | "not_rec" | "failed";
-export type UploadState = "idle" | "uploading" | "uploaded" | "failed";
+/**
+ * `none` is not a failure and it is not a success.
+ *
+ * **It exists because those two were being reported as one.** A finalize that
+ * answers "there was nothing to merge" — nobody's microphone produced a single
+ * chunk — was marked `uploaded`, and the status panel rendered that as
+ * **saved**. So a meeting could show every participant "saved" with one file in
+ * Drive, which is the one thing this panel exists to make impossible.
+ *
+ * "The server has nothing left to do" and "your audio is in Drive" are
+ * different facts, and only the second one survives being checked.
+ */
+export type UploadState =
+  | "idle"
+  | "uploading"
+  | "uploaded"
+  | "none"
+  | "failed";
 
 /** Broadcast when the host starts/stops the recording (server → room). */
 export interface RecordingSignal {
@@ -98,6 +115,31 @@ export function emitRecordingStop(payload: {
   stoppedByName: string;
 }): void {
   socket?.emit("recording_stop", payload);
+}
+
+/**
+ * Host: pause the recording for everyone in the room.
+ *
+ * Its own event rather than a flag on stop, because the two are not the same
+ * decision: stopping finalises every participant's audio to Drive and cannot
+ * be resumed, and a pause that reached a participant as a stop would end their
+ * recording irreversibly.
+ */
+export function emitRecordingPause(payload: {
+  meetId: string;
+  pausedBy: string;
+  pausedByName: string;
+}): void {
+  socket?.emit("recording_pause", payload);
+}
+
+/** Host: resume a paused recording for everyone in the room. */
+export function emitRecordingResume(payload: {
+  meetId: string;
+  resumedBy: string;
+  resumedByName: string;
+}): void {
+  socket?.emit("recording_resume", payload);
 }
 
 /** Everyone: publish my own record/upload state to the room. */

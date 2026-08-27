@@ -6,6 +6,7 @@ import { TopBar } from "./TopBar";
 import { NotificationToasts } from "./NotificationToasts";
 import { DemoBar } from "./DemoBar";
 import { PlayerEngine } from "@/components/features/music/PlayerEngine";
+import { MeetingEngine } from "@/components/features/meetings/MeetingEngine";
 import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
@@ -338,6 +339,13 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
         video slot, and everywhere else it runs audio-only behind a quiet
         bar. See `PlayerEngine` for what that costs. */}
       <PlayerEngine showBar={!fullBleed} />
+      {/* **The meeting, for the same reason and by the same mechanism.** It is
+        mounted once here and positioned over whatever rectangle the meeting
+        page publishes, so navigating away — Back included — moves the picture
+        into the corner and leaves the connection, the microphone and the
+        recording exactly where they were. It renders nothing at all when
+        nobody is in a meeting. */}
+      <MeetingEngine />
       {/* **No presence room here any more, and that is the point.** Sharing a
         screen used to need a Grav Stream iframe mounted beside the shell,
         because the capture prompt can only be opened from inside the frame

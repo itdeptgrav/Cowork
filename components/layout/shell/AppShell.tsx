@@ -5,6 +5,7 @@ import { DeviceModeProvider } from "./DeviceModeContext";
 import { ShellFrame } from "./ShellFrame";
 import { IridescentField } from "@/components/ui/IridescentField";
 import { MusicProvider } from "@/components/features/music/MusicContext";
+import { MeetingSessionProvider } from "@/components/features/meetings/MeetingSessionContext";
 import { MUSIC_ENABLED } from "@/lib/music/config";
 
 /**
@@ -29,10 +30,14 @@ export function AppShell({ children }: { children: ReactNode }) {
           session exists. */}
       <DeviceModeProvider>
       <LensProvider>
+        {/* Above the router, for the same reason `MusicProvider` is: a meeting
+            that lives inside a page ends when you navigate away from it. */}
+        <MeetingSessionProvider>
         <MusicProvider enabled={MUSIC_ENABLED}>
           <IridescentField />
           <ShellFrame>{children}</ShellFrame>
         </MusicProvider>
+        </MeetingSessionProvider>
       </LensProvider>
       </DeviceModeProvider>
     </ThemeProvider>

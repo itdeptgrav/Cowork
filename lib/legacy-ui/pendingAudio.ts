@@ -70,6 +70,15 @@ export interface PendingSession {
   mimeType: string;
   isRejoin: boolean;
   speechIntervals: unknown[];
+  /**
+   * Every stretch the recording was paused for.
+   *
+   * Optional because records written before pause existed do not have it, and
+   * a replay must not refuse to finalise audio that is sitting on the server
+   * over a field it never had. Absent reads as "no pauses", which is exactly
+   * what those recordings were.
+   */
+  pauseIntervals?: unknown[];
   guestSessionId?: string;
   at: number;
 }

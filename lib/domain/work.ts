@@ -472,6 +472,38 @@ export interface Meeting {
   actionItems: string[];
 }
 
+/**
+ * One participant's recorded audio from one meeting, as it reached Drive.
+ *
+ * **The answer to "whose voice actually got saved".** Every participant records
+ * their own microphone and uploads it independently, which is what makes a
+ * meeting recoverable when one person's connection fails — but it also means
+ * nobody could tell whether everybody's audio arrived. The engine has written
+ * one of these per finished upload since recording existed, and nothing read
+ * them back, so the only way to check was to open Drive.
+ *
+ * There is one record per UPLOAD, not per person: somebody who rejoins, or
+ * whose host stops and restarts recording, produces a second file rather than
+ * overwriting the first. `isRejoin` marks those so a reader can tell a second
+ * segment from a duplicate.
+ */
+export interface MeetingRecording {
+  id: string;
+  meetingId: string;
+  employeeId: EmployeeId;
+  employeeName: string;
+  fileName: string;
+  /** Bytes, as merged on the server. Zero where the engine did not report it. */
+  sizeBytes: number;
+  mimeType: string;
+  /** Opens the file in Drive. Empty where the upload has no link yet. */
+  viewUrl: string;
+  downloadUrl: string;
+  uploadedAt: string;
+  /** A later segment of the same person's audio, not a duplicate of it. */
+  isRejoin: boolean;
+}
+
 /** Why somebody is in the room. Decides their LiveKit grants and nothing else. */
 export type MeetingRole = "organiser" | "participant";
 

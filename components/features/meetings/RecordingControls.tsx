@@ -38,7 +38,7 @@ export function RecordingControls({
 
   return (
     <div className="flex items-center gap-2">
-      {isRecording && <RecIndicator />}
+      {isRecording && <RecIndicator paused={recording.isPaused} />}
       {isUploading && (
         <span className="text-[11px] text-slab-ink-muted">Uploading…</span>
       )}
@@ -68,16 +68,74 @@ export function RecordingControls({
           </button>
         </span>
       )}
+      {/**
+       * **Audio held on this device, and the button to push it.**
+       *
+       * The count was here and the button was not: it only appeared alongside
+       * an upload ERROR, so audio waiting quietly — a slow connection, a drain
+       * between retries — could be seen and not sent. Somebody watching a
+       * number they cannot act on has no way to tell waiting from stuck.
+       *
+       * Nothing is at risk either way: every clip is in IndexedDB before it is
+       * uploaded and deleted only once the server has it, and the drain runs on
+       * a timer and on the next page load regardless. This is for the person
+       * who does not want to wait for either.
+       */}
       {!uploadError && !isUploading && pendingUploads > 0 && (
-        <span
-          className="text-[11px] text-slab-ink-muted"
-          title="Recorded audio still to be sent. It is saved on this device and will upload by itself."
-        >
-          {pendingUploads} clip{pendingUploads === 1 ? "" : "s"} to upload
+        <span className="flex items-center gap-1.5">
+          <span
+            className="text-[11px] text-slab-ink-muted"
+            title="Saved on this device. It uploads by itself; this is the manual nudge."
+          >
+            {pendingUploads} clip{pendingUploads === 1 ? "" : "s"} saved here
+          </span>
+          <button
+            type="button"
+            onClick={() => void recording.retryUpload()}
+            className="rounded-md border border-slab-line px-1.5 py-0.5 text-[10px] text-slab-ink-muted hover:text-slab-ink"
+          >
+            Send to Drive
+          </button>
         </span>
       )}
 
       <StatusPanel statuses={participantStatuses} />
+
+      {/* **Pause is separate from Stop, and separate from the microphone.**
+          Stopping finalises everybody's audio to Drive and cannot be undone;
+          pausing keeps the file open and simply captures nothing. Muting is a
+          third thing entirely — it decides who can hear you, not what is kept —
+          so a paused recording captures nothing however many microphones are
+          live. Offered only while recording, because pausing something that is
+          not running is not a state. */}
+      {isHost && isRecording && (
+        <button
+          type="button"
+          onClick={
+            recording.isPaused
+              ? recording.hostResumeRecording
+              : recording.hostPauseRecording
+          }
+          title={
+            recording.isPaused
+              ? "Resume recording for everyone"
+              : "Pause recording for everyone — nothing said while paused is kept"
+          }
+          className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5 text-[12px] font-medium text-slab-ink transition-colors hover:bg-white/20"
+        >
+          {recording.isPaused ? (
+            <>
+              <Icon.play className="h-3.5 w-3.5" />
+              Resume
+            </>
+          ) : (
+            <>
+              <Icon.pause className="h-3.5 w-3.5" />
+              Pause
+            </>
+          )}
+        </button>
+      )}
 
       {isHost && (
         <HostButton
@@ -91,26 +149,42 @@ export function RecordingControls({
 }
 
 /** A pulsing red dot and the running time, the universal "we are recording". */
-function RecIndicator() {
+function RecIndicator({ paused }: { paused: boolean }) {
   const [secs, setSecs] = useState(0);
+  /**
+   * **The clock stops while paused, and so does the word.**
+   *
+   * It counted wall-clock time from the moment recording began and pulsed red
+   * throughout — so a paused meeting went on saying REC with a rising figure
+   * over a file that was not growing. That is the one thing this indicator
+   * must never do: it exists to tell people they are being recorded, and it
+   * was saying so while they were not.
+   *
+   * The counter measures what is IN the recording, which is why the paused
+   * seconds are skipped rather than the whole thing restarted.
+   */
   useEffect(() => {
-    const start = Date.now();
-    const t = setInterval(
-      () => setSecs(Math.round((Date.now() - start) / 1000)),
-      1000,
-    );
+    if (paused) return;
+    const t = setInterval(() => setSecs((n) => n + 1), 1000);
     return () => clearInterval(t);
-  }, []);
+  }, [paused]);
   const mm = String(Math.floor(secs / 60)).padStart(2, "0");
   const ss = String(secs % 60).padStart(2, "0");
   return (
     <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-medium text-slab-ink">
       <span
         aria-hidden="true"
-        className="h-2 w-2 animate-pulse rounded-full"
-        style={{ backgroundColor: "var(--state-overdue)" }}
+        className={`h-2 w-2 rounded-full ${paused ? "" : "animate-pulse"}`}
+        style={{
+          backgroundColor: paused
+            ? "var(--state-risk)"
+            : "var(--state-overdue)",
+        }}
       />
-      REC <span data-figure>{mm}:{ss}</span>
+      {paused ? "PAUSED" : "REC"}{" "}
+      <span data-figure>
+        {mm}:{ss}
+      </span>
     </span>
   );
 }
@@ -189,7 +263,10 @@ function HostButton({
 
 const REC_LABEL: Record<RecordingState, string> = {
   recording: "Recording",
-  paused: "Muted",
+  /* "Muted" was right when muting was what paused a recorder. It is not any
+     more: pausing is its own control and a muted person is still recorded, so
+     this said the wrong thing about both of them. */
+  paused: "Paused",
   not_rec: "Idle",
   failed: "Mic failed",
 };
@@ -203,6 +280,10 @@ const UP_LABEL: Record<UploadState, string> = {
   idle: "",
   uploading: "uploading",
   uploaded: "saved",
+  /* Said plainly, because it is the state somebody has to act on WHILE the
+     meeting is still running. It used to read "saved" — a folder with one file
+     in it and two people both told their audio was safe. */
+  none: "no audio",
   failed: "upload failed",
 };
 

@@ -100,6 +100,7 @@ import type {
   Meeting,
   MeetingEvent,
   MeetingParticipant,
+  MeetingRecording,
   Message,
   MessageAttachment,
   MessageReply,
@@ -2586,6 +2587,21 @@ export interface CoworkRepository {
   listMeetings(): Promise<Meeting[]>;
   /* Meeting lifecycle. The organiser drives all of it; `manageRefusal` gates. */
   listMeetingParticipants(meetingId: string): Promise<MeetingParticipant[]>;
+  /**
+   * Every participant's recorded audio, as it reached Drive.
+   *
+   * **What makes a recording verifiable rather than hoped-for.** Each person
+   * records their own microphone and uploads it independently — the property
+   * that stops one failed connection costing the whole meeting — and the cost
+   * of that independence is that nobody could see whether everybody's audio
+   * actually arrived. The engine has written a record per finished upload
+   * since recording existed; nothing read them back, so the only way to check
+   * was to open Drive and count.
+   *
+   * Empty is a real answer: a meeting nobody recorded has no files, and that is
+   * not a failure to report as one.
+   */
+  listMeetingRecordings(meetingId: string): Promise<MeetingRecording[]>;
   listMeetingEvents(meetingId: string): Promise<MeetingEvent[]>;
   setMeetingStatus(
     meetingId: string,

@@ -15,10 +15,15 @@
  *      meeting ended, and server errors.
  *   2. Room — once the guest submits their name and the backend returns
  *      LiveKit credentials, we drop them into a lightweight LiveKit room,
- *      carrying over the mic/camera/device choice made in the lobby. No
- *      recording hook (guests can't upload to Drive), no transcript (needs
- *      LiveKit DataChannel which needs auth participants to broadcast), just
- *      the participant grid + control bar.
+ *      carrying over the mic/camera/device choice made in the lobby. The
+ *      recording hook RUNS — a guest's microphone is captured and uploaded on
+ *      the same 30-second cadence as anybody else's, through the no-auth
+ *      `guest-chunk` / `guest-finalize` routes keyed by the `guestSessionId`
+ *      issued at join. This said "guests can't upload to Drive", which was
+ *      true before those routes existed and left every meeting with a guest in
+ *      it missing the one voice most likely to matter. No transcript (needs
+ *      LiveKit DataChannel which needs auth participants to broadcast), and
+ *      otherwise just the participant grid + control bar.
  *
  * All API calls go through `meetingMedia.ts` — the `getPublicMeetingInfo` and
  * `guestJoinMeeting` functions hit the NO-AUTH backend routes directly.
@@ -42,6 +47,7 @@ import {
   getPublicMeetingInfo,
   guestJoinMeeting,
 } from "@/lib/legacy/meetingMedia";
+import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
@@ -63,6 +69,23 @@ type Phase =
       micEnabled: boolean;
       camId: string;
       micId: string;
+      /**
+       * What a guest needs to have their voice recorded like anybody else's.
+       *
+       * `guest-join` has always returned these three; this screen discarded
+       * them, on a comment that said "guests can't upload to Drive". That was
+       * true once and has not been for some time: `/cowork/audio/guest-chunk`
+       * and `/cowork/audio/guest-finalize` take a `guestSessionId` instead of a
+       * Firebase token, merge the chunks and push the file to Drive through the
+       * same `uploadAudioToDrive` an employee's recording uses, into the same
+       * `meeting_audio_recordings` collection the summary reads.
+       *
+       * So a guest's voice was missing from every recording and every summary —
+       * not because it could not be captured, but because nothing asked for it.
+       */
+      meetId: string;
+      guestId: string;
+      guestSessionId: string;
     }
   | { kind: "error"; message: string };
 
@@ -125,6 +148,13 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
         micEnabled,
         camId,
         micId,
+        /* Carried rather than dropped — the guest's voice is recorded with
+           these. Empty strings where the engine sent nothing: the recorder
+           refuses to start without a meet id and a session, which is the right
+           answer for a build whose engine predates guest recording. */
+        meetId: d.meetId ?? "",
+        guestId: d.guestId ?? "",
+        guestSessionId: d.guestSessionId ?? "",
       });
     } catch (e) {
       setJoinError(e instanceof Error ? e.message : "Could not join.");
@@ -145,6 +175,10 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
         micEnabled={phase.micEnabled}
         camId={phase.camId}
         micId={phase.micId}
+        meetId={phase.meetId}
+        guestId={phase.guestId}
+        guestSessionId={phase.guestSessionId}
+        guestName={name.trim() || "Guest"}
         onLeave={() =>
           setPhase({
             kind: "lobby",
@@ -600,7 +634,23 @@ function CameraOffIcon({ className }: { className?: string }) {
   );
 }
 
-// ── Guest room — no recording, just the grid + controls ──────────────────────
+/**
+ * The guest room — the grid, the controls, and the guest's own voice.
+ *
+ * **Recording is not an employee privilege.** It reads as one because the
+ * uploads an employee makes are authenticated with their Firebase token, and a
+ * guest has no account to hold one. The engine answered that a long time ago
+ * with `/cowork/audio/guest-chunk` and `/cowork/audio/guest-finalize`, which
+ * take the `guestSessionId` issued at join instead — same 30-second cadence,
+ * same merge, same `uploadAudioToDrive`, same `meeting_audio_recordings`
+ * collection the summary reads. `useMeetingRecording` has carried a
+ * `guestSessionId` parameter for exactly this since it was ported.
+ *
+ * Only this screen never asked. So a meeting with a guest in it produced a
+ * recording with a hole where they spoke, and a summary that could not
+ * attribute a word of it — the one participant most likely to be the reason
+ * the meeting happened.
+ */
 
 function GuestRoom({
   token,
@@ -610,6 +660,10 @@ function GuestRoom({
   micEnabled,
   camId,
   micId,
+  meetId,
+  guestId,
+  guestSessionId,
+  guestName,
   onLeave,
 }: {
   token: string;
@@ -619,9 +673,39 @@ function GuestRoom({
   micEnabled: boolean;
   camId: string;
   micId: string;
+  meetId: string;
+  guestId: string;
+  guestSessionId: string;
+  guestName: string;
   onLeave: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * The guest's own microphone, captured and uploaded exactly as a colleague's
+   * is.
+   *
+   * `employeeId` carries the guest id: the hook uses it as the identity for the
+   * socket room and as the folder its chunks are written under, and the engine
+   * keys a guest's chunk directory by the same `guestId` it minted at join. It
+   * is an identity, not a claim of employment — and passing a blank would put
+   * every guest's audio in one unnamed pile.
+   *
+   * `isHost: false` always. A guest hears the host's start and stop over the
+   * socket like everybody else and never drives the room's recording.
+   */
+  const recording = useMeetingRecording({
+    meetId,
+    employeeId: guestId,
+    employeeName: guestName,
+    firstName: guestName.trim().split(/\s+/)[0] || guestName,
+    isHost: false,
+    guestSessionId,
+  });
+  /* Read so the hook is unmistakably live rather than looking like a call whose
+     result was thrown away — and so a guest can be told their voice failed to
+     reach Drive instead of finding out from a silent gap in the summary. */
+  const uploadFailed = recording.uploadError;
 
   return (
     <section
@@ -633,6 +717,18 @@ function GuestRoom({
         <span className="flex-1 truncate text-sm font-medium text-slab-ink">
           {meetTitle}
         </span>
+        {/* Said where it happens. A guest whose clips are not reaching Drive
+            would otherwise learn it from a gap in a summary nobody can fix
+            afterwards, and the recording is still running — this is a warning,
+            not a failure of the meeting. */}
+        {uploadFailed ? (
+          <span
+            className="truncate text-[11px] text-[var(--state-rework-ink)]"
+            title={uploadFailed}
+          >
+            Your audio is not uploading
+          </span>
+        ) : null}
         <span className="text-[11px] text-slab-ink-muted">Guest</span>
       </header>
 

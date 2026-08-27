@@ -89,7 +89,7 @@ import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -429,6 +429,7 @@ import {
 } from "../../legacy/tasks.ts";
 import { firstNumber } from "../../legacy/wire.ts";
 import * as meetHttp from "../../legacy/meetings.ts";
+import { listMeetingRecordings as listMeetingRecordingsHttp } from "../../legacy/meetingMedia.ts";
 import {
   toMeeting,
   toMeetingEvents,
@@ -9759,6 +9760,66 @@ export class LegacyRepository {
       throw new Error(result.error.message);
     }
     return toMeetingParticipants((result.data ?? {}) as never);
+  }
+
+  /**
+   * Every participant's recorded audio for one meeting.
+   *
+   * Read defensively field by field: these documents are written by the engine
+   * over a long period and by two routes — a signed-in participant's finalize
+   * and a guest's — so a record from an older build may be missing a name or a
+   * size. A missing field is shown as unknown; it is never a reason to refuse
+   * to list a file that exists.
+   */
+  async listMeetingRecordings(meetingId: string): Promise<MeetingRecording[]> {
+    const token = await this.#token();
+    const result = await listMeetingRecordingsHttp({
+      token,
+      meetId: String(meetingId),
+    });
+    if (!result.ok) {
+      /* A meeting nobody recorded, or an engine without the route: an empty
+         list, not an error over a page whose meeting is perfectly fine. */
+      if (result.error.kind === "not_found") return [];
+      throw new Error(result.error.message);
+    }
+
+    const rows = Array.isArray(result.data) ? result.data : [];
+    const text = (v: unknown): string => (typeof v === "string" ? v : "");
+    const num = (v: unknown): number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : 0;
+
+    return rows
+      .map((raw) => {
+        const r = (raw ?? {}) as Record<string, unknown>;
+        const id = text(r.id);
+        if (!id) return null;
+        return {
+          id,
+          meetingId: String(meetingId),
+          employeeId: text(r.employeeId) as EmployeeId,
+          /* The engine already falls back to "Unknown" when it writes these;
+             this covers a document written before it did. */
+          employeeName: text(r.employeeName) || text(r.firstName) || "Unknown",
+          fileName: text(r.fileName),
+          sizeBytes: num(r.fileSize),
+          mimeType: text(r.mimeType),
+          viewUrl: text(r.driveViewUrl),
+          downloadUrl: text(r.driveDownloadUrl) || text(r.driveViewUrl),
+          /* The engine writes a Firestore server timestamp, which arrives as
+             an object rather than a string.  already knows every
+             shape this legacy store uses. */
+          uploadedAt: (() => {
+            const ms = readInstant(r.uploadedAt);
+            return ms === null ? "" : new Date(ms).toISOString();
+          })(),
+          isRejoin: r.isRejoin === true,
+        } satisfies MeetingRecording;
+      })
+      .filter((r): r is MeetingRecording => r !== null)
+      /* Newest first: a rejoin's second segment is the one somebody is looking
+         for when they come to check whether the last stretch was captured. */
+      .sort((a, b) => b.uploadedAt.localeCompare(a.uploadedAt));
   }
 
   async listMeetingEvents(meetingId: string): Promise<MeetingEvent[]> {
