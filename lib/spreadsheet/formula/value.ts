@@ -55,7 +55,10 @@ export function isArray(value: ScalarValue): value is ArrayValue {
 const NUMERIC = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
 
 /** Coerce to a number, or a #VALUE! error when text cannot be read as one.
-    Errors pass straight through; an array coerces via its top-left element. */
+    A BLANK (empty cell) is 0, but the empty STRING is not numeric text and is
+    #VALUE! — the Sheets/Excel distinction (`=A1+1` is 1 when A1 is empty,
+    `=""+1` is #VALUE!). Errors pass straight through; an array coerces via its
+    top-left element. */
 export function toNumber(value: ScalarValue): number | FormulaError {
   if (isError(value)) return value;
   if (isArray(value)) return toNumber(value.first);
@@ -63,7 +66,6 @@ export function toNumber(value: ScalarValue): number | FormulaError {
   if (typeof value === "boolean") return value ? 1 : 0;
   if (isBlank(value)) return 0;
   const text = value.trim();
-  if (text === "") return 0;
   return NUMERIC.test(text) ? Number(text) : VALUE;
 }
 

@@ -39,6 +39,32 @@ import type { SelectionState, SheetDispatch } from "../sheetCommands";
  * `SheetData`, then hand the RESULT to `dispatch({type:"structuralEdit"})` —
  * this file decides nothing about how a Yjs map gets rewritten, the grid
  * still does.
+ *
+ * ## What the Undo button actually undoes
+ *
+ * The grid's own history (`dispatch({type:"undo"})` → Y.UndoManager) tracks
+ * the CRDT-backed maps — cells, styles, charts, rules, images — and nothing
+ * else. Two kinds of applied action are therefore NOT (fully) reversible
+ * through it, and each keeps its own one-shot inverse snapshot instead, the
+ * way `rename_sheet` always has:
+ *
+ *  · `filter_range` writes only `hidden`, plain tab state the undo manager
+ *    never sees — its inverse is the previous hidden-rows array.
+ *  · The insert/delete row/column tools change tracked maps AND untracked tab
+ *    state (`rows`/`cols`, `hidden`, sizes, merges) in one move; undoing only
+ *    the tracked half would leave the sheet inconsistent (cells restored, row
+ *    count still wrong). Their inverse is the whole pre-apply `SheetData`,
+ *    handed back through the same `structuralEdit` door the edit went in by.
+ *
+ * A snapshot is captured per apply and cleared when any OTHER action applies
+ * (same one-shot rule as `lastRename`), so Undo on an older turn falls back
+ * to the grid's history rather than restoring a stale snapshot. Known limit,
+ * inherited from snapshot semantics: in a live session, a collaborator's
+ * edits on this tab made between Apply and Undo are rolled back with it.
+ * `sort_range` is NOT snapshotted: it changes only tracked maps, where the
+ * undo manager (whenever it exists — live sessions only) reverses granularly
+ * without touching a collaborator's interleaved edits, which a snapshot
+ * restore would clobber.
  */
 
 const SUGGESTED_ACTIONS = [
@@ -81,6 +107,13 @@ export function SheetsAssistant({
   onClose: () => void;
 }) {
   const lastRename = useRef<{ previousTitle: string } | null>(null);
+  /* The one-shot inverse for the most recently applied action whose effects
+     the grid's undo manager does not (fully) track — see the header note. */
+  const lastInverse = useRef<
+    | { kind: "hiddenRows"; hidden: number[] }
+    | { kind: "sheet"; previous: SheetData }
+    | null
+  >(null);
 
   const contextLabel = selection.rect
     ? `Selected: ${describeRect(selection.rect)}`
@@ -194,21 +227,29 @@ export function SheetsAssistant({
 
   function apply(action: SheetsAiAction) {
     if (action.tool !== "rename_sheet") lastRename.current = null;
+    /* One-shot: whatever applies now owns the snapshot slot. The structural
+       and filter cases below refill it; every other action leaves the grid's
+       own history as the only (and sufficient) undo path. */
+    lastInverse.current = null;
 
     switch (action.tool) {
       case "set_cells":
         dispatch({ type: "writeCells", cells: action.cells });
         return;
       case "insert_rows":
+        lastInverse.current = { kind: "sheet", previous: sheet };
         dispatch({ type: "structuralEdit", next: insertRows(sheet, action.atRow, action.count) });
         return;
       case "delete_rows":
+        lastInverse.current = { kind: "sheet", previous: sheet };
         dispatch({ type: "structuralEdit", next: deleteRows(sheet, action.atRow, action.count) });
         return;
       case "insert_columns":
+        lastInverse.current = { kind: "sheet", previous: sheet };
         dispatch({ type: "structuralEdit", next: insertColumns(sheet, action.atCol, action.count) });
         return;
       case "delete_columns":
+        lastInverse.current = { kind: "sheet", previous: sheet };
         dispatch({ type: "structuralEdit", next: deleteColumns(sheet, action.atCol, action.count) });
         return;
       case "create_table": {
@@ -224,10 +265,24 @@ export function SheetsAssistant({
       case "set_formula":
         dispatch({ type: "writeCells", cells: [{ ref: action.ref, value: action.formula }] });
         return;
-      case "format_range":
+      case "format_range": {
+        /* The `selectRange` is for the EYES only — it moves the visible
+           selection onto the range being formatted. The styling itself must
+           not go through `{type:"style"}`: that command styles "whatever is
+           selected", and the grid's `toggleStyle` reads the selection from
+           the render closure, so a selectRange dispatched in the same tick
+           has not landed yet and the PREVIOUS selection would be painted —
+           the exact trap `styleCells` exists for (see `sheetCommands.ts`).
+           So the rect's cells are enumerated explicitly, the same way
+           `flag_outliers` names its refs. */
         dispatch({ type: "selectRange", range: describeRect(action.rect) });
-        dispatch({ type: "style", patch: action.style });
+        const refs: string[] = [];
+        for (let row = action.rect.top; row <= action.rect.bottom; row++)
+          for (let col = action.rect.left; col <= action.rect.right; col++)
+            refs.push(cellRef(row, col));
+        dispatch({ type: "styleCells", refs, patch: action.style });
         return;
+      }
       case "sort_range":
         dispatch({
           type: "structuralEdit",
@@ -237,8 +292,11 @@ export function SheetsAssistant({
       case "filter_range": {
         const newlyHidden = rowsNotMatching(sheet, action.rect, action.byCol, action.condition, action.value, action.hasHeaderRow);
         /* Rows outside this range keep whatever hidden state they already
-           had; only rows inside it are re-decided by this filter. */
+           had; only rows inside it are re-decided by this filter. Hidden rows
+           are tab state the undo manager never sees, so the previous array IS
+           the undo — captured here, restored by the Undo button. */
         const outsideRange = (sheet.hidden ?? []).filter((r) => r < action.rect.top || r > action.rect.bottom);
+        lastInverse.current = { kind: "hiddenRows", hidden: sheet.hidden ?? [] };
         dispatch({ type: "setHiddenRows", hidden: [...outsideRange, ...newlyHidden] });
         return;
       }
@@ -317,6 +375,16 @@ export function SheetsAssistant({
             .then((r) => {
               if (r.ok) onRenamed();
             });
+          return;
+        }
+        /* The captured inverse for the last filter/structural apply — see the
+           header note. Consumed once; anything older falls through to the
+           grid's own history below. */
+        const inverse = lastInverse.current;
+        if (inverse) {
+          lastInverse.current = null;
+          if (inverse.kind === "hiddenRows") dispatch({ type: "setHiddenRows", hidden: inverse.hidden });
+          else dispatch({ type: "structuralEdit", next: inverse.previous });
           return;
         }
         dispatch({ type: "undo" });

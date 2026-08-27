@@ -5,7 +5,10 @@
  * B and C together, so relationships across the row are preserved (requirement).
  * The key is the COMPUTED value of the key column, so numbers, dates (serials)
  * and text all sort correctly — numeric, chronological and alphabetical fall out
- * of one cross-type comparison. Cells outside the range are untouched.
+ * of one cross-type comparison. Descending reverses that order for VALUES only:
+ * blank rows sink to the bottom in both directions, as Sheets and Excel pin, so
+ * blank ranking sits outside the direction sign. Cells outside the range are
+ * untouched.
  *
  * It returns the cell edits (value AND style per cell), so a sort flows through
  * the ordinary command path and is a single undo. Formula references move
@@ -42,8 +45,18 @@ export function sortRangeEdits(
   }
 
   const sign = direction === "asc" ? 1 : -1;
+  /* Blank rows (and other non-values — errors rank with them in
+     `compareValues`) always sort LAST, whichever direction is asked for, and
+     keep their original order among themselves. Only real values reverse. */
+  const sinks = (v: ScalarValue) =>
+    typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean";
   const order = rows.map((_, i) => i).sort((a, b) => {
-    const c = compareValues(rows[a].key, rows[b].key) * sign;
+    const ka = rows[a].key;
+    const kb = rows[b].key;
+    const aSinks = sinks(ka);
+    const bSinks = sinks(kb);
+    if (aSinks !== bSinks) return aSinks ? 1 : -1;
+    const c = aSinks ? 0 : compareValues(ka, kb) * sign;
     return c !== 0 ? c : a - b; // stable: ties keep their original order
   });
 

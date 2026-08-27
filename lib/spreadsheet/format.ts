@@ -12,6 +12,14 @@
  * 25569 = 1970-01-01, and the fractional part is the time of day. Formatting
  * reads the date in UTC so it does not drift with the machine's timezone.
  *
+ * Fixed-decimal display rounds the number's 15-significant-digit DECIMAL
+ * reading — the value Excel and Sheets format from — not the raw binary double,
+ * so 1.005 at two decimals shows 1.01 even though the stored double is
+ * 1.00499…; asking for more decimals than that reading resolves falls back to
+ * the double's own digits. Decimal counts are clamped to 0–30 (Excel's cap) so
+ * a runaway count degrades instead of throwing, and a non-finite number shows
+ * "#NUM!" under every format kind.
+ *
  * Pure and DOM-free.
  */
 
@@ -35,11 +43,58 @@ export function resolveAlign(value: ScalarValue, style: CellStyle): CellAlign {
   return style.align ?? defaultAlign(value);
 }
 
+/** Excel's cap on fixed decimal places. `toFixed`/`toExponential` throw a
+    RangeError past 100; clamping here keeps every count renderable. */
+const MAX_DECIMALS = 30;
+
+/** A decimal count as something the formatters accept — an integer in 0..30.
+    Out-of-range and nonsense counts clamp rather than throw, so a cell with a
+    runaway format still renders. */
+function clampDecimals(d: number): number {
+  if (!Number.isFinite(d)) return 0;
+  return Math.min(MAX_DECIMALS, Math.max(0, Math.trunc(d)));
+}
+
+/**
+ * |n| as fixed-decimal digits, rounded from its 15-significant-digit decimal
+ * reading (half away from zero) rather than from the raw binary double — the
+ * rounding Excel and Sheets display. 1.005 is stored as 1.00499…, but its
+ * reading is "1.005", so two decimals show "1.01" where `toFixed` shows "1.00".
+ * Falls back to `toFixed` when the reading is exponential (|n| ≥ 1e21 or
+ * < 1e-6) or when more decimals are asked for than the reading resolves —
+ * there the double's own digits are all there is to show.
+ */
+function fixedFromReading(abs: number, decimals: number): string {
+  const reading = abs.toPrecision(15);
+  if (reading.includes("e")) return abs.toFixed(decimals);
+  const [intPart, fracPart = ""] = reading.split(".");
+  if (decimals >= fracPart.length) return abs.toFixed(decimals);
+
+  const digits = intPart + fracPart; // the decimal point sits after intPart.length
+  const keep = intPart.length + decimals;
+  let head = digits.slice(0, keep);
+  if (digits.charCodeAt(keep) - 48 >= 5) {
+    /* Round the kept digits up as a decimal string, carrying rightmost-first;
+       an all-9s carry prepends a digit, which grows the integer part by one. */
+    const chars = head.split("");
+    let i = chars.length - 1;
+    while (i >= 0 && chars[i] === "9") {
+      chars[i] = "0";
+      i -= 1;
+    }
+    if (i >= 0) chars[i] = String.fromCharCode(chars[i].charCodeAt(0) + 1);
+    head = (i >= 0 ? "" : "1") + chars.join("");
+  }
+  const intLen = head.length - decimals;
+  const int = head.slice(0, intLen);
+  return decimals > 0 ? `${int}.${head.slice(intLen)}` : int;
+}
+
 /** A signed number as grouped, fixed-decimal digits — sign and body split so a
     currency symbol can sit between them ("-$1,234.50"). */
 function commaFixed(n: number, decimals: number): { neg: boolean; body: string } {
   const neg = n < 0;
-  const fixed = Math.abs(n).toFixed(decimals);
+  const fixed = fixedFromReading(Math.abs(n), clampDecimals(decimals));
   const [int, frac] = fixed.split(".");
   const grouped = int.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return { neg, body: grouped + (frac ? `.${frac}` : "") };
@@ -123,6 +178,10 @@ export function formatValue(value: ScalarValue, fmt?: NumberFormat): string {
   if (typeof value === "string") return value;
 
   const n = value;
+  /* A non-finite number shows the error code under EVERY kind — an Infinity
+     under a currency format must not read "$Infinity". `formatNumber` supplies
+     the same "#NUM!" the automatic path always showed. */
+  if (!Number.isFinite(n)) return formatNumber(n);
   if (!fmt || fmt.kind === "automatic") return formatNumber(n);
 
   switch (fmt.kind) {
@@ -139,7 +198,7 @@ export function formatValue(value: ScalarValue, fmt?: NumberFormat): string {
       return `${neg ? "-" : ""}${body}%`;
     }
     case "scientific":
-      return n.toExponential(fmt.decimals ?? 2).replace("e", "E");
+      return n.toExponential(clampDecimals(fmt.decimals ?? 2)).replace("e", "E");
     case "date":
       return formatDate(n, "date");
     case "time":

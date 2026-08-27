@@ -116,10 +116,17 @@ test("isSubtask is left alone", () => {
   /* It governs the subtask CHROME — the requirement picker, the claim rules —
      none of which belongs on a task that merely sits in a folder. Widening it
      instead of adding `capApplies` would put that whole apparatus on the wrong
-     form. */
+     form.
+
+     The shape is now `!!parent && parent.task.isFolder !== true` rather than
+     `parent?.task.isFolder !== true`, which the incoming branch tightened: an
+     unloaded parent is `undefined`, and `undefined !== true` is TRUE — so the
+     form wore the subtask apparatus for the moment before the parent arrived.
+     That NARROWS the flag, the opposite of the widening this test exists to
+     prevent, so the guarantee is unchanged and only the line it pins moved. */
   assert.match(
     code(TASK_FORM),
-    /const isSubtask = !!presetParentTaskId && parent\?\.task\.isFolder !== true;/,
+    /const isSubtask =\s*!!presetParentTaskId && !!parent && parent\.task\.isFolder !== true;/,
   );
 });
 

@@ -234,7 +234,25 @@ alike. Each uses the visualisation its data wants:
 2. **Duration** — 11px uppercase label + 28px figure + an 11px qualifier.
 3. **Queue** — label + figure + *one actionable row* (a pill link carrying a
    truncated title, an uppercase verb tag and a date), or "Nothing is stalled on you."
-4. **Session** — a 44px `Ring` + 28px elapsed figure + a running/paused line.
+4. **Score** — a 44px `Ring` carrying the C1 percentage, beside an 11px
+   uppercase label ("Score from tasks"), a 28px earned-points figure, and an
+   11px line reading `of N · <period>`.
+
+Cell 4 was **Session** until 19 Aug 2026 — a ring of elapsed-against-estimate,
+the running task, a paused tally. It was replaced because the strip answered
+"how long" twice: cell 2 already logs time spent against time estimated, and
+every row of the action queue below carries its own `TimerControl`. What no
+cell answered was what the work had been *worth*. It now reads C1 — Task
+Execution, the one channel of the four a task can move, for the current scoring
+period, and always for the VIEWER rather than the selected scope: a score
+belongs to one person, so switching to My team must not switch whose points
+appear. Brief §9 (paused sessions visible and operable) is carried by the queue
+rows plus a `· N paused` tally in the queue’s own header.
+
+**The Refused Zero Rule.** Nothing in this cell may render a confident `0`. An
+unscored channel is `—`, and every percentage goes through `formatPercent`,
+which returns null rather than `NaN%` — pinned by "no task surface rounds a
+number straight into the DOM" in extensionChain.test.ts.
 
 Four identical cells is the low-information block this exists to avoid.
 
@@ -260,6 +278,30 @@ grid-cols-[28px_92px_minmax(0,1fr)_78px_146px_86px_74px_62px_78px_76px_30px]
 Priority is 92px and not the 38px a bare "P1" needs, because two of the four
 things it renders are longer: `Was P3` on a closed task and `P1 to accept` on
 work whose hours are not agreed.
+
+**The Priority Cell Has Five States, And One Is Not A Position.**
+
+| State | Shows |
+|---|---|
+| Awaiting THIS reader's approval | a 6px `--state-overdue` dot on the ordinary `--control` chip |
+| Container (a project) | `—`, ink-faint |
+| Held, no rank ever stored | `—`, ink-faint, tooltip says why |
+| Held, real provisional rank | `P{n}`, ink-faint, not a button |
+| Live queue position | `P{n}`, a button where `task.priority.change` allows |
+
+The first is the only one that is an obligation rather than a position, and it
+is checked first. It carries an **invisible `P1` sizer** so the chip is exactly
+25.5 × 18 — identical to a rank chip — and the column keeps one edge when a
+decision clears and a real number replaces it. The chip stays neutral and the
+DOT carries the colour: a state wash would put `--state-overdue-ink` on
+`--state-overdue`, which on the dark theme is pale pink on dark maroon — high
+contrast, but it does not read as red.
+
+Rows in this state also **sort to the top** (`floatMyApprovals`, the mirror of
+`sinkClosed`), because the list is the only place the obligation can be found:
+a cross-department task held for your hours estimate is assigned to nobody,
+created in another department, and carries no queue position, so it otherwise
+sorts wherever its `updatedAt` falls and reads as somebody else's work.
 
 - Header: `border-b border-hairline px-3 py-1.5` + column-label type.
 - Row: `px-3 py-2 gap-2 items-center`; hover `bg-[var(--control)]`; selected

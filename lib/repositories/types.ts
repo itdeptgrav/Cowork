@@ -17,6 +17,7 @@ import type {
 } from "@/lib/rules/tasks/extensionRecords";
 import type { AttachmentEntity, AttachmentMeta } from "@/lib/legacy/attachments";
 import type { Feasibility } from "@/lib/rules/tasks/deadlineFeasibility";
+import type { OutputState } from "@/lib/rules/tasks/outputs";
 import type {
   HelpArticle,
   HelpCategory,
@@ -140,6 +141,7 @@ import type {
   TaskId,
   TaskReview,
   TaskStatus,
+  TaskOutput,
   TaskSubmission,
   TeamAnalytics,
   TeamMonitoringRow,
@@ -452,6 +454,23 @@ export interface TaskView {
   approvals: Approval[];
   reworkCount: number;
   isOverdue: boolean;
+  /**
+   * Each declared output, with where it has got to and whether it can be
+   * started. DERIVED on every read from the submissions and reviews that
+   * actually happened, so it cannot drift from them.
+   *
+   * Empty for a task that declares no outputs — every task today.
+   */
+  outputs: TaskOutputView[];
+  /**
+   * Submissions still awaiting a decision — task-level or per-output.
+   *
+   * `latestSubmission` cannot answer this once outputs exist: a task may have
+   * Gopalpur waiting on a reviewer and Puri already approved, and "the latest"
+   * is one of them arbitrarily. The actionable rule needs all of the open ones
+   * to know whether any is this viewer's turn.
+   */
+  openSubmissions: TaskSubmission[];
   subtaskCount: number;
   chatCount: number;
   /**
@@ -1565,6 +1584,53 @@ export interface CoworkRepository {
   listDailyReports(taskId: TaskId): Promise<DailyReport[]>;
 
   /* Submission and review */
+  /**
+   * Declare what a task hands over, and what each handover waits for.
+   *
+   * Same permission as requirements — the task's creator or the person carrying
+   * it. Outputs are the contract with other people, and those two are who the
+   * contract belongs to.
+   */
+  setOutputs(input: SetOutputsInput): Promise<ActionResult<Task>>;
+  /**
+   * Hand ONE output over for review.
+   *
+   * Separate from `submitCompletion` because it must NOT move the task: its
+   * assignee is still delivering the rest, and flipping the whole task to
+   * `in_review` would stop their clock and take their queue position.
+   */
+  submitOutput(input: {
+    taskId: TaskId;
+    outputId: string;
+    message: string;
+    /**
+     * The work itself, as files somebody can open.
+     *
+     * Optional, and absent behaves exactly as before — every submission written
+     * before this existed carries none, and the engine has always accepted a
+     * message on its own.
+     *
+     * `ReportAttachment` rather than a shape of this method's own: the engine
+     * stores an output submission in the SAME record a task submission uses,
+     * and a second file shape over one record is how two screens come to
+     * describe one handover differently. These are public media URLs — the
+     * per-output route has always taken `imageUrls` and `pdfAttachments`, and
+     * this is what fills them.
+     */
+    attachments?: ReportAttachment[];
+  }): Promise<ActionResult<Task>>;
+  /**
+   * Approve or return ONE output.
+   *
+   * Approving releases whatever was waiting on it; the last approval finishes
+   * the task, with no second review of its own.
+   */
+  reviewOutput(input: {
+    taskId: TaskId;
+    outputId: string;
+    approved: boolean;
+    note?: string;
+  }): Promise<ActionResult<Task>>;
   submitCompletion(
     input: SubmitCompletionInput,
   ): Promise<ActionResult<TaskSubmission>>;
@@ -2897,10 +2963,47 @@ export interface RequestExtensionInput {
   reason: string;
 }
 
+export interface TaskOutputView {
+  output: TaskOutput;
+  state: OutputState;
+  /** Every input approved, so work on it may begin. */
+  isWorkable: boolean;
+  /**
+   * Inputs that have NOT been approved, named for a reader.
+   *
+   * The label, not the id: "waiting on Google Doc — Gopalpur" is an answer, and
+   * an id is a lookup somebody then has to perform themselves. `taskTitle` is
+   * null where the producing task was not in this read — a filtered list
+   * legitimately may not hold it, and inventing a name would be worse than
+   * admitting that.
+   */
+  waitingOn: { outputId: string; label: string; taskTitle: string | null }[];
+}
+
+export interface SetOutputsInput {
+  taskId: TaskId;
+  /** The whole list, in order. Absent ids are removed. */
+  outputs: {
+    /** Omitted for a new one; the engine assigns it. */
+    id?: string;
+    label: string;
+    needsOutputIds: string[];
+  }[];
+}
+
 export interface SubmitCompletionInput {
   taskId: TaskId;
   message: string;
   attachmentIds: string[];
+  /**
+   * Deliver ONE output rather than the whole task.
+   *
+   * Absent is today's behaviour: the task itself is submitted, moves to
+   * `in_review`, and finishes through its own review. With an output named, the
+   * task stays where it is — Anant is still writing Puri while Gopalpur is read
+   * — and only that output goes for review.
+   */
+  outputId?: string | null;
 }
 
 export interface ReviewInput {

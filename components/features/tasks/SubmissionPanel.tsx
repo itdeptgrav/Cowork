@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Button,
   Chip,
@@ -17,9 +17,16 @@ import {
   FileUploader,
 } from "@/components/features/attachments/Attachments";
 import { SubmittedFiles } from "./SubmittedFiles";
+import { OutputSubmitList } from "./OutputSubmitList";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { viewerHolds } from "@/lib/rules/tasks/viewerHolds";
-import { formatDateTime } from "@/lib/utils/format";
+import { useLiveNow } from "@/lib/hooks/useLiveNow";
+import {
+  istDayKey,
+  hasReportFor,
+  workedToday,
+} from "@/lib/rules/tasks/dailyReport";
+import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -59,6 +66,97 @@ export function SubmissionPanel({
   );
 
   /**
+   * **The daily report is filed from this same composer.**
+   *
+   * They were two forms on two tabs asking the same question — what did you
+   * do, and what can somebody look at — and the second was usually the first
+   * reworded. One box, two buttons: log today's progress, or hand the work
+   * over. What differs is the consequence, not the writing.
+   *
+   * `useLiveNow`, not `useNow`: `useNow` floors to the current minute, so a
+   * timer started seconds ago computes a negative elapsed and `workedToday`
+   * drops it — the task would not count as worked until the minute rolled.
+   */
+  const nowMs = useLiveNow();
+  const today = istDayKey(nowMs);
+  const reports = useQuery((r) => r.listDailyReports(taskId), [taskId]);
+  const commits = useQuery((r) => r.listDayCommits(today), [today]);
+  const timers = useQuery((r) => r.listTimers(), []);
+
+  const workedThis = useMemo(() => {
+    const worked = workedToday(
+      commits.data ?? [],
+      (timers.data ?? []) as Parameters<typeof workedToday>[1],
+      nowMs,
+    );
+    return worked.find((w) => w.taskId === taskId) ?? null;
+  }, [commits.data, timers.data, nowMs, taskId]);
+
+  /**
+   * When a report is owed: you worked on it, you have not filed one today, and
+   * the task is NOT finished.
+   *
+   * The last condition is the new one. A report is the record of a day spent on
+   * work still in progress — once the task is completed the submission is the
+   * account of it, and asking for a daily report as well would be asking twice
+   * for the same day.
+   */
+  const isClosed =
+    view.task.status === "completed" ||
+    view.task.status === "cancelled" ||
+    view.task.status === "assignment_rejected";
+  const reportOwed =
+    Boolean(me) &&
+    !isClosed &&
+    workedThis !== null &&
+    !hasReportFor(reports.data ?? [], String(me ?? ""), today);
+
+  const [filing, setFiling] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  /**
+   * A daily report needs its supporting documents; a submission does not.
+   *
+   * Deliberately different, and the reason is what each is for. A submission is
+   * read by a reviewer who can ask for anything missing; a daily report is read
+   * later, by somebody reconstructing what a day went on, and a sentence with
+   * nothing attached is not a record of work. So the report button waits for a
+   * file and the submit button does not.
+   */
+  const canFileReport =
+    reportOwed && message.trim().length > 0 && staged.length > 0;
+
+  async function fileReport() {
+    setFiling(true);
+    setFileError(null);
+    const r = await repo.submitDailyReport({
+      taskId,
+      message: message.trim(),
+      /* Still on the contract, no longer meaningful and no longer shown —
+         nobody can compute what fraction of a task is done, so the figure was
+         only ever an assertion. Written as zero rather than invented. */
+      progressPercent: 0,
+      attachmentIds: [],
+      /* Named and typed from the chosen files. `url` is empty because nothing
+         has been uploaded yet — the report records WHAT was attached; the
+         bytes follow the same staging path the submission uses. */
+      attachments: staged.map((f) => ({
+        name: f.name,
+        url: "",
+        mimeType: f.type || "application/octet-stream",
+      })),
+    });
+    setFiling(false);
+    if (!r.ok) {
+      setFileError(r.message);
+      return;
+    }
+    setMessage("");
+    setStaged([]);
+    onChange();
+  }
+
+  /**
    * **Three answers, not two — see `viewerHolds`.**
    *
    * This was `assignments.some((a) => a.employeeId === me)`, and `me` is null
@@ -69,11 +167,36 @@ export function SubmissionPanel({
    */
   const holds = viewerHolds({ viewerId: me, assignments: view.assignments });
   const isAssignee = holds === "yes";
-  const canSubmit = isAssignee && view.task.status === "in_progress";
+  /**
+   * A task that declares outputs is delivered output by output.
+   *
+   * It completes when they are all approved, so a whole-task submission would
+   * ask a reviewer to approve work the same chain is approving one piece at a
+   * time — and would flip the task to `in_review` while its assignee still has
+   * outputs to write. The engine refuses it; this stops the form being offered
+   * at all, because a control that exists only to be refused is worse than no
+   * control.
+   */
+  const deliversByOutput = view.task.outputs.length > 0;
+  const canSubmit =
+    isAssignee && !deliversByOutput && view.task.status === "in_progress";
   const latest = submissions.data?.[0];
 
   return (
     <div className="flex flex-col gap-4">
+      {deliversByOutput && (
+        /**
+         * **The outputs are submitted HERE, not described here.**
+         *
+         * This was a panel whose entire content was "Submit them from
+         * Overview" — a screen that explained the flow and then sent the reader
+         * two tabs away to take part in it, on the one tab named after the
+         * thing they came to do. The review that decides on the handover
+         * already renders directly beneath this, so submit and decide now sit
+         * on one screen in the order the work moves.
+         */
+        <OutputSubmitList view={view} viewerId={me} onChange={onChange} />
+      )}
       {reworks.data && reworks.data.length > 0 && (
         <Panel>
           <div className="flex flex-wrap items-center gap-2">
@@ -181,7 +304,33 @@ export function SubmissionPanel({
             </div>
           )}
 
-          <div className="mt-3 flex justify-end">
+          {fileError && (
+            <div className="mt-3">
+              <InlineError message={fileError} />
+            </div>
+          )}
+
+          <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+            {/* **File a daily report, from the same box.**
+                Only when one is actually owed — the timer ran on this task
+                today, nothing has been filed, and the task is still open. On a
+                task nobody worked today this button is simply absent rather
+                than present and refused. */}
+            {reportOwed && (
+              <>
+                <span className="mr-auto text-[11px] text-ink-faint">
+                  {formatDuration(workedThis?.totalSecs ?? 0)} worked today
+                  {staged.length === 0 &&
+                    " · attach the supporting work to file a report"}
+                </span>
+                <Button
+                  disabled={filing || !canFileReport}
+                  onClick={() => void fileReport()}
+                >
+                  {filing ? "Filing…" : "File daily report"}
+                </Button>
+              </>
+            )}
             <Button
               data-help="task-submit-work-button"
               tone="primary"
@@ -267,7 +416,17 @@ export function SubmissionPanel({
             {submissions.data.map((s) => (
               <div key={s.id} className="px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm text-ink">Attempt {s.attempt}</span>
+                  {/* **Which output, where there is one.** A task delivering
+                      three outputs listed three rows reading "Attempt 1", and
+                      the person who submitted them could not tell which was
+                      which — the one question this list exists to answer. */}
+                  <span className="text-sm text-ink">
+                    {s.outputId
+                      ? (view.task.outputs.find((o) => o.id === s.outputId)
+                          ?.label ?? "Output")
+                      : "Attempt"}{" "}
+                    {s.outputId ? `· attempt ${s.attempt}` : s.attempt}
+                  </span>
                   {s.wasLate && <Chip tone="overdue">Late</Chip>}
                   {s.supersededById && <Chip>Superseded</Chip>}
                   <span className="ml-auto text-xs text-ink-faint">

@@ -32,8 +32,6 @@ export interface ReportDraft {
   documentTitle: string | null;
 }
 
-const PROGRESS_STEPS = [0, 25, 50, 75, 100] as const;
-
 /** Files still going up, shown beside the ones that landed. */
 interface Uploading {
   key: string;
@@ -275,28 +273,21 @@ export function ReportComposer({
           )}
         </div>
 
-        <div className="ml-auto flex min-w-[220px] flex-1 items-center gap-2">
-          <span className="shrink-0 text-[11px] font-medium tracking-[0.04em] text-ink-faint uppercase">
-            Progress
-          </span>
-          <div className="flex flex-1 gap-1">
-            {PROGRESS_STEPS.map((pct) => (
-              <button
-                key={pct}
-                type="button"
-                disabled={disabled}
-                onClick={() => onChange({ progressPercent: pct })}
-                className={`flex-1 rounded-lg py-1 text-[11px] font-medium transition-colors disabled:opacity-40 ${
-                  draft.progressPercent === pct
-                    ? "bg-ink text-[var(--body-bg)]"
-                    : "bg-black/6 text-ink-muted hover:bg-black/10 dark:bg-white/8 dark:hover:bg-white/12"
-                }`}
-              >
-                {pct}%
-              </button>
-            ))}
-          </div>
-        </div>
+        {/**
+         * **The percentage is gone, and nothing replaces it here.**
+         *
+         * It was five buttons — 0/25/50/75/100 — and the figure they produced
+         * was an assertion, not a measurement: nobody can compute what fraction
+         * of a task is done, so the number meant only what the person clicking
+         * it hoped. This codebase already holds that line elsewhere — project
+         * progress must be DERIVED, and a manually entered number may never
+         * become the source of truth — and the daily report was the one place
+         * the rule did not reach.
+         *
+         * The honest figure is the time the timer measured, and the header of
+         * this card already carries it. Restating it down here would be the
+         * same number twice in one panel.
+         */}
       </div>
     </div>
   );

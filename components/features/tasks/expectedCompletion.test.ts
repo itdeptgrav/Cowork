@@ -252,7 +252,17 @@ test("the list column says which date it is showing", () => {
   /* A list cannot compute expected completion without one query per row, so it
      shows the fact it has and names it honestly. */
   const table = code("components/features/tasks/TaskTable.tsx");
-  assert.match(table, /\["due", "Requested"\]/);
+  /* ASSERTION MOVED, NOT WEAKENED. It looked for the sort option
+     ["due", "Requested"] — the sort menu was the only place the product said
+     which of the two dates this column carries. That menu was removed (priority
+     order is permanent now) and the disclosure moved to the column header,
+     where a reader looks for it. The guarded property is unchanged: the list
+     must name the REQUESTED date rather than implying expected completion. */
+  assert.match(
+    table,
+    /Deadline · requested/,
+    "the deadline column no longer says which date it shows",
+  );
 });
 
 test("a task with no agreed budget shows no expected completion", () => {

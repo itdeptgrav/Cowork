@@ -1,18 +1,18 @@
 "use client";
 
 import Link from "next/link";
-import { formatRankDisplay, rankFor } from "@/lib/rules/tasks/priorityDisplay";
+import {
+  formatRankDisplay,
+  rankFor,
+  rankTitle,
+} from "@/lib/rules/tasks/priorityDisplay";
+import { awaitsApprovalFrom } from "@/lib/rules/tasks/actionable";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
 import { buildTaskTree } from "@/lib/rules/tasks/tree";
-import { useMemo, useState } from "react";
-import {
-  statusMeta,
-  statusLabel,
-  nextAction,
-  ALL_STATUSES,
-} from "./statusMeta";
+import { useMemo, useState, type ReactNode } from "react";
+import { statusMeta, nextAction, ALL_STATUSES } from "./statusMeta";
 import { PriorityDialog } from "./PriorityDialog";
 import { PriorityReorderConfirm } from "./PriorityReorderConfirm";
 import { TimerControl } from "./TimerControl";
@@ -21,7 +21,6 @@ import { Icon } from "@/components/ui/Icons";
 import {
   MenuDivider,
   MenuItem,
-  MenuLabel,
   Popover,
   ToolButton,
 } from "@/components/ui/Workspace";
@@ -30,7 +29,7 @@ import {
   Chip,
   EmptyState,
   ErrorState,
-  Meter,
+  Segmented,
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
@@ -60,13 +59,64 @@ type Grouping = "none" | "status" | "project" | "assignee" | "deadline";
 type Sort = "rank" | "due" | "updated" | "title";
 
 /**
+ * The whole filter, and it is one question: is this work still live?
+ *
+ * It was four options naming states — Overdue, Blocked, In review. Each was a
+ * real question, but they were three of the ten a task can be in, and picking
+ * three meant the row was answering "which of these particular problems" rather
+ * than the question people actually arrive with. Overdue and blocked work is
+ * still open work, and the row itself already says which is which — the status
+ * chip, the amber deadline, the pending-action line under it.
+ *
+ * **Open and closed, and nothing between.** Everything under way, waiting on
+ * somebody, or past its deadline is open; everything finished is closed.
+ */
+type FilterId = "all" | "open" | "closed";
+
+/**
+ * Terminal, and the same three the rest of the product calls terminal —
+ * `signals.ts`'s `isOpen` is this list negated, and `deadlineShift.ts` carries
+ * it as `UNSHIFTABLE`, transcribed from legacy's `TERMINAL_STATUSES`.
+ *
+ * "Closed" therefore holds a cancelled or refused task as well as a completed
+ * one. They are finished by every rule in the codebase, and a task reachable
+ * from neither Open nor Closed would be a task the filter simply lost.
+ */
+const CLOSED_STATUSES: TaskStatus[] = [
+  "completed",
+  "cancelled",
+  "assignment_rejected",
+];
+
+/* Derived, never listed. A status added to the engine later is open work until
+   somebody declares it terminal above — the safe direction, and it is one edit
+   rather than two that can disagree. */
+const OPEN_STATUSES: TaskStatus[] = ALL_STATUSES.filter(
+  (s) => !CLOSED_STATUSES.includes(s),
+);
+
+const FILTERS: { id: FilterId; label: string; hint: string }[] = [
+  {
+    id: "all",
+    label: "All",
+    hint: "Everything in this scope, in priority order",
+  },
+  {
+    id: "open",
+    label: "Open",
+    hint: "Under way, waiting on somebody, or past its deadline",
+  },
+  { id: "closed", label: "Closed", hint: "Finished work" },
+];
+
+/**
  * Eleven columns. The brief names task, status, priority, assignee, owner,
  * project, deadline, timer, progress, play/pause state and pending action as
  * things a person must be able to compare — owner and assignee share one cell
  * as "owner → assignee", status and pending action share one as "status ·
  * next", and the timer cell is both the elapsed figure and the control.
  */
-/* The priority column is 92px, not the 38px a bare "P1" needs. Two of the four
+/* The priority column is 84px, not the 38px a bare "P1" needs. Two of the four
    things it renders are longer than the chip: "Was P3" on a closed task, and
    "P2 to accept" on work whose hours are not agreed. Both are deliberate — a
    number from a different sequence must not wear the live queue's chip — and
@@ -74,28 +124,131 @@ type Sort = "rank" | "due" | "updated" | "title";
 
    The number in "P2 to accept" is the rank whoever assigned it CHOSE, not a
    derived position: the suffix alone marks the sequence. See `priority.ts`. */
+/* **Every column is sized for its HEADER as well as its values.** The widths
+   were once fitted to the figures alone, so "Time budget" wrapped to two lines
+   in a 62px column while "of 03:06:31" — 58px of tabular figures — spilled left
+   over the deadline beside it. Each track below is the wider of what the value
+   needs and what the column heading needs, plus the 16px of cell padding that
+   keeps neighbouring columns apart.
+
+   Measured against the real Geist metrics rather than guessed. Content width is
+   the track less that padding: P 80 (fits "P2 to accept", 77) · People 78 (two
+   28px monograms, the chevron and their gaps, 76) · Status 136 (fits
+   "Assignment rejected", 133) · Progress 72 · Deadline 64 · Time budget 84
+   (fits the heading, 82 — the widest thing in that column) · Timer 76 (the 74px
+   control) · Activity 60. */
+/**
+ * **Ten columns on the task list, eleven inside a project.**
+ *
+ * The eleventh was a headerless 48px track holding a hover-only `···` menu, and
+ * four of that menu's five items were already reachable in one click from the
+ * row itself — the title opens the task, the P chip changes priority, and the
+ * task page carries Deadline and History. So on the ordinary list it was a
+ * permanently empty column bought for nothing, which is what it looked like.
+ *
+ * The fifth item is not redundant: "Remove from project" exists nowhere else,
+ * and only a project supplies the `onUnlink` that renders it. So the track is
+ * spent exactly where it buys something and dropped everywhere else, rather
+ * than deleting an action with no other home.
+ */
 const COLS =
-  "grid-cols-[28px_92px_minmax(0,1fr)_78px_146px_86px_74px_62px_78px_76px_30px]";
+  "grid-cols-[38px_96px_minmax(0,1fr)_152px_88px_80px_100px_92px_84px]";
+const COLS_MENU =
+  "grid-cols-[38px_96px_minmax(0,1fr)_152px_88px_80px_100px_92px_76px_52px]";
+
+/**
+ * One cell.
+ *
+ * No rule between columns: at eleven of them the verticals stopped reading as
+ * structure and started reading as a spreadsheet, boxing in every value on the
+ * screen. The 8px of padding either side is what separates the columns now —
+ * 16px of clear space between any two neighbours, which is more air than the
+ * ruled version had and needs no ink to do it. The row rules stay: those
+ * separate things a reader actually scans between.
+ */
+const CELL = "flex min-w-0 flex-col gap-0.5 px-2 py-2.5";
+/** The leading and trailing cells carry the panel's own 16px inset. */
+const CELL_LEAD = "flex min-w-0 flex-col gap-0.5 py-2.5 pr-2 pl-4";
+const CELL_TAIL = "flex min-w-0 flex-col gap-0.5 py-2.5 pr-4 pl-2";
+
+/**
+ * The first line of every cell — one height, in every column.
+ *
+ * This is the whole of the alignment fix. The row was `items-center`, so a
+ * one-line cell floated to the vertical middle while a two-line cell started at
+ * the top: the deadline sat in the GAP between the title and its reference, the
+ * timer between the two halves of the time budget, and eleven columns each
+ * found their own baseline. Now every primary value sits on the same 28px line
+ * at the top of its cell — the height an avatar needs, which is the tallest of
+ * them — and every secondary value on the 16px line beneath it.
+ */
+const LINE = "flex h-7 items-center";
+/** The second line: the quiet half of a cell. */
+const SUB = "block truncate text-[11px] leading-4 text-ink-faint";
+
+/**
+ * Header cells, inset to match the rows exactly.
+ *
+ * **A heading lines up with the GLYPHS under it, not with the cell box.** Six
+ * columns need nothing for that — their content starts at the content edge. The
+ * other four each hold something whose visible left edge is inset from the box
+ * it sits in, and a heading flush to the box therefore sat to the left of every
+ * value it named:
+ *
+ *   · Task, +24px — the fold gutter (`w-5` plus its margin) that every title
+ *     clears so a subtask's elbow has somewhere to go.
+ *   · Status, +10px — the chip's own `px-2.5`.
+ *   · P, +6px — the rank chip's `px-1.5`.
+ *   · Timer, centred — the figure is centred inside a fixed 74px control, so
+ *     this is the one column where matching an edge is the wrong move and
+ *     sharing a centre line is the right one.
+ *
+ * Written as whole class strings rather than as `HEAD` plus a `pl-*` override:
+ * `px-2` and `pl-8` both set `padding-left`, and which one wins would be down
+ * to the order Tailwind emits them in rather than to anything stated here.
+ */
+const HEAD = "flex items-center px-2 py-2.5";
+const HEAD_P = "flex items-center py-2.5 pr-2 pl-3.5";
+const HEAD_TASK = "flex items-center py-2.5 pr-2 pl-8";
+const HEAD_STATUS = "flex items-center py-2.5 pr-2 pl-[18px]";
+const HEAD_TIMER = "flex items-center justify-center px-2 py-2.5";
+const HEAD_LEAD = "flex items-center justify-center py-2.5 pr-2 pl-4";
+const HEAD_TAIL = "flex items-center py-2.5 pr-4 pl-2";
 
 export function TaskTable({
   scope,
   projectId,
   onUnlink,
+  scopeControl,
 }: {
   scope: TaskScope;
   /** When set, the table is scoped to one project and hides the project column. */
   projectId?: string;
   /** Supplied by a project, which can remove a task's link without deleting it. */
   onUnlink?: (taskId: string) => Promise<void>;
+  /**
+   * The "whose work" switch, owned by the caller and rendered in this toolbar.
+   *
+   * A node rather than the state itself: `scope` is a prop here, and the thing
+   * that sets it lives a level up because the board reads the same value. This
+   * only decides where it appears — beside the filter that answers the next
+   * question about the same list. Absent inside a project, which has no scope
+   * to choose.
+   */
+  scopeControl?: ReactNode;
 }) {
   const [search, setSearch] = useState("");
   const [statuses, setStatuses] = useState<TaskStatus[]>([]);
   const [sort, setSort] = useState<Sort>("rank");
-  /* Grouped by status on arrival. A flat list of forty rows makes a person do
-     the triage the product already knows how to do: the first question is
-     always "what needs me", and that is the first group. Changing it is one
-     click and the choice sticks for the session. */
-  const [grouping, setGrouping] = useState<Grouping>("status");
+  /* **Ungrouped, and no longer switchable.**
+     It used to arrive grouped by status, on the reasoning that a flat list of
+     forty rows makes a person do triage the product already knows how to do.
+     The flaw is that grouping by status breaks the list into buckets and
+     destroys the one order this product spends all its rules establishing —
+     P1 stops being the first row on the page, which is the whole point of a
+     priority queue. The state stays because the grouping machinery below still
+     reads it; nothing sets it any more. */
+  const [grouping, setGrouping] = useState<Grouping>("none");
   const [onlyOverdue, setOnlyOverdue] = useState(false);
   const [onlyBlocked, setOnlyBlocked] = useState(false);
   const [onlyMine, setOnlyMine] = useState(false);
@@ -288,15 +441,81 @@ export function TaskTable({
     r.normalizePriorities(tableViewerId ?? ""),
   );
 
+  /**
+   * Four questions, where there were twenty-two answers.
+   *
+   * The toolbar carried three popovers: a filter holding three quick toggles
+   * and all ten engine statuses, a grouping menu, and a sort menu. Between them
+   * that is twenty-two controls over a list whose order is already decided —
+   * and three of them actively worked against it. Sorting by title, or grouping
+   * by status, takes a priority queue and returns a list where P1 is not at the
+   * top, which is the one thing the queue exists to guarantee.
+   *
+   * What is left answers what a person actually arrives asking: everything, or
+   * one side of the open/closed line. Priority order is permanent rather than
+   * the default of four.
+   *
+   * The query is UNCHANGED — `statuses` is the same field it has always read,
+   * and this only decides what goes in it. `onlyOverdue` and `onlyBlocked` are
+   * no longer set by anything: overdue and blocked work is open work, the row
+   * says which it is, and a filter that carves one problem out of "open" was
+   * answering a narrower question than anybody asked.
+   */
+  /* Unchanged, and still read by the empty state below: "did a filter cause
+     this emptiness, or is there genuinely nothing here" is a different question
+     from which filter is on, and it wants the same answer it always gave. */
   const filterCount =
     statuses.length +
     (onlyOverdue ? 1 : 0) +
     (onlyBlocked ? 1 : 0) +
     (onlyMine ? 1 : 0);
 
+  /* Which side is showing, read back off the one field that carries it. Only
+     `setFilter` writes `statuses`, so a list containing a terminal status can
+     only have come from Closed. */
+  const filter: FilterId =
+    statuses.length === 0
+      ? "all"
+      : statuses.includes("completed")
+        ? "closed"
+        : "open";
+
+  function setFilter(next: FilterId) {
+    /* Cleared, not merely unset. These two are still read by the query, so a
+       flag left standing from an earlier session state would quietly narrow a
+       list whose control no longer shows it. */
+    setOnlyOverdue(false);
+    setOnlyBlocked(false);
+    setStatuses(
+      next === "open"
+        ? OPEN_STATUSES
+        : next === "closed"
+          ? CLOSED_STATUSES
+          : [],
+    );
+  }
+
+  /**
+   * **"My team" separates by person; every other scope does not.**
+   *
+   * A manager's list is a different object from an assignee's. Looking at your
+   * own work, one flat run in priority order is the answer — P1 first, and the
+   * next thing under it. Looking at six people's work, that same flat run
+   * interleaves six queues into one column and the first question a manager has
+   * — what is this person carrying — takes reading every row to answer.
+   *
+   * Derived from the scope rather than chosen, because it is not really a
+   * preference: it follows from whose list you asked for. That is also why the
+   * grouping control is gone and nothing else sets it.
+   *
+   * Within each person the priority order is untouched, so a manager still
+   * reads each queue top-down the way its owner does.
+   */
+  const separateBy: Grouping = scope === "team" ? "assignee" : grouping;
+
   const groups = useMemo(
-    () => groupTasks(data ?? [], grouping, tableViewerId ?? ""),
-    [data, grouping, tableViewerId],
+    () => groupTasks(data ?? [], separateBy, tableViewerId ?? ""),
+    [data, separateBy, tableViewerId],
   );
 
   function toggle(id: string) {
@@ -311,163 +530,36 @@ export function TaskTable({
   const allSelected =
     allIds.length > 0 && allIds.every((id) => selected.has(id));
 
+  /* Whether the trailing menu column is worth its width — see `COLS`. Derived
+     from the same prop `Row` reads, and in one place, because a header that
+     spends the track while its rows do not (or the reverse) is a table whose
+     columns no longer line up. */
+  const hasRowMenu = Boolean(onUnlink);
+
   return (
     <>
       {/* Toolbar — one row, right-aligned, no empty gutter. */}
       <div className="mb-2 flex flex-wrap items-center gap-1.5">
         <SearchBox value={search} onChange={setSearch} />
 
-        <Popover
-          label="Filters"
-          trigger={({ toggle: t, open }) => (
-            <ToolButton
-              icon="filter"
-              label="Filter"
-              onClick={t}
-              active={open || filterCount > 0}
-              count={filterCount}
-            >
-              Filter
-            </ToolButton>
-          )}
-        >
-          {() => (
-            <>
-              <MenuLabel>Quick</MenuLabel>
-              <MenuItem
-                selected={onlyOverdue}
-                onClick={() => setOnlyOverdue((v) => !v)}
-              >
-                Overdue only
-              </MenuItem>
-              <MenuItem
-                selected={onlyBlocked}
-                onClick={() => setOnlyBlocked((v) => !v)}
-              >
-                Blocked only
-              </MenuItem>
-              <MenuItem
-                selected={onlyMine}
-                onClick={() => setOnlyMine((v) => !v)}
-              >
-                Assigned to me
-              </MenuItem>
-              <MenuDivider />
-              <MenuLabel>Status</MenuLabel>
-              <div className="max-h-[220px] overflow-y-auto scroll-slim">
-                {ALL_STATUSES.map((s) => (
-                  <MenuItem
-                    key={s}
-                    selected={statuses.includes(s)}
-                    onClick={() =>
-                      setStatuses((cur) =>
-                        cur.includes(s)
-                          ? cur.filter((x) => x !== s)
-                          : [...cur, s],
-                      )
-                    }
-                  >
-                    {statusLabel(s)}
-                  </MenuItem>
-                ))}
-              </div>
-              {filterCount > 0 && (
-                <>
-                  <MenuDivider />
-                  <MenuItem
-                    onClick={() => {
-                      setStatuses([]);
-                      setOnlyOverdue(false);
-                      setOnlyBlocked(false);
-                      setOnlyMine(false);
-                    }}
-                  >
-                    Clear all filters
-                  </MenuItem>
-                </>
-              )}
-            </>
-          )}
-        </Popover>
+        {/* One row of named filters, in the same segmented control the scope
+            switch uses — so the two questions this page asks about a list,
+            whose work and which of it, are asked the same way. */}
+        <Segmented
+          label="Task filter"
+          size="sm"
+          value={filter}
+          onChange={setFilter}
+          options={FILTERS}
+        />
 
-        <Popover
-          label="Group by"
-          trigger={({ toggle: t, open }) => (
-            <ToolButton
-              icon="group"
-              label="Group"
-              onClick={t}
-              active={open || grouping !== "none"}
-            >
-              {grouping === "none" ? "Group" : `By ${grouping}`}
-            </ToolButton>
-          )}
-        >
-          {(close) => (
-            <>
-              {(
-                [
-                  "none",
-                  "status",
-                  "project",
-                  "assignee",
-                  "deadline",
-                ] as Grouping[]
-              ).map((g) => (
-                <MenuItem
-                  key={g}
-                  selected={grouping === g}
-                  onClick={() => {
-                    setGrouping(g);
-                    close();
-                  }}
-                >
-                  {g === "none" ? "No grouping" : `By ${g}`}
-                </MenuItem>
-              ))}
-            </>
-          )}
-        </Popover>
-
-        <Popover
-          label="Sort"
-          trigger={({ toggle: t, open }) => (
-            <ToolButton icon="sort" label="Sort" onClick={t} active={open} />
-          )}
-        >
-          {(close) => (
-            <>
-              <MenuLabel>Sort by</MenuLabel>
-              {(
-                [
-                  ["rank", "Priority"],
-                  /* The assignor's commitment, not when the work will finish.
-                     A list cannot show expected completion without one
-                     feasibility query PER ROW, so it shows the fact it has and
-                     names it honestly — the detail page carries both. */
-                  ["due", "Requested"],
-                  ["updated", "Recently updated"],
-                  ["title", "Title"],
-                ] as [Sort, string][]
-              ).map(([id, label]) => (
-                <MenuItem
-                  key={id}
-                  selected={sort === id}
-                  onClick={() => {
-                    setSort(id);
-                    close();
-                  }}
-                >
-                  {label}
-                </MenuItem>
-              ))}
-            </>
-          )}
-        </Popover>
-
-        <span className="ml-auto text-xs text-ink-faint">
-          {data ? `${data.length} ${data.length === 1 ? "task" : "tasks"}` : ""}
-        </span>
+        {/* The scope switch takes the right end on its own now. The row count
+            that shared it is gone: every scope pill already carries its own
+            figure, so the row said the same number twice — "My tasks 17" and
+            "17 tasks", a few hundred pixels apart. */}
+        <div className="ml-auto flex flex-wrap items-center gap-3">
+          {scopeControl}
+        </div>
       </div>
 
       {/* Bulk bar replaces the column header while a selection exists. */}
@@ -569,10 +661,16 @@ export function TaskTable({
         <div className="frost-panel overflow-hidden rounded-panel">
           {/* Desktop */}
           <div className="hidden deck:block">
+            {/* Headings sit in the same cells the values do, on the same inset,
+                so each label is visibly the head of ITS column rather than a
+                word floating near one. `truncate` rather than wrapping: a
+                heading that runs long clips inside its own cell instead of
+                growing a second line and shunting the row taller than its
+                neighbours. */}
             <div
-              className={`grid ${COLS} items-center gap-2 border-b border-hairline px-3 py-1.5 text-[11px] tracking-[0.09em] text-ink-faint uppercase`}
+              className={`grid ${hasRowMenu ? COLS_MENU : COLS} border-b border-hairline text-[11px] tracking-[0.09em] text-ink-faint uppercase`}
             >
-              <span className="grid place-items-center">
+              <span className={HEAD_LEAD}>
                 <input
                   type="checkbox"
                   aria-label="Select all"
@@ -583,16 +681,40 @@ export function TaskTable({
                   className="h-3.5 w-3.5 accent-[var(--color-ink)]"
                 />
               </span>
-              <span>P</span>
-              <span>Task</span>
-              <span>People</span>
-              <span>Status · next</span>
-              <span>Progress</span>
-              <span>Deadline</span>
-              <span className="text-right">Time budget</span>
-              <span>Timer</span>
-              <span>Activity</span>
-              <span />
+              <span className={HEAD_P}>
+                <span className="truncate">P</span>
+              </span>
+              <span className={HEAD_TASK}>
+                <span className="truncate">Task</span>
+              </span>
+              <span className={HEAD}>
+                <span className="truncate">People</span>
+              </span>
+              <span className={HEAD_STATUS}>
+                <span className="truncate">Status · next</span>
+              </span>
+              {/* **Which date this column shows, said in the column.**
+                  It is the REQUESTED deadline — the commitment the assignor
+                  asked for — not the expected completion, which is when the
+                  work will actually finish once it is laid through the queue.
+                  A list cannot compute expected completion without one
+                  feasibility query per row, so it shows the fact it has and
+                  names it honestly. That disclosure used to live in the sort
+                  menu, as the option labelled "Requested"; the menu is gone
+                  and the header is where it always belonged. */}
+              <span className={HEAD}>
+                <span className="truncate">Deadline · requested</span>
+              </span>
+              <span className={`${HEAD} justify-end`}>
+                <span className="truncate">Time budget</span>
+              </span>
+              <span className={HEAD_TIMER}>
+                <span className="truncate">Timer</span>
+              </span>
+              <span className={hasRowMenu ? HEAD : HEAD_TAIL}>
+                <span className="truncate">Activity</span>
+              </span>
+              {hasRowMenu && <span className={HEAD_TAIL} />}
             </div>
 
             {/* Each group is a section, not a band in a table.
@@ -610,10 +732,8 @@ export function TaskTable({
                    assignee grouping — each group is one queue. Active tasks are
                    laid out in that person's rank order so the drag reads as the
                    priority list it is. */
-                const groupAssigneeId =
-                  grouping === "assignee"
-                    ? (g.items[0]?.assignees[0]?.id ?? null)
-                    : null;
+                /* Whoever `groupTasks` grouped this by — see `Group.ownerId`. */
+                const groupAssigneeId = g.ownerId;
                 const isAssigneeGroup = groupAssigneeId !== null;
                 /* Reordering needs permission; the gap-free NUMBERING does not.
                    Whether or not this viewer may drag, an assignee's active queue
@@ -658,13 +778,35 @@ export function TaskTable({
                           })
                         }
                         aria-expanded={!isCollapsed}
-                        className="mb-4 flex w-full items-center gap-2 border-b border-hairline px-3 pb-2 text-left transition-colors hover:border-[var(--color-ink-faint)]"
+                        /**
+                         * **No rule under the name.**
+                         *
+                         * It was `border-b border-hairline` — the same token, at
+                         * the same weight, as the rules dividing the rows. So
+                         * the one element on the page that had to read as a
+                         * SECTION HEADING was drawn exactly like a row
+                         * separator, and the name ended up looking like the
+                         * first row of the table rather than the title of the
+                         * group under it. It also underlined the person, not
+                         * their queue: the line sat between the name and the
+                         * work it belongs to, cutting the two apart.
+                         *
+                         * Proximity does the job instead, and does it better —
+                         * 32px above the heading against 6px below it, so the
+                         * name is unambiguously nearer its own rows than the
+                         * section before. No ink required.
+                         */
+                        className="mb-1.5 flex w-full items-center gap-2 px-4 pb-1.5 text-left text-ink-muted transition-colors hover:text-ink"
                       >
                         <span
                           aria-hidden
-                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-ink-faint"
+                          className="h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-60"
                         />
-                        <span className="text-[11px] tracking-[0.09em] text-ink-muted uppercase">
+                        {/* Inherits the button's colour rather than pinning its
+                            own, so the whole heading answers the hover — the
+                            border used to be the only thing that did, and it is
+                            gone. */}
+                        <span className="text-[11px] tracking-[0.09em] uppercase">
                           {g.label}
                         </span>
                         <span
@@ -965,10 +1107,38 @@ function Row({
   /* Prefer the derived, gap-free position where the caller supplied one — a
      completed task in the queue no longer leaves a hole the reader has to
      explain. Fall back to the stored figure everywhere else. */
-  const rankText =
-    displayRank !== null
+  /**
+   * **A closed task shows no rank at all.**
+   *
+   * It used to read "Was P1", and on this product almost every finished task
+   * does. The queue compacts when work closes, so whatever you finish next
+   * becomes P1 and then leaves holding it — "Was P1" ends up stamped down the
+   * whole history and says nothing about the task it is attached to. A column
+   * of them is a column of noise sitting where a live position would be.
+   *
+   * Read off the rule's own `isHistoric` rather than re-deriving "closed" here,
+   * so this stays the same answer `priorityDisplay.ts` gives. The rule is
+   * unchanged: it still resolves the historic rank, and the tooltip still says
+   * what it was when the task left the queue. This only declines to print it in
+   * a 92px cell.
+   */
+  const rankDisplay = rankFor(view, rankSubject);
+  const rankText = rankDisplay.isHistoric
+    ? "—"
+    : displayRank !== null
       ? `P${displayRank}`
-      : formatRankDisplay(rankFor(view, rankSubject));
+      : formatRankDisplay(rankDisplay);
+  /**
+   * **Why the number is what it is, where the number is.**
+   *
+   * A blocked task shows the position it actually holds — P2 rather than the
+   * P1 somebody set — and on this screen the only tooltips were "Change
+   * priority" and "Your priority is set by your manager". Neither says a word
+   * about a demotion, so the reader saw a rank move with no explanation
+   * anywhere they were looking. `rankTitle` already writes the sentence; it was
+   * simply wired to two other surfaces and not to the list.
+   */
+  const blockedNote = rankDisplay.isBlocked ? rankTitle(rankDisplay) : null;
   /* Priority is only real once the time budget is settled. In an assignee group
      the parent already works this out (`notInQueueReason`); everywhere else,
      catch the budget-still-in-negotiation case here so no grouping shows a
@@ -983,9 +1153,14 @@ function Row({
     (!isClosed && !isBudgetSettled(view.budgetNegotiation?.state ?? null)
       ? "Not in the queue yet — the time budget isn't settled. Priority takes effect once it's agreed."
       : null);
+  /* A decision addressed to this reader by name — the same predicate the
+     Actionable inbox decides its membership with, so the mark on the row and
+     the row in the inbox can never disagree. */
+  const awaitingMyApproval = awaitsApprovalFrom(view, viewerId);
   const action = nextAction(view, viewerId ?? "");
   const ownerEmp = view.owner;
-  const progress = progressOf(view);
+  /* The same test the header runs, off the same prop — see `COLS`. */
+  const hasMenu = Boolean(onUnlink);
 
   return (
     <div
@@ -1017,20 +1192,25 @@ function Row({
           : undefined
       }
       onDragEnd={onDragEnd}
-      className={`group grid ${COLS} items-center gap-2 px-3 py-2 transition-[colors,opacity] ${
+      /* No `gap` and no padding on the row itself — both live inside the cells,
+         so a cell's own padding is the whole of the space between columns and
+         the hover wash still reaches the panel's edges. */
+      className={`group grid ${hasMenu ? COLS_MENU : COLS} transition-[colors,opacity] ${
         selected ? "bg-[var(--control-active)]" : "hover:bg-[var(--control)]"
       } ${draggable ? "cursor-grab active:cursor-grabbing" : ""} ${
         isDragging ? "opacity-40" : ""
       } ${isDropTarget ? "outline outline-1 -outline-offset-1 outline-ink/40" : ""}`}
     >
-      <span className="grid place-items-center">
-        <input
-          type="checkbox"
-          checked={selected}
-          onChange={onSelect}
-          aria-label={`Select ${view.task.title}`}
-          className="h-3.5 w-3.5 accent-[var(--color-ink)]"
-        />
+      <span className={CELL_LEAD}>
+        <span className={`${LINE} justify-center`}>
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={onSelect}
+            aria-label={`Select ${view.task.title}`}
+            className="h-3.5 w-3.5 accent-[var(--color-ink)]"
+          />
+        </span>
       </span>
 
       {/* The rank is INFORMATION first and a control second. Rendering it as a
@@ -1038,14 +1218,53 @@ function Row({
           still needs and announced it as disabled to a screen reader. Not
           interactive is a span, not a disabled button — the same treatment the
           task detail already gives it. */}
-      {isContainer ? (
+      <span className={CELL}>
+      <span className={LINE}>
+      {awaitingMyApproval ? (
+        /* **A mark, not a number — because there is no number.**
+
+           A task waiting on your approval holds no queue position: nobody has
+           accepted it, its budget is not settled, and on the cross-department
+           path it is not even assigned yet. Every other branch below prints
+           either a rank or an em-dash, and an em-dash here says "no rank" —
+           true, and the same thing a project and a task awaiting somebody
+           ELSE’s decision both show. This is the one state in the column that
+           is an obligation rather than a position.
+
+           The chip itself stays neutral — identical background, padding and
+           radius to a rank chip — and the DOT carries the colour. A state wash
+           behind it would have put `--state-overdue-ink` on `--state-overdue`,
+           which on the dark theme is pale pink on dark maroon: high contrast,
+           but it does not read as red. Red on the ordinary control surface
+           does, and it keeps the column one material.
+
+           The invisible "P1" is a sizer, and it is why this is not simply a
+           dot in a box: it makes the chip exactly the width and height of a
+           rank chip, so the column keeps one edge and nothing shifts when a
+           decision clears and a real number takes its place. */
+        <span
+          title="Waiting for your approval. It takes a queue position once you decide."
+          className="relative max-w-full rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px]"
+        >
+          <span data-figure aria-hidden className="invisible">
+            P1
+          </span>
+          <span className="absolute inset-0 grid place-items-center">
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 rounded-full bg-[var(--state-overdue)]"
+            />
+          </span>
+          <span className="sr-only">Waiting for your approval</span>
+        </span>
+      ) : isContainer ? (
         /* A container holds no rank at all — not "—, because the budget isn't
            settled", but "there is no queue this belongs to". Its subtasks each
            sit in their own assignee's queue with their own number, which is the
            whole reason the work was broken out. */
         <span
           title="A project — its subtasks carry the priority, each in its own assignee's queue."
-          className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
+          className="max-w-full truncate rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
         >
           <span data-figure>—</span>
         </span>
@@ -1054,7 +1273,7 @@ function Row({
            the em-dash says "no rank here"; the tooltip says why. */
         <span
           title={heldReason}
-          className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
+          className="max-w-full truncate rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
         >
           <span data-figure>—</span>
         </span>
@@ -1081,7 +1300,7 @@ function Row({
            joined. */
         <span
           title={`${heldReason} Shown is its position among your work still awaiting acceptance — a separate count from the live queue.`}
-          className="justify-self-start rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
+          className="max-w-full truncate rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-faint"
         >
           <span data-figure>{rankText}</span>
         </span>
@@ -1092,9 +1311,9 @@ function Row({
           title={
             conflicted
               ? "Rank conflict — more than one task holds this rank"
-              : "Change priority"
+              : (blockedNote ?? "Change priority")
           }
-          className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] transition-colors ${
+          className={`max-w-full truncate rounded-full px-1.5 py-0.5 text-[11px] transition-colors ${
             conflicted
               ? "bg-[color-mix(in_srgb,var(--state-risk)_30%,transparent)] text-[var(--state-risk-ink)]"
               : "bg-[var(--control)] text-ink-muted hover:bg-[var(--control-hover)]"
@@ -1107,9 +1326,9 @@ function Row({
           title={
             conflicted
               ? "Rank conflict — more than one task holds this rank"
-              : "Your priority is set by your manager"
+              : (blockedNote ?? "Your priority is set by your manager")
           }
-          className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] ${
+          className={`max-w-full truncate rounded-full px-1.5 py-0.5 text-[11px] ${
             conflicted
               ? "bg-[color-mix(in_srgb,var(--state-risk)_30%,transparent)] text-[var(--state-risk-ink)]"
               : "bg-[var(--control)] text-ink-muted"
@@ -1118,12 +1337,15 @@ function Row({
           <span data-figure>{rankText}</span>
         </span>
       )}
+      </span>
+      </span>
 
       {/* The title cell carries the tree: the fold control and the folder on a
           container, the indent and the elbow on a child. Both live INSIDE this
           cell rather than taking columns of their own, so the eleven-column
           grid — and every other row's alignment — is untouched. */}
-      <div className="flex min-w-0 items-center">
+      <div className={CELL}>
+      <div className="flex min-w-0 flex-1 items-stretch">
         {depth > 0 && (
           /* The elbow. `aria-hidden` because the relationship is already
              carried in words by the "Subtask" mark below the title — a screen
@@ -1156,7 +1378,9 @@ function Row({
                 ? `Show the ${childCount} subtask${childCount === 1 ? "" : "s"} of ${view.task.title}`
                 : `Hide the subtasks of ${view.task.title}`
             }
-            className="mr-1 grid h-5 w-5 shrink-0 place-items-center rounded text-ink-faint transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+            /* `h-7` and `self-start`, so the control sits ON the title's line
+               rather than centred over the whole two-line cell. */
+            className="mr-1 grid h-7 w-5 shrink-0 place-items-center self-start rounded text-ink-faint transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
           >
             {collapsed ? (
               <Icon.chevronRight className="h-3.5 w-3.5" />
@@ -1167,7 +1391,7 @@ function Row({
         ) : (
           /* Holds the chevron's width so titles line up down the column
              whether or not a row can be folded. */
-          <span aria-hidden="true" className="mr-1 h-5 w-5 shrink-0" />
+          <span aria-hidden="true" className="mr-1 h-7 w-5 shrink-0" />
         )}
 
         {/* An anchor drags its URL by default, which would fight the row drag —
@@ -1175,9 +1399,9 @@ function Row({
         <Link
           href={`/tasks/${view.task.id}`}
           draggable={false}
-          className="min-w-0 flex-1"
+          className="flex min-w-0 flex-1 flex-col gap-0.5"
         >
-        <span className="flex items-center gap-1.5">
+        <span className={`${LINE} gap-1.5`}>
           {isContainer && (
             /* A broken-down task IS a project — the same word the task's own
                Completion requirements panel has always used for this state. It
@@ -1198,8 +1422,10 @@ function Row({
           )}
           <span className="truncate text-sm text-ink">{view.task.title}</span>
         </span>
-        <span className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-faint">
-          <span data-figure>{view.task.reference}</span>
+        <span className="flex h-4 items-center gap-2 overflow-hidden text-[11px] leading-4 text-ink-faint">
+          <span data-figure className="shrink-0">
+            {view.task.reference}
+          </span>
           {/* Which side of a breakdown this row is on. A subtask reads as an
               ordinary task otherwise, and the two rows tell a reader nothing
               about how they relate — which matters most in the list where both
@@ -1229,9 +1455,13 @@ function Row({
         </span>
         </Link>
       </div>
+      </div>
 
-      {/* Owner → assignee, so both are visible in one 78px cell. */}
-      <span className="flex items-center gap-1">
+      {/* Owner → assignee, in one 88px cell — the two 28px monograms, the
+          chevron between them and the padding that holds them off the rules
+          measure 72px, so nothing is pressed against a column line. */}
+      <span className={CELL}>
+      <span className={`${LINE} gap-1`}>
         {ownerEmp ? (
           <Avatar
             initials={ownerEmp.initials}
@@ -1259,17 +1489,31 @@ function Row({
             size="sm"
           />
         ) : (
-          <span className="h-7 w-7 rounded-full bg-[var(--control)]" />
+          <span className="h-7 w-7 shrink-0 rounded-full bg-[var(--control)]" />
         )}
       </span>
+      </span>
 
-      <span className="min-w-0">
-        <Chip tone={meta.tone}>{meta.label}</Chip>
+      <span className={CELL}>
+      <span className={LINE}>
+        <Chip tone={meta.tone} className="max-w-full truncate">
+          {meta.label}
+        </Chip>
         {/* Here as well as on the task itself: the whole point of marking a
             task important is being able to spot it in the list without
-            opening it. A label only — see `Task.isImportant`. */}
+            opening it. A label only — see `Task.isImportant`.
+
+            Carried across the merge INTO the incoming branch's cell geometry
+            rather than replaced by it: the geometry decides how the cell is
+            laid out and this decides what the cell says, and neither answers
+            the other's question. */}
         {view.task.isImportant && <Chip tone="overdue">Important</Chip>}
+        {/* Kept through the merge for the same reason. It is the only thing on
+            the row that says work has been HANDED IN — a manager scanning the
+            list can otherwise not tell a task being worked on from one waiting
+            on them, which is the whole reason it was added. */}
         <InReviewChip view={view} meta={meta} />
+      </span>
         {/* No next action on a container. `action`/`meta` read this document's
             own stored status — usually whatever it was mid-negotiation when it
             got broken down — and nothing here decides for itself that the
@@ -1277,8 +1521,17 @@ function Row({
             Naming the project instead of a false "Accept" is the fix; leaving
             the chip alone since a stale status label is at least true of the
             document, where a call to action on it was not. */}
+        {/* `SUB`'s geometry, but not its colour: this line goes full-strength
+            when the next move is the reader's, and stacking `text-ink` on top
+            of `SUB`'s `text-ink-faint` would leave which one wins to the order
+            Tailwind happens to emit them in rather than to the condition.
+
+            `pl-2.5` is the chip's own horizontal padding, repeated. Without it
+            this line began 10px to the left of the chip's first letter and the
+            cell had two left edges — see `HEAD_STATUS`, which lines the heading
+            up on the same one. */}
         <span
-          className={`mt-0.5 block truncate text-[11px] ${
+          className={`block truncate pl-2.5 text-[11px] leading-4 ${
             !isContainer && action.actor === "you"
               ? "text-ink"
               : "text-ink-faint"
@@ -1290,15 +1543,16 @@ function Row({
         </span>
       </span>
 
-      <span className="min-w-0">
-        <Meter value={progress} label={`${view.task.title} progress`} />
-        <span data-figure className="mt-1 block text-[11px] text-ink-faint">
-          {progress}%
-        </span>
-      </span>
+      {/* **The progress column is gone.**
+          It showed a percentage derived from status and logged time — 5% on
+          anything in progress, 95% in review, 100% complete — which is a
+          shape, not a measurement. Nobody can compute what fraction of a
+          task is done, and the figure invited the reading that somebody
+          had. The timer column carries the one honest number. */}
 
+      <span className={CELL}>
       <span
-        className={`text-xs ${view.isOverdue ? "text-[var(--state-overdue-ink)]" : "text-ink-muted"}`}
+        className={`${LINE} text-xs ${view.isOverdue ? "text-[var(--state-overdue-ink)]" : "text-ink-muted"}`}
       >
         {/* Committed deadline where one exists, else the DERIVED completion date.
             A budget extension leaves the committed deadline frozen (by design) but
@@ -1317,20 +1571,24 @@ function Row({
               view.task.deadline.dueAt ?? view.task.deadline.operationalDueAt,
             )}
       </span>
+      </span>
 
-      <span className="text-right">
+      {/* Both figures are eight tabular characters wide, so the column is sized
+          for them and for its own heading rather than for the shorter of the
+          two — at 62px "of 03:06:31" ran back over the deadline beside it. */}
+      <span className={`${CELL} text-right`}>
         {isContainer ? (
           /* No time budget on a container — see the deadline cell's note; the
              same document field, the same reason it is not this row's to show. */
-          <span data-figure className="block text-xs text-ink-faint">
+          <span data-figure className={`${LINE} justify-end text-xs text-ink-faint`}>
             —
           </span>
         ) : (
           <>
-            <span data-figure className="block text-xs text-ink">
+            <span data-figure className={`${LINE} justify-end text-xs text-ink`}>
               {formatTimer(view.loggedSecs)}
             </span>
-            <span data-figure className="block text-[11px] text-ink-faint">
+            <span data-figure className={SUB}>
               of {formatDurationTimer(view.task.estimatedEffortSecs)}
             </span>
           </>
@@ -1342,25 +1600,35 @@ function Row({
           A container is one more thing that cannot run a session — nobody
           works a project — so it gets the same dash rather than a Start
           button that would begin timing nothing. */}
-      <span className="justify-self-start">
+      <span className={CELL}>
+      {/* Centred, because the control is a fixed 74px pill that centres its own
+          figure — so the column's values share a centre line, not a left edge,
+          and the heading is centred over them to match. */}
+      <span className={`${LINE} justify-center`}>
         {isContainer ? (
           <span className="text-xs text-ink-faint">—</span>
         ) : (
           <TimerControl view={view} />
         )}
       </span>
+      </span>
 
-      <span className="min-w-0 text-[11px] text-ink-faint">
-        <span className="block truncate">
-          {now && formatRelative(view.task.updatedAt, now)}
+      <span className={hasMenu ? CELL : CELL_TAIL}>
+        <span className={`${LINE} text-[11px] text-ink-faint`}>
+          <span className="truncate">
+            {now && formatRelative(view.task.updatedAt, now)}
+          </span>
         </span>
         {view.latestSubmission && (
-          <span className="block truncate">
-            attempt {view.latestSubmission.attempt}
-          </span>
+          <span className={SUB}>attempt {view.latestSubmission.attempt}</span>
         )}
       </span>
 
+      {/* Only inside a project, where "Remove from project" has no other home.
+          Everywhere else this whole column is gone — see `COLS`. */}
+      {hasMenu && (
+      <span className={CELL_TAIL}>
+      <span className={`${LINE} justify-end`}>
       <Popover
         align="right"
         label={`Actions for ${view.task.title}`}
@@ -1400,6 +1668,9 @@ function Row({
           </>
         )}
       </Popover>
+      </span>
+      </span>
+      )}
     </div>
   );
 }
@@ -1411,14 +1682,20 @@ function NarrowRow({ view }: { view: TaskView }) {
      "Awaiting someone" on a task they were blocking. */
   const viewerId = useViewerId();
   const action = nextAction(view, viewerId ?? "");
+  const cardRank = rankFor(view, viewerId);
   return (
     <Link href={`/tasks/${view.task.id}`} className="block px-3 py-2.5">
       <div className="flex items-start gap-2">
         <span
           data-figure
+          /* Same sentence as the table, on the card that shows the same chip. */
+          title={rankTitle(rankFor(view, viewerId))}
           className="mt-0.5 shrink-0 rounded-full bg-[var(--control)] px-1.5 py-0.5 text-[11px] text-ink-muted"
         >
-          {formatRankDisplay(rankFor(view, viewerId))}
+          {/* Same rule as the table's rank cell: a closed task prints nothing
+              rather than "Was P1", which the compacting queue stamps on almost
+              everything that finishes. */}
+          {cardRank.isHistoric ? "—" : formatRankDisplay(cardRank)}
         </span>
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm text-ink">
@@ -1483,26 +1760,20 @@ function InReviewChip({
 
 /* ── helpers ──────────────────────────────────────────────────────────────── */
 
-/**
- * Progress from logged effort against the estimate — real data, not a status
- * lookup table. Terminal and pre-start states short-circuit because effort
- * logged against them is not meaningful progress.
- */
-function progressOf(v: TaskView): number {
-  const t = v.task;
-  if (t.status === "completed") return 100;
-  if (t.status === "cancelled" || t.status === "draft") return 0;
-  if (t.status === "in_review") return 95;
-  const estimate = t.estimatedEffortSecs ?? 0;
-  if (estimate <= 0 || v.loggedSecs <= 0)
-    return t.status === "in_progress" ? 5 : 0;
-  return Math.min(90, Math.round((v.loggedSecs / estimate) * 100));
-}
 
 interface Group {
   key: string;
   label: string | null;
   items: TaskView[];
+  /**
+   * Whose queue this group is, when grouping by person. Null otherwise.
+   *
+   * Carried on the group rather than re-derived from `items[0]` at the render
+   * site: the grouping function is the only thing that knows who it grouped by,
+   * and two places working it out independently is how the heading and the rank
+   * lookup came to disagree.
+   */
+  ownerId: string | null;
 }
 
 /**
@@ -1528,20 +1799,91 @@ function bucketOf(v: TaskView, viewerId: string): string {
   return "Waiting";
 }
 
+/**
+ * Finished work sinks to the bottom.
+ *
+ * The list arrives in priority order, and a closed task keeps the rank it held
+ * when it left the queue — so a task completed last week sat between P1 and P2,
+ * three of them in a row above the work actually in progress. The rank is not
+ * wrong; it is just no longer a claim on anybody's attention. Priority answers
+ * "what next", and nothing that is already done is next.
+ *
+ * A stable partition rather than a sort: the incoming order is the priority
+ * order the engine resolved, and it survives inside both halves. Applied before
+ * grouping, so it holds within each person's group on the team list too.
+ */
+/**
+ * Work waiting on MY decision, lifted to the top.
+ *
+ * The mirror of `sinkClosed`, and applied after it so the two compose: a
+ * decision waiting on you rises, a finished task sinks, everything else keeps
+ * the order the query gave it.
+ *
+ * It earns the top because it is the one kind of row where the LIST is the
+ * only place the obligation can be found. A task you are carrying announces
+ * itself — it has your name on it, a deadline, a timer. A cross-department
+ * task waiting on your hours estimate has none of those: it is not assigned
+ * to you, not created by you, and carries no queue position, so it sorts
+ * wherever its `updatedAt` happens to fall and reads as somebody else’s work.
+ */
+function floatMyApprovals(items: TaskView[], viewerId: string): TaskView[] {
+  const waiting: TaskView[] = [];
+  const rest: TaskView[] = [];
+  for (const v of items) {
+    (awaitsApprovalFrom(v, viewerId) ? waiting : rest).push(v);
+  }
+  return [...waiting, ...rest];
+}
+
+function sinkClosed(items: TaskView[]): TaskView[] {
+  const live: TaskView[] = [];
+  const done: TaskView[] = [];
+  for (const v of items) {
+    (CLOSED_STATUSES.includes(v.task.status) ? done : live).push(v);
+  }
+  return [...live, ...done];
+}
+
+/**
+ * Whose queue a row belongs to, on a list grouped by person.
+ *
+ * **Somebody other than the viewer, where there is one.** A jointly-held task
+ * lists both, and `assignees[0]` can be the manager — so a team list grew a
+ * group headed with the manager's own name over work that is genuinely their
+ * report's. The task belongs there; the heading was answering "who holds this"
+ * when the question a team list asks is "whose queue am I reading".
+ *
+ * One function, used for the heading AND for the id everything else resolves
+ * against, because the two must never disagree. They did: the heading moved to
+ * the report while `groupAssigneeId` still read `assignees[0]`, so the rank
+ * lookup asked about the wrong person, found no assignment, scored every row
+ * 999 and left the group unsorted and undraggable.
+ */
+function groupOwnerOf(v: TaskView, viewerId: string) {
+  return v.assignees.find((a) => a.id !== viewerId) ?? v.assignees[0] ?? null;
+}
+
 function groupTasks(
   items: TaskView[],
   grouping: Grouping,
   viewerId: string,
 ): Group[] {
-  if (grouping === "none") return [{ key: "all", label: null, items }];
+  const ordered = floatMyApprovals(sinkClosed(items), viewerId);
+  if (grouping === "none")
+    return [{ key: "all", label: null, items: ordered, ownerId: null }];
 
   const map = new Map<string, TaskView[]>();
-  for (const v of items) {
+  /* The person each group is about, captured where the key is decided. */
+  const owners = new Map<string, string | null>();
+  for (const v of ordered) {
     let key: string;
     if (grouping === "status") key = bucketOf(v, viewerId);
     else if (grouping === "project") key = v.project?.name ?? "No project";
-    else if (grouping === "assignee")
-      key = v.assignees[0]?.displayName ?? "Unassigned";
+    else if (grouping === "assignee") {
+      const owner = groupOwnerOf(v, viewerId);
+      key = owner?.displayName ?? "Unassigned";
+      if (!owners.has(key)) owners.set(key, owner?.id ?? null);
+    }
     else {
       const due = v.task.deadline.dueAt;
       key = !due ? "No deadline" : v.isOverdue ? "Overdue" : formatDate(due);
@@ -1559,5 +1901,6 @@ function groupTasks(
     key: label,
     label,
     items: list,
+    ownerId: owners.get(label) ?? null,
   }));
 }

@@ -53,6 +53,7 @@ import type {
   RequestExtensionInput,
   ReviewInput,
   SimulatedFailure,
+  SetOutputsInput,
   SubmitCompletionInput,
   TaskQuery,
   CreateRoleInput,
@@ -259,6 +260,14 @@ import {
 import { closureOf, hasManager, unattachedEmployees } from "@/lib/auth/hierarchy";
 import { runDurationSecs } from "@/lib/rules/tasks/timer";
 import {
+  allOutputsApproved,
+  isOutputWorkable,
+  outputState,
+  taskHasWorkableOutput,
+  type OutputSubmissionFact,
+} from "@/lib/rules/tasks/outputs";
+import { mayReview } from "@/lib/rules/tasks/outputs";
+import {
   addWallClockDuration,
   cascadeShifts,
   isDuplicateCascade,
@@ -305,6 +314,9 @@ import { sendRefusal, transportFor } from "@/lib/integrations/mail/transport";
 import { previewOfHtml } from "@/lib/rules/documents/preview";
 import { pageSetupRefusal } from "@/lib/rules/documents/pageSetup";
 import { emergencyCompensationMs } from "@/lib/rules/tasks/emergency";
+/* "Everybody beneath this person, never including themselves" — the one
+   definition of a team, shared with every other team-scoped surface. */
+import { peopleUnder } from "@/lib/rules/team/visibility";
 import { storedPictureRefusal } from "@/lib/rules/people/profilePicture";
 import {
   canManage as canManageDocument,
@@ -731,6 +743,39 @@ export class MockRepository implements CoworkRepository {
         new Date(due as string) < now() &&
         task.status !== "completed" &&
         task.status !== "cancelled",
+      openSubmissions: s.submissions.filter(
+        (x) =>
+          x.taskId === task.id &&
+          !s.reviews.some((r) => r.submissionId === x.id && r.isFinalStage),
+      ),
+      outputs: (() => {
+        if (task.outputs.length === 0) return [];
+        const facts = this.#outputFacts(task.id);
+        const approved = this.#approvedOutputIds();
+        /* Every output in the store, so an input can be named whichever task
+           produces it. Built once per view rather than per output. */
+        const producers = new Map<
+          string,
+          { label: string; taskTitle: string }
+        >();
+        for (const other of s.tasks)
+          for (const o of other.outputs)
+            producers.set(o.id, { label: o.label, taskTitle: other.title });
+        return [...task.outputs]
+          .sort((a, b) => a.order - b.order)
+          .map((o) => ({
+            output: o,
+            state: outputState(o.id, facts),
+            isWorkable: isOutputWorkable(o, approved),
+            waitingOn: o.needsOutputIds
+              .filter((id) => !approved.has(id))
+              .map((id) => ({
+                outputId: id,
+                label: producers.get(id)?.label ?? "an output you cannot see",
+                taskTitle: producers.get(id)?.taskTitle ?? null,
+              })),
+          }));
+      })(),
       subtaskCount: s.tasks.filter(
         (t) => t.parentTaskId === task.id && !t.deletedAt,
       ).length,
@@ -756,10 +801,23 @@ export class MockRepository implements CoworkRepository {
     if (q.scope === "mine") {
       list = list.filter((t) => assignedTo(t.id, viewer.employeeId));
     } else if (q.scope === "team") {
-      // Hierarchy-scoped. Legacy let any TL see everyone (D10 reverses that).
-      list = list.filter((t) =>
-        viewer.hierarchyIds.some((id) => assignedTo(t.id, id)),
-      );
+      /*
+       * **The team is the people UNDER you, and you are not one of them.**
+       *
+       * This read `viewer.hierarchyIds` directly, and the closure "includes the
+       * viewer in some responses and not others" — `visibility.test.ts` says so
+       * in as many words, which is why `managesAnyone` never reads it raw. So
+       * "My team" showed the manager their own assignments mixed in with their
+       * reports', and on the grouped list that meant a group headed with their
+       * own name. A manager asking what their team is carrying is not asking
+       * about themselves; their own work is what "My tasks" is for.
+       *
+       * `peopleUnder` is the product's existing answer to exactly this, tested,
+       * and used by every other team surface. Hierarchy-scoped either way —
+       * legacy let any TL see everyone, and D10 reverses that.
+       */
+      const under = peopleUnder(viewer);
+      list = list.filter((t) => under.some((id) => assignedTo(t.id, id)));
     } else if (q.scope === "assigned_out") {
       list = list.filter(
         (t) =>
@@ -1324,6 +1382,7 @@ export class MockRepository implements CoworkRepository {
       isScoreEligible: input.type !== "recurring" && input.type !== "external",
       recurrence: input.recurrence ?? null,
       goalId: input.goalId ?? null,
+      outputs: [],
       isBlocked: false,
       blockedReason: null,
       tags: input.tags ?? [],
@@ -2253,6 +2312,7 @@ export class MockRepository implements CoworkRepository {
             storedRank: a.rank,
             createdAtMs: t?.createdAt ? Date.parse(t.createdAt) : null,
             accepted: a.confirmedAt !== null,
+            isWorkable: t ? this.#taskWorkable(t) : true,
           };
         }),
       );
@@ -2268,6 +2328,85 @@ export class MockRepository implements CoworkRepository {
     return getStore()
       .assignments.filter((a) => a.taskId === taskId)
       .map((a) => a.employeeId);
+  }
+
+  /**
+   * A task's submissions in the shape the output rules read.
+   *
+   * The rules take facts rather than records so they stay testable without a
+   * store, and so the decision about what "approved" means lives in one place
+   * rather than being re-derived at each call site.
+   */
+  #outputFacts(taskId: string): OutputSubmissionFact[] {
+    const s = getStore();
+    return s.submissions
+      .filter((x) => x.taskId === taskId)
+      .map((x) => {
+        const decisions = s.reviews
+          .filter((r) => r.submissionId === x.id)
+          .sort((a, b) => a.stage - b.stage);
+        const last = decisions[decisions.length - 1];
+        return {
+          outputId: x.outputId,
+          attempt: x.attempt,
+          decision: last?.decision ?? null,
+          isFinal: last?.isFinalStage ?? false,
+        };
+      });
+  }
+
+  /** Every output approved anywhere — what an input is checked against. */
+  #approvedOutputIds(): Set<string> {
+    const s = getStore();
+    const out = new Set<string>();
+    for (const t of s.tasks) {
+      if (t.deletedAt) continue;
+      const facts = this.#outputFacts(t.id);
+      for (const o of t.outputs)
+        if (outputState(o.id, facts) === "approved") out.add(o.id);
+    }
+    return out;
+  }
+
+  /** Whether this task can be worked on at all — see `taskHasWorkableOutput`. */
+  #taskWorkable(t: Task): boolean {
+    return taskHasWorkableOutput(t.outputs, this.#approvedOutputIds());
+  }
+
+  /**
+   * Recompute the queues of everybody an approved output just unblocked.
+   *
+   * Nothing is written to the waiting tasks: being blocked is DERIVED from
+   * whether their inputs are approved, so approving the input IS the release.
+   * What this does is make the consequence visible — the queues that just
+   * gained a workable task, and a word to the people holding them.
+   */
+  #releaseWaitingOn(outputId: string): void {
+    const s = getStore();
+    const approved = this.#approvedOutputIds();
+    for (const t of s.tasks) {
+      if (t.deletedAt || t.status === "completed" || t.status === "cancelled")
+        continue;
+      const freed = t.outputs.filter(
+        (o) => o.needsOutputIds.includes(outputId) && isOutputWorkable(o, approved),
+      );
+      if (freed.length === 0) continue;
+      this.#renumber(this.#holdersOfTask(t.id));
+      this.#event(
+        t.id,
+        "edited",
+        `“${freed[0].label}” can be started — its input was approved`,
+      );
+      for (const holder of this.#holdersOfTask(t.id))
+        this.#notify(
+          holder,
+          "dependency_released",
+          "Ready to start",
+          `“${freed[0].label}” is unblocked — its input was approved.`,
+          "task",
+          t.id,
+        );
+    }
   }
 
   async normalizePrioritiesAllUsers(): Promise<
@@ -3610,7 +3749,23 @@ export class MockRepository implements CoworkRepository {
   #officePolicy: OfficePolicy | null = null;
 
   async getOfficePolicy(): Promise<OfficePolicy> {
-    this.#officePolicy ??= readOfficePolicy(null);
+    /**
+     * The prototype tenant has screen-share monitoring switched OFF.
+     *
+     * Not a change to the rule: `readOfficePolicy` still treats an ABSENT
+     * setting as `true`, because a workspace that never opened the page has not
+     * decided to drop the requirement. This passes a document that says
+     * `false` — the same thing an administrator toggling it on the
+     * office-policy page writes — so the prototype behaves like a workspace
+     * that made that choice.
+     *
+     * It has to be made somewhere. With the requirement on, Online means "a
+     * manager can watch your screen", and nothing in a fixture can produce a
+     * real share — so `declareOnline` refuses, nobody can go online, and every
+     * flow that begins with being at work is unreachable. The timer stays
+     * paused and the task refuses every action.
+     */
+    this.#officePolicy ??= readOfficePolicy({ requireScreenShare: false });
     return delay(this.#officePolicy);
   }
 
@@ -4757,6 +4912,38 @@ export class MockRepository implements CoworkRepository {
     if (refusal) return refusal;
 
     const s = getStore();
+
+    /**
+     * **Nothing to work on means no clock.**
+     *
+     * A task whose every output is waiting on somebody else's approval cannot
+     * be started, and running the timer against it would bank time that was
+     * never work — which is the exact unfairness the whole waiting model exists
+     * to prevent. It also drops the task out of the live queue, so a running
+     * clock on it would contradict the queue in the same breath.
+     *
+     * A task with no outputs is unaffected: that is every task today.
+     */
+    const target = s.tasks.find((x) => x.id === taskId);
+    if (target && !this.#taskWorkable(target)) {
+      const waiting = target.outputs
+        .flatMap((o) => o.needsOutputIds)
+        .map((id) => {
+          for (const other of s.tasks) {
+            const found = other.outputs.find((x) => x.id === id);
+            if (found) return found.label;
+          }
+          return null;
+        })
+        .filter(Boolean)[0];
+      return fail(
+        "invalid_state",
+        waiting
+          ? `Nothing on this task can be started yet — every output is waiting on “${waiting}”.`
+          : "Nothing on this task can be started yet — every output is waiting on work that has not been approved.",
+      );
+    }
+
     tick();
     // One active timer per person — pause any other before starting.
     for (const t of s.timers) {
@@ -5053,6 +5240,123 @@ export class MockRepository implements CoworkRepository {
 
   /* ── Submission and review ──────────────────────────────────────────────── */
 
+  async setOutputs(input: SetOutputsInput): Promise<ActionResult<Task>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const t = s.tasks.find((x) => x.id === input.taskId);
+    if (!t) return fail("not_found", "Task not found.");
+
+    /* The same two people who may add requirements. Outputs are the contract
+       with other people; the person who raised the work and the person carrying
+       it are who that contract belongs to. */
+    const me = actingId();
+    const isOwner = t.createdById === me;
+    const isAssignee = s.assignments.some(
+      (a) => a.taskId === t.id && a.employeeId === me,
+    );
+    if (!isOwner && !isAssignee)
+      return fail(
+        "permission_denied",
+        "Only the person who raised this task or the person carrying it can set its outputs.",
+      );
+
+    for (const o of input.outputs)
+      if (!o.label.trim())
+        return fail("validation_failed", "Give the output a name.", "label");
+
+    /**
+     * **An output that has been submitted cannot be removed.**
+     *
+     * Its submissions and reviews name it, and deleting it would orphan a
+     * record somebody's score is computed from. Renaming stays allowed: the
+     * label is how a person refers to it, and correcting a typo must not be
+     * blocked by a review that happened.
+     */
+    const facts = this.#outputFacts(t.id);
+    const keeping = new Set(input.outputs.map((o) => o.id).filter(Boolean));
+    const removedWithHistory = t.outputs.filter(
+      (o) => !keeping.has(o.id) && outputState(o.id, facts) !== "not_started",
+    );
+    if (removedWithHistory.length > 0)
+      return fail(
+        "invalid_state",
+        `“${removedWithHistory[0].label}” has already been submitted and cannot be removed.`,
+      );
+
+    tick();
+    t.outputs = input.outputs.map((o, i) => ({
+      id: o.id ?? nextId("out"),
+      label: o.label.trim(),
+      order: i,
+      needsOutputIds: [...new Set(o.needsOutputIds)].filter(
+        /* Never itself: an output waiting on its own approval can never be
+           worked on, and nothing in the engine would ever clear it. */
+        (id) => id !== o.id,
+      ),
+    }));
+    t.updatedAt = nowIso();
+    /* Declaring an input can BLOCK a task that was workable a moment ago, so
+       the holders' queues are recomputed here as well as on approval. */
+    this.#renumber(this.#holdersOfTask(t.id));
+    this.#event(t.id, "edited", `Outputs set — ${t.outputs.length} declared`);
+    persistStore();
+    return delay(ok(t));
+  }
+
+  /**
+   * Hand ONE output over — the mock's route to the same behaviour.
+   *
+   * Delegates to `submitCompletion` with an `outputId` rather than duplicating
+   * the validation: the legacy engine has a dedicated endpoint, this store does
+   * not need one, and two copies of "may this output be submitted" would be two
+   * chances to disagree.
+   */
+  async submitOutput(input: {
+    taskId: TaskId;
+    outputId: string;
+    message: string;
+    attachments?: ReportAttachment[];
+  }): Promise<ActionResult<Task>> {
+    const r = await this.submitCompletion({
+      taskId: input.taskId,
+      outputId: input.outputId,
+      message: input.message,
+      /* The mock's submission record keys files by URL — `submitCompletion`
+         builds its `attachments` list from these — so the URLs are what travel.
+         Names are lost here and only here; the engine keeps them. */
+      attachmentIds: (input.attachments ?? []).map((a) => a.url),
+    });
+    if (!r.ok) return r;
+    const t = getStore().tasks.find((x) => x.id === input.taskId);
+    return t ? ok(t) : fail("not_found", "Task not found.");
+  }
+
+  /** Approve or return ONE output, through the same review the engine uses. */
+  async reviewOutput(input: {
+    taskId: TaskId;
+    outputId: string;
+    approved: boolean;
+    note?: string;
+  }): Promise<ActionResult<Task>> {
+    const s = getStore();
+    const sub = s.submissions
+      .filter((x) => x.taskId === input.taskId && x.outputId === input.outputId)
+      .sort((a, b) => b.attempt - a.attempt)[0];
+    if (!sub) return fail("not_found", "That output has not been submitted.");
+    const r = await this.reviewSubmission({
+      submissionId: sub.id,
+      decision: input.approved ? "approved" : "rework",
+      /* The engine requires a note on every decision, and an empty string would
+         be refused — so a caller that gave none gets a truthful default rather
+         than a validation failure it cannot act on. */
+      reason: input.note?.trim() || (input.approved ? "Approved" : "Returned"),
+    });
+    if (!r.ok) return r;
+    const t = s.tasks.find((x) => x.id === input.taskId);
+    return t ? ok(t) : fail("not_found", "Task not found.");
+  }
+
   async submitCompletion(
     input: SubmitCompletionInput,
   ): Promise<ActionResult<TaskSubmission>> {
@@ -5099,8 +5403,41 @@ export class MockRepository implements CoworkRepository {
       );
     }
 
+    /* An output submission names something the task actually declares. Wrong
+       ids are refused rather than stored — a submission pointing at nothing
+       would sit in a review queue for ever with no way to release anybody. */
+    const outputId = input.outputId ?? null;
+
+    /**
+     * **A task with outputs is never submitted as a whole.**
+     *
+     * It completes when its outputs are all approved — OWNER DECISION (b) — so
+     * a task-level submission here would ask a reviewer to approve work the
+     * same chain is approving piece by piece, and flip the task to `in_review`
+     * while its assignee still has outputs to deliver. Refused rather than
+     * quietly allowed: two routes to finishing one task is exactly the kind of
+     * second answer this model exists to avoid.
+     */
+    if (outputId === null && t.outputs.length > 0)
+      return fail(
+        "invalid_state",
+        `This task is delivered output by output. Submit each of its ${t.outputs.length} outputs; the task completes when they are all approved.`,
+      );
+    if (outputId !== null && !t.outputs.some((o) => o.id === outputId))
+      return fail(
+        "validation_failed",
+        "That output does not belong to this task.",
+        "outputId",
+      );
+
     tick();
-    const prior = s.submissions.filter((x) => x.taskId === t.id);
+    /* Attempts run per (task, OUTPUT). Attempt 2 on Gopalpur is a second try at
+       Gopalpur, and it supersedes only the earlier Gopalpur — not Puri, which
+       shares the task and nothing else. A task-level submission keeps its own
+       sequence, which is every submission written before outputs existed. */
+    const prior = s.submissions.filter(
+      (x) => x.taskId === t.id && (x.outputId ?? null) === outputId,
+    );
     prior.forEach((p) => {
       if (!p.supersededById) p.supersededById = "pending";
     });
@@ -5109,6 +5446,7 @@ export class MockRepository implements CoworkRepository {
     const sub: TaskSubmission = {
       id: nextId("sb"),
       taskId: t.id,
+      outputId,
       attempt: prior.length + 1,
       submittedById: actingId(),
       submittedAt: nowIso(),
@@ -5135,27 +5473,39 @@ export class MockRepository implements CoworkRepository {
     });
     s.submissions.push(sub);
 
-    t.status = "in_review";
+    /* **Only a task-level submission moves the task.** An output going for
+       review leaves the task in progress, which is the honest state: its
+       assignee still has work in front of them, still holds their queue slot,
+       and their clock should keep running. Flipping the whole task to
+       `in_review` on one output would stop all of that. */
+    if (outputId === null) t.status = "in_review";
     t.updatedAt = nowIso();
 
     // The timer stops server-side. Legacy left it running.
     const timer = s.timers.find(
       (x) => x.taskId === t.id && x.employeeId === actingId() && x.isActive,
     );
-    if (timer)
+    if (timer && outputId === null)
       await this.pauseTimer(t.id, "Submitted for review", "submission");
 
+    const outputLabel = outputId
+      ? (t.outputs.find((o) => o.id === outputId)?.label ?? "an output")
+      : null;
     this.#event(
       t.id,
       "submitted",
-      `Submitted for review (attempt ${sub.attempt})`,
+      outputLabel
+        ? `“${outputLabel}” submitted for review (attempt ${sub.attempt})`
+        : `Submitted for review (attempt ${sub.attempt})`,
     );
     if (reviewChain[0])
       this.#notify(
         reviewChain[0],
         "review_requested",
         "Work submitted",
-        `“${t.title}” is ready for your review.`,
+        outputLabel
+          ? `“${outputLabel}” from “${t.title}” is ready for your review.`
+          : `“${t.title}” is ready for your review.`,
         "task",
         t.id,
       );
@@ -5311,7 +5661,7 @@ export class MockRepository implements CoworkRepository {
         "permission_denied",
         "This submission is not in your review chain.",
       );
-    if (t.status !== "in_review")
+    if (!mayReview({ outputId: sub.outputId, taskStatus: t.status }))
       return fail("invalid_state", "This task is not awaiting review.");
     if (!input.reason.trim())
       return fail("validation_failed", "A note is required.", "reason");
@@ -5333,6 +5683,43 @@ export class MockRepository implements CoworkRepository {
     s.reviews.push(review);
 
     if (input.decision === "approved") {
+      if (isFinal && sub.outputId !== null) {
+        /**
+         * One output delivered. The task itself is untouched — its assignee may
+         * still have three more to write — but everything waiting on this
+         * output can now start, and the queues that just gained workable tasks
+         * have to be recomputed.
+         */
+        const label =
+          t.outputs.find((o) => o.id === sub.outputId)?.label ?? "an output";
+        t.updatedAt = nowIso();
+        this.#event(t.id, "approved", `“${label}” approved`);
+        this.#notify(
+          sub.submittedById,
+          "task_approved",
+          "Output approved",
+          `“${label}” was approved.`,
+          "task",
+          t.id,
+        );
+        this.#releaseWaitingOn(sub.outputId);
+
+        /* OWNER DECISION (b): the last output finishes the task. No second
+           review of work this same chain already approved one piece at a time —
+           a review that can only ever approve measures nothing. */
+        if (allOutputsApproved(t.outputs, this.#outputFacts(t.id))) {
+          t.status = "completed";
+          this.#renumber(this.#holdersOfTask(t.id));
+          this.#event(
+            t.id,
+            "approved",
+            `All ${t.outputs.length} outputs approved — task complete`,
+          );
+          this.#announceToParent(t);
+        }
+        persistStore();
+        return delay(ok(review));
+      }
       if (isFinal) {
         t.status = "completed";
         /* Out of the queue. The stored rank is left exactly as it was — a closed

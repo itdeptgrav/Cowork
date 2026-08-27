@@ -31,6 +31,10 @@ export class Autosaver<T> {
   private pending: T | null = null;
   /** A deferred payload builder from `pushLazy`, invoked when the save fires. */
   private producer: (() => T) | null = null;
+  /** The save currently on the wire, if any — later runs queue behind it so
+      two saves can never overlap (an overlap sends the same revision twice and
+      the second is refused as a conflict the user never caused). */
+  private inFlight: Promise<void> | null = null;
   private readonly options: AutosaverOptions<T>;
 
   constructor(options: AutosaverOptions<T>) {
@@ -48,9 +52,21 @@ export class Autosaver<T> {
    * Note the current state. Schedules a debounced save if it differs from what
    * was last saved, and returns whether it did — so the caller can show
    * "Saving…" only when a save is actually coming.
+   *
+   * Matching the last save is not merely "nothing to schedule": an undo back to
+   * the saved state must also DISARM whatever the burst had pending, or the
+   * timer would fire and persist the very state the user undid.
    */
   push(data: T): boolean {
-    if (JSON.stringify(data) === this.lastSavedJson) return false;
+    this.producer = null; // a direct push supersedes an earlier lazy one
+    if (JSON.stringify(data) === this.lastSavedJson) {
+      this.pending = null;
+      if (this.timer) {
+        clearTimeout(this.timer);
+        this.timer = null;
+      }
+      return false;
+    }
     this.pending = data;
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.run(), this.options.delayMs);
@@ -87,6 +103,14 @@ export class Autosaver<T> {
 
   private async run(): Promise<void> {
     this.timer = null;
+    /* Single writer: while a save is on the wire, queue this run behind it and
+       re-evaluate afterwards — by then the pending state (and the baseline the
+       first save updated) may make it a no-op. */
+    if (this.inFlight) {
+      const current = this.inFlight;
+      await current;
+      return this.run();
+    }
     /* A lazy push builds its payload here — once per settled burst. */
     if (this.producer) {
       this.pending = this.producer();
@@ -100,13 +124,19 @@ export class Autosaver<T> {
       this.options.onNoChange?.();
       return;
     }
-    try {
-      await this.options.save(data);
-      this.lastSavedJson = json;
-    } catch (error) {
-      /* Leave `lastSavedJson` unchanged so the next change re-attempts. */
-      this.options.onError?.(error);
-    }
+    this.inFlight = (async () => {
+      try {
+        await this.options.save(data);
+        this.lastSavedJson = json;
+        if (this.pending === data) this.pending = null;
+      } catch (error) {
+        /* Leave `lastSavedJson` unchanged so the next change re-attempts. */
+        this.options.onError?.(error);
+      } finally {
+        this.inFlight = null;
+      }
+    })();
+    return this.inFlight;
   }
 
   /** Drop any pending timer — on unmount. */

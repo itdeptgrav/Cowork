@@ -83,7 +83,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateProjectInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateProjectInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, SetOutputsInput, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
@@ -111,14 +111,18 @@ import {
   reworkTask,
   reworkQueuePreview as reworkQueuePreviewCall,
   startTask as startTaskRequest,
+  fetchOutputIndex,
+  reviewOutput,
+  setTaskOutputs,
   submitCompletion,
+  submitOutput,
   proposeDeadline as proposeDeadlineRequest,
   acceptAssignorWindow as acceptAssignorWindowRequest,
   rejectAssignorWindow as rejectAssignorWindowRequest,
   approveDeadline as approveDeadlineRequest,
 } from "../../legacy/taskWrites.ts";
 import { listMembers } from "../../legacy/employees.ts";
-import { toHierarchyId } from "../../legacy/identityMap.ts";
+import { fromHierarchyId, toHierarchyId } from "../../legacy/identityMap.ts";
 import {
   buildReportingTree,
   fetchMyManagers,
@@ -165,6 +169,7 @@ import { computeProgress } from "../mock/progress.ts";
    the music block below for why these are wired rather than stubbed out. */
 import { musicStore } from "../mock/musicStore.ts";
 import { toTaskStatus, toTaskView } from "./taskMap.ts";
+import { hasStartableOutput } from "@/lib/rules/tasks/outputs";
 import {
   activeQueuePositions,
   provisionalQueuePositions,
@@ -416,6 +421,7 @@ import {
 } from "../../rules/meetings/taskRoom.ts";
 import type { TaskMeetingSession } from "../../domain/tasks.ts";
 import {
+  restoreBlockedDeadlines,
   readDueAtMs,
   readInstant,
   readTask,
@@ -669,7 +675,112 @@ function readPerUser(
   return raw as Record<string, Partial<GoalStepPerson>>;
 }
 
+/**
+ * A task document's per-output submissions, as `TaskSubmission` records.
+ *
+ * Newest first. Only those still AWAITING a decision are returned: a decided
+ * one is history, and the review screen reads `[0]` as the thing to act on — so
+ * including a settled submission would offer a decision on work already judged.
+ *
+ * The id is composite (`taskId:outputId`) rather than stored, because legacy
+ * keeps these in a map keyed by output and never mints a submission id. It is
+ * stable, which is all the screen needs it for.
+ */
+function readOutputSubmissionRecords(
+  doc: Record<string, unknown>,
+  taskId: string,
+): TaskSubmission[] {
+  const map = doc.outputSubmissions;
+  if (!map || typeof map !== "object") return [];
+  const reviewer =
+    (typeof doc.assignedBy === "string" && doc.assignedBy) ||
+    (typeof doc.createdBy === "string" && doc.createdBy) ||
+    null;
+  const out: TaskSubmission[] = [];
+  for (const [outputId, value] of Object.entries(
+    map as Record<string, unknown>,
+  )) {
+    if (!value || typeof value !== "object") continue;
+    const v = value as Record<string, unknown>;
+    if (v.review) continue;
+    const submittedBy = typeof v.submittedBy === "string" ? v.submittedBy : "";
+    if (!submittedBy) continue;
+    const files = readSubmissionAttachments(v);
+    out.push({
+      id: `${taskId}:${outputId}`,
+      taskId: taskId as TaskId,
+      outputId,
+      attempt: typeof v.attempt === "number" ? v.attempt : 1,
+      submittedById: submittedBy as EmployeeId,
+      submittedAt: typeof v.submittedAt === "string" ? v.submittedAt : "",
+      message: typeof v.message === "string" ? v.message : "",
+      /**
+       * **The files, read the same way a task submission's are.**
+       *
+       * These were both `[]`. The engine has always stored `imageUrls` and
+       * `pdfAttachments` on an output submission — the record is the same shape
+       * a task submission uses — but this dropped them, so a reviewer opening a
+       * submitted output saw the covering note and no way to reach the work it
+       * was describing.
+       */
+      attachments: files,
+      /* Derived FROM the list above rather than gathered separately, so the two
+         cannot come to disagree about what was submitted. */
+      attachmentIds: files.map((f) => f.url),
+      /* One reviewer, one stage — this engine resolves the assigner of record
+         and their approval is final (owner decision, 16 Aug 2026). */
+      reviewChain: reviewer ? [reviewer as EmployeeId] : [],
+      currentStage: 1,
+      supersededById: null,
+      wasLate: false,
+    });
+  }
+  return out.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+}
+
+/**
+ * Is there anything on this task its assignee could sit down and start?
+ *
+ * **One definition, three readers**: the viewer's own queue, every OTHER
+ * subject's queue in `#activeQueueOf`, and the timer gate. Each of them derived
+ * this separately, and two of them disagreeing is precisely the bug that put a
+ * P1 badge beside a row reading "Waiting on Puri pg" — so the answer is
+ * computed once here and the readers are left with nothing to disagree about.
+ *
+ * Takes a loose shape on purpose: the queue passes a `readTask` result and the
+ * timer gate passes a raw Firestore document. Both carry the same two fields,
+ * and neither should have to be converted to ask this question.
+ *
+ * A task with no outputs is workable — every task that predates them.
+ */
+function taskIsWorkable(
+  source: { outputs?: unknown; outputSubmissions?: unknown },
+  approvedOutputIds: ReadonlySet<string>,
+): boolean {
+  const subs = (source.outputSubmissions ?? {}) as Record<
+    string,
+    { review?: { approved?: boolean } | null } | undefined
+  >;
+  return hasStartableOutput({
+    outputs: (Array.isArray(source.outputs) ? source.outputs : []) as {
+      id: string;
+      needsOutputIds: string[];
+    }[],
+    approvedOutputIds,
+    stateOf: (outputId) => {
+      const sub = subs[outputId];
+      if (!sub) return "not_started";
+      if (!sub.review) return "in_review";
+      return sub.review.approved ? "approved" : "rework";
+    },
+  });
+}
+
 export class LegacyRepository {
+  /* Per-viewer, and static so it survives the repository instances a render
+     creates. Only a round-trip saver — the engine decides what is written. */
+  static #lastQueueSyncMs = new Map<string, number>();
+
   #ctx: LegacyRepositoryContext;
   /**
    * The directory, resolved once per instance.
@@ -878,7 +989,31 @@ export class LegacyRepository {
    */
   async getViewer(employeeId?: EmployeeId): Promise<Viewer> {
     const id = String(employeeId ?? this.#ctx.employeeId);
-    const tree = await this.#reportingTree();
+    /**
+     * **Identity must not depend on the directory being readable.**
+     *
+     * The tree is ~17 HTTP calls (one `my-managers` per employee) and it is
+     * awaited here for two booleans. `#employeesById` throws outright when the
+     * directory read fails, so ANY failure in that chain rejected `getViewer`,
+     * `useViewerId()` returned null, and null viewerId is load-bearing far
+     * beyond this method: it greys out Go online, empties the score pill, and
+     * makes both of `DutySync`'s effects return early — so presence is never
+     * published and the account cannot go online at all.
+     *
+     * A person who cannot be placed in the hierarchy is still a person with an
+     * employee id. Degrade to "no manager, no reports" — the same answer the
+     * tree already gives for somebody absent from HR — rather than refusing to
+     * say who they are.
+     */
+    let tree: ReportingTree | null = null;
+    try {
+      tree = await this.#reportingTree();
+    } catch (e) {
+      console.warn(
+        "[legacy] reporting tree unavailable; viewer resolved without hierarchy:",
+        e instanceof Error ? e.message : e,
+      );
+    }
     /* **Resolve to the hierarchy identity before reading the tree.**
      *
      * The Cowork account and the HR record are the same string for 15 of 16
@@ -889,7 +1024,7 @@ export class LegacyRepository {
      *
      * See `lib/legacy/identityMap.ts` — the mapping is written down rather
      * than guessed, because nothing in the data derives it. */
-    const node = tree.byEmployee.get(toHierarchyId(id));
+    const node = tree?.byEmployee.get(toHierarchyId(id));
     return {
       ...toViewer({
         employeeId: id,
@@ -1100,11 +1235,79 @@ export class LegacyRepository {
      * the sender, the approvers, and the person it is being assigned to. The
      * old page reaches the same set (`page.js:6932`) by filtering the same
      * org-wide listener. */
+    /**
+     * Who manages the person each BUDGET-gated task is for.
+     *
+     * Resolved before the filter because the scoping below needs it and a
+     * `filter` cannot await. One memoised tree read and then map lookups —
+     * `#assigneeManagerId` is the product’s source of truth for who manages
+     * whom, and the same relationship `budgetOwner` is built from, so the row
+     * a manager can see and the approval they are offered cannot disagree.
+     */
+    const budgetTargetOf = (t: {
+      pendingAssigneeId: string | null;
+      assigneeIds: string[];
+    }) => t.pendingAssigneeId ?? t.assigneeIds[0] ?? "";
+    /**
+     * A tree manager id, back in COWORK id space.
+     *
+     * `ReportingNode.managerId` is the HR record’s `biometricId`, which for
+     * fifteen of sixteen people is also their Cowork id — and for the CEO is
+     * not: they sign in as `E000` and HR calls them `GR0000`, two records in
+     * two stores sharing no key. Comparing the raw value against `viewerId`
+     * would therefore hide a budget-gated task from precisely one person: the
+     * one who manages somebody reporting to the top of the company. Same trap
+     * `getViewer` documents, resolved the same way rather than left to the
+     * fifteen cases where it happens not to matter.
+     */
+    const toCoworkId = (hierarchyId: string | null): string | null => {
+      if (!hierarchyId) return null;
+      if (employeesById.has(hierarchyId)) return hierarchyId;
+      return fromHierarchyId(hierarchyId)[0] ?? null;
+    };
+    const budgetManagerByTarget = new Map<string, string | null>();
+    await Promise.all(
+      [...new Set(
+        legacyTasks
+          .filter((t) => t.status === "pending_tl_hours")
+          .map(budgetTargetOf)
+          .filter((id) => id !== ""),
+      )].map(async (id) =>
+        budgetManagerByTarget.set(
+          id,
+          toCoworkId(await this.#assigneeManagerId(id)),
+        ),
+      ),
+    );
+
     legacyTasks = legacyTasks.filter((t) => {
-      if (t.status !== "pending_department_approval") return true;
-      if (t.createdById === viewerId) return true;
-      if (t.pendingAssigneeId === viewerId) return true;
-      return t.departmentApproverIds.includes(viewerId);
+      if (t.status === "pending_department_approval") {
+        if (t.createdById === viewerId) return true;
+        if (t.pendingAssigneeId === viewerId) return true;
+        return t.departmentApproverIds.includes(viewerId);
+      }
+      /* The BUDGET gate, scoped for the same reason as the one above — its
+         query is org-wide because the responsible person is recorded nowhere
+         on the document — and to the same people, PLUS the one who can
+         actually clear it: the manager of the person the work is for. That
+         last clause is the whole fix. Everyone else already had a route to
+         the task and they had none, which is why it reached them only as a
+         notification.
+
+         Visibility here is the reporting relationship; the ACTION is narrower
+         and stays where it was — `pendingApprovalsFor` offers the form only to
+         the assignee’s own manager, and the engine 403s anybody else. */
+      if (t.status === "pending_tl_hours") {
+        if (t.createdById === viewerId) return true;
+        /* The person it is FOR, by either route: the gate parks them in
+           `pendingAssigneeId`, but a task created straight into this state
+           can carry them in `assigneeIds`. */
+        if (t.pendingAssigneeId === viewerId) return true;
+        if (t.assigneeIds.includes(viewerId)) return true;
+        if (t.departmentApproverIds.includes(viewerId)) return true;
+        return budgetManagerByTarget.get(budgetTargetOf(t)) === viewerId;
+      }
+      return true;
     });
 
     /* The old task page's own tab predicates, from `page.js:6016-6040`.
@@ -1148,6 +1351,11 @@ export class LegacyRepository {
      * renumbers nothing on disk, so there is no write to race and every viewer
      * computes the same positions from the same stored ranks.
      */
+    /* Once for the whole page, and BEFORE the queue is built: workability is a
+       sort key, so the entries need it. Each row needs the index too, and forty
+       rows fetching it separately would be forty round trips for one screen. */
+    const outputIndex = await this.#outputIndex();
+
     const myQueueEntries = legacyTasks
       /* `holdersOf`, not `assigneeIds`: a cross-department task waiting at
          the gate keeps its person in `pendingAssigneeId` with an EMPTY
@@ -1182,8 +1390,26 @@ export class LegacyRepository {
         /* A broken-down task is a project, not workload — see
            `#activeQueueOf`, which excludes it for the identical reason. */
         isContainer: t.subtaskIds.length > 0,
+        /**
+         * Can anything on this task be started?
+         *
+         * False only when EVERY declared output is waiting on somebody else's
+         * approval. It keeps its place in the queue and its stored rank; it
+         * simply sorts below work that can be started, so the next task becomes
+         * P1 and this one P2 until its input lands.
+         *
+         * A task with no outputs is workable — every task that predates them.
+         */
+        isWorkable: taskIsWorkable(t, outputIndex.approved),
+        /* Not a queue property — it decides only whether this viewer is worth
+           sweeping for a restore. A queue with no outputs anywhere can neither
+           be blocked nor have been pushed. */
+        hasOutputs: t.outputs.length > 0,
       }));
     const myQueue = activeQueuePositions(myQueueEntries);
+    /* The badge moved; the DEADLINE has to move with it. Fire-and-forget, and
+       never awaited — see `#cascadeBlockedDeadlines`. */
+    void this.#syncQueueDeadlines(viewerId, myQueueEntries, myQueue);
     /* The viewer's own SEPARATE sequence for work not yet accepted or
        budget-settled — see `provisionalQueuePositions`. Computed from the
        SAME entries so the two sequences can never disagree about which task
@@ -1320,15 +1546,37 @@ export class LegacyRepository {
         }
       }
 
-      legacyTasks = [...byId.values()].filter((t) =>
-        canManagerViewTask(
-          viewerId,
-          {
-            assigneeIds: t.assigneeIds,
-            pendingAssigneeIds: t.pendingAssigneeId ? [t.pendingAssigneeId] : [],
-          },
-          tree,
-        ),
+      /*
+       * **May-I-see-it and is-it-my-team's are different questions.**
+       *
+       * This filtered on `canManagerViewTask` alone, and that predicate reads
+       * `reportingSubtree`, which seeds itself with the manager — correctly, for
+       * a permission check: a manager may of course view their own task. Used as
+       * the SCOPE filter it also let their own assignments into "My team", so a
+       * manager looking at what their reports are carrying found their own work
+       * in the list, and on the grouped view, a group under their own name.
+       *
+       * Permission is still the first test, unchanged. The second says the task
+       * is somebody else's: at least one of the people holding it is not the
+       * viewer. A task held jointly by a manager and a report stays — it is
+       * genuinely the report's work too.
+       */
+      const heldByAnother = (t: { assigneeIds: string[]; pendingAssigneeId?: string | null }) =>
+        [...t.assigneeIds, ...(t.pendingAssigneeId ? [t.pendingAssigneeId] : [])]
+          .some((id) => String(id) !== viewerId);
+
+      legacyTasks = [...byId.values()].filter(
+        (t) =>
+          canManagerViewTask(
+            viewerId,
+            {
+              assigneeIds: t.assigneeIds,
+              pendingAssigneeIds: t.pendingAssigneeId
+                ? [t.pendingAssigneeId]
+                : [],
+            },
+            tree,
+          ) && heldByAnother(t),
       );
     } else if (q.scope === "mine") {
       legacyTasks = legacyTasks.filter((t) => {
@@ -1460,12 +1708,28 @@ export class LegacyRepository {
         projectParent: legacy.parentTaskId
           ? (docsById.get(String(legacy.parentTaskId)) ?? null)
           : null,
+        approvedOutputIds: outputIndex.approved,
+        outputLabels: outputIndex.labels,
         /* The ROW's subject queue — the person who actually holds this task — so
            the derived, gap-free 1..N a manager sees is identical to what the
            report sees on their own list, and the operational date agrees too.
            Falls back to undefined (→ stored rank) only when unresolved. */
         queue: (subjectId && queuesBySubject.get(subjectId)) || undefined,
         viewerLegacyRole: this.#ctx.legacyRole,
+        /* **Supplied on the list path too, not only on the detail page.**
+           `pendingApprovalsFor` produces the `effort_estimate` approval only
+           when it is handed the assignee’s manager, so without this the row
+           reached the viewer and still carried no obligation — the Actionable
+           inbox, whose membership is decided by `actionableFor` reading exactly
+           that approval, stayed empty on a task plainly waiting for them.
+           Resolved above from the memoised tree, so this costs no round trip
+           per row. */
+        budgetOwner:
+          legacy.status === "pending_tl_hours"
+            ? (employeesById.get(
+                budgetManagerByTarget.get(budgetTargetOf(legacy)) ?? "",
+              ) ?? null)
+            : null,
       });
     });
 
@@ -2048,9 +2312,12 @@ export class LegacyRepository {
       }
     }
 
+    const detailOutputIndex = await this.#outputIndex();
     return toTaskView({
       legacy,
       employeesById,
+      approvedOutputIds: detailOutputIndex.approved,
+      outputLabels: detailOutputIndex.labels,
       viewerId,
       nowMs: Date.now(),
       queue,
@@ -2332,6 +2599,93 @@ export class LegacyRepository {
    * Defaults reproduce today's behaviour exactly, so an unsaved rules document
    * refuses nothing that used to be accepted.
    */
+  /**
+   * Declare what a task hands over.
+   *
+   * The engine owns the rules — who may set them, and that an output already
+   * submitted may be renamed but not removed. This layer neither restates nor
+   * pre-empts them: a refusal comes back as the engine's own words.
+   */
+  async setOutputs(input: SetOutputsInput): Promise<ActionResult<Task>> {
+    const taskId = String(input.taskId);
+    return this.#write(
+      (token) =>
+        setTaskOutputs({
+          token,
+          taskId,
+          outputs: input.outputs.map((o: SetOutputsInput["outputs"][number]) => ({
+            id: o.id,
+            label: o.label,
+            needsOutputIds: o.needsOutputIds,
+          })),
+        }),
+      () => taskId,
+    );
+  }
+
+  /**
+   * Hand ONE output over for review.
+   *
+   * Routed to the per-output endpoint, never to `submit-completion`: that one
+   * moves `completionStatus` and would stop the assignee's clock while they
+   * still have outputs to deliver.
+   */
+  async submitOutput(input: {
+    taskId: TaskId;
+    outputId: string;
+    message: string;
+    attachments?: ReportAttachment[];
+  }): Promise<ActionResult<Task>> {
+    const taskId = String(input.taskId);
+    /* Split by type, exactly as `submitDailyReport` does and for the same
+       reason: the route has always taken two typed arrays, and the old
+       application reads those two and knows nothing about anything else. */
+    const files = input.attachments ?? [];
+    const imageUrls = files
+      .filter((a) => a.mimeType.startsWith("image/"))
+      .map((a) => a.url);
+    const pdfAttachments = files
+      .filter((a) => !a.mimeType.startsWith("image/"))
+      /* The object form, not the bare URL: `readSubmissionAttachments` reads a
+         name off it, and a string leaves the reviewer with a URL to squint at
+         instead of a filename. */
+      .map((a) => ({ url: a.url, name: a.name, mimeType: a.mimeType }));
+
+    return this.#write(
+      (token) =>
+        submitOutput({
+          token,
+          taskId,
+          outputId: input.outputId,
+          message: input.message,
+          imageUrls,
+          pdfAttachments,
+        }),
+      () => taskId,
+    );
+  }
+
+  /** Approve or return ONE output. The last approval finishes the task. */
+  async reviewOutput(input: {
+    taskId: TaskId;
+    outputId: string;
+    approved: boolean;
+    note?: string;
+  }): Promise<ActionResult<Task>> {
+    const taskId = String(input.taskId);
+    return this.#write(
+      (token) =>
+        reviewOutput({
+          token,
+          taskId,
+          outputId: input.outputId,
+          approved: input.approved,
+          note: input.note ?? "",
+        }),
+      () => taskId,
+    );
+  }
+
   async submitCompletion(input: {
     taskId: TaskId;
     message: string;
@@ -4290,6 +4644,49 @@ export class LegacyRepository {
      * a session started before a laptop slept is still running when it wakes. */
     const refusal = presenceWriteRefusal(dutyMode);
     if (refusal) return refusal;
+
+    /**
+     * **Nothing to work on means no clock — held at the write, like the rule
+     * above it.**
+     *
+     * A task whose every declared output is waiting on somebody else's approval
+     * cannot be started, and running the clock against it would bank time that
+     * was never work. That is the exact unfairness the waiting model exists to
+     * prevent, and it also contradicts the queue in the same breath: the task
+     * has already given up P1 because nothing on it can be done.
+     *
+     * A task with SOME workable output is allowed. That is the point of
+     * per-output delivery — Puri waiting on its input does not stop anybody
+     * building Gopalpur, and blocking the whole task would put the batch back.
+     *
+     * A task with no outputs is unaffected: every task that predates them.
+     */
+    const outputs = Array.isArray(taskDoc?.outputs) ? taskDoc.outputs : [];
+    if (outputs.length > 0) {
+      const index = await this.#outputIndex();
+      /* The SAME question the queue asks. An output already with a reviewer is
+         not something its assignee can pick up, so a task whose only released
+         output has been handed over has nothing to start — and must not be
+         able to run a clock against it. */
+      const anyWorkable = taskIsWorkable(taskDoc ?? {}, index.approved);
+      if (!anyWorkable) {
+        const firstNeed = outputs
+          .flatMap((o) =>
+            Array.isArray((o as { needsOutputIds?: unknown }).needsOutputIds)
+              ? ((o as { needsOutputIds: string[] }).needsOutputIds ?? [])
+              : [],
+          )
+          .find((n) => !index.approved.has(n));
+        const label = firstNeed ? index.labels.get(firstNeed)?.label : null;
+        return {
+          ok: false,
+          code: "invalid_state",
+          message: label
+            ? `Nothing on this task can be started yet — every output is waiting on “${label}”.`
+            : "Nothing on this task can be started yet — every output is waiting on work that has not been approved.",
+        };
+      }
+    }
 
     /* Pause whatever else is running. Still sequential and deliberately so —
        one timer at a time is the rule, and starting this one before the other
@@ -7202,12 +7599,64 @@ export class LegacyRepository {
    * fabricating an attempt history would invent a record of work that no longer
    * exists anywhere.
    */
+  /**
+   * The workspace's outputs, briefly cached.
+   *
+   * Every task view needs it — to know whether its inputs are approved and what
+   * they are called — and a list of forty tasks would otherwise fetch it forty
+   * times for one screen. Two seconds is long enough to serve one render pass
+   * and short enough that an approval shows up on the next interaction.
+   *
+   * A failed read yields an EMPTY index, which renders as "waiting on an output
+   * you cannot see" rather than as work being ready. Falling the other way
+   * would tell somebody to start on an input that has not landed.
+   */
+  #outputIndexCache: {
+    at: number;
+    value: {
+      approved: Set<string>;
+      labels: Map<string, { label: string; taskTitle: string }>;
+    };
+  } | null = null;
+
+  async #outputIndex() {
+    const fresh = this.#outputIndexCache && Date.now() - this.#outputIndexCache.at < 2000;
+    if (fresh) return this.#outputIndexCache!.value;
+    const token = await this.#token();
+    const res = await fetchOutputIndex({ token }).catch(() => null);
+    const approved = new Set<string>();
+    const labels = new Map<string, { label: string; taskTitle: string }>();
+    if (res?.ok) {
+      for (const item of res.data.items ?? []) {
+        labels.set(item.outputId, { label: item.label, taskTitle: item.taskTitle });
+        if (item.approved) approved.add(item.outputId);
+      }
+    }
+    const value = { approved, labels };
+    this.#outputIndexCache = { at: Date.now(), value };
+    return value;
+  }
+
   async listSubmissions(taskId: TaskId): Promise<TaskSubmission[]> {
     const id = String(taskId);
     const doc = await this.#taskDocument(id);
     if (!doc) return [];
+
+    /**
+     * Output submissions first, because a task that delivers by output has no
+     * task-level one at all.
+     *
+     * The review screen reads this list. Returning only `completionSubmission`
+     * meant a submitted output showed "Nothing has been submitted for review
+     * yet" on the very page its reviewer had just been sent to.
+     *
+     * Newest first, so `[0]` is the one awaiting a decision — the same ordering
+     * the mock repository returns and the same the screen assumes.
+     */
+    const outputs = readOutputSubmissionRecords(doc, id);
+
     const raw = doc.completionSubmission;
-    if (!raw || typeof raw !== "object") return [];
+    if (!raw || typeof raw !== "object") return outputs;
     const sub = raw as Record<string, unknown>;
 
     const submittedAtMs = readInstant(sub.submittedAt);
@@ -7219,7 +7668,8 @@ export class LegacyRepository {
         taskId: id as TaskId,
         /* One record, so one attempt. Counting resubmissions would need a
            history legacy does not keep. */
-        attempt: 1,
+        outputId: null,
+      attempt: 1,
         submittedById: (typeof sub.submittedBy === "string" ? sub.submittedBy : "") as EmployeeId,
         submittedAt: submittedAtMs ? new Date(submittedAtMs).toISOString() : "",
         message: typeof sub.message === "string" ? sub.message : "",
@@ -7238,6 +7688,7 @@ export class LegacyRepository {
            work that was not. */
         wasLate: false,
       },
+      ...outputs,
     ];
   }
 
@@ -10242,6 +10693,69 @@ export class LegacyRepository {
    * at the gate, where the person sits in `pendingAssigneeId`. Firestore cannot
    * OR across fields, so it is two reads merged by id.
    */
+  /**
+   * Keep this viewer's stored deadlines in step with the order actually shown.
+   *
+   * **The dependency feature does exactly one thing: it swaps priority.**
+   * Everything about dates stays the engine's — anchors from
+   * `resolveAcceptanceAnchor`, dates walked through the office calendar,
+   * chaining by `rechainQueueFor`. There is no deadline rule for blocked work
+   * and there must not be one.
+   *
+   * That is not a gap. A blocked task drops to P2, and the ordinary chain then
+   * anchors it after the task that overtook it — which IS the clock stopping
+   * while its input is unavailable, paid for by the swap. An earlier version
+   * pushed the blocked deadline out directly and gave it back on approval; it
+   * computed the same answer twice from two anchors, and the two disagreed the
+   * moment either moved.
+   *
+   * What still has to happen is the ASKING: `workableFirst` reorders for
+   * display without touching a stored rank, so nothing on the engine side knows
+   * the order changed until somebody tells it. This is that telling.
+   *
+   * Never awaited, and it swallows its own failures — a stale date is a thing
+   * to fix on the next load, not a reason to cost anybody their task list.
+   */
+  async #syncQueueDeadlines(
+    viewerId: string,
+    entries: readonly {
+      taskId: string;
+      isWorkable?: boolean;
+      /* Whether the task declares outputs at all — decides only whether this
+         viewer is worth syncing, never anything about the queue. */
+      hasOutputs?: boolean;
+    }[],
+    positions: Map<string, number>,
+  ): Promise<void> {
+    try {
+      /* Neither blocked nor carrying outputs: every queue in the product
+         today, and nothing here can apply to it. */
+      if (!entries.some((e) => e.isWorkable === false || e.hasOutputs)) return;
+
+      const order = [...positions.entries()].sort((a, b) => a[1] - b[1]);
+      if (order.length === 0) return;
+
+      /* A list can render many times a minute, and `rechainQueueFor` writes
+         only where a date actually moves — so this spares the round trip, not
+         the writes. */
+      const nowMs = Date.now();
+      const last = LegacyRepository.#lastQueueSyncMs.get(viewerId) ?? 0;
+      if (nowMs - last < 60_000) return;
+      LegacyRepository.#lastQueueSyncMs.set(viewerId, nowMs);
+
+      await restoreBlockedDeadlines({
+        token: await this.#token(),
+        employeeId: String(viewerId),
+        /* The head of the DERIVED queue — what this person is actually meant
+           to be working on once a blocked task has been dropped past. The
+           engine announces a change from it; it cannot compute it. */
+        effectiveP1TaskId: order[0]?.[0] ?? null,
+      }).catch(() => null);
+    } catch {
+      /* Deliberately silent — see the note above. */
+    }
+  }
+
   async #activeQueueOf(employeeId: string): Promise<{
     order: string[];
     dueDates: Map<string, string>;
@@ -10283,6 +10797,10 @@ export class LegacyRepository {
       .map((d) => readTask(d as never))
       .filter((t): t is NonNullable<typeof t> => t !== null && !t.isDeleted);
 
+    /* The approved-anywhere set, for `isWorkable` below. Cached, so a list
+       page resolving several reports' queues pays for this once. */
+    const outputIndex = await this.#outputIndex();
+
     const entries = tasks.map((t) => ({
       taskId: t.id,
       status: toTaskStatus(t),
@@ -10303,6 +10821,17 @@ export class LegacyRepository {
          which is why a queue of five could read P1, P3, P5 with nothing at P2
          or P4: two of the five documents had become containers. */
       isContainer: t.subtaskIds.length > 0,
+      /**
+       * Blocked work does not lead this person's queue.
+       *
+       * **This is the queue OTHER people see** — a manager reading their
+       * report's row, and the task detail page. It was the one queue builder
+       * without this, so Rakesh's own list demoted his blocked P1 while every
+       * screen showing Rakesh's queue to somebody else still called it P1: two
+       * P-numbers for one task, which is the exact fault the surrounding
+       * comments describe for stored ranks.
+       */
+      isWorkable: taskIsWorkable(t, outputIndex.approved),
     }));
 
     /* The same ordering the screen derives, so a reorder starts from what the

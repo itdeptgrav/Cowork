@@ -160,9 +160,12 @@ export function selectAllRect(b: Bounds): Rect {
  * The contiguous block of data around a cell — what the first Ctrl/Cmd+A picks.
  *
  * Grows a rectangle from the active cell while the row or column just outside it
- * holds any value, the standard "current region" expansion. An isolated empty
- * cell stays a single cell, so pressing the shortcut on a blank sheet selects
- * one cell first and the whole sheet next.
+ * holds any value, the standard "current region" expansion. Each border scan
+ * reaches ONE CELL PAST each end of the rectangle's span, so diagonally-adjacent
+ * data counts as connected — as Excel's CurrentRegion and Sheets' Ctrl+A treat
+ * it: the region is bounded by fully blank rows and columns, corners included.
+ * An isolated empty cell stays a single cell, so pressing the shortcut on a
+ * blank sheet selects one cell first and the whole sheet next.
  */
 export function dataRegion(active: CellPos, filled: FilledFn, b: Bounds): Rect {
   const rect: Rect = {
@@ -172,31 +175,37 @@ export function dataRegion(active: CellPos, filled: FilledFn, b: Bounds): Rect {
     right: active.col,
   };
 
+  /* Span scans include one cell beyond each end (clamped to the grid), so a
+     neighbour touching only at a corner still pulls its row/column in. */
   const rowHasData = (r: number, c0: number, c1: number) => {
-    for (let c = c0; c <= c1; c++) if (filled(r, c)) return true;
+    const lo = Math.max(0, c0);
+    const hi = Math.min(b.cols - 1, c1);
+    for (let c = lo; c <= hi; c++) if (filled(r, c)) return true;
     return false;
   };
   const colHasData = (c: number, r0: number, r1: number) => {
-    for (let r = r0; r <= r1; r++) if (filled(r, c)) return true;
+    const lo = Math.max(0, r0);
+    const hi = Math.min(b.rows - 1, r1);
+    for (let r = lo; r <= hi; r++) if (filled(r, c)) return true;
     return false;
   };
 
   let growing = true;
   while (growing) {
     growing = false;
-    if (rect.top > 0 && rowHasData(rect.top - 1, rect.left, rect.right)) {
+    if (rect.top > 0 && rowHasData(rect.top - 1, rect.left - 1, rect.right + 1)) {
       rect.top -= 1;
       growing = true;
     }
-    if (rect.bottom < b.rows - 1 && rowHasData(rect.bottom + 1, rect.left, rect.right)) {
+    if (rect.bottom < b.rows - 1 && rowHasData(rect.bottom + 1, rect.left - 1, rect.right + 1)) {
       rect.bottom += 1;
       growing = true;
     }
-    if (rect.left > 0 && colHasData(rect.left - 1, rect.top, rect.bottom)) {
+    if (rect.left > 0 && colHasData(rect.left - 1, rect.top - 1, rect.bottom + 1)) {
       rect.left -= 1;
       growing = true;
     }
-    if (rect.right < b.cols - 1 && colHasData(rect.right + 1, rect.top, rect.bottom)) {
+    if (rect.right < b.cols - 1 && colHasData(rect.right + 1, rect.top - 1, rect.bottom + 1)) {
       rect.right += 1;
       growing = true;
     }
@@ -207,16 +216,18 @@ export function dataRegion(active: CellPos, filled: FilledFn, b: Bounds): Rect {
 /**
  * What Ctrl/Cmd+A selects, given where it currently is: the data region first,
  * then — pressed again, once the region is already selected — the whole sheet.
+ * Once the whole sheet is selected, further presses keep it selected (Excel and
+ * Sheets do not cycle back down to the data region).
  */
 export function selectAllStep(sel: Selection, filled: FilledFn, b: Bounds): Selection {
   const region = dataRegion(sel.active, filled, b);
   const everything = selectAllRect(b);
-  const already =
-    sel.range.top === region.top &&
-    sel.range.left === region.left &&
-    sel.range.bottom === region.bottom &&
-    sel.range.right === region.right;
-  const next = already || isSingleCell(region) ? everything : region;
+  const sameRect = (a: Rect, c: Rect) =>
+    a.top === c.top && a.left === c.left && a.bottom === c.bottom && a.right === c.right;
+  const next =
+    sameRect(sel.range, everything) || sameRect(sel.range, region) || isSingleCell(region)
+      ? everything
+      : region;
   return { anchor: sel.active, active: sel.active, range: next };
 }
 

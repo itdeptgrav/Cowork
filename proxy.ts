@@ -184,6 +184,25 @@ async function readSessionState(
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+  /**
+   * The prototype session bypass — development only, and opt-in.
+   *
+   * `NEXT_PUBLIC_MOCK_SESSION=1` opens the workspace on the seeded mock store
+   * so a flow whose steps belong to different people can be walked in a
+   * browser. That session is created client-side and writes no Firebase
+   * cookie, so without this the gate below bounces every route to `/signin`.
+   *
+   * Guarded twice, and both halves matter. `NODE_ENV` is inlined by Next at
+   * build time, so in a production build this branch folds to nothing rather
+   * than being a runtime check somebody could flip; and it stays opt-in in
+   * development, because an authentication gate that can be turned off by one
+   * variable is not something to leave on by default.
+   */
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.NEXT_PUBLIC_MOCK_SESSION === "1"
+  )
+    return NextResponse.next();
   const state = await readSessionState(
     request.cookies.get(FIREBASE_COOKIE)?.value ??
       readFirebaseCookie(request.headers.get("cookie")),

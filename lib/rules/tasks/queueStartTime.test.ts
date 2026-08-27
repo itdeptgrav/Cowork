@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { calculateDeadlineFeasibility } from "./deadlineFeasibility.ts";
+import { chainDeadlines } from "./priorityDeadline.ts";
 import { addWorkingSecs } from "../../legacy-ui/officeDueDate.js";
 
 /**
@@ -85,6 +86,18 @@ const ask = (over: Record<string, unknown> = {}) =>
     committedDeadline: null,
     tasks: [P1, P2, T648],
     nowMs: MON_0930,
+    /**
+     * Supplied, because production always supplies it —
+     * `officeOpenMsFor(policy.schedule, ...)` at both call sites in the legacy
+     * repository. Omitting it fell through to `setHours(0,0,0,0)`, a
+     * placeholder chosen for being FIXED rather than meaningful, and the
+     * fixture then only agreed with the code by accident: the displayed start
+     * used to be `nowMs`, which happened to equal 09:30 here.
+     *
+     * `estimatedStartTime` now reports the anchor the chain actually used, so
+     * the fixture has to describe a real office day like the product does.
+     */
+    officeOpenMs: Date.parse(AT["09:30"]),
     addWorkingSecs: work,
     ...over,
   });
@@ -253,4 +266,121 @@ test("a per-assignee rank outranks the shared one", () => {
   /* P9 for Pramod: behind T648, so it cannot delay it. */
   assert.equal(r.estimatedStartTime, AT["12:30"]);
   assert.equal(r.simulatedPosition, 3);
+});
+
+/* ── Start and completion must come from one anchor ───────────────────────── */
+
+/**
+ * **The reported panel.** A placement preview showed:
+ *
+ *     Estimated start       21 Aug 2026 · 13:25 IST
+ *     Estimated completion  21 Aug 2026 · 17:21 IST
+ *
+ * Four minutes apart on a four-hour budget, because they were computed from
+ * different anchors. The completion came from `chainDeadlines`, which anchors
+ * at the office opening and floors each task at its own `createdAtMs`. The
+ * start was `new Date(input.nowMs)` — the moment the dialog happened to be
+ * opened, which is neither.
+ *
+ * `chainDeadlines` already knew the answer; it just was not returning it. Now
+ * it does, and the preview reads it rather than guessing a second time.
+ */
+
+test("the start reported is the one the chain actually used", () => {
+  const r = ask({ proposedPriority: 1 });
+  /* At the front, so nothing is ahead and the chain anchors at the opening. */
+  assert.equal(r.estimatedStartTime, AT["09:30"]);
+  /* And the completion is that start plus the budget — by construction, not
+     by coincidence. `work` is the fixture's plain-addition calendar. */
+  assert.equal(
+    r.estimatedCompletionTime,
+    work(Date.parse(r.estimatedStartTime!), 4 * H),
+  );
+});
+
+test("behind other work, the pair still corresponds", () => {
+  const r = ask();
+  assert.equal(r.estimatedStartTime, AT["12:30"]);
+  assert.equal(
+    r.estimatedCompletionTime,
+    work(Date.parse(r.estimatedStartTime!), 4 * H),
+  );
+});
+
+test("the chain hands back the start it used, for every task", () => {
+  /**
+   * Pinned at the source. Returning only `dueDate` is what forced callers to
+   * re-derive a start, and a re-derivation is free to disagree.
+   */
+  const r = ask();
+  for (const row of r.simulatedQueue) {
+    assert.ok(row.completionTime, `${row.taskId} has no completion`);
+  }
+  /* P1 leads, so its start is the opening; P2 starts where P1 ends. */
+  assert.equal(r.simulatedQueue[0].completionTime, AT["11:30"]);
+  assert.equal(r.simulatedQueue[1].completionTime, AT["12:30"]);
+});
+
+/* ── One start per person ─────────────────────────────────────────────────── */
+
+/**
+ * **The queue's start does not change with whichever task leads it.**
+ * OWNER RULE, 21 Aug 2026.
+ *
+ * Reported with real documents: Cowork meet (raised 12:28:55) leading showed a
+ * start of 12:28:55; Dev (raised 13:21:24) leading showed 13:21:24. Same
+ * person, same queue, two different answers to "when does this start" — because
+ * the chain floored every task at its own `createdAtMs`, including the head.
+ *
+ * The head is now anchored where the person became available to the queue: the
+ * day's opening, floored at the EARLIEST task in it. `rechainQueueFor` computes
+ * the identical figure as `queueAnchorMs`, so the preview and the apply cannot
+ * promise different dates.
+ */
+
+const OPEN = Date.parse(AT["09:30"]);
+const first = { taskId: "FIRST", createdAtMs: OPEN + 3 * H, deadlineWindowSecs: 2 * H };
+const later = { taskId: "LATER", createdAtMs: OPEN + 4 * H, deadlineWindowSecs: 2 * H };
+const chain = (queue: unknown[]) =>
+  chainDeadlines({
+    queue: queue as never,
+    anchorMs: OPEN,
+    addWorkingSecs: work,
+    budget: "full",
+  });
+
+test("the head starts at the queue's start, whichever task leads", () => {
+  const a = chain([first, later]);
+  const b = chain([later, first]);
+  assert.equal(a[0].startsAt, b[0].startsAt, "the queue start moved with the order");
+  /* And that start is the earliest task in the queue, not the head's own. */
+  assert.equal(Date.parse(a[0].startsAt), OPEN + 3 * H);
+});
+
+test("a task raised later IS charged from the queue's start when it leads", () => {
+  /* The deliberate cost of one shared number, stated so nobody rediscovers it
+     as a surprise: LATER was raised an hour after the queue began, and leading
+     it does not buy that hour back. */
+  const led = chain([later, first]);
+  assert.equal(Date.parse(led[0].startsAt), OPEN + 3 * H);
+  assert.ok(Date.parse(led[0].startsAt) < (later.createdAtMs as number));
+});
+
+test("the queue start never precedes the work existing", () => {
+  /* Without the floor, a queue would begin at an opening hours before any of
+     its tasks were raised. */
+  const late = chain([
+    { taskId: "L1", createdAtMs: OPEN + 5 * H, deadlineWindowSecs: H },
+    { taskId: "L2", createdAtMs: OPEN + 6 * H, deadlineWindowSecs: H },
+  ]);
+  assert.equal(Date.parse(late[0].startsAt), OPEN + 5 * H);
+});
+
+test("everything below the head still cannot start before it was raised", () => {
+  /* The head takes the queue's start; the rest keep their own floor, so a task
+     raised at 14:00 is not scheduled from 12:30 just because the queue was
+     free then. */
+  const short = { taskId: "SHORT", createdAtMs: OPEN, deadlineWindowSecs: 0.5 * H };
+  const r = chain([short, later]);
+  assert.ok(Date.parse(r[1].startsAt) >= (later.createdAtMs as number));
 });

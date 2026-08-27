@@ -20,7 +20,11 @@ import {
 } from "@/lib/rules/tasks/timer";
 import { presenceRefusal } from "@/lib/rules/presence/taskGate";
 import { blockedMessage, deadlineBlock } from "@/lib/rules/tasks/deadlineBlock";
-import { HEARTBEAT_INTERVAL_MS, STALE_AFTER_MS } from "@/lib/rules/presence/duty";
+import { RequestMoreTime } from "./RequestMoreTime";
+import {
+  HEARTBEAT_INTERVAL_MS,
+  STALE_AFTER_MS,
+} from "@/lib/rules/presence/duty";
 import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
 import type { TaskView } from "@/lib/repositories";
 
@@ -111,7 +115,6 @@ export function useTicker(startedAtRealMs: number | null): number {
     : rebaseSecs(tick, startedAtRealMs);
 }
 
-
 /**
  * The wall clock, for EVENT HANDLERS only.
  *
@@ -129,12 +132,27 @@ function pressMs(): number {
 export function TimerControl({
   view,
   size = "row",
+  align = "start",
   onChange,
   tone = "default",
 }: {
   view: TaskView;
   /** `bar` is `row` at a larger scale — same compact control, bigger clock. */
   size?: "row" | "detail" | "bar";
+  /**
+   * Where the press sits on the `detail` layout.
+   *
+   * `"start"` — the default and every existing caller — leads with the
+   * button, which is right when the control is the first thing in its box.
+   * `"end"` leads with the figure and puts the press at the right edge,
+   * for a caller placing this in a footer row beside another action that is
+   * also right-aligned: two presses on one line, at one height, rather than
+   * one at each end of the card.
+   *
+   * It reorders; it does not restyle. The button, the figure and the note
+   * are the same elements either way.
+   */
+  align?: "start" | "end";
   onChange?: () => void;
   /**
    * Presentational only. `warn` recolours the row clock amber for a caller that
@@ -154,6 +172,10 @@ export function TimerControl({
     [taskId, view.task.updatedAt],
   );
   const repo = useRepo();
+  /* Whether the request-more-time panel is open on the blocked chip. Up
+     here with the other hooks: the blocked branch sits below several early
+     returns, and a hook declared there would run conditionally. */
+  const [askingTime, setAskingTime] = useState(false);
   const [start, startState] = useAction((r) => r.startTimer(taskId));
   const [pause, pauseState] = useAction((r) =>
     r.pauseTimer(taskId, null, "manual"),
@@ -264,7 +286,10 @@ export function TimerControl({
    * different one cannot inherit it. The one-shot read survives for exactly
    * what it was for: the first paint, before the listener has ever delivered.
    */
-  const lastLive = useRef<{ taskId: string; data: NonNullable<typeof live> } | null>(null);
+  const lastLive = useRef<{
+    taskId: string;
+    data: NonNullable<typeof live>;
+  } | null>(null);
   if (live) lastLive.current = { taskId, data: live };
   const remembered =
     lastLive.current?.taskId === taskId ? lastLive.current.data : null;
@@ -526,6 +551,24 @@ export function TimerControl({
     nowMs,
     isActionable: startable,
   });
+  /**
+   * Nothing on this task can be started, because every output is waiting.
+   *
+   * Derived here so the CONTROL can say so, rather than the press being
+   * refused after the fact. A button that looks live and then returns an error
+   * banner teaches people that the product is unreliable; a disabled button
+   * with a reason teaches them what the product is waiting for.
+   *
+   * Pausing stays available regardless — a session started before an input was
+   * withdrawn has to be stoppable.
+   */
+  const noWorkableOutput =
+    (view.outputs ?? []).length > 0 &&
+    !(view.outputs ?? []).some((o) => o.isWorkable);
+  const waitingLabel =
+    (view.outputs ?? []).find((o) => o.waitingOn.length > 0)?.waitingOn[0]
+      ?.label ?? null;
+
   const pending =
     startState.isPending || pauseState.isPending || beginState.isPending;
   /**
@@ -788,6 +831,23 @@ export function TimerControl({
      the glyph scale differ. `detail` is the separate two-line block further
      down and is unaffected. */
   const isBar = size === "bar";
+  /* Explicit order values on all three, not just the two being moved: an
+     unordered flex child sorts as 0 and would jump ahead of every one of
+     them. Empty strings when aligning normally, so the default markup is
+     byte-for-byte what it was. */
+  /* Three stacked rows, then the press on its own at the right.
+
+     An earlier pass put the figure on the button's line, which moved the clock
+     across the card to chase the button — the reader lost the column the
+     deadline and the elapsed figure make together. Each of the three takes the
+     full width now, so the figure stays under whatever the caller put above it
+     and the press is the only thing that travels. */
+  const endFigure = align === "end" ? "order-1 w-full" : "";
+  const endFirst = align === "end" ? "order-2 w-full pt-1" : "";
+  const endAction = align === "end" ? "order-3 ml-auto" : "";
+  /* Bottom-aligned rather than centred, so the press lands on the same line as
+     the one it is paired with across the card. */
+  const endRoot = align === "end" ? "items-end" : "items-center";
   const compact = size === "row" || isBar;
   const figSize = isBar
     ? "h-9 min-w-[108px] gap-1.5 px-3.5 text-[15px]"
@@ -843,12 +903,40 @@ export function TimerControl({
       );
     }
     return (
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-3 py-1.5 text-[13px] text-[var(--state-overdue-ink)]">
-          <Icon.blocked className="h-3.5 w-3.5" />
-          Blocked
-        </span>
-        <div className="min-w-0">
+      <div className={`flex flex-wrap ${endRoot} gap-x-4 gap-y-2`}>
+        {/**
+         * **Blocked is the way out, not just a label.**
+         *
+         * It was a grey chip stating a fact, beside a sentence telling you to
+         * ask for more time — and nothing here to ask with. The one action
+         * that clears this state was a page away, so the panel named the cure
+         * and withheld it.
+         *
+         * Amber rather than the overdue red it wore: this is not a failure to
+         * report, it is a thing waiting on a decision, and it is the same
+         * colour the blocked clock takes on the active-work bar.
+         */}
+        <div className={`relative ${endAction}`}>
+          <button
+            type="button"
+            onClick={() => setAskingTime((v) => !v)}
+            aria-haspopup="dialog"
+            aria-expanded={askingTime}
+            title={blockedMessage(block)}
+            className="inline-flex items-center gap-1.5 rounded-full bg-[var(--state-warn)] px-3.5 py-2 text-[15px] font-medium text-[#1c1405] transition-opacity hover:opacity-90"
+          >
+            <Icon.blocked className="h-3.5 w-3.5" />
+            Blocked
+          </button>
+          {askingTime && (
+            <RequestMoreTime
+              view={view}
+              onClose={() => setAskingTime(false)}
+              className="absolute top-[calc(100%+8px)] left-0 z-50"
+            />
+          )}
+        </div>
+        <div className={`min-w-0 ${endFigure}`}>
           <p className="flex items-baseline gap-1.5">
             <span
               data-figure
@@ -865,7 +953,9 @@ export function TimerControl({
             <span data-figure>{formatTimer(block.overdueSecs)}</span> ago
           </p>
         </div>
-        <p className="w-full max-w-[62ch] text-[11px] text-[var(--state-overdue-ink)]">
+        <p
+          className={`w-full max-w-[62ch] text-[11px] text-[var(--state-overdue-ink)] ${endFirst}`}
+        >
           {blockedMessage(block)}
         </p>
       </div>
@@ -887,7 +977,7 @@ export function TimerControl({
       );
     }
     return (
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className={`flex flex-wrap ${endRoot} gap-x-4 gap-y-2`}>
         <div className="min-w-0">
           <p className="flex items-baseline gap-1.5">
             <span
@@ -931,9 +1021,12 @@ export function TimerControl({
       );
     }
     return (
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+      <div className={`flex flex-wrap ${endRoot} gap-x-4 gap-y-2`}>
         <div className="min-w-0">
-          <p data-figure className="text-[22px] leading-none tracking-[-0.025em] text-ink-muted">
+          <p
+            data-figure
+            className="text-[22px] leading-none tracking-[-0.025em] text-ink-muted"
+          >
             {formatTimer(elapsed)}
           </p>
           <p className="mt-1 text-[11px] text-ink-faint">
@@ -977,8 +1070,13 @@ export function TimerControl({
       <button
         type="button"
         onClick={toggle}
+        disabled={!running && noWorkableOutput}
         title={
-          running
+          !running && noWorkableOutput
+            ? waitingLabel
+              ? `Waiting on “${waitingLabel}”`
+              : "Nothing on this task can be started yet"
+            : running
             ? `Pause — ${formatTimer(elapsed)} on the clock`
             : other
               ? `Start — this will pause “${other.taskTitle}”`
@@ -1029,11 +1127,22 @@ export function TimerControl({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+    <div className={`flex flex-wrap ${endRoot} gap-x-4 gap-y-2`}>
       <button
         type="button"
         onClick={toggle}
-        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[15px] font-medium transition-colors disabled:opacity-50 ${
+        disabled={!running && noWorkableOutput}
+        title={
+          !running && noWorkableOutput
+            ? waitingLabel
+              ? `Waiting on “${waitingLabel}”`
+              : "Every output is waiting on work that has not been approved"
+            : undefined
+        }
+        /* `${endAction}` is kept from this branch: the bar variant lays its
+           parts out with `order-1..5`, and a button without its order class
+           jumps to the front of that row. */
+        className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[15px] font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${endAction} ${
           running
             ? "bg-ink text-[var(--body-bg)]"
             : "bg-[var(--control)] text-ink hover:bg-[var(--control-hover)]"
@@ -1057,7 +1166,7 @@ export function TimerControl({
               : "Start timer"}
       </button>
 
-      <div className="min-w-0">
+      <div className={`min-w-0 ${endFigure}`}>
         <p className="flex items-baseline gap-1.5">
           <span
             data-figure
@@ -1086,7 +1195,7 @@ export function TimerControl({
       </div>
 
       {other && !running && (
-        <p className="w-full text-[11px] text-ink-faint">
+        <p className={`w-full text-[11px] text-ink-faint ${endFirst}`}>
           Starting this pauses{" "}
           <span className="text-ink">“{other.taskTitle}”</span> — only one task
           runs at a time.
@@ -1096,7 +1205,7 @@ export function TimerControl({
       {/* Pausing writes a work commit and closes the run, so the deliberate
           press asks once. Nothing is written until Yes. */}
       {confirmingPause && (
-        <div className="w-full rounded-inset border border-hairline bg-[var(--surface-sunken)] p-3">
+        <div className="order-4 w-full rounded-inset border border-hairline bg-[var(--surface-sunken)] p-3">
           <p className="text-[13px] text-ink">Pause the timer?</p>
           <p className="mt-0.5 max-w-[58ch] text-[11px] text-ink-faint">
             This closes the current run and credits the time worked so far. You
@@ -1117,8 +1226,27 @@ export function TimerControl({
         </div>
       )}
 
-      {error && (
-        <div className="w-full">
+      {/* A quiet line, not an alarm. Waiting on somebody is the ordinary state
+          of dependent work — it is not a fault, nothing has gone wrong, and
+          nobody needs to act on it. The red banner below is for things that
+          actually failed.
+
+          `order-5` on both this and the banner, kept from this branch: they are
+          mutually exclusive — the banner is suppressed while the line shows —
+          so they occupy one slot in the bar's ordered row rather than two. */}
+      {!running && noWorkableOutput && (
+        <p className="order-5 w-full text-[12px] text-ink-muted">
+          {waitingLabel
+            ? `Nothing to start yet — waiting on “${waitingLabel}”.`
+            : "Nothing to start yet — every output is waiting on work that has not been approved."}
+        </p>
+      )}
+
+      {/* Suppressed while the task is waiting: the engine's refusal says the
+          same thing the line above already says, and saying it twice — once
+          quietly and once in red — reads as two problems. */}
+      {error && !(noWorkableOutput && !running) && (
+        <div className="order-5 w-full">
           <InlineError
             message={error}
             code={

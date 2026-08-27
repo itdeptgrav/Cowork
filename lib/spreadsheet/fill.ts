@@ -35,10 +35,13 @@ function asNumber(raw: string): number | null {
 }
 
 /** A generated number as a clean raw string, shaving the float noise a constant
-    step accumulates (0.1 + 0.2 …) without touching genuine precision. */
+    step accumulates (0.1 + 0.2 …) without touching genuine precision. Rounds
+    RELATIVELY — to 15 significant digits, the same reading the engine's
+    `formatNumber` uses — so tiny magnitudes (1e-15, 2e-15 → 3e-15) survive,
+    where an absolute cutoff would floor them to zero. */
 function numberToRaw(value: number): string {
-  const rounded = Math.round(value * 1e10) / 1e10;
-  return String(rounded);
+  if (!Number.isFinite(value)) return String(value);
+  return String(Number(value.toPrecision(15)));
 }
 
 /**

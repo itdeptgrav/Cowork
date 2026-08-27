@@ -1,5 +1,14 @@
-import type { Employee, EmployeeId, Project, Task, TaskStatus, TaskType } from "@/lib/domain";
+import type { OutputState } from "@/lib/rules/tasks/outputs";
+import type {
+  Employee,
+  EmployeeId,
+  Project,
+  Task,
+  TaskStatus,
+  TaskType,
+} from "@/lib/domain";
 import { compositeId } from "./compositeId.ts";
+import { readSubmissionAttachments } from "../../rules/tasks/submissionFiles.ts";
 import { instantOrNull } from "./instantOrNull.ts";
 import { completionState } from "../../rules/tasks/completion.ts";
 import {
@@ -355,6 +364,7 @@ export function toTask(legacy: LegacyTask): Task {
       legacy.c1?.isExcluded !== true,
     recurrence: null,
     goalId: null,
+    outputs: legacy.outputs ?? [],
     isBlocked: false,
     blockedReason: null,
     tags: [],
@@ -545,11 +555,53 @@ function projectFromParent(parent: LegacyTask | null | undefined): Project | nul
   };
 }
 
+/**
+ * This person's position, from the queue read if there was one — otherwise from
+ * the figure the engine recorded.
+ *
+ * **The fallback used to be nothing, and nothing meant the STORED rank.** A
+ * failed or absent queue read left `queuePosition` null, `displayPriority` fell
+ * through to the rank somebody SET, and a blocked task showed P1 beside a
+ * deadline computed for position 2. Reported exactly that way: badge P1,
+ * deadline 12:19, which is the P2 slot.
+ *
+ * `effectivePriority` is written by `rechainQueueFor` — the same walk, in the
+ * same order, that produced those dates. Reading it here means the badge and
+ * the deadline come from one number and cannot contradict each other, even when
+ * the live queue cannot be fetched.
+ *
+ * Only for a task with ONE assignee. The field records a position in whichever
+ * person's queue was last chained, so on shared work it names a queue we cannot
+ * identify — and a confident wrong number is worse than an honest null.
+ */
+function positionFor(
+  legacy: LegacyTask,
+  employeeId: string,
+  queue: { ownerId: string; positions: ReadonlyMap<string, number> } | undefined,
+): number | null {
+  if (queue && queue.ownerId === employeeId) {
+    return queue.positions.get(legacy.id) ?? null;
+  }
+  const soleHolder =
+    legacy.assigneeIds.length === 1 && legacy.assigneeIds[0] === employeeId;
+  return soleHolder ? (legacy.effectivePriority ?? null) : null;
+}
+
 export function toTaskView(input: {
   legacy: LegacyTask;
   employeesById: ReadonlyMap<string, Employee>;
   viewerId: string;
   nowMs: number;
+  /**
+   * Every output approved ANYWHERE, and what each one is called.
+   *
+   * An input is by definition another task's output, so neither can be answered
+   * from this document alone. Both are optional: a caller that did not gather
+   * them gets `isWorkable: false` with an honest "an output you cannot see",
+   * which is better than claiming work is ready on data nobody read.
+   */
+  approvedOutputIds?: ReadonlySet<string>;
+  outputLabels?: ReadonlyMap<string, { label: string; taskTitle: string }>;
   /**
    * One person's live queue positions, and whose they are.
    *
@@ -642,6 +694,98 @@ export function toTaskView(input: {
   return {
     task,
     /**
+     * Each output's standing, derived from the submissions on the document.
+     *
+     * Legacy resolves ONE reviewer whose approval is final — owner decision,
+     * 16 Aug 2026 — so there is no mid-chain state here and `approved` on the
+     * review is the whole answer. That is the difference from the prototype's
+     * multi-stage chain, and it is why nothing here asks whether a decision was
+     * the final one.
+     *
+     * `waitingOn` names the producing task where this read holds it. A read
+     * scoped to one person legitimately may not, and a label invented for an
+     * output nobody fetched would be worse than admitting it is unknown.
+     */
+    /* `?? []` and `?? {}` because a fixture or an older cached document may
+       predate these fields. Absent means "declares no outputs" — which is every
+       task written before this existed — and never a crash. */
+    outputs: (legacy.outputs ?? []).map((o) => {
+      const sub = (legacy.outputSubmissions ?? {})[o.id] ?? null;
+      const state: OutputState = !sub
+        ? "not_started"
+        : sub.review === null
+          ? "in_review"
+          : sub.review.approved
+            ? "approved"
+            : "rework";
+      const unmet = o.needsOutputIds.filter(
+        (id) => !(input.approvedOutputIds?.has(id) ?? false),
+      );
+      return {
+        output: o,
+        state,
+        isWorkable: unmet.length === 0,
+        waitingOn: unmet.map((id) => ({
+          outputId: id,
+          label: input.outputLabels?.get(id)?.label ?? "an output you cannot see",
+          taskTitle: input.outputLabels?.get(id)?.taskTitle ?? null,
+        })),
+      };
+    }),
+    /**
+     * Output submissions still awaiting a decision.
+     *
+     * **This is what puts a submitted output in front of its reviewer.**
+     * `actionableFor` looks here for work that is somebody's move, and an
+     * output submission deliberately does NOT set `completionStatus` — the task
+     * is still in progress while one piece of it is read. So the task-level
+     * branch can never fire for one, and leaving this empty meant a submitted
+     * output sat in Firestore reaching nobody at all.
+     *
+     * The task-level submission is not duplicated here: `latestSubmission`
+     * already carries it and the branch above already finds it.
+     *
+     * The chain is the assigner of record, one deep, because that is this
+     * engine's rule — their approval is final (owner decision, 16 Aug 2026).
+     */
+    openSubmissions: Object.entries(legacy.outputSubmissions ?? {})
+      .filter(([, sub]) => sub.review === null)
+      .map(([outputId, sub]) => {
+        /**
+         * **The work itself, so the Approvals queue can show it.**
+         *
+         * `attachments` and `attachmentIds` were both `[]`. The engine stores
+         * `imageUrls` and `pdfAttachments` on an output submission in the same
+         * shape a task submission uses, and dropping them here left a reviewer
+         * with the covering note and no way to open what it described. Read
+         * with the same rule the task-level path uses, so one submission cannot
+         * read differently on two screens.
+         */
+        const files = readSubmissionAttachments(
+          sub as unknown as Record<string, unknown>,
+        );
+        return {
+        id: `${legacy.id}:${outputId}`,
+        taskId: legacy.id,
+        outputId,
+        attempt: sub.attempt,
+        submittedById: sub.submittedBy,
+        submittedAt: sub.submittedAt ?? "",
+        message: sub.message,
+        attachments: files,
+        /* Derived FROM the list above rather than gathered separately, so the
+           two cannot come to disagree about what was submitted. */
+        attachmentIds: files.map((f) => f.url),
+        reviewChain: legacy.assignedById ? [legacy.assignedById] : [],
+        currentStage: 1,
+        supersededById: null,
+        /* Lateness is a task-level judgement here: legacy records one deadline
+           for the whole task, so claiming a per-output verdict would be
+           inventing a date nobody set. */
+        wasLate: false,
+        };
+      }),
+    /**
      * One record per assignee, built from the task document.
      *
      * This was `[]`, on the reasoning that legacy has no assignment entity and
@@ -720,10 +864,7 @@ export function toTaskView(input: {
       /* Present only where THIS person's queue was the one fetched. Null is the
          honest answer otherwise: a list read fetches one queue, so every other
          assignee's position is genuinely unknown. */
-      queuePosition:
-        input.queue && input.queue.ownerId === employeeId
-          ? (input.queue.positions.get(legacy.id) ?? null)
-          : null,
+      queuePosition: positionFor(legacy, employeeId, input.queue),
       /* Same owner check as `queuePosition` — read from the SAME queue fetch,
          just the other of its two maps. */
       provisionalPosition:

@@ -18,6 +18,7 @@ import type { Validation } from "@/lib/spreadsheet/validation";
 import type { SheetFilter } from "@/lib/spreadsheet/filter";
 import { mergeAt } from "@/lib/spreadsheet/merge";
 import { formatValue, resolveAlign } from "@/lib/spreadsheet/format";
+import { isFormula } from "@/lib/spreadsheet/values";
 import { styleToCss } from "./cellStyle";
 
 /**
@@ -88,9 +89,16 @@ function GridBodyInner({
     const isFilterHeader =
       !!filter && r === filter.range.top && c >= filter.range.left && c <= filter.range.right;
     const style = effectiveStyle(r, c);
-    const rawEmpty = getCellValue(worksheet, r, c) === "";
+    const raw = getCellValue(worksheet, r, c);
+    const rawEmpty = raw === "";
     const value = engine.getValue(sheetId, r, c);
-    const text = rawEmpty ? "" : formatValue(value, style.numberFormat);
+    /* A Text-formatted cell shows exactly what was typed — "007" keeps its
+       zeros — and aligns as text. The engine still interprets the raw (so a
+       formula elsewhere reading the cell coerces it as usual), but the DISPLAY
+       comes from the raw string, not the interpreted number. Formulas keep
+       computing; Text format governs typed entries. */
+    const asTypedText = style.numberFormat?.kind === "text" && !isFormula(raw);
+    const text = rawEmpty ? "" : asTypedText ? raw : formatValue(value, style.numberFormat);
     const link = linkAt(r, c);
     const comment = hasComment(r, c);
     const merged = span !== undefined;
@@ -107,7 +115,7 @@ function GridBodyInner({
       return null;
     }
 
-    const align = resolveAlign(value, style);
+    const align = resolveAlign(asTypedText ? raw : value, style);
     const css = styleToCss(style, align);
     const width = span?.width ?? colWidth(metrics, c);
     const height = span?.height ?? rowHeight(metrics, r);

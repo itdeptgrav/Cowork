@@ -385,7 +385,45 @@ export function nextAction(
       ? { label: "Start work", actor: "you", href: `/tasks/${id}` }
       : { label: "Not started", actor: "them" };
 
-  if (task.status === "in_progress")
+  if (task.status === "in_progress") {
+    /**
+     * A task delivered output by output has no whole-task submission, so
+     * "Submit when ready" would point at a form that refuses. What is owed is
+     * the next output — or nothing, if every one is waiting on somebody else.
+     */
+    /* `?? []` because a caller may hand over a partial view. The field is
+       required on `TaskView`, but fixtures and narrowed reads build objects
+       without it, and absent means "declares no outputs" — never a crash. */
+    const declared = view.outputs ?? [];
+    if (declared.length > 0) {
+      /* The same condition `hasStartableOutput` applies for the queue and the
+         timer — kept as one filter here because this branch also needs the
+         matching outputs, not just whether any exist. */
+      const ready = declared.filter(
+        (o) =>
+          o.isWorkable && (o.state === "not_started" || o.state === "rework"),
+      );
+      if (!mine) return { label: "In progress", actor: "them" };
+      if (ready.length === 0) {
+        const waiting = declared.find(
+          (o) => !o.isWorkable && o.waitingOn.length > 0,
+        );
+        return waiting
+          ? {
+              label: `Waiting on ${waiting.waitingOn[0].label}`,
+              actor: "them",
+            }
+          : { label: "With the reviewer", actor: "them" };
+      }
+      return {
+        label:
+          ready.length === 1
+            ? `Submit ${ready[0].output.label}`
+            : `Submit ${ready.length} outputs`,
+        actor: "you",
+        href: `/tasks/${id}`,
+      };
+    }
     return mine
       ? {
           label: "Submit when ready",
@@ -393,6 +431,7 @@ export function nextAction(
           href: `/tasks/${id}/submission`,
         }
       : { label: "In progress", actor: "them" };
+  }
 
   return { label: "—", actor: "nobody" };
 }

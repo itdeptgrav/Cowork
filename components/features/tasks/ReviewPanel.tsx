@@ -24,6 +24,7 @@ import type { AttachmentMeta } from "@/lib/legacy/attachments";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { formatDateTime } from "@/lib/utils/format";
 import { REWORK_DEDUCTION } from "@/lib/rules/scoring/engine";
+import { mayReview as mayReviewOutput } from "@/lib/rules/tasks/outputs";
 import { PROVISIONAL_RULES } from "@/lib/config/provisional";
 import type { TaskView } from "@/lib/repositories";
 import type { ReviewDecision } from "@/lib/domain";
@@ -105,8 +106,39 @@ export function ReviewPanel({
     [taskId, view.task.updatedAt],
   );
 
+  const latest = submissions.data?.find((s) => !s.supersededById);
+
+  /**
+   * One press, two routes.
+   *
+   * An OUTPUT submission is decided by `reviewOutput`, which the engine keys by
+   * output id — `reviewSubmission` would look for a task-level submission that
+   * does not exist and refuse. The rework extras are dropped on that path
+   * because legacy records a return on an output as a note, not as a rework
+   * request against the whole task.
+   */
   const [review, state] = useAction((r, sid: string) =>
-    r.reviewSubmission({
+    latest?.outputId
+      ? /* Both branches must resolve to the same shape for `useAction`. The
+           caller only reads `ok`, so the output route's Task is discarded
+           rather than reported as a review record it never created. */
+        r
+          .reviewOutput({
+            taskId,
+            outputId: latest.outputId,
+            approved: decision === "approved",
+            note: reason || correction,
+          })
+          .then((res) =>
+            res.ok
+              ? ({ ok: true, data: undefined } as unknown as Awaited<
+                  ReturnType<typeof r.reviewSubmission>
+                >)
+              : (res as unknown as Awaited<
+                  ReturnType<typeof r.reviewSubmission>
+                >),
+          )
+      : r.reviewSubmission({
       submissionId: sid,
       decision,
       reason,
@@ -117,15 +149,22 @@ export function ReviewPanel({
       waiveDeduction: waive,
     }),
   );
-
-  const latest = submissions.data?.find((s) => !s.supersededById);
   /* One predicate, shared with the repository's own resolution. It gates on
      the stage that is OPEN rather than on membership anywhere in the chain: on
      a two-stage flow the second reviewer is in the chain from the start, and
      letting them decide early would skip the first stage entirely. */
   const canReview =
     !!latest &&
-    view.task.status === "in_review" &&
+    /* The same rule the engine applies, not a second copy of it. A task-level
+       submission still needs the task to be `in_review`; an OUTPUT submission
+       does not, because the task is legitimately still in progress while one
+       piece of it is being read. This screen had its own hard-coded copy of the
+       old condition, so the engine allowed the review and the page refused it —
+       "This task is not awaiting review", with no form. */
+    mayReviewOutput({
+      outputId: latest.outputId,
+      taskStatus: view.task.status,
+    }) &&
     mayReview({
       chain: latest.reviewChain,
       currentStage: latest.currentStage,
@@ -140,7 +179,15 @@ export function ReviewPanel({
       {latest ? (
         <Panel>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-medium text-ink">Submitted work</h2>
+            <h2 className="text-sm font-medium text-ink">
+              {/* WHICH output, when it is one. A reviewer looking at a task
+                  with ten outputs otherwise sees only the task's title and has
+                  to guess which piece of it they are being asked to judge. */}
+              {latest.outputId
+                ? (view.task.outputs.find((o) => o.id === latest.outputId)
+                    ?.label ?? "Submitted output")
+                : "Submitted work"}
+            </h2>
             <Chip>Attempt {latest.attempt}</Chip>
             {latest.wasLate && <Chip tone="overdue">Late</Chip>}
             <span className="ml-auto text-xs text-ink-faint">

@@ -6,6 +6,7 @@ import { Avatar } from "@/components/ui/Avatar";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { getRepository } from "@/lib/repositories";
+import { notifyRepositoryChanged } from "@/lib/repositories/events";
 import type { Conversation, Employee, Message } from "@/lib/domain";
 /**
  * Where a forwarded message goes.
@@ -35,7 +36,10 @@ export function ForwardDialog({
    *  duplicate nobody means to send. */
   fromConversationId: string;
   onClose: () => void;
-  onForwarded: (conversationTitle: string) => void;
+  /** The forward landed. The id — not a title — because the caller opens that
+   *  conversation so the sender sees the copy arrive, and refreshes the list so
+   *  its preview reflects the message just sent. */
+  onForwarded: (conversationId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const [sendingTo, setSendingTo] = useState<string | null>(null);
@@ -84,8 +88,15 @@ export function ForwardDialog({
       setFailure(result.message ?? "That message could not be forwarded.");
       return;
     }
-    onForwarded(titleOf(target, viewerId));
+    /* This write went through `getRepository()` directly rather than through
+       `useAction`, so nothing bumped the repository version — and without that
+       bump no query re-runs: the destination's row in the conversation list
+       keeps its old preview, and every other live view of it stays stale. The
+       mutation invariant every `useAction` upholds has to be upheld by hand
+       here. */
+    notifyRepositoryChanged();
     onClose();
+    onForwarded(target.id);
   }
 
   /* The same guard every other portal dialog in the product uses: an

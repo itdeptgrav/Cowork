@@ -434,10 +434,19 @@ test("a queue with no stamps at all still has no floor", () => {
   assert.equal(earliestClockStartMs([{ taskId: "a" }, { taskId: "b" }]), null);
 });
 
-test("a task that genuinely did not exist yet still holds the queue back", () => {
-  /* The clock floor is now order-invariant; `createdAtMs` deliberately is not.
-     Promoting work that only arrived at 16:29 cannot start it at 15:59, and
-     that clamp must survive this fix rather than be swept up in it. */
+test("promoted to the head, a late-raised task is charged from the queue's start", () => {
+  /**
+   * OWNER RULE, 21 Aug 2026 — "the queue's start does not change with
+   * whichever task leads it", recorded in `queueStartTime.test.ts`.
+   *
+   * The trade-off is deliberate and is stated there: a task raised after the
+   * queue was already running IS charged from that start, because the person
+   * was available and the queue was moving. One shared start is what stops the
+   * whole chain sliding every time somebody reorders, and this is its cost.
+   *
+   * So promoting the 16:29 task does NOT buy it a fresh half hour: it takes
+   * the head slot, 15:59 → 16:29, and the task it displaced follows.
+   */
   const chained = chainDeadlines({
     queue: [
       {
@@ -461,6 +470,42 @@ test("a task that genuinely did not exist yet still holds the queue back", () =>
     budget: "full",
     addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
   });
-  assert.equal(chained[0].dueDate, "2026-08-22T11:29:00.000Z"); // 16:59 IST
-  assert.equal(chained[1].dueDate, "2026-08-22T11:59:00.000Z"); // 17:29 IST
+  assert.equal(chained[0].dueDate, "2026-08-22T10:59:00.000Z"); // 16:29 IST
+  assert.equal(chained[1].dueDate, "2026-08-22T11:29:00.000Z"); // 16:59 IST
+});
+
+test("BEHIND the head, a task still cannot start before it existed", () => {
+  /* The per-task `createdAtMs` floor is untouched for everything the head does
+     not cover — the queue may be free at 16:29 and the work still not exist.
+     Only the head reads the queue's shared start. */
+  const chained = chainDeadlines({
+    queue: [
+      {
+        taskId: "EARLY",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 1 },
+        agreedWindowSecs: HALF_HOUR,
+        createdAtMs: CREATED,
+        clockStartsAtMs: CLOCK_T1,
+      },
+      {
+        taskId: "MUCH_LATER",
+        assigneeIds: ["E1"],
+        assigneePriorities: { E1: 2 },
+        agreedWindowSecs: HALF_HOUR,
+        /* Raised at 18:00 IST, long after the head finishes at 16:29. */
+        createdAtMs: at("2026-08-22T12:30:00.000Z"),
+        clockStartsAtMs: at("2026-08-22T12:30:00.000Z"),
+      },
+    ],
+    anchorMs: OPEN_0930,
+    budget: "full",
+    addWorkingSecs: (fromMs, secs) => new Date(fromMs + secs * 1000).toISOString(),
+  });
+  assert.equal(chained[0].dueDate, "2026-08-22T10:59:00.000Z"); // 16:29 IST
+  assert.equal(
+    chained[1].dueDate,
+    "2026-08-22T13:00:00.000Z", // 18:30 IST — 18:00 + 30m, not 16:59
+    "a task behind the head was scheduled before it was raised",
+  );
 });

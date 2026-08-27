@@ -1339,6 +1339,60 @@
   color-scheme: light;
 }
 
+/* ── The document editor is light too ───────────────────────────────────────
+   Same reasoning as the sheet above, and the same mechanism.
+
+   A document is a PAGE. Its whole job is to look like the thing that comes out
+   of the printer, and the product already commits to that at the far end — the
+   print rules below force white paper and dark ink because "paper has no
+   theme". Everything before the print dialog was themed, so a document was
+   dark on screen and white on paper, and what somebody was writing never looked
+   like what they were making. The chrome around it had the same problem in
+   reverse: a white page inside dark toolbars reads as a floating rectangle
+   rather than as a sheet on a desk.
+
+   `--doc-page` and `--doc-page-ink` are pinned to their light values here as
+   well as the shell tokens, because those two are what the prose itself is
+   painted with and the dark theme redefines them.
+
+   Both token families are redeclared for the reason given above `.sheet-light`:
+   `--color-*` resolves against `:root` unless it is overridden here too. */
+.doc-light {
+  --ink: #0a0a0a;
+  --ink-muted: #565656;
+  --ink-faint: #5f5f5f;
+  --hairline: rgba(10, 10, 10, 0.14);
+  --surface-raised: #ffffff;
+  --surface-sunken: rgba(10, 10, 10, 0.04);
+  --control: rgba(10, 10, 10, 0.06);
+  --control-hover: rgba(10, 10, 10, 0.1);
+  --control-active: rgba(10, 10, 10, 0.14);
+  --body-bg: #ffffff;
+
+  --color-ink: #0a0a0a;
+  --color-ink-muted: #565656;
+  --color-ink-faint: #5f5f5f;
+  --color-hairline: rgba(10, 10, 10, 0.14);
+  --color-surface-raised: #ffffff;
+
+  /* The page and the ink on it — the pair the print rules already force. */
+  --doc-page: #ffffff;
+  --doc-page-ink: #101014;
+  --doc-rule: rgba(10, 10, 10, 0.08);
+
+  color: var(--ink);
+  color-scheme: light;
+}
+
+/* Native controls in the editor's dialogs and toolbars, for the same reason the
+   sheet's are pinned: the OS paints them from the colour-scheme, and a dark
+   select on a white toolbar is the one thing the theme override cannot reach. */
+.doc-light select,
+.doc-light input,
+.doc-light textarea {
+  color-scheme: light;
+}
+
 /* ── The spreadsheet route runs full-bleed ──────────────────────────────────
    The width and height come from the SHELL, which drops its centred column and
    its padding for this route (`FULL_BLEED_ROUTES` in ShellFrame) and makes the
@@ -1354,4 +1408,23 @@
   flex: 1;
   min-height: 0;
   flex-direction: column;
+}
+
+/* The spreadsheet's pending-CUT border. A cut is a deferred destructive move —
+   the source clears when the block is pasted — so its outline animates
+   ("marching ants", as in Excel) to read as armed, where a copy's border sits
+   still. Dash cycle is 10 (6 dash + 4 gap), so one cycle per step keeps the
+   motion seamless. */
+.sheet-marching-ants {
+  animation: sheet-ants-march 0.4s linear infinite;
+}
+@keyframes sheet-ants-march {
+  to {
+    stroke-dashoffset: -10;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sheet-marching-ants {
+    animation: none;
+  }
 }

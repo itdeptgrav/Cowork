@@ -108,7 +108,13 @@ export function SheetsArea() {
        hundred pixels tall. "← All sheets" is the way back out. */
     return (
       <div className="sheet-light fixed inset-0 z-50 flex flex-col">
+        {/* Keyed on the choice: switching workbook — or File ▸ New sheet from an
+            open one — must REMOUNT the spreadsheet. Reusing the instance kept the
+            old workbook's cells and left persistence pointed at the old id with
+            saving disarmed, so the "new" sheet showed stale content and silently
+            stopped saving. */}
         <Spreadsheet
+          key={openId}
           workbookId={openId === "draft" ? null : openId}
           draft={openId === "draft"}
           onBack={() => setOpenId(null)}

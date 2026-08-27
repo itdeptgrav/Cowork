@@ -119,7 +119,12 @@ test("the owner's assignment rank is the derived position", () => {
      the gate has an empty `assigneeIds` and its person in `pendingAssigneeId`,
      so the one holding the work had no assignment and therefore no rank. */
   const block = map.slice(map.indexOf("assignments: holders.map("));
-  assert.match(block.slice(0, 1200), /input\.queue\.positions\.get\(legacy\.id\)/);
+  /* The decision moved into `positionFor` — see it there. The assignment still
+     carries a POSITION rather than the owner's stored value, which is the
+     guarantee this test exists for. */
+  assert.match(block.slice(0, 1200), /queuePosition: positionFor\(legacy, employeeId, input\.queue\)/);
+  assert.match(map, /function positionFor\(/);
+  assert.match(map, /queue\.positions\.get\(legacy\.id\) \?\? null/);
 });
 
 /* ── The list still derives over the unfiltered set ───────────────────────── */

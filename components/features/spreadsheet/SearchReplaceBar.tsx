@@ -77,8 +77,20 @@ export function SearchReplaceBar({
     const m = matches[cursor];
     const did = controller.replaceOne(m.row, m.col, query, replacement, opts);
     setNote(did ? null : "Can't replace that match");
-    /* The match set shifts under us; step to whatever is now at this position. */
-    go(true);
+    if (!did) {
+      go(true); // this one can't be rewritten — step past it
+      return;
+    }
+    /* The replaced match leaves the set and its successor slides into this same
+       position, so the index STAYS PUT and we reveal that successor (still at
+       cursor+1 in the pre-replace list we hold). Stepping forward here walked
+       the stale list instead: the counter drifted one ahead of the highlight
+       and every other match was skipped. */
+    setIndex(cursor);
+    if (matches.length > 1) {
+      const successor = matches[cursor + 1] ?? matches[0];
+      controller.revealCell(successor.row, successor.col);
+    }
   }
 
   function replaceEverything() {

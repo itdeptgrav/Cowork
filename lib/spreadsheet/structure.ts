@@ -5,13 +5,18 @@
  * Inserting or deleting a line is the one edit that moves the whole sheet: every
  * cell at or past the cut shifts, and — because the data moved — every formula
  * ANYWHERE must have its references rewritten to keep pointing at the same
- * values (`transformStructural`). A deletion drops the cut cells and turns
- * references into them to `#REF!`; an insertion pushes cells off the far edge.
- * The dimension overrides, the hidden sets and the freeze counts all sit on the
- * same axis, so they shift with it.
+ * values (`transformStructural`). "Anywhere" spans the whole workbook: on the
+ * edited sheet both bare and self-qualified (`=Sheet1!A5` written on Sheet1)
+ * references move, and on every OTHER sheet the references qualified with the
+ * edited sheet's name move — the workbook-level entry points below do both. A
+ * deletion drops the cut cells and turns references into them to `#REF!`; an
+ * insertion pushes cells off the far edge. The dimension overrides, the hidden
+ * sets and the freeze counts all sit on the same axis, so they shift with it.
  *
- * Everything returns a NEW worksheet — pure and immutable, like the rest of the
- * model — so a structural edit is one snapshot the history can undo whole.
+ * Everything returns a NEW worksheet (or workbook) — pure and immutable, like
+ * the rest of the model — so a structural edit is one snapshot the history can
+ * undo whole. A worksheet whose cells did not change comes back identical
+ * (`===`), so callers can cheaply tell what an edit touched.
  */
 
 import { cellRef, parseCellRef } from "./coordinates";
@@ -19,10 +24,11 @@ import {
   transformRegionShift,
   transformStructural,
   type RegionShiftOp,
+  type RewriteContext,
   type StructuralOp,
 } from "./formula/rewrite";
 import { isFormula } from "./values";
-import type { Cell, Worksheet } from "./model";
+import type { Cell, Workbook, Worksheet } from "./model";
 
 /** The index a line maps to under an op, or null when the op deletes it. */
 function mapLine(index: number, op: StructuralOp): number | null {
@@ -67,6 +73,10 @@ function adjustFrozen(frozen: number, op: StructuralOp): number {
 export function structuralOp(ws: Worksheet, op: StructuralOp): Worksheet {
   const rowAxis = op.axis === "row";
   const maxLine = rowAxis ? ws.rowCount : ws.colCount;
+  /* Formulas here live ON the edited sheet, so bare references move and so do
+     self-qualified ones — `=Sheet1!A5` written on Sheet1 names the same cell
+     as `=A5` and must not go stale while its twin is rewritten. */
+  const ctx: RewriteContext = { editedSheet: ws.name };
 
   const cells: Record<string, Cell> = {};
   for (const ref of Object.keys(ws.cells)) {
@@ -80,7 +90,7 @@ export function structuralOp(ws: Worksheet, op: StructuralOp): Worksheet {
     const cell = ws.cells[ref];
     /* Every formula is rewritten, even one that did not move — its references
        may point at data that did. */
-    const value = isFormula(cell.value) ? transformStructural(cell.value, op) : cell.value;
+    const value = isFormula(cell.value) ? transformStructural(cell.value, op, ctx) : cell.value;
     cells[cellRef(nr, nc)] = value === cell.value ? cell : { ...cell, value };
   }
 
@@ -122,6 +132,68 @@ export function deleteCols(ws: Worksheet, at: number, count = 1): Worksheet {
   return structuralOp(ws, { axis: "col", at, count, mode: "delete" });
 }
 
+/* ── Workbook-level structural edits ──────────────────────────────────────── */
+
+/**
+ * Rewrite one OTHER sheet's formulas for a structural edit on `editedSheet`.
+ * Only references qualified with the edited sheet's name move — this sheet's
+ * own cells (and its bare references, which point at itself) stay put. Returns
+ * the SAME worksheet object when no formula mentions the edited sheet.
+ */
+function rewriteOtherSheet(
+  ws: Worksheet,
+  editedSheet: string,
+  rewrite: (raw: string, ctx: RewriteContext) => string,
+): Worksheet {
+  const ctx: RewriteContext = { editedSheet, onEditedSheet: false };
+  let changed = false;
+  const cells: Record<string, Cell> = {};
+  for (const ref of Object.keys(ws.cells)) {
+    const cell = ws.cells[ref];
+    if (isFormula(cell.value)) {
+      const value = rewrite(cell.value, ctx);
+      if (value !== cell.value) {
+        cells[ref] = { ...cell, value };
+        changed = true;
+        continue;
+      }
+    }
+    cells[ref] = cell;
+  }
+  return changed ? { ...ws, cells } : ws;
+}
+
+/**
+ * Apply a row/column insert or delete on ONE sheet of a workbook, rewriting
+ * formulas EVERYWHERE: the edited sheet's bare and self-qualified references,
+ * and every other sheet's references into it. This is the operation the
+ * product should reach for — a per-sheet `structuralOp` alone leaves other
+ * sheets' `=Sheet1!A3` formulas silently pointing at the wrong row.
+ */
+export function structuralOpWorkbook(wb: Workbook, sheetId: string, op: StructuralOp): Workbook {
+  const edited = wb.worksheets.find((s) => s.id === sheetId);
+  if (!edited) return wb;
+  const worksheets = wb.worksheets.map((ws) =>
+    ws.id === sheetId
+      ? structuralOp(ws, op)
+      : rewriteOtherSheet(ws, edited.name, (raw, ctx) => transformStructural(raw, op, ctx)),
+  );
+  return { ...wb, worksheets };
+}
+
+export function insertRowsWorkbook(wb: Workbook, sheetId: string, at: number, count = 1): Workbook {
+  return structuralOpWorkbook(wb, sheetId, { axis: "row", at, count, mode: "insert" });
+}
+export function deleteRowsWorkbook(wb: Workbook, sheetId: string, at: number, count = 1): Workbook {
+  return structuralOpWorkbook(wb, sheetId, { axis: "row", at, count, mode: "delete" });
+}
+export function insertColsWorkbook(wb: Workbook, sheetId: string, at: number, count = 1): Workbook {
+  return structuralOpWorkbook(wb, sheetId, { axis: "col", at, count, mode: "insert" });
+}
+export function deleteColsWorkbook(wb: Workbook, sheetId: string, at: number, count = 1): Workbook {
+  return structuralOpWorkbook(wb, sheetId, { axis: "col", at, count, mode: "delete" });
+}
+
 /* ── Cell-block shifts ────────────────────────────────────────────────────── */
 
 /** Where a block of cells is inserted, or which way the gap it leaves closes. */
@@ -158,6 +230,7 @@ export function shiftCells(
 ): Worksheet {
   const { axis, mode } = SHIFTS[direction];
   const op: RegionShiftOp = { rect, axis, mode };
+  const ctx: RewriteContext = { editedSheet: ws.name };
   const vertical = axis === "row";
   const at = vertical ? rect.top : rect.left;
   const count = vertical ? rect.bottom - rect.top + 1 : rect.right - rect.left + 1;
@@ -179,7 +252,7 @@ export function shiftCells(
     const cell = ws.cells[ref];
     /* Every formula is rewritten wherever it lives — the data it points at may
        have moved even when the formula did not. */
-    const value = isFormula(cell.value) ? transformRegionShift(cell.value, op) : cell.value;
+    const value = isFormula(cell.value) ? transformRegionShift(cell.value, op, ctx) : cell.value;
     const next = value === cell.value ? cell : { ...cell, value };
 
     if (!banded(pos.row, pos.col)) {
@@ -207,6 +280,29 @@ export function shiftCells(
   /* Row heights, column widths, hidden sets and freezes belong to a whole line.
      A block shift moves part of a line, so none of them moves with it. */
   return { ...ws, cells, cellStyles };
+}
+
+/**
+ * A cell-block shift on ONE sheet of a workbook, rewriting other sheets'
+ * qualified references into the shifted band too — the block-shift counterpart
+ * of `structuralOpWorkbook`.
+ */
+export function shiftCellsWorkbook(
+  wb: Workbook,
+  sheetId: string,
+  rect: { top: number; left: number; bottom: number; right: number },
+  direction: ShiftDirection,
+): Workbook {
+  const edited = wb.worksheets.find((s) => s.id === sheetId);
+  if (!edited) return wb;
+  const { axis, mode } = SHIFTS[direction];
+  const op: RegionShiftOp = { rect, axis, mode };
+  const worksheets = wb.worksheets.map((ws) =>
+    ws.id === sheetId
+      ? shiftCells(ws, rect, direction)
+      : rewriteOtherSheet(ws, edited.name, (raw, ctx) => transformRegionShift(raw, op, ctx)),
+  );
+  return { ...wb, worksheets };
 }
 
 /** Resize a row; setting it back to the default height drops the override. */

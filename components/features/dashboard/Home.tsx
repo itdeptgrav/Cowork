@@ -39,6 +39,29 @@
  *   the ring is where open work sits rather than where money went, and the
  *   gradient card is the next meeting rather than a referral offer.
  *
+ * DEPARTURE (19 Aug 2026) — the right stack is two cards, the meeting card
+ *   joins the stat pair, and the page is sized to the window.
+ *
+ *   The reference’s right-hand column runs the height of the page because it
+ *   holds three objects. Cowork’s third — the next meeting — is a FIXED shape
+ *   with nothing to grow into, while its second is a triage list that grows
+ *   with the work. Stacked in that order the column outran the left region and
+ *   the page ended in a band of empty field on one side and a card past the
+ *   fold on the other: one fault wearing two faces.
+ *
+ *   So the meeting card took the second slot of the row-1 pair — the slot open
+ *   work held, which counted the same five tasks the ring below it breaks down
+ *   by state — and the list took the height the meeting card vacated. The pair
+ *   stretches to the hero’s height, so B2’s bottom edge meets A’s exactly, as
+ *   the reference measures them (both rows end at 846).
+ *
+ *   The page carries a MIN height of one window, not a fixed one. A fixed
+ *   height squashed row 1 below its content on a short screen and the ring
+ *   overlapped the card above it by 20px. A minimum fills a tall window and
+ *   yields to a short one, which is the only version of "one screen" that
+ *   cannot clip. A dashboard is a glance surface; a summary you must scroll to
+ *   finish is not a summary, but one that overlaps itself is worse.
+ *
  * LENS: the team lens changes what each slot reads, never which slots exist.
  * ───────────────────────────────────────────────────────────────────────────── */
 
@@ -46,7 +69,7 @@ import { DashboardChrome } from "@/components/features/dashboard/Chrome";
 import { ActiveTimerBar } from "@/components/features/dashboard/ActiveTimerBar";
 import { DashboardSearch } from "@/components/features/dashboard/DashboardSearch";
 import { SignatureGraph } from "@/components/features/dashboard/SignatureGraph";
-import { ScoreStat, LoadStat } from "@/components/features/dashboard/Stats";
+import { ScoreStat } from "@/components/features/dashboard/Stats";
 import { AttentionCard } from "@/components/features/dashboard/AttentionCard";
 import { TeamLoadCard } from "@/components/features/dashboard/TeamLoadCard";
 import { WorkMix } from "@/components/features/dashboard/WorkMix";
@@ -66,14 +89,33 @@ export function Home() {
   const isAdmin = canAccessAdminConsole(useSession());
 
   return (
-    <>
+    /*
+     * **One screen, and it does not scroll.**
+     *
+     * The dashboard is a glance surface: everything on it is a summary of
+     * something else, and a summary you have to scroll to finish is not one.
+     * It scrolled because the right-hand stack was three cards tall while the
+     * left region packed to its content — so the page ended in a band of empty
+     * field on the left and a card hanging past the fold on the right.
+     *
+     * The height is the window minus the chrome and ONE gap at each end, the
+     * same arithmetic `MessagesPage` uses and for the same reason. The
+     * negative bottom margin is what makes it possible: the frame pads the
+     * bottom by more than the gap we want and a page cannot shrink its
+     * parent’s padding, so the difference is pulled back here.
+     *
+     * Locked at `deck` only. Below it the columns stack and the page must
+     * scroll — a fixed height there would clip the content instead of fitting
+     * it, which is the failure this is trying to avoid.
+     */
+    <div className="deck:mb-[calc(var(--shell-gap)-var(--shell-bottom))] deck:flex deck:min-h-[calc(100vh-var(--shell-top)-2*var(--shell-gap))] deck:flex-col">
       <DashboardChrome />
 
       {/* The active-work bar and the search share one row, split on the same
           8 / 4 grid as the content below: the bar runs the width of the left
           region (ending where the graph does), and the search fills the right
           column, sitting above "Needs you". */}
-      <div className="mb-4 grid grid-cols-1 items-center gap-4 deck:grid-cols-12">
+      <div className="mb-4 grid shrink-0 grid-cols-1 items-center gap-4 deck:grid-cols-12">
         <div className="min-w-0 deck:col-span-8">
           <ActiveTimerBar />
         </div>
@@ -90,16 +132,40 @@ export function Home() {
           columns of rows on the left, four columns of stack on the right, each
           packing to its own content. The module is unchanged — the inner grids
           resolve to the same 557 / 328 and 443 / 443 the reference measures. */}
-      <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
+      <div className="grid grid-cols-1 items-start gap-4 deck:flex-1 deck:grid-cols-12 deck:items-stretch">
         <div className="flex min-w-0 flex-col gap-4 deck:col-span-8">
-          {/* Row 1 — hero graph 5, stacked stat pair 3. */}
-          <div className="grid grid-cols-1 items-start gap-4 deck:grid-cols-8">
+          {/* Row 1 — hero graph 5, stacked pair 3.
+
+              **The pair is score and the next meeting, not score and open
+              work.** Open work counted the same five tasks the ring beneath
+              it breaks down by state — "5 open, 4 overdue" over "Open 5 ·
+              Overdue 4 · Blocked 0 · In review 0 · Not started 1" — so the
+              region opened with a figure and then immediately explained it
+              twice. The meeting card is the fact neither of them carries.
+
+              `items-stretch` (the default, restored from `items-start`) is
+              what makes the two columns end on ONE line: the pair takes the
+              graph’s height rather than its own content’s, and the meeting
+              card — the `flex-1` half of that pair — absorbs the difference.
+              Bottoms align at any window with no height written anywhere.
+
+              **The row does NOT absorb the page’s surplus**, and that is
+              deliberate: giving it `flex-1` made the hero grow with the
+              window, and at 1200px it stood 802 tall against 524 wide — a
+              portrait hero, against a contract that measures it wide and flat
+              at 0.46. The graph keeps the height its content asks for; the
+              meeting card is what flexes, which is the right way round
+              because the graph has a measured proportion to honour and the
+              meeting card has none. */}
+          <div className="grid grid-cols-1 gap-4 deck:grid-cols-8">
             <div className="min-w-0 deck:col-span-5">
               <SignatureGraph />
             </div>
             <div className="flex min-w-0 flex-col gap-4 deck:col-span-3">
               <ScoreStat />
-              <LoadStat />
+              <div className="min-w-0 deck:flex-1">
+                <NextCard />
+              </div>
             </div>
           </div>
 
@@ -117,21 +183,22 @@ export function Home() {
               </div>
             </div>
           ) : (
-            <div className="min-w-0">
+            <div className="min-w-0 deck:shrink-0">
               <WorkMix />
             </div>
           )}
         </div>
 
-        {/* The right-hand stack — action card, list, gradient card — running
-            the height of both rows and overhanging the first, as measured.
+        {/* The right-hand stack — action card then list, running
+            the height of both rows. The gradient card that closed it has moved
+            into the row-1 pair; see the DEPARTURE note at the head of this file.
 
             **QuickAssign leads it.** It carries the only "new task" control on
             the page now that the header's duplicate is gone, so it sits where
             that button was: top of the right column, under the search. Buried
             at the foot of a three-card stack it was the least findable thing on
             the dashboard while being the one thing people arrive wanting to do. */}
-        <div className="flex min-w-0 flex-col gap-4 deck:col-span-4">
+        <div className="flex min-w-0 flex-col gap-4 deck:col-span-4 deck:h-full deck:min-h-0">
           {/* Today's attendance — administrators only, and a BUTTON rather than
               the roster card this replaced: the count is the glance, the drawer
               behind it is the detail. It leads the right column because "who is
@@ -140,10 +207,17 @@ export function Home() {
               work surfaces the way a full roster did. */}
           {isAdmin && <AttendanceButton />}
           <QuickAssign />
-          <AttentionCard />
-          <NextCard />
+          {/* Packs to its rows. It held the rest of the column for a while,
+              which put a band of empty card under the last notification — the
+              list is capped at six, so beyond that height there is nothing for
+              the card to hold. Field below a card that has ended reads as 
+              composition; empty card below its own content reads as a 
+              loading failure. */}
+          <div className="min-w-0">
+            <AttentionCard />
+          </div>
         </div>
       </div>
-    </>
+    </div>
   );
 }

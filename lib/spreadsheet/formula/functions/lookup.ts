@@ -12,8 +12,8 @@
 
 import type { Node } from "../ast";
 import type { FnContext } from "../evaluator";
-import { NA, REF, VALUE, isError } from "../errors";
-import { ArrayValue, type ScalarValue } from "../value";
+import { FormulaError, NA, REF, VALUE, isError } from "../errors";
+import { ArrayValue, toNumber, type ScalarValue } from "../value";
 import { argCount, compareValues, valuesEqual, wildcardToRegExp, type Fn } from "./types";
 
 /** A 1-D vector from a range/array matrix (row- or column-shaped), row-major. */
@@ -21,8 +21,16 @@ function vectorOf(matrix: ScalarValue[][]): ScalarValue[] {
   return matrix.flat();
 }
 
+/** A numeric argument (a type flag, an index) — errors propagate and text that
+    is not a number is #VALUE!, never a silent NaN. */
+function numberArg(node: Node, ctx: FnContext): number | FormulaError {
+  return toNumber(ctx.eval(node));
+}
+
 /** The index (0-based) of `lookup` in `vector`, or −1. `type`: 0 exact, 1 largest
-    value ≤ lookup, −1 smallest value ≥ lookup. */
+    value ≤ lookup, −1 smallest value ≥ lookup. Among EQUAL keys the approximate
+    modes keep the LAST — what a binary search over sorted duplicates lands on,
+    and what Sheets/Excel return. */
 function matchIndex(vector: ScalarValue[], lookup: ScalarValue, type: number): number {
   if (type === 0) {
     for (let i = 0; i < vector.length; i++) if (valuesEqual(vector[i], lookup)) return i;
@@ -32,9 +40,9 @@ function matchIndex(vector: ScalarValue[], lookup: ScalarValue, type: number): n
   for (let i = 0; i < vector.length; i++) {
     const c = compareValues(vector[i], lookup);
     if (type === 1 && c <= 0) {
-      if (best === -1 || compareValues(vector[i], vector[best]) > 0) best = i;
+      if (best === -1 || compareValues(vector[i], vector[best]) >= 0) best = i;
     } else if (type === -1 && c >= 0) {
-      if (best === -1 || compareValues(vector[i], vector[best]) < 0) best = i;
+      if (best === -1 || compareValues(vector[i], vector[best]) <= 0) best = i;
     }
   }
   return best;
@@ -46,30 +54,42 @@ const MATCH: Fn = (args, ctx) => {
   const lookup = ctx.eval(args[0]);
   if (isError(lookup)) return lookup;
   const vector = vectorOf(ctx.matrix(args[1]));
-  const type = args.length === 3 ? Number(ctx.eval(args[2])) : 1;
+  let type = 1;
+  if (args.length === 3) {
+    const t = numberArg(args[2], ctx);
+    if (isError(t)) return t;
+    type = t;
+  }
   const idx = matchIndex(vector, lookup, type === 0 ? 0 : type > 0 ? 1 : -1);
   return idx === -1 ? NA : idx + 1;
 };
 
+/**
+ * INDEX(range, row, [column]). A zero row selects the whole column, a zero
+ * column the whole row, and both zero (or `INDEX(range, 0)`) the WHOLE range —
+ * each as an array, so a wrapping aggregate sees every cell while a bare cell
+ * shows the top-left. A negative index is #VALUE!; past the end is #REF!.
+ */
 const INDEX: Fn = (args, ctx) => {
   const bad = argCount(args, 2, 3);
   if (bad) return bad;
   const matrix = ctx.matrix(args[0]);
   const rows = matrix.length;
   const cols = matrix[0]?.length ?? 0;
-  const rowArg = ctx.eval(args[1]);
+  const rowArg = numberArg(args[1], ctx);
   if (isError(rowArg)) return rowArg;
-  const colArg = args.length === 3 ? ctx.eval(args[2]) : null;
+  const colArg = args.length === 3 ? numberArg(args[2], ctx) : null;
   if (colArg !== null && isError(colArg)) return colArg;
-  let r = Math.trunc(Number(rowArg));
-  let c = colArg === null ? (rows === 1 ? 1 : 0) : Math.trunc(Number(colArg));
-  /* A single-row/column range indexed with one number treats it as a position. */
+  let r = Math.trunc(rowArg);
+  let c = colArg === null ? (rows === 1 ? 1 : 0) : Math.trunc(colArg);
+  /* A single-row range indexed with one number treats it as a position. */
   if (args.length === 2 && rows === 1) {
     c = r;
     r = 1;
   }
-  if (r < 0 || c < 0 || r > rows || c > cols) return REF;
-  /* A zero index returns the whole column (r=0) or row (c=0) as an array. */
+  if (r < 0 || c < 0) return VALUE;
+  if (r > rows || c > cols) return REF;
+  if (r === 0 && c === 0) return new ArrayValue(matrix);
   if (r === 0) return new ArrayValue(matrix.map((row) => [row[c - 1]]));
   if (c === 0) return new ArrayValue([matrix[r - 1]]);
   return matrix[r - 1][c - 1];
@@ -85,9 +105,16 @@ function tableLookup(
   const lookup = ctx.eval(args[0]);
   if (isError(lookup)) return lookup;
   const matrix = ctx.matrix(args[1]);
-  const index = Math.trunc(Number(ctx.eval(args[2])));
+  const indexNum = numberArg(args[2], ctx);
+  if (isError(indexNum)) return indexNum;
+  const index = Math.trunc(indexNum);
   if (index < 1) return VALUE;
-  const approximate = args.length === 4 ? Boolean(coerceBool(ctx.eval(args[3]))) : true;
+  let approximate = true;
+  if (args.length === 4) {
+    const flag = ctx.eval(args[3]);
+    if (isError(flag)) return flag;
+    approximate = coerceBool(flag);
+  }
 
   const keyVector =
     orientation === "v" ? matrix.map((row) => row[0]) : (matrix[0] ?? []);
@@ -120,7 +147,12 @@ const XLOOKUP: Fn = (args, ctx) => {
   if (isError(lookup)) return lookup;
   const lookupVector = vectorOf(ctx.matrix(args[1]));
   const returnVector = vectorOf(ctx.matrix(args[2]));
-  const matchMode = args.length >= 5 ? Math.trunc(Number(ctx.eval(args[4]))) : 0;
+  let matchMode = 0;
+  if (args.length >= 5) {
+    const m = numberArg(args[4], ctx);
+    if (isError(m)) return m;
+    matchMode = Math.trunc(m);
+  }
 
   let pos = -1;
   if (matchMode === 2 && typeof lookup === "string") {

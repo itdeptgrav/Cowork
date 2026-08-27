@@ -27,6 +27,13 @@ import type { RowGroup } from "./datatools";
 export const DEFAULT_ROW_COUNT = 1000;
 export const DEFAULT_COL_COUNT = 100;
 
+/** The largest sheet an IMPORT may materialise — well past any real hand-built
+    sheet, but a hard ceiling against a crafted file claiming millions of cells.
+    Shared by every importer (xlsx, json), so a file rejected by one cannot
+    smuggle the same dimensions in through another. */
+export const MAX_IMPORT_ROWS = 200_000;
+export const MAX_IMPORT_COLS = 4_096;
+
 /** One cell. Only a value for now; formatting and typing extend this later. */
 export interface Cell {
   value: string;

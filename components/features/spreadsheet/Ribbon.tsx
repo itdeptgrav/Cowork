@@ -126,10 +126,7 @@ export function Ribbon({
                 className={cmd}
                 onMouseDown={keepFocus}
                 disabled={!frozen}
-                onClick={() => {
-                  controller.freezeRows(0);
-                  controller.freezeCols(0);
-                }}
+                onClick={() => controller.unfreeze()}
               >
                 Unfreeze
               </button>

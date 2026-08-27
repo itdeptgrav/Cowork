@@ -80,15 +80,16 @@ export type SheetCommand =
   | { type: "applyConditionalFormat"; rule: Omit<ConditionalRule, "id"> }
   /**
    * Style an EXPLICIT list of cells, regardless of what is currently
-   * selected — for `flag_outliers`, whose flagged cells are rarely a single
-   * rectangle. `{ type: "style" }` above styles "whatever is selected", which
-   * is right for a human at the toolbar but wrong for an assistant action
-   * that knows exactly which refs it means: a `selectRange` immediately
-   * followed by a `style` dispatch cannot be relied on here, because the
-   * selection state that `style` reads back is not updated until the next
-   * render, so a second `selectRange`+`style` pair in the same call would
-   * still read the FIRST pair's target. This carries its own ref list
-   * instead, straight to the same merge-and-write code `style` already uses.
+   * selected — for the assistant's `flag_outliers` (whose flagged cells are
+   * rarely a single rectangle) and `format_range` (whose target is a rect,
+   * but never the one on screen). `{ type: "style" }` above styles "whatever
+   * is selected", which is right for a human at the toolbar but wrong for an
+   * assistant action that knows exactly which refs it means: a `selectRange`
+   * immediately followed by a `style` dispatch cannot be relied on here,
+   * because the selection state that `style` reads back is not updated until
+   * the next render, so the `style` half would land on whatever was selected
+   * BEFORE the pair was dispatched. This carries its own ref list instead,
+   * straight to the same merge-and-write code `style` already uses.
    */
   | { type: "styleCells"; refs: string[]; patch: Partial<CellStyle> };
 
