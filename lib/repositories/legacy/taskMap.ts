@@ -8,6 +8,7 @@ import type {
   TaskType,
 } from "@/lib/domain";
 import { compositeId } from "./compositeId.ts";
+import { readSubmissionAttachments } from "../../rules/tasks/submissionFiles.ts";
 import { instantOrNull } from "./instantOrNull.ts";
 import { completionState } from "../../rules/tasks/completion.ts";
 import {
@@ -746,7 +747,21 @@ export function toTaskView(input: {
      */
     openSubmissions: Object.entries(legacy.outputSubmissions ?? {})
       .filter(([, sub]) => sub.review === null)
-      .map(([outputId, sub]) => ({
+      .map(([outputId, sub]) => {
+        /**
+         * **The work itself, so the Approvals queue can show it.**
+         *
+         * `attachments` and `attachmentIds` were both `[]`. The engine stores
+         * `imageUrls` and `pdfAttachments` on an output submission in the same
+         * shape a task submission uses, and dropping them here left a reviewer
+         * with the covering note and no way to open what it described. Read
+         * with the same rule the task-level path uses, so one submission cannot
+         * read differently on two screens.
+         */
+        const files = readSubmissionAttachments(
+          sub as unknown as Record<string, unknown>,
+        );
+        return {
         id: `${legacy.id}:${outputId}`,
         taskId: legacy.id,
         outputId,
@@ -754,8 +769,10 @@ export function toTaskView(input: {
         submittedById: sub.submittedBy,
         submittedAt: sub.submittedAt ?? "",
         message: sub.message,
-        attachmentIds: [],
-        attachments: [],
+        attachments: files,
+        /* Derived FROM the list above rather than gathered separately, so the
+           two cannot come to disagree about what was submitted. */
+        attachmentIds: files.map((f) => f.url),
         reviewChain: legacy.assignedById ? [legacy.assignedById] : [],
         currentStage: 1,
         supersededById: null,
@@ -763,7 +780,8 @@ export function toTaskView(input: {
            for the whole task, so claiming a per-output verdict would be
            inventing a date nobody set. */
         wasLate: false,
-      })),
+        };
+      }),
     /**
      * One record per assignee, built from the task document.
      *

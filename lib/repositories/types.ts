@@ -1603,6 +1603,21 @@ export interface CoworkRepository {
     taskId: TaskId;
     outputId: string;
     message: string;
+    /**
+     * The work itself, as files somebody can open.
+     *
+     * Optional, and absent behaves exactly as before — every submission written
+     * before this existed carries none, and the engine has always accepted a
+     * message on its own.
+     *
+     * `ReportAttachment` rather than a shape of this method's own: the engine
+     * stores an output submission in the SAME record a task submission uses,
+     * and a second file shape over one record is how two screens come to
+     * describe one handover differently. These are public media URLs — the
+     * per-output route has always taken `imageUrls` and `pdfAttachments`, and
+     * this is what fills them.
+     */
+    attachments?: ReportAttachment[];
   }): Promise<ActionResult<Task>>;
   /**
    * Approve or return ONE output.

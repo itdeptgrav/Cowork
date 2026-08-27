@@ -699,6 +699,7 @@ function readOutputSubmissionRecords(
     if (v.review) continue;
     const submittedBy = typeof v.submittedBy === "string" ? v.submittedBy : "";
     if (!submittedBy) continue;
+    const files = readSubmissionAttachments(v);
     out.push({
       id: `${taskId}:${outputId}`,
       taskId: taskId as TaskId,
@@ -707,8 +708,19 @@ function readOutputSubmissionRecords(
       submittedById: submittedBy as EmployeeId,
       submittedAt: typeof v.submittedAt === "string" ? v.submittedAt : "",
       message: typeof v.message === "string" ? v.message : "",
-      attachmentIds: [],
-      attachments: [],
+      /**
+       * **The files, read the same way a task submission's are.**
+       *
+       * These were both `[]`. The engine has always stored `imageUrls` and
+       * `pdfAttachments` on an output submission — the record is the same shape
+       * a task submission uses — but this dropped them, so a reviewer opening a
+       * submitted output saw the covering note and no way to reach the work it
+       * was describing.
+       */
+      attachments: files,
+      /* Derived FROM the list above rather than gathered separately, so the two
+         cannot come to disagree about what was submitted. */
+      attachmentIds: files.map((f) => f.url),
       /* One reviewer, one stage — this engine resolves the assigner of record
          and their approval is final (owner decision, 16 Aug 2026). */
       reviewChain: reviewer ? [reviewer as EmployeeId] : [],
@@ -2612,8 +2624,23 @@ export class LegacyRepository {
     taskId: TaskId;
     outputId: string;
     message: string;
+    attachments?: ReportAttachment[];
   }): Promise<ActionResult<Task>> {
     const taskId = String(input.taskId);
+    /* Split by type, exactly as `submitDailyReport` does and for the same
+       reason: the route has always taken two typed arrays, and the old
+       application reads those two and knows nothing about anything else. */
+    const files = input.attachments ?? [];
+    const imageUrls = files
+      .filter((a) => a.mimeType.startsWith("image/"))
+      .map((a) => a.url);
+    const pdfAttachments = files
+      .filter((a) => !a.mimeType.startsWith("image/"))
+      /* The object form, not the bare URL: `readSubmissionAttachments` reads a
+         name off it, and a string leaves the reviewer with a URL to squint at
+         instead of a filename. */
+      .map((a) => ({ url: a.url, name: a.name, mimeType: a.mimeType }));
+
     return this.#write(
       (token) =>
         submitOutput({
@@ -2621,6 +2648,8 @@ export class LegacyRepository {
           taskId,
           outputId: input.outputId,
           message: input.message,
+          imageUrls,
+          pdfAttachments,
         }),
       () => taskId,
     );

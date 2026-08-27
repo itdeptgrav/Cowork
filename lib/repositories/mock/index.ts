@@ -5313,12 +5313,16 @@ export class MockRepository implements CoworkRepository {
     taskId: TaskId;
     outputId: string;
     message: string;
+    attachments?: ReportAttachment[];
   }): Promise<ActionResult<Task>> {
     const r = await this.submitCompletion({
       taskId: input.taskId,
       outputId: input.outputId,
       message: input.message,
-      attachmentIds: [],
+      /* The mock's submission record keys files by URL — `submitCompletion`
+         builds its `attachments` list from these — so the URLs are what travel.
+         Names are lost here and only here; the engine keeps them. */
+      attachmentIds: (input.attachments ?? []).map((a) => a.url),
     });
     if (!r.ok) return r;
     const t = getStore().tasks.find((x) => x.id === input.taskId);

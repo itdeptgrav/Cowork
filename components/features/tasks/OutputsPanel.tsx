@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { Button, Chip, InlineError, Input, Panel } from "@/components/ui/Primitives";
-import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
+import { Button, Chip, InlineError, Panel } from "@/components/ui/Primitives";
+import { useQuery, useRepo } from "@/lib/hooks/useRepository";
 import type { TaskView } from "@/lib/repositories";
-import type { OutputState } from "@/lib/rules/tasks/outputs";
+import { OutputHandoverForm } from "./OutputHandoverForm";
+import { OUTPUT_TONE } from "./outputTone";
 
 /**
  * What a task hands over, and where each handover has got to.
@@ -17,14 +18,6 @@ import type { OutputState } from "@/lib/rules/tasks/outputs";
  * no change to the hierarchy — the list is a field on the task, and a task that
  * declares nothing never sees this panel do anything.
  */
-
-const TONE: Record<OutputState, { label: string; tone: Parameters<typeof Chip>[0]["tone"] }> = {
-  not_started: { label: "Not started", tone: "neutral" },
-  in_review: { label: "In review", tone: "extension" },
-  rework: { label: "Rework", tone: "rework" },
-  rejected: { label: "Rejected", tone: "overdue" },
-  approved: { label: "Approved", tone: "positive" },
-};
 
 export function OutputsPanel({
   view,
@@ -39,16 +32,8 @@ export function OutputsPanel({
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  /**
-   * The output being submitted, and what is being said about it.
-   *
-   * A message is mandatory — `submissionMessageRequired` is `require`, on the
-   * reasoning that a review with no statement of work is not reviewable — and
-   * that applies to an output exactly as it does to a task. Submitting with an
-   * empty string was silently refused, which looked like a dead button.
-   */
+  /** The output whose handover form is open, or null. */
   const [submitting, setSubmitting] = useState<string | null>(null);
-  const [note, setNote] = useState("");
 
   const mine = view.assignments.some((a) => a.employeeId === viewerId);
   const isOwner = view.task.createdById === viewerId;
@@ -120,18 +105,6 @@ export function OutputsPanel({
   }
 
 
-  /* The contract method, not `submitCompletion` with a field — so this works
-     unchanged against the legacy engine, which has a dedicated endpoint, and
-     against the mock, which delegates back to its own submission path. */
-  const [submit, submitState] = useAction(
-    (r, arg: { outputId: string; message: string }) =>
-      r.submitOutput({
-        taskId: view.task.id,
-        outputId: arg.outputId,
-        message: arg.message,
-      }),
-  );
-
   return (
     <Panel>
       <div className="mb-3 flex items-baseline gap-2">
@@ -154,102 +127,73 @@ export function OutputsPanel({
 
       <div className="divide-y divide-hairline">
         {view.outputs.map((o) => {
-          const meta = TONE[o.state];
+          const meta = OUTPUT_TONE[o.state];
           const canSubmit =
             mine &&
             o.isWorkable &&
             (o.state === "not_started" || o.state === "rework");
+          const open = submitting === o.output.id;
           return (
-            <div key={o.output.id} className="flex items-center gap-3 py-2.5">
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-sm text-ink">{o.output.label}</div>
-                {/* Why it cannot be started, naming the output and the task
-                    that owes it — an id would be a lookup, not an answer. */}
-                {!o.isWorkable && o.waitingOn.length > 0 && (
-                  <div className="mt-0.5 truncate text-[11px] text-ink-faint">
-                    Waiting on “{o.waitingOn[0].label}”
-                    {o.waitingOn[0].taskTitle
-                      ? ` — ${o.waitingOn[0].taskTitle}`
-                      : ""}
-                  </div>
+            <div key={o.output.id} className="py-2.5">
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm text-ink">{o.output.label}</div>
+                  {/* Why it cannot be started, naming the output and the task
+                      that owes it — an id would be a lookup, not an answer. */}
+                  {!o.isWorkable && o.waitingOn.length > 0 && (
+                    <div className="mt-0.5 truncate text-[11px] text-ink-faint">
+                      Waiting on “{o.waitingOn[0].label}”
+                      {o.waitingOn[0].taskTitle
+                        ? ` — ${o.waitingOn[0].taskTitle}`
+                        : ""}
+                    </div>
+                  )}
+                </div>
+                <Chip tone={meta.tone}>{meta.label}</Chip>
+                {/* **Submitting is offered here as well as on Submission.**
+                    Naming an output and handing it over are one thought when
+                    the work is fresh in front of you, and this is the list
+                    somebody is already looking at. Both drive
+                    `OutputHandoverForm`, so there is one upload path and one
+                    definition of a complete handover either way. */}
+                {canSubmit && !open && (
+                  <Button
+                    size="sm"
+                    tone="primary"
+                    onClick={() => setSubmitting(o.output.id)}
+                  >
+                    {o.state === "rework" ? "Resubmit" : "Submit"}
+                  </Button>
+                )}
+                {mayEdit && o.state === "not_started" && (
+                  <button
+                    type="button"
+                    className="rounded-full px-2 py-1 text-[11px] text-ink-faint hover:text-ink"
+                    disabled={busy}
+                    onClick={() =>
+                      void write(current.filter((c) => c.id !== o.output.id))
+                    }
+                  >
+                    Remove
+                  </button>
                 )}
               </div>
-              <Chip tone={meta.tone}>{meta.label}</Chip>
-              {canSubmit && submitting !== o.output.id && (
-                <Button
-                  size="sm"
-                  tone="primary"
-                  onClick={() => {
-                    setSubmitting(o.output.id);
-                    setNote("");
+
+              {open && (
+                <OutputHandoverForm
+                  taskId={view.task.id}
+                  outputId={o.output.id}
+                  onCancel={() => setSubmitting(null)}
+                  onDone={() => {
+                    setSubmitting(null);
+                    onChange();
                   }}
-                >
-                  {o.state === "rework" ? "Resubmit" : "Submit"}
-                </Button>
-              )}
-              {mayEdit && o.state === "not_started" && (
-                <button
-                  type="button"
-                  className="rounded-full px-2 py-1 text-[11px] text-ink-faint hover:text-ink"
-                  disabled={busy}
-                  onClick={() =>
-                    void write(current.filter((c) => c.id !== o.output.id))
-                  }
-                >
-                  Remove
-                </button>
-              )}
-              {mayEdit && o.state === "not_started" && submitting !== o.output.id && (
-                <span />
+                />
               )}
             </div>
           );
         })}
       </div>
-
-      {/* The message step. Inline under the list rather than a dialog: it is one
-          field, and interrupting the page for it would be heavier than the
-          decision deserves. */}
-      {submitting && (
-        <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] p-3">
-          <div className="mb-2 text-[11px] text-ink-faint">
-            Describe what you are handing over. The reviewer sees this.
-          </div>
-          <Input
-            value={note}
-            autoFocus
-            placeholder="Copy and tariffs, temple timings confirmed"
-            onChange={(e) => setNote(e.target.value)}
-          />
-          <div className="mt-2 flex items-center gap-2">
-            <Button
-              size="sm"
-              tone="primary"
-              disabled={submitState.isPending || !note.trim()}
-              onClick={async () => {
-                const r = await submit({ outputId: submitting, message: note });
-                if (r && !r.ok) return;
-                setSubmitting(null);
-                setNote("");
-                onChange();
-              }}
-            >
-              {submitState.isPending ? "Submitting…" : "Send for review"}
-            </Button>
-            <Button size="sm" onClick={() => setSubmitting(null)}>
-              Cancel
-            </Button>
-          </div>
-          {/* Surfaced, not swallowed. The engine refuses an empty message and a
-              task that has not been started, and a button that silently does
-              nothing is worse than either refusal. */}
-          {submitState.error && (
-            <div className="mt-2">
-              <InlineError message={submitState.error} />
-            </div>
-          )}
-        </div>
-      )}
 
       {mayEdit && (
         <div className="mt-3">

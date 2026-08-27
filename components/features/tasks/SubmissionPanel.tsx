@@ -17,6 +17,7 @@ import {
   FileUploader,
 } from "@/components/features/attachments/Attachments";
 import { SubmittedFiles } from "./SubmittedFiles";
+import { OutputSubmitList } from "./OutputSubmitList";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { viewerHolds } from "@/lib/rules/tasks/viewerHolds";
 import { useLiveNow } from "@/lib/hooks/useLiveNow";
@@ -184,20 +185,17 @@ export function SubmissionPanel({
   return (
     <div className="flex flex-col gap-4">
       {deliversByOutput && (
-        <Panel>
-          <h2 className="text-sm font-medium text-ink">
-            Delivered output by output
-          </h2>
-          <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
-            This task hands over {view.task.outputs.length} outputs, each
-            submitted and reviewed on its own. It completes when all of them are
-            approved — there is no separate submission for the task itself.
-          </p>
-          <p className="mt-2 text-[12px] text-ink-faint" data-figure>
-            {view.outputs.filter((o) => o.state === "approved").length} of{" "}
-            {view.task.outputs.length} approved. Submit them from Overview.
-          </p>
-        </Panel>
+        /**
+         * **The outputs are submitted HERE, not described here.**
+         *
+         * This was a panel whose entire content was "Submit them from
+         * Overview" — a screen that explained the flow and then sent the reader
+         * two tabs away to take part in it, on the one tab named after the
+         * thing they came to do. The review that decides on the handover
+         * already renders directly beneath this, so submit and decide now sit
+         * on one screen in the order the work moves.
+         */
+        <OutputSubmitList view={view} viewerId={me} onChange={onChange} />
       )}
       {reworks.data && reworks.data.length > 0 && (
         <Panel>
@@ -418,7 +416,17 @@ export function SubmissionPanel({
             {submissions.data.map((s) => (
               <div key={s.id} className="px-5 py-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm text-ink">Attempt {s.attempt}</span>
+                  {/* **Which output, where there is one.** A task delivering
+                      three outputs listed three rows reading "Attempt 1", and
+                      the person who submitted them could not tell which was
+                      which — the one question this list exists to answer. */}
+                  <span className="text-sm text-ink">
+                    {s.outputId
+                      ? (view.task.outputs.find((o) => o.id === s.outputId)
+                          ?.label ?? "Output")
+                      : "Attempt"}{" "}
+                    {s.outputId ? `· attempt ${s.attempt}` : s.attempt}
+                  </span>
                   {s.wasLate && <Chip tone="overdue">Late</Chip>}
                   {s.supersededById && <Chip>Superseded</Chip>}
                   <span className="ml-auto text-xs text-ink-faint">

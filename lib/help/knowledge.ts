@@ -306,6 +306,38 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "submitDailyReport and listDailyReports in lib/repositories/mock/index.ts and lib/repositories/legacy/index.ts (cowork_tasks/{id}/dailyReports); DailyReportModal.tsx is the end-of-day dialog, opened by StatusButton.tsx when Offline is chosen and built from listDayCommits; ReportsPanel.tsx renders the tab, wired in TaskDetail.tsx and gated on isContainer the same way the deadline, submission and review tabs are. Moved out of a card at the bottom of the overview tab into a tab of its own 2026-08-02",
   },
   {
+    id: "task-outputs",
+    category: "tasks",
+    title: "Tasks delivered output by output",
+    keywords: [
+      "outputs",
+      "outputs required",
+      "output by output",
+      "submit an output",
+      "deliverables",
+      "hand over one piece",
+      "partial delivery",
+      "waiting on another output",
+      "attach files to an output",
+      "resubmit an output",
+      "0 of 2 approved",
+    ],
+    examples: [
+      "What are outputs on a task?",
+      "How do I submit one output?",
+      "Where did the Submit button on Overview go?",
+      "Why can't I submit this output yet?",
+      "Do I have to attach a file to submit an output?",
+      "Why is there no Submit for the whole task?",
+      "My output was returned — how do I send it again?",
+    ],
+    answer:
+      "A task can name the separate things it hands over — three destinations, two documents, a design and its source files — and each one is submitted and reviewed on its own. The point is that somebody waiting on the first does not wait for all of them. A task that names no outputs behaves exactly as it always has. **You can hand an output over from either Overview or Submission — they are the same form.** Overview is where outputs are named: add them (commas or new lines add several at once), remove one that has not been submitted, point each at the output of another task it waits for. Each row there also carries its own Submit button, because naming a deliverable and handing it over are one thought when the work is in front of you. The Submission tab lists the same outputs with the same buttons, and the reviewer's decision appears directly beneath on that screen, so the person handing work in and the person judging it read one page. Whichever you start from, the form is identical. **A note is required. Files are not.** The note says what you are handing over and is the first thing the reviewer reads. Attaching the work is offered and encouraged but never demanded — not every output is a document, and some are a sentence confirming something — so the picker carries a suggestion rather than a rule: attaching usually saves a round trip, because the reviewer can decide without asking for it. Any type and any size: images, PDFs, ZIP archives, audio, documents. They upload straight from your browser to storage rather than through Cowork's server, so a large archive or a recording is fine, and an upload that is interrupted resumes rather than starting over. If a file you chose fails to upload, nothing is submitted at all — a file you picked is one you decided the reviewer needed, so you are told which failed and can try again or remove it and send the note on its own, rather than the reviewer receiving a note describing a document that never arrived. An output cannot be submitted while it is waiting on another task's output that has not been approved yet; the row says which one and on which task. A task that delivers by output has no separate submission of its own — it completes when every output is approved, so there is no whole-task Submit button and asking for one would be asking a reviewer to approve work the same chain is already approving piece by piece. Submitting an output does not stop your clock or move the task out of progress, because you are still writing the rest of it. If an output is returned for rework its row says Rework and the button reads Resubmit; sending it again counts as the next attempt on that output alone, and attempts are counted per output, so a second try at one is not a second try at another.",
+    related: ["task-submit", "task-rework", "approvals-what-happens"],
+    source:
+      "OutputHandoverForm.tsx is the single handover form (note, optional Drive-backed files, Send), rendered by OutputSubmitList.tsx on the Submission tab and by OutputsPanel.tsx on Overview — neither list calls submitOutput itself; OUTPUT_TONE in outputTone.ts is the one state-label table; submitOutput in both repositories takes attachments and the legacy one splits them into the route's imageUrls/pdfAttachments; files go through uploadDriveFile, the resumable Drive pipeline, never through the engine; readSubmissionAttachments reads them back in readOutputSubmissionRecords and taskMap's openSubmissions, rendered by SubmittedFiles on ReviewPanel; workability and per-output attempts in lib/rules/tasks/outputs.ts and taskForward.service.js submitOutput",
+  },
+  {
     id: "task-rework",
     guide: {
       actionType: "reject-task",
