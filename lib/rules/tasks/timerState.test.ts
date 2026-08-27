@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { elapsedSecs } from "./timer.ts";
+import { elapsedSecs, TIMER_BANKABLE_GRACE_MS } from "./timer.ts";
+import { STALE_AFTER_MS } from "../presence/duty.ts";
 
 /**
  * The timer, audited against production rather than assumed.
@@ -223,12 +224,26 @@ test("the running figure is capped where the CREDIT is capped", () => {
    *
    * The minutes were never creditable. Showing them and taking them back is
    * the fault, so the display now stops where the credit stops.
+   *
+   * **Which is what this assertion did not check.** It required
+   * `STALE_AFTER_MS` — 120 000, presence's constant — while both engine paths
+   * bank with `TIMER_BANKABLE_GRACE_MS` at fifteen minutes. So the test passed
+   * while the display was capped seven times tighter than the credit, and the
+   * drift it was written to prevent went on happening in the other direction:
+   * the run froze at the last beat plus two minutes, then lurched whenever the
+   * engine reconciled. Capped where the CREDIT is capped means the constant the
+   * credit uses.
    */
   const src = code(CONTROL);
   assert.match(src, /const runSecs =/);
   assert.match(src, /bankableRunSecs\(\{/);
   assert.match(src, /heartbeatAtRealMs: session\?\.heartbeatAtRealMs \?\? null/);
-  assert.match(src, /graceMs: STALE_AFTER_MS/);
+  assert.match(src, /graceMs: TIMER_BANKABLE_GRACE_MS/);
+  assert.equal(
+    /graceMs: STALE_AFTER_MS/.test(src),
+    false,
+    "presence's staleness constant is back on the credit path",
+  );
   /* Derived from the ticker, never from the clock: reading `Date.now()` during
      a render makes the same props produce two different figures, which is what
      the assertion further down this file exists to prevent. */
@@ -701,4 +716,27 @@ test("starting costs one round of reads and one write, like pausing", () => {
     false,
     "the extra sequential read is back",
   );
+});
+
+/* ── The clock that jumped ────────────────────────────────────────────────── */
+
+test("both engine paths bank with that same grace", () => {
+  const src = code(REPO);
+  const calls = src.match(/bankableRunSecs\(\{[\s\S]*?\}\)/g) ?? [];
+  assert.ok(calls.length >= 2, "expected pauseTimer and the gap-closer");
+  for (const call of calls) {
+    assert.match(
+      call,
+      /graceMs: TIMER_BANKABLE_GRACE_MS/,
+      "an engine path banks with a different grace than the screen shows",
+    );
+  }
+});
+
+test("the two graces are deliberately different constants", () => {
+  /* Guards the merge that would "tidy" them into one. They answer different
+     questions: which tab owns a presence claim, versus whether somebody was
+     working. `timer.ts` says so at length above the constant. */
+  assert.notEqual(TIMER_BANKABLE_GRACE_MS, STALE_AFTER_MS);
+  assert.ok(TIMER_BANKABLE_GRACE_MS > STALE_AFTER_MS);
 });
