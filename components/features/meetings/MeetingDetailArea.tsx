@@ -18,6 +18,8 @@ import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { canView, joinRefusal, manageRefusal } from "@/lib/rules/meetings/access";
 import { RoomClosed } from "./MeetingRoom";
+import { CollapsiblePanel } from "./CollapsiblePanel";
+import { MeetingMasthead } from "./MeetingMasthead";
 import { MeetingStage } from "./MeetingStage";
 import { useMeetingSession } from "./MeetingSessionContext";
 import { MeetingSummaryPanel } from "./MeetingSummaryPanel";
@@ -84,10 +86,28 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
         seesOrganisation: false,
         hierarchyIds: viewerHierarchy,
       })
-    )
+    ) {
+      /**
+       * **Closed, not merely not-opened.**
+       *
+       * This used to `return`, which is right the first time round and wrong
+       * every time after. Pressing **End for everyone** flips the status to
+       * `completed`, the refusal becomes "This meeting has ended.", and the
+       * page correctly says so — while the floating window carried on in the
+       * corner with everybody's tiles and a live control bar, because nothing
+       * ever told the session it was over. The organiser had ended the meeting
+       * and was still sitting in it.
+       *
+       * The same line covers cancelling, archiving, and being removed from the
+       * invitation while the window is open: the moment a meeting is one you
+       * may not join, you are not in it.
+       */
+      closeMeeting();
       return;
+    }
 
     openMeeting({
+      kind: "scheduled",
       meeting: liveMeeting,
       displayName: myName,
       isOrganiser: liveMeeting.organiserId === viewerId,
@@ -100,7 +120,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
        re-open the session continuously. The callback closes over the current
        one, which is the one that should be refetched. */
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveMeeting, left, viewerId, myName, openMeeting]);
+  }, [liveMeeting, left, viewerId, myName, openMeeting, closeMeeting]);
 
   /* Leaving takes the meeting down everywhere, not just off this page. */
   useEffect(() => {
@@ -142,6 +162,69 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
   const refusalToManage = manageRefusal(m, access.employeeId);
   const isOrganiser = m.organiserId === access.employeeId;
 
+  /**
+   * The organiser's state controls, built once and handed to the masthead.
+   *
+   * A variable rather than inline JSX because the masthead decides WHERE they
+   * sit — end of the title row on a wide screen, their own full-width row on a
+   * narrow one — and that decision should live in one place, not be duplicated
+   * as two conditional blocks in the page.
+   */
+  const organiserActions = (
+    <>
+            {m.status === "scheduled" && (
+              <Button
+                tone="secondary"
+                size="sm"
+                disabled={statusState.isPending}
+                onClick={() => void setStatus("waiting")}
+              >
+                Open the room
+              </Button>
+            )}
+            {(m.status === "scheduled" || m.status === "waiting") && (
+              <Button
+                tone="primary"
+                size="sm"
+                disabled={statusState.isPending}
+                onClick={() => void setStatus("live")}
+              >
+                Start meeting
+              </Button>
+            )}
+            {(m.status === "live" || m.status === "waiting") && (
+              <Button
+                tone="secondary"
+                size="sm"
+                disabled={statusState.isPending}
+                onClick={() => void setStatus("completed")}
+              >
+                End for everyone
+              </Button>
+            )}
+            {(m.status === "scheduled" || m.status === "waiting") && (
+              <Button
+                tone="ghost"
+                size="sm"
+                disabled={statusState.isPending}
+                onClick={() => void setStatus("cancelled")}
+              >
+                Cancel
+              </Button>
+            )}
+            {m.status === "completed" && (
+              <Button
+                tone="ghost"
+                size="sm"
+                disabled={statusState.isPending}
+                onClick={() => void setStatus("archived")}
+              >
+                Archive
+              </Button>
+            )}
+    </>
+  );
+
   return (
     <>
       <Breadcrumb
@@ -160,66 +243,72 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
         </div>
       )}
 
-      {/* The organiser's controls. Absent entirely for everybody else — a
-          disabled End button on somebody else's meeting is an invitation to
-          wonder why. */}
-      {!refusalToManage && (
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          {m.status === "scheduled" && (
-            <Button
-              tone="secondary"
-              size="sm"
-              disabled={statusState.isPending}
-              onClick={() => void setStatus("waiting")}
-            >
-              Open the room
-            </Button>
-          )}
-          {(m.status === "scheduled" || m.status === "waiting") && (
-            <Button
-              tone="primary"
-              size="sm"
-              disabled={statusState.isPending}
-              onClick={() => void setStatus("live")}
-            >
-              Start meeting
-            </Button>
-          )}
-          {(m.status === "live" || m.status === "waiting") && (
-            <Button
-              tone="secondary"
-              size="sm"
-              disabled={statusState.isPending}
-              onClick={() => void setStatus("completed")}
-            >
-              End for everyone
-            </Button>
-          )}
-          {(m.status === "scheduled" || m.status === "waiting") && (
-            <Button
-              tone="ghost"
-              size="sm"
-              disabled={statusState.isPending}
-              onClick={() => void setStatus("cancelled")}
-            >
-              Cancel
-            </Button>
-          )}
-          {m.status === "completed" && (
-            <Button
-              tone="ghost"
-              size="sm"
-              disabled={statusState.isPending}
-              onClick={() => void setStatus("archived")}
-            >
-              Archive
-            </Button>
-          )}
-        </div>
-      )}
+      {/**
+       * **The page finally has a title.**
+       *
+       * The meeting's name used to appear only as the last breadcrumb — caption
+       * size, muted, styled as navigation — while a row of five buttons was the
+       * loudest thing on the screen. The masthead puts identity first and the
+       * controls where a wide screen finishes reading, and it carries the when
+       * / how long / who, because below `deck` the Details panel that holds
+       * those facts sits a full screen-height below the room.
+       *
+       * The organiser's controls are passed in and are absent entirely for
+       * everybody else — a disabled End button on somebody else's meeting is an
+       * invitation to wonder why.
+       */}
+      <MeetingMasthead
+        title={m.title}
+        status={m.status}
+        when={formatDateTime(m.startsAt)}
+        duration={formatDuration(
+          m.actualDurationSecs ??
+            Math.max(
+              0,
+              Math.round(
+                (Date.parse(m.endsAt) - Date.parse(m.startsAt)) / 1000,
+              ),
+            ),
+        )}
+        organiser={
+          people.data?.find((p) => p.id === m.organiserId)?.displayName ?? "—"
+        }
+        actions={refusalToManage ? undefined : organiserActions}
+      />
 
-      <div className="grid gap-4 deck:grid-cols-3">
-        <div className="deck:col-span-2">
+
+      {/**
+       * **Three compositions, one for each way this page is actually used.**
+       *
+       * There used to be two: a 2:1 split at `deck`, and below it a single
+       * column. That single column was the whole problem. On a tablet — and on
+       * a desktop window merely dragged narrow — the room went full width and
+       * then **eight panels** stacked beneath it in one file: Details,
+       * Participants, Transcript, Summary, Recordings, Guest link, History. A
+       * 900px-wide screen showed a 900px-wide Details panel with two facts on
+       * it, and finding the transcript meant scrolling past all of them.
+       *
+       * - **< 640px** — one column. There is no width to divide.
+       * - **640–1179px** — the rail flows into TWO columns beneath the room.
+       * - **≥ 1180px** — the deck: room at 2/3, rail beside it at 1/3.
+       */}
+      <div className="grid gap-4 deck:grid-cols-3 deck:items-start">
+        {/**
+         * **The room sticks; the rail scrolls past it.**
+         *
+         * The room is a fixed 520px and the rail is seven panels tall, so the
+         * left column ran out of content less than halfway down the page and
+         * left a column-wide hole of nothing under the video while the
+         * transcript continued below the fold. Two things were wrong with that
+         * at once: the emptiest part of the page was its centre, and reading
+         * the transcript meant scrolling the live meeting off the screen.
+         *
+         * Sticky fixes both — the video stays put while its record moves past
+         * it, which is also what somebody reading a transcript during a call
+         * actually wants. `self-start` is required: a stretched grid item is
+         * as tall as its row and has nothing to slide within.
+         */}
+        <div className="deck:sticky deck:top-4 deck:col-span-2 deck:self-start">
           {refusalToJoin ? (
             <RoomClosed reason={refusalToJoin} />
           ) : left ? (
@@ -265,12 +354,46 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
              * `min-h-[520px]` matches what `RoomFrame` reserved when it was
              * here, so the page's layout is unchanged.
              */
-            <MeetingStage className="min-h-[520px] w-full rounded-card" />
+            <MeetingStage
+              /**
+               * **A height ladder, not a flat 520px.**
+               *
+               * `min-h-[520px]` is a desk measurement. On a 667px-tall phone it
+               * left 147px for a masthead, a breadcrumb and the browser's own
+               * chrome — so the control bar, which is the last thing in the
+               * room and the only way to mute or leave, sat below the fold on
+               * the one device where scrolling during a call is hardest.
+               *
+               * The room lays itself out from this box, so the ladder is what
+               * makes a phone get a usable call rather than a cropped one.
+               */
+              className="min-h-[26rem] w-full rounded-card sm:min-h-[30rem] deck:min-h-[32.5rem]"
+            />
           )}
         </div>
 
-        <div className="flex flex-col gap-4">
-          <Panel>
+        {/**
+         * **CSS columns, not a grid, and that is the whole trick.**
+         *
+         * These panels have wildly different heights — Details is four lines,
+         * a generated transcript is hundreds. In a two-column `grid` every row
+         * is as tall as its tallest cell, so a short panel beside a long one
+         * leaves a hole the size of the difference. `columns` has no rows: each
+         * panel is placed directly under the one before it and the browser
+         * balances the two flows. `break-inside-avoid` is what stops a panel
+         * being sawn in half across the gap.
+         *
+         * Reading order is the DOM order either way, so a screen reader and a
+         * keyboard traverse Details → Participants → Transcript regardless of
+         * how the columns fall.
+         *
+         * `deck:columns-1` returns it to a single flow once it is a rail beside
+         * the room, where it is one column by definition.
+         */}
+        <div className="gap-4 sm:columns-2 deck:columns-1 [&>section]:mb-4 [&>section]:break-inside-avoid">
+          <RailHeading>About this meeting</RailHeading>
+
+          <Panel label="Details">
             <PanelHead title="Details" sub="What this meeting is for" />
             <dl className="divide-y divide-hairline text-sm">
               <Fact label="When" value={formatDateTime(m.startsAt)} />
@@ -323,7 +446,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
             )}
           </Panel>
 
-          <Panel>
+          <Panel label="Participants">
             <PanelHead
               title="Participants"
               sub={`${parts.data?.length ?? 0} invited`}
@@ -371,7 +494,9 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               VerbatimTranscriptPanel's own header for why they must not be
               conflated: the summary paraphrases and translates by design,
               while this flags uncertainty instead of guessing. */}
-          <Panel>
+          <RailHeading>The record</RailHeading>
+
+          <Panel label="Transcript">
             <PanelHead
               title="Transcript"
               sub="Verbatim or translated — never the summary's silent paraphrase"
@@ -382,7 +507,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
             />
           </Panel>
 
-          <Panel>
+          <Panel label="AI Summary">
             <PanelHead
               title="AI Summary"
               sub="Generated from meeting audio"
@@ -392,6 +517,34 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               meetStatus={m.status}
             />
           </Panel>
+
+          {isOrganiser && (
+            <Panel label="Guest link">
+              <PanelHead
+                title="Guest link"
+                sub="Share with people outside CoWork"
+              />
+              <PublicLinkPanel meetId={meetingId} />
+            </Panel>
+          )}
+
+          {/**
+           * **The two logs, together and shut.**
+           *
+           * Recorded audio and History are the only panels here that grow
+           * without bound — one row per clip, one line every time anybody joins
+           * or leaves. A meeting with twenty-two clips from four people put
+           * twenty-two rows in the rail, and between them they were most of the
+           * page's height and none of its usual reading.
+           *
+           * They are also the only two nobody reads in passing. Details,
+           * Participants and the transcript answer questions you have while
+           * looking at the page; these answer questions you came for. So they
+           * sit last, and they start shut — with their headline still on the
+           * closed header, because minimising should cost the detail and never
+           * the answer.
+           */}
+          <RailHeading>Files and history</RailHeading>
 
           {/* **Whose audio was saved, beside the summary made from it.**
               Everyone in the meeting sees it, not only the organiser: the
@@ -406,20 +559,17 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
             }
           />
 
-          {isOrganiser && (
-            <Panel>
-              <PanelHead
-                title="Guest link"
-                sub="Share with people outside CoWork"
-              />
-              <PublicLinkPanel meetId={meetingId} />
-            </Panel>
-          )}
-
-          <Panel>
-            <PanelHead title="History" sub="Every change to this meeting" />
+          <CollapsiblePanel
+            title="History"
+            sub="Every change to this meeting"
+            summary={
+              events.data?.length
+                ? `${events.data.length} change${events.data.length === 1 ? "" : "s"}`
+                : "Nothing recorded."
+            }
+          >
             {events.data?.length ? (
-              <ol className="mt-2 flex flex-col gap-2">
+              <ol className="flex flex-col gap-2">
                 {events.data.map((e) => (
                   <li key={e.id} className="text-[11px] text-ink-faint">
                     <span className="text-ink-muted">{e.actorName}</span>{" "}
@@ -429,20 +579,62 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
                 ))}
               </ol>
             ) : (
-              <p className="mt-2 text-sm text-ink-muted">Nothing recorded.</p>
+              <p className="text-sm text-ink-muted">Nothing recorded.</p>
             )}
-          </Panel>
+          </CollapsiblePanel>
         </div>
       </div>
     </>
   );
 }
 
+/**
+ * A heading that names a group of panels in the rail.
+ *
+ * The rail was seven panels in a row with nothing to say which were about the
+ * meeting, which were produced by it, and which were housekeeping. Every one
+ * carried the same weight of heading, so the eye had to read all seven titles
+ * to find the one it wanted, every time.
+ *
+ * **Title, not a tracked uppercase eyebrow.** DESIGN.md's One Kicker Rule is
+ * explicit that tracked caps over a panel is a defect — the tracked style is
+ * reserved for the single wayfinding kicker in a view and for metric labels.
+ * A section heading takes Title, and the separation is carried by space:
+ * `32px` above and `12px` below, which is the system's own rhythm for a
+ * section heading, against the `16px` that runs between panels within a group.
+ * Proximity does the grouping; the heading only names it.
+ *
+ * `break-after-avoid` matters because the rail is a CSS-columns flow between
+ * `sm` and `deck`: without it a heading can be laid at the foot of one column
+ * with everything it names at the head of the next.
+ */
+function RailHeading({ children }: { children: React.ReactNode }) {
+  return (
+    <h2 className="mt-8 mb-3 break-after-avoid px-1 text-[15px] leading-none font-medium tracking-[-0.012em] text-ink-muted first:mt-0">
+      {children}
+    </h2>
+  );
+}
+
+/**
+ * One labelled fact.
+ *
+ * **`truncate` was the bug in the screenshot.** The row was
+ * `justify-between` with a truncating value, so once the panel became a narrow
+ * rail the label kept its full width and the value — the only part carrying
+ * information — was clipped to "28". A date that reads "28" is worse than no
+ * date: it looks like a value rather than like something missing.
+ *
+ * Now the label may shrink and the value may not, and below `sm` the pair
+ * stacks so a long date gets the panel's whole width. Nothing is ever cut.
+ */
 function Fact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-4 py-2">
-      <dt className="text-ink-muted">{label}</dt>
-      <dd className="min-w-0 truncate text-ink">{value}</dd>
+    <div className="flex flex-col gap-0.5 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
+      <dt className="min-w-0 shrink text-ink-muted">{label}</dt>
+      <dd className="min-w-0 font-medium text-ink tabular-nums sm:shrink-0 sm:text-right">
+        {value}
+      </dd>
     </div>
   );
 }

@@ -26,7 +26,7 @@ import {
   type MessageMenuItem,
 } from "@/components/features/messages/MessageContextMenu";
 import { MessageTicks } from "@/components/features/messages/MessageTicks";
-import { formatClock, formatDate, formatPercent } from "@/lib/utils/format";
+import { formatClock, formatDate } from "@/lib/utils/format";
 import { clearDraft, readDraft, saveDraft } from "@/components/features/messages/draftStorage";
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { MESSAGE_QUICK_REACTIONS } from "@/lib/domain";
@@ -41,11 +41,15 @@ import {
   isDropActive,
 } from "@/lib/rules/messages/fileDrop";
 import {
+  MEDIA_BASE,
   MessageAttachments,
   filesFromClipboard,
   formatBytes,
+  UploadProgressRow,
   mediaUrl,
 } from "@/components/features/messages/MessageAttachments";
+import { copyPlan } from "@/lib/rules/media/copyMessage";
+import { COPIED_NOTICE, runCopyPlan } from "@/lib/utils/copyToClipboard";
 
 /** Uploads are staged before send; keep the batch bounded, as the thread does. */
 const MAX_ATTACHMENTS = 10;
@@ -402,16 +406,20 @@ export function ChatPanel({
     setText("");
   }
 
+  /**
+   * Copy a message — the caption AND the picture, in one clipboard write.
+   *
+   * The decision is `copyPlan`'s and the bytes are `runCopyPlan`'s, both shared
+   * with `MessagesArea` so a task's discussion and a conversation cannot come
+   * to disagree about what Copy means. What actually landed is reported rather
+   * than a flat "Copied.": a picture that could not be fetched still puts the
+   * caption on the clipboard, and somebody pasting into a document needs to
+   * know which half arrived.
+   */
   async function copyMessage(m: TaskChatMessage) {
     setMenu(null);
-    try {
-      await navigator.clipboard.writeText(m.text);
-      setNotice("Copied.");
-    } catch {
-      /* Clipboard access is refused in some contexts. Saying so beats a
-         control that appears to do nothing. */
-      setNotice("Copying is not available here.");
-    }
+    const out = await runCopyPlan(copyPlan(m), MEDIA_BASE);
+    setNotice(out.ok ? COPIED_NOTICE[out.copied] : out.message);
   }
 
   async function toggleStar(m: TaskChatMessage) {
@@ -443,6 +451,7 @@ export function ChatPanel({
     const deleted = m.isDeleted === true;
     const starred = Boolean(viewerId && (m.starredBy ?? []).includes(viewerId));
     const gone = "This message was deleted.";
+    const copy = copyPlan(m);
     return [
       {
         id: "reply",
@@ -451,15 +460,14 @@ export function ChatPanel({
         reason: deleted ? gone : undefined,
         run: () => startReply(m),
       },
+      /* Label, availability and reason all come from the one rule, so a message
+         carrying a screenshot and no caption offers "Copy image" here and in
+         Messages rather than being greyed out in both. */
       {
         id: "copy",
-        label: "Copy text",
-        disabled: deleted || !m.text,
-        reason: deleted
-          ? gone
-          : !m.text
-            ? "This message has no text to copy."
-            : undefined,
+        label: copy.label,
+        disabled: copy.disabled,
+        reason: copy.reason ?? undefined,
         run: () => void copyMessage(m),
       },
       ...(repo.toggleTaskChatStar
@@ -1072,39 +1080,9 @@ export function ChatPanel({
               file is not enough to tell working from hung. */}
           {uploadProgress.length > 0 && (
             <div className="mb-2 space-y-1.5">
-              {uploadProgress.map((p) => {
-                /* Computed once, clamped, and never NaN.
-                   `Math.round(undefined)` is NaN, and NaN reaches three places
-                   here — an `aria-valuenow` a screen reader cannot say, a
-                   `width: NaN%` the browser discards, and the visible figure.
-                   The last of those goes through `formatPercent`, which can
-                   refuse; these two cannot, so the guard is here instead. */
-                const pct = Math.max(
-                  0,
-                  Math.min(100, Math.round(p.fraction * 100) || 0),
-                );
-                return (
-                  <div key={p.id} className="flex items-center gap-2 text-xs text-ink-muted">
-                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                    <span
-                      role="progressbar"
-                      aria-label={`Uploading ${p.name}`}
-                      aria-valuenow={pct}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--control)]"
-                    >
-                      <span
-                        className="block h-full rounded-full bg-ink transition-[width] duration-150 ease-out"
-                        style={{ width: `${pct}%` }}
-                      />
-                    </span>
-                    <span data-figure className="w-8 shrink-0 text-right text-[11px]">
-                      {formatPercent(p.fraction * 100) ?? "—"}
-                    </span>
-                  </div>
-                );
-              })}
+              {uploadProgress.map((p) => (
+                <UploadProgressRow key={p.id} name={p.name} fraction={p.fraction} />
+              ))}
             </div>
           )}
 

@@ -153,10 +153,18 @@ const HOOK = "lib/legacy-ui/useMeetingRecording.ts";
 test("a chunk is stored before the upload is attempted, not after it fails", () => {
   /* Persisting only on failure leaves the whole upload window uncovered —
      which is exactly when a person closes the tab on a stalled request. */
-  const src = code(HOOK);
+  /* Scoped to `flushChunks` rather than to the whole file. `drainPendingAudio`
+     also calls `uploadChunkWithRetry`, and it is now module-level and earlier
+     in the file, so a search from the top finds the drain's call and compares
+     against the wrong thing. The guarantee being pinned is unchanged: inside
+     the flush, the durable write comes first. */
+  const src = code(HOOK).slice(
+    code(HOOK).indexOf("const flushChunks = useCallback("),
+  );
   const put = src.indexOf("await putChunk(");
   const up = src.indexOf("await uploadChunkWithRetry(");
   assert.notEqual(put, -1, "chunks are not persisted at all");
+  assert.notEqual(up, -1, "the flush no longer uploads");
   assert.ok(put < up, "the durable copy is written after the upload attempt");
 });
 
@@ -176,10 +184,13 @@ test("a durably-stored failed chunk is not ALSO re-queued in memory", () => {
 test("the finalize marker is written before finalize runs", () => {
   /* Written afterwards, the one case it exists for — finalize throwing —
      never writes it. */
-  const src = code(HOOK);
+  /* Scoped to `stopRecording`, for the same reason as the chunk test above:
+     `drainPendingAudio` finalizes too and now sits earlier in the file. */
+  const src = code(HOOK).slice(code(HOOK).indexOf("const marker = {"));
   const mark = src.indexOf("await putSession(marker)");
   const fin = src.indexOf("await finalizeRecording({");
   assert.notEqual(mark, -1, "no marker is written");
+  assert.notEqual(fin, -1, "the stop no longer finalizes");
   assert.ok(mark < fin, "the marker is written after finalize");
 });
 
@@ -307,13 +318,17 @@ test("pausing stops the recording regardless of any microphone", () => {
   assert.match(setMuted, /speechIntervalsRef\.current\.push/);
 });
 
-test("nothing said while paused is captured", () => {
-  /* recorder.pause() stops the encoder, so the stretch is ABSENT from the file
-     rather than silent. The guard covers a browser without pause support. */
-  assert.match(
-    HOOK_CODE,
-    /if \(e\.data && e\.data\.size > 0 && !isPausedRef\.current\)/,
-  );
+test("nothing said while paused OR muted is captured", () => {
+  /**
+   * `recorder.pause()` stops the encoder, so either stretch is ABSENT from the
+   * file rather than silent. This guard is the belt to that braces: a browser
+   * without pause support keeps producing data, and it must still not be kept.
+   *
+   * Both conditions, because they are different facts. A mute says "this is not
+   * for the meeting"; a pause says "the room is not being recorded".
+   */
+  const guard = /e\.data\.size > 0 &&\s*!isPausedRef\.current &&\s*!isMutedRef\.current/;
+  assert.match(HOOK_CODE, guard);
 });
 
 test("the paused stretches travel with the upload and survive a reload", () => {
@@ -345,7 +360,16 @@ test("a paused recording does not go on saying REC", () => {
     "utf8",
   );
   assert.match(ui, /paused \? "PAUSED" : "REC"/);
-  assert.match(ui, /if \(paused\) return;/);
+  /**
+   * The figure freezes because it is measured TO the moment the pause began,
+   * not because a ticking counter was stopped. Same guarantee, and it now
+   * survives the indicator unmounting — which a stopped counter did not.
+   */
+  assert.match(
+    ui,
+    /paused && pauseStartedAtMs !== null \? pauseStartedAtMs : now/,
+    "the figure no longer stops at the instant the pause began",
+  );
 });
 
 test("the engine relays pause to the room, or only the host pauses", () => {
@@ -421,32 +445,63 @@ test("audio held on this device can be sent without waiting", () => {
   );
 });
 
-test("joining muted does not start the recorder paused", () => {
+test("a recorder starts in whatever state mute and pause put it in", () => {
   /**
-   * **The bug that cost a participant their entire recording.**
+   * **Both conditions, at the moment capture begins.**
    *
-   * `startRecording` paused the recorder when `isMutedRef` was set — correct
-   * back when muting and pausing were one control. Once everybody began joining
-   * muted by default, it meant every recorder was paused the instant it
-   * started: no chunks, finalize answered "nothing to merge", and that person's
-   * voice never reached Drive while the room showed them recording.
+   * Somebody joins muted by default, so a recorder that ignored the mute would
+   * capture the room from before they had chosen to be heard. One that ignored
+   * the pause would capture through a pause the host set before they arrived.
    *
-   * Observed on M053 — two people in the meeting, one file in the folder — and
-   * again on M054, where the panel read "Paused" for somebody nobody had
-   * paused.
+   * This line has been wrong in both directions. Keyed on the mute ALONE it
+   * meant a person who never unmuted produced no chunks at all, finalize
+   * answered "nothing to merge", and the room still showed them recording —
+   * M053, two people in the meeting and one file in the folder. That half is
+   * now caught by the honest `none` upload state rather than by pretending mute
+   * does not matter.
    */
   const start = HOOK_CODE.slice(
     HOOK_CODE.indexOf("recorder.start(1000)"),
     HOOK_CODE.indexOf("} catch (e) {", HOOK_CODE.indexOf("recorder.start(1000)")),
   );
   assert.notEqual(start, "", "startRecording body not found");
-  assert.equal(
-    /isMutedRef/.test(start),
-    false,
-    "the recorder still keys its start state on the microphone, not on pause",
+  assert.match(start, /if \(isPausedRef\.current \|\| isMutedRef\.current\)/);
+  /* The ROOM is told about the pause only: a muted person already shows as
+     muted on their own tile, and reporting them as "Paused" would say the room
+     had stopped recording when it had not. */
+  assert.match(
+    start,
+    /broadcastStatus\(isPausedRef\.current \? "paused" : "recording"\)/,
   );
-  assert.match(start, /if \(isPausedRef\.current\)/);
-  assert.match(start, /broadcastStatus\(isPausedRef\.current \? "paused" : "recording"\)/);
+});
+
+test("one place decides whether the recorder captures", () => {
+  /**
+   * Two callers each pausing and resuming for their own reason is how unmuting
+   * resumed a recording the host had paused, and how a resume un-paused a
+   * recorder that was only paused because a microphone was off. `syncCapture`
+   * computes the state instead of toggling it, so neither can undo the other.
+   */
+  assert.match(HOOK_CODE, /const syncCapture = useCallback/);
+  assert.match(
+    HOOK_CODE,
+    /const shouldCapture = !isPausedRef\.current && !isMutedRef\.current/,
+  );
+  /**
+   * And nothing else decides it. Four direct calls are expected and no more:
+   * the pause and the resume inside `syncCapture`, the guard that starts a
+   * recorder in the state mute and pause put it in, and the resume in
+   * `stopRecording` — which is not a decision about capture at all, but the
+   * flush a paused `MediaRecorder` needs before `stop()` will emit its last
+   * data.
+   */
+  const direct = (HOOK_CODE.match(/recorder\.(pause|resume)\(\)/g) ?? []).length;
+  assert.equal(
+    direct,
+    4,
+    `the recorder is paused/resumed in ${direct} places — a fifth means something is deciding capture outside syncCapture`,
+  );
+  assert.match(HOOK_CODE, /recorder\.resume\(\);[\s\S]{0,220}recorder\.stop\(\)/);
 });
 
 /* ── Recording has to work in every browser, not only Chromium ────────────── */
@@ -507,4 +562,124 @@ test("microphone constraints are preferences, not demands", () => {
   /* An `exact` constraint a browser cannot meet is an OverconstrainedError and
      no recording at all — Firefox and Safari refuse sample rates Chrome takes. */
   assert.match(HOOK_CODE, /sampleRate: \{ ideal: 16000 \}/);
+});
+
+test("the REC timer survives the meeting being popped out", () => {
+  /**
+   * **The timer restarted; the recording never did.**
+   *
+   * `RecIndicator` counted in its own state, and it is rendered inside the
+   * room's header — which is not rendered in the corner window or the
+   * picture-in-picture one. Popping the meeting out unmounted it; coming back
+   * mounted a fresh one at 00:00. The recorder lives in this hook, which stays
+   * mounted throughout, so nothing was lost — but a REC timer that resets says
+   * the recording restarted, and somebody could reasonably stop and restart a
+   * meeting over that, losing the audio the timer was wrongly reporting.
+   *
+   * So the hook holds the instants and the indicator does arithmetic.
+   */
+  assert.match(HOOK_CODE, /recordingStartedAtMs/);
+  assert.match(HOOK_CODE, /pausedTotalMs/);
+  assert.match(HOOK_CODE, /pauseStartedAtMs/);
+
+  const ui = readFileSync(
+    "components/features/meetings/RecordingControls.tsx",
+    "utf8",
+  );
+  /* Derived, not counted: no interval incrementing a seconds counter. */
+  assert.equal(
+    /setSecs\(/.test(ui),
+    false,
+    "the indicator counts its own seconds again — it will reset when it unmounts",
+  );
+  assert.match(ui, /upTo - startedAtMs - pausedTotalMs/);
+  /* And the light travels into the small windows, where it is the only thing
+     saying the recording is still running. */
+  assert.match(ui, /indicatorOnly/);
+});
+
+/**
+ * Reloading the page was eating the recording.
+ *
+ * Reported as "after reload the REC timer starts from 0 — is the audio before
+ * the reload deleted?". It was, and the timer was the visible half of it.
+ *
+ * The engine writes chunks as `chunk_0000`, `chunk_0001` … into ONE directory
+ * per person, with a plain `writeFileSync`. `startRecording` reset
+ * `chunkIndexRef` to 0 unconditionally, so a recorder coming back after a
+ * reload did not append — it wrote over the audio recorded before it, clip by
+ * clip, and finalize then merged the new recording's opening minutes followed
+ * by whatever tail of the old one happened to be longer.
+ */
+
+test("a resumed recording continues the numbering rather than restarting it", () => {
+  const src = code(HOOK);
+  assert.match(
+    src,
+    /chunkIndexRef\.current = prior\?\.nextChunkIndex \?\? 0/,
+    "the chunk index resets on resume, so a reload overwrites the audio before it",
+  );
+  assert.doesNotMatch(
+    src,
+    /isFinalizedRef\.current = false;\s*chunkIndexRef\.current = 0;/,
+    "the unconditional reset is back",
+  );
+});
+
+test("the prior session is read whatever the rejoin flag says", () => {
+  /* A reload races two callers: the hook's own resume effect, which passes
+     `rejoin: true` after 2.5s, and the socket replaying `recording_started` to
+     a late joiner, which passes `false` and usually arrives first. Trusting the
+     flag resets the numbering on exactly the path that actually runs. */
+  const src = code(HOOK);
+  assert.match(src, /const prior = getSession\(meetIdRef\.current, employeeIdRef\.current\)/);
+  assert.doesNotMatch(
+    src,
+    /const prior = rejoin \?/,
+    "the resume trusts the flag again, and the socket path resets the index",
+  );
+});
+
+test("the index is remembered on every chunk, not once at the start", () => {
+  /* A reload lands at an arbitrary moment; the only safe index to resume from
+     is the last one actually used. */
+  const src = code(HOOK);
+  assert.match(src, /function rememberChunkIndex\(/);
+  const flush = src.slice(src.indexOf("const flushChunks = useCallback("));
+  assert.match(
+    flush.slice(0, 900),
+    /rememberChunkIndex\(/,
+    "the flush does not record where the numbering reached",
+  );
+});
+
+test("the page-hide save records its index too", () => {
+  /* Closing the tab writes one more chunk. Not recording its index would let
+     the next load write over it. */
+  const src = code(HOOK);
+  const hide = src.slice(src.indexOf("chunkIndexRef.current = idx + 1;"));
+  assert.match(hide.slice(0, 300), /rememberChunkIndex\(/);
+});
+
+test("the REC clock counts the meeting, not the page", () => {
+  /* A reload showing 00:00 over a twenty-minute recording is what made somebody
+     reasonably assume the audio had been thrown away. */
+  const src = code(HOOK);
+  assert.match(src, /const startedAt = prior\?\.startedAt \?\? Date\.now\(\)/);
+  assert.match(src, /setRecordingStartedAtMs\(startedAt\)/);
+});
+
+test("a row written before the index existed resumes somewhere safe", () => {
+  /* An old `localStorage` row has no `nextChunkIndex`. Reading that as 0 would
+     overwrite; the safest reading of "unknown" is a number no earlier chunk
+     can have used. */
+  const src = code(HOOK);
+  assert.match(src, /nextChunkIndex: s\.nextChunkIndex \?\? 1000/);
+});
+
+test("a genuine first start still begins at zero", () => {
+  /* `stopRecording` clears the row, so the next start finds nothing and the
+     `?? 0` applies. Without that, every meeting would begin mid-numbering. */
+  const src = code(HOOK);
+  assert.match(src, /clearSession\(meetIdRef\.current, employeeIdRef\.current\)/);
 });

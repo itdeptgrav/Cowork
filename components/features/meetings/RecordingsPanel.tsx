@@ -1,6 +1,7 @@
 "use client";
 
-import { Panel, PanelHead, SkeletonRows } from "@/components/ui/Primitives";
+import { SkeletonRows } from "@/components/ui/Primitives";
+import { CollapsiblePanel } from "./CollapsiblePanel";
 import { Icon } from "@/components/ui/Icons";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime } from "@/lib/utils/format";
@@ -71,12 +72,24 @@ export function RecordingsPanel({
     (p) => p.joinedAt && !withAudio.has(String(p.employeeId)),
   );
 
+  /* The headline the panel can show while shut, so minimising costs the rows
+     and not the answer. Deliberately says the awkward cases too: a build with
+     no recording store, and a meeting that captured nothing, are both things
+     you want to know without opening anything. */
+  const summary = recordings.isLoading
+    ? "Checking…"
+    : recordings.isUnavailable
+      ? "This build does not store recordings."
+      : rows.length === 0
+        ? "No audio was recorded."
+        : `${rows.length} file${rows.length === 1 ? "" : "s"} from ${withAudio.size} ${withAudio.size === 1 ? "person" : "people"}${missing.length ? ` · ${missing.length} missing` : ""}`;
+
   return (
-    <Panel>
-      <PanelHead
-        title="Recorded audio"
-        sub="One file per person — check everybody's arrived"
-      />
+    <CollapsiblePanel
+      title="Recorded audio"
+      sub="One file per person — check everybody's arrived"
+      summary={summary}
+    >
 
       {recordings.isLoading ? (
         <SkeletonRows rows={2} />
@@ -100,6 +113,17 @@ export function RecordingsPanel({
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm text-ink">
                     {r.employeeName}
+                    {/* **Said, not hidden.** A backup is a second-generation
+                        copy kept by somebody else's browser because this
+                        person's own upload never arrived. It sounds worse, and
+                        anyone comparing it against a transcript needs to know
+                        which file is the evidence and which is the rescue. */}
+                    {r.isBackup && (
+                      <span className="ml-1.5 text-[11px] text-[var(--state-rework-ink)]">
+                        · backup copy
+                        {r.recordedByName ? ` from ${r.recordedByName}` : ""}
+                      </span>
+                    )}
                     {r.isRejoin && (
                       <span className="ml-1.5 text-[11px] text-ink-faint">
                         · later segment
@@ -145,6 +169,6 @@ export function RecordingsPanel({
           open Cowork.
         </p>
       )}
-    </Panel>
+    </CollapsiblePanel>
   );
 }

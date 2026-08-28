@@ -28,12 +28,16 @@ import {
   type MessageMenuItem,
 } from "./MessageContextMenu";
 import {
+  MEDIA_BASE,
   MessageAttachments,
   FileDropZone,
   filesFromClipboard,
   formatBytes,
+  UploadProgressRow,
   mediaUrl,
 } from "./MessageAttachments";
+import { copyPlan } from "@/lib/rules/media/copyMessage";
+import { COPIED_NOTICE, runCopyPlan } from "@/lib/utils/copyToClipboard";
 import { formatClock, formatDate, formatRelative, istDayKey } from "@/lib/utils/format";
 import { linkifyMessage } from "@/lib/utils/linkify";
 import { useNow } from "@/lib/hooks/useNow";
@@ -965,7 +969,7 @@ function Thread({
   /* The current match belongs to ONE query: a stored position only counts
      while the query it was reached in still stands, so editing the text drops
      back to "not yet navigated" with no state to reset. */
-  const searchKey = `${starFilter ? "*" : ""} ${searchQuery}`;
+  const searchKey = `${starFilter ? "*" : ""}\u0000${searchQuery}`;
   const searchAt =
     searchNav && searchNav.key === searchKey ? searchNav.at : -1;
 
@@ -1305,22 +1309,28 @@ function Thread({
   }
 
   /**
-   * Copy the text of a message.
+   * Copy a message — its text AND its picture.
    *
-   * Text only, and the menu greys the item out when there is none: `writeText`
-   * on an empty string succeeds and silently replaces whatever the person had
-   * on their clipboard, which is a worse outcome than the action being
-   * unavailable. Attachments are not copied — a file is not a clipboard string,
-   * and pretending otherwise would put a filename where people expect a file.
+   * The menu still greys the item out when there is neither: `writeText` on an
+   * empty string succeeds and silently replaces whatever the person had on
+   * their clipboard, which is worse than the action being unavailable.
+   *
+   * **What changed, and what did not.** A picture now goes on the clipboard
+   * beside the caption, as one `ClipboardItem` carrying both — paste into a
+   * document and the image lands, paste into a plain-text box and the words do.
+   * A message that is only a screenshot used to be refused outright with "no
+   * text to copy", which is the ordinary case for a screenshot and the reason
+   * this was reported. Other attachments are still not copied: a PDF or a video
+   * has no clipboard representation that survives a paste, and a filename put
+   * where somebody expected a file is the outcome that comment warned about.
+   *
+   * The decision lives in `copyPlan` and the bytes in `runCopyPlan`, both
+   * shared with `ChatPanel` — the two menus had already grown a duplicate of
+   * this rule, written out twice with the same sentence.
    */
   async function copyMessage(m: Message) {
-    try {
-      await navigator.clipboard.writeText(m.text);
-      setMessageNotice("Message copied.");
-    } catch {
-      /* Denied permission, or a browser without the API on an insecure origin. */
-      setMessageNotice("This browser would not let Cowork use the clipboard.");
-    }
+    const out = await runCopyPlan(copyPlan(m), MEDIA_BASE);
+    setMessageNotice(out.ok ? COPIED_NOTICE[out.copied] : out.message);
   }
 
   /** Scroll a message into view and flash it — if it is on the page. */
@@ -1540,6 +1550,7 @@ function Thread({
       viewerId && (m.starredBy ?? []).includes(viewerId),
     );
     const pinnedHere = isPinned(c.pinned, m.id);
+    const copy = copyPlan(m);
     return [
       {
         id: "reply",
@@ -1555,15 +1566,14 @@ function Thread({
         reason: deleted ? "This message was deleted." : undefined,
         run: () => setForwarding(m),
       },
+      /* Label, availability and reason from the one rule — see `copyMessage`.
+         "Copy image" appears on a screenshot with no caption, where this used
+         to read "Copy text" and be greyed out. */
       {
         id: "copy",
-        label: "Copy text",
-        disabled: deleted || !m.text,
-        reason: deleted
-          ? "This message was deleted."
-          : !m.text
-            ? "This message has no text to copy."
-            : undefined,
+        label: copy.label,
+        disabled: copy.disabled,
+        reason: copy.reason ?? undefined,
         run: () => void copyMessage(m),
       },
       ...(repo.toggleMessageStar
@@ -2191,28 +2201,15 @@ function Thread({
             ))}
           </div>
         )}
+        {/* The bar while bytes are moving, then a spinner reading “Processing…”
+            for the finalize round trip — which reports no progress of its own
+            and used to leave the bar sitting at 100% looking finished. Send
+            stays disabled across both stages: `uploading` clears only when the
+            batch actually resolves. */}
         {uploading && (
           <div className="mb-2 flex flex-col gap-1.5">
             {uploadProgress.map((p) => (
-              <div key={p.id} className="flex items-center gap-2 text-xs text-ink-muted">
-                <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                <div
-                  role="progressbar"
-                  aria-label={`Uploading ${p.name}`}
-                  aria-valuenow={Math.round(p.fraction * 100)}
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--control)]"
-                >
-                  <div
-                    className="h-full rounded-full bg-ink transition-[width] duration-150 ease-out"
-                    style={{ width: `${Math.round(p.fraction * 100)}%` }}
-                  />
-                </div>
-                <span data-figure className="w-8 shrink-0 text-right text-[11px]">
-                  {Math.round(p.fraction * 100)}%
-                </span>
-              </div>
+              <UploadProgressRow key={p.id} name={p.name} fraction={p.fraction} />
             ))}
           </div>
         )}

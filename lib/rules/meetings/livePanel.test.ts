@@ -27,7 +27,12 @@ const src = readFileSync(PANEL, "utf8");
 test("joining refetches immediately, not on the next tick", () => {
   const from = src.indexOf("setJoined(r.data)");
   assert.ok(from > 0, "the join handler was restructured");
-  const after = src.slice(from, from + 600);
+  /* Generous, because the join handler now also hands the session to the
+     shell — that is what lets the room outlive this page — and the block that
+     does it sits between `setJoined` and the refetch. What is being pinned is
+     that the refetch happens in the SAME handler rather than on a later tick,
+     which a wider window still says. */
+  const after = src.slice(from, from + 2000);
   assert.match(
     after,
     /sessions\.refetch\(\)/,
@@ -46,7 +51,11 @@ test("the clock and the refetch run while THIS reader is in a meeting", () => {
      was — permanently showing a meeting nobody is in. */
   assert.match(
     src,
-    /const watching = openId !== null \|\| joined !== null/,
+    /* `inRoom`, not `joined`: returning from the floating window remounts the
+       panel, so its own state would say nobody is in a meeting about a call
+       still running in the corner. The shell's session is the authority now —
+       the same guarantee, with one more way of being in the room. */
+    /const watching = openId !== null \|\| inRoom !== null/,
     "the live state is gated on a running session alone — a reader who joined " +
       "before their list knew about it gets no clock and no refetch at all, " +
       "and an abandoned room is never noticed going empty",
@@ -77,7 +86,9 @@ test("the refetch is faster than the figure beside it is slow", () => {
 test("the room coming up re-reads who is in it", () => {
   assert.match(
     src,
-    /onConnected=\{\(\) => refetchSessions\(\)\}/,
+    /* It travels on the session now: the room moved into the shell, and the
+       engine has no idea which page — if any — is showing it. */
+    /onConnected: \(\) => refetchSessions\(\)/,
     "the room connecting is the moment the other side becomes visible to this " +
       "one; waiting out the poll there is the longest avoidable disagreement",
   );
@@ -220,22 +231,49 @@ test("leaving takes the room off the screen before it waits on the network", () 
    * Same shape as the timer's held press: answer the person first, finish the
    * write behind them.
    */
+  /**
+   * **The guarantee is now stronger, and the mechanism moved.**
+   *
+   * `depart` used to clear the room and then `await leave` and `await end`
+   * itself. It cannot any more: the room lives in the shell, and
+   * `TaskMeetingLifecycle` runs both when the session closes — including when
+   * this page is not mounted, which is exactly what the floating window
+   * creates. Two callers would be two owners of one settlement, closing a
+   * session twice against different clocks.
+   *
+   * So the departure awaits NOTHING. The room goes on the click and the
+   * settlement follows from the session closing, which is the same answer to
+   * the 17 Aug report arrived at more directly.
+   */
   const from = src.indexOf("const depart = async (sessionId: string)");
   assert.ok(from > 0, "the departure handler was restructured");
-  const body = src.slice(from, from + 1800);
+  const body = src.slice(from, from + 2400);
 
   const cleared = body.indexOf("setJoined(null)");
-  const awaited = body.indexOf("await leave(sessionId)");
-  assert.ok(cleared > 0 && awaited > 0, "the departure no longer clears or leaves");
+  const closed = body.indexOf("closeMeeting()");
+  assert.ok(cleared > 0, "the departure no longer clears the room");
+  assert.ok(closed > 0, "the departure no longer closes the shell's session");
   assert.ok(
-    cleared < awaited,
-    "the room is unmounted only after the network calls, so Leave looks dead " +
-      "until they return and the press has to be repeated",
+    cleared < closed,
+    "the room is cleared after the session, so the page and the shell disagree " +
+      "for a frame about whether a meeting is running",
+  );
+  assert.doesNotMatch(
+    body,
+    /await leave\(/,
+    "the panel settles the session again, racing the shell that already does",
   );
 
   /* The re-entry guard stays: without it the button press AND the resulting
-     disconnection both run the settlement, closing the session twice. */
+     disconnection both run the departure. */
   assert.match(body, /if \(departingRef\.current === sessionId\) return;/);
-  /* And the settlement still runs — clearing early must not skip the credit. */
-  assert.match(body, /await end\(sessionId\)/);
+
+  /* And the settlement still happens — in the shell, where it survives the page
+     going away. Clearing early must not skip the credit. */
+  const shell = readFileSync(
+    "components/features/meetings/TaskMeetingLifecycle.tsx",
+    "utf8",
+  );
+  assert.match(shell, /await leave\(args\)/, "leaving is no longer recorded");
+  assert.match(shell, /await end\(args\)/, "the session is never settled");
 });

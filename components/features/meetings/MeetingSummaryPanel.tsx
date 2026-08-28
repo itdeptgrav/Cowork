@@ -55,14 +55,33 @@ async function getToken(): Promise<string> {
   return user.getIdToken();
 }
 
+/** Long enough for finalize to land the tail of the recording. */
+const AUTO_DELAY_MS = 60_000;
+
 // ── Component ──────────────────────────────────────────────────────────────────
 
 export function MeetingSummaryPanel({
   meetId,
   meetStatus,
+  autoGenerateAfter = null,
 }: {
   meetId: string;
   meetStatus: string;
+  /**
+   * Generate without being asked, once, when this changes to a new non-empty
+   * value.
+   *
+   * For a task meeting, which has no "End for everyone": the meeting is over
+   * when the last person leaves, and asking somebody to come back and press a
+   * button for the summary of a conversation they have already walked away
+   * from is asking for a summary nobody will ever have.
+   *
+   * The value is the session that just ended, so leaving twice generates twice
+   * and a re-render generates nothing. Deliberately NOT "generate whenever a
+   * summary is missing" — that would put every past meeting through Gemini the
+   * first time anybody opened the tab.
+   */
+  autoGenerateAfter?: string | null;
 }) {
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -113,6 +132,33 @@ export function MeetingSummaryPanel({
       }
     }
   }, [generating]);
+
+  /**
+   * The one automatic run, for a meeting that ends by everybody leaving.
+   *
+   * Keyed on the session id so it fires once per meeting rather than once per
+   * render. It waits before asking: finalize is still uploading the tail of the
+   * recording as the room closes, and a summary generated against half the
+   * audio is worse than one generated a minute later — Gemini would answer
+   * confidently from whatever had landed.
+   *
+   * `firedFor` is a ref rather than state because nothing renders differently
+   * for having fired; it exists only so a re-render cannot fire again.
+   */
+  const firedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!autoGenerateAfter) return;
+    if (firedFor.current === autoGenerateAfter) return;
+    firedFor.current = autoGenerateAfter;
+    const t = setTimeout(() => void generateRef.current(false), AUTO_DELAY_MS);
+    return () => clearTimeout(t);
+    /* Only the session id. `generate` is reached through a ref precisely so
+       this cannot re-run when its identity changes — that would start a second
+       generation while the first was still in flight. */
+  }, [autoGenerateAfter]);
+
+  const generateRef = useRef<(force?: boolean) => Promise<void>>(async () => {});
+  generateRef.current = generate;
 
   async function generate(force = false) {
     setGenerating(true);

@@ -26,6 +26,17 @@ function code(path: string): string {
 const DETAIL = "components/features/meetings/MeetingDetailArea.tsx";
 const GUEST = "components/features/meetings/GuestMeetingArea.tsx";
 const ROOM = "components/features/meetings/MeetingRoom.tsx";
+/**
+ * The room's interior was extracted so a task's meeting could use it too. The
+ * behaviour these tests pin did not change; the file holding it did.
+ *
+ *   RoomStage    — the grid, pinning, the per-tile menu, the avatars
+ *   RoomInterior — the control bar, the audio renderer, the null helpers
+ */
+const STAGE = "components/features/meetings/RoomStage.tsx";
+const INTERIOR = "components/features/meetings/RoomInterior.tsx";
+/** The three together, for a check that does not care which one holds it. */
+const roomTree = () => code(ROOM) + code(STAGE) + code(INTERIOR);
 
 /**
  * **These two now assert the same guarantees through a different mechanism.**
@@ -289,10 +300,32 @@ test("joining is silent and dark by default", () => {
    * seen before deciding to be. A click to speak is a small friction; being
    * heard before you meant to be cannot be taken back.
    */
+  /**
+   * **The guarantee is unchanged; where it is written moved.**
+   *
+   * This used to assert the literal `audio={false}` on `LiveKitRoom`. That is
+   * no longer where the answer lives, and it could not stay there: those props
+   * are re-applied on every `SignalConnected`, so a hardcoded `false` also
+   * re-muted somebody mid-meeting every time the connection blipped. The
+   * initial state carries the default now, and `DeviceIntentSync` keeps the
+   * props level with the real tracks afterwards — so joining is still silent
+   * and dark, and staying joined no longer silences you. See
+   * micSurvivesReconnect.test.ts.
+   */
   const room = code(ROOM);
   const props = room.slice(room.indexOf("<LiveKitRoom"), room.indexOf("data-lk-theme"));
-  assert.match(props, /video=\{false\}/, "the camera is on by default again");
-  assert.match(props, /audio=\{false\}/, "the microphone is live by default again");
+  assert.match(props, /video=\{camOn\}/, "the camera prop is no longer the live one");
+  assert.match(props, /audio=\{micOn\}/, "the microphone prop is no longer the live one");
+  assert.match(
+    room,
+    /const \[micOn, setMicOn\] = useState\(false\)/,
+    "the microphone is live by default again",
+  );
+  assert.match(
+    room,
+    /const \[camOn, setCamOn\] = useState\(false\)/,
+    "the camera is on by default again",
+  );
 });
 
 test("the room fills the box the engine gives it", () => {
@@ -373,7 +406,7 @@ test("a pinned track is enlarged and the rest stay visible", () => {
    * It is a decision about your OWN screen — nothing is broadcast, because
    * whose turn it is to look at what is not the pinner's call for the room.
    */
-  const room = code(ROOM);
+  const room = roomTree();
   assert.match(room, /<FocusLayoutContainer/);
   assert.match(room, /<FocusLayout trackRef=\{pinned\}/);
   assert.match(room, /<CarouselLayout tracks=\{others\}/);
@@ -385,7 +418,7 @@ test("a shared screen pins itself once, and can be overridden", () => {
   /* Somebody sharing has almost always done it to be looked at. Making every
      viewer hunt for a pin button first is the wrong default — but it stays a
      default: unpin, or pin something else, and the choice holds. */
-  const room = code(ROOM);
+  const room = roomTree();
   assert.match(room, /autoPinnedRef/);
   assert.match(room, /if \(autoPinnedRef\.current === key\) return;/);
 });
@@ -405,10 +438,32 @@ test("every entry in the tile menu takes real effect", () => {
   assert.match(menu, /onPin\(isPinned \? null : key\)/);
   /* Hide — the stage filters the grid by these keys. */
   assert.match(menu, /onHide\(key, !isHidden\)/);
-  const room = code(ROOM);
+  const room = roomTree();
   assert.match(room, /hiddenKeys\.has\(keyOf\(t\)\)/);
   /* Silence — LiveKit's own per-participant volume in this browser. */
-  assert.match(menu, /remote\.setVolume\(silenced \? 1 : 0\)/);
+  assert.match(menu, /participant\.setVolume\(silenced \? 1 : 0\)/);
+
+  /**
+   * **And the grid still gets LiveKit's own tile as its DIRECT child.**
+   *
+   * This is the guard on the mistake that turned a live meeting into a black
+   * rectangle. `ParticipantTile` renders `children ?? defaultContent`, so
+   * anything passed as a child REPLACES the video; and `GridLayout` sizes its
+   * direct children, so wrapping the tile collapses it to nothing. The controls
+   * therefore live above the grid, and the grid is left alone.
+   */
+  assert.match(
+    room,
+    /<GridLayout tracks=\{visible\} className="h-full">\s*<ParticipantTile>/,
+    "the grid's child is no longer LiveKit's own tile — the tiles will not render",
+  );
+  /* Supplying the tile's CONTENT is the supported seam and keeps the tile as
+     the grid's direct child. Wrapping it is the thing that breaks. */
+  assert.equal(
+    /<div[^>]*>\s*<ParticipantTile/.test(room),
+    false,
+    "the tile is wrapped again — the grid will size the wrapper and the tile collapses",
+  );
 });
 
 test("the menu says these are local decisions, not room ones", () => {
@@ -424,14 +479,184 @@ test("an option that cannot work is absent, not disabled", () => {
   /* There is no volume to change on your own tile, and a screen share's audio
      is a different track from the person's microphone. */
   const menu = code("components/features/meetings/TileMenu.tsx");
-  assert.match(menu, /\{remote && !isLocal && !isScreen && \(/);
-  assert.match(menu, /participant instanceof RemoteParticipant/);
+  assert.match(menu, /\{remote && !isScreen && \(/);
+  assert.match(menu, /p instanceof RemoteParticipant/);
 });
 
 test("hiding cannot strand the reader with an empty stage", () => {
   /* The pinned tile survives a hide, and hiding everything offers the way
      back rather than leaving a blank panel. */
-  const room = code(ROOM);
+  const room = roomTree();
   assert.match(room, /\|\| keyOf\(t\) === pinnedKey/);
   assert.match(room, /Show them all again/);
+});
+
+test("the pinned tile is the LARGE one, not the thumbnail", () => {
+  /**
+   * `FocusLayoutContainer` "expects two children: a small side component ...
+   * and a larger main component". The order IS the contract, not a style
+   * choice — written the other way round it silently swaps them, which put a
+   * pinned screen share in the thumbnail strip and a face in the large slot.
+   * Pinning appeared to do the exact opposite of what it says.
+   */
+  const room = roomTree();
+  const block = room.slice(
+    room.indexOf("<FocusLayoutContainer"),
+    room.indexOf("</FocusLayoutContainer>"),
+  );
+  assert.notEqual(block, "", "the focus layout was not found");
+  const carousel = block.indexOf("<CarouselLayout");
+  const focus = block.indexOf("<FocusLayout ");
+  assert.ok(carousel !== -1 && focus !== -1, "both children must be present");
+  assert.ok(
+    carousel < focus,
+    "the focused tile is first, so it will be drawn in the small side slot",
+  );
+});
+
+test("a tile with no camera shows the person, not a grey outline", () => {
+  /**
+   * Everybody joins with their camera off, so the default placeholder is what a
+   * meeting looks like almost all of the time — and it is the same anonymous
+   * figure for every participant. Four people were four identical silhouettes,
+   * distinguishable only by reading the labels. The directory already holds
+   * their photographs.
+   */
+  const content = code("components/features/meetings/TileContent.tsx");
+  assert.match(content, /<Avatar/);
+  /* Resolved by employee id, which is what the token signs as the LiveKit
+     identity — no second lookup key to keep in step. */
+  assert.match(content, /p\.id === participant\.identity/);
+  /* And the name stays: replacing the tile's content replaces ALL of it, and a
+     tile with no name is worse than an outline with one. */
+  assert.match(content, /<ParticipantName/);
+});
+
+/**
+ * Ending the meeting left the organiser sitting in it.
+ *
+ * **End for everyone** flips the status to `completed`. The page then says
+ * "You cannot join this meeting — This meeting has ended." and it was telling
+ * the truth: the room's own gate refused. But the floating window carried on
+ * in the corner with both participants' tiles and a live control bar, because
+ * the shell's effect only ever asked whether it should OPEN a session. Having
+ * decided not to, it returned — and never told the session already running
+ * that the meeting it belonged to was over.
+ *
+ * LiveKit does not rescue this. Ending a meeting writes a status; it does not
+ * delete the room, so nobody is disconnected and `onLeave` never fires. The
+ * only thing that can end that window is the refusal itself.
+ */
+test("a meeting you may no longer join closes the session, not merely skips opening it", () => {
+  const detail = code("components/features/meetings/MeetingDetailArea.tsx");
+  const guard = detail.slice(detail.indexOf("joinRefusal(liveMeeting"));
+  const body = guard.slice(0, guard.indexOf("openMeeting({"));
+  assert.match(
+    body,
+    /closeMeeting\(\)/,
+    "the refusal branch does not close the running session, so ending a meeting leaves its window open",
+  );
+});
+
+test("the refusal branch still stops the meeting being re-opened", () => {
+  /* Closing without returning would fall straight through to `openMeeting`
+     and the window would come back on the next render. */
+  const detail = code("components/features/meetings/MeetingDetailArea.tsx");
+  const guard = detail.slice(detail.indexOf("joinRefusal(liveMeeting"));
+  const body = guard.slice(0, guard.indexOf("openMeeting({"));
+  const closed = body.indexOf("closeMeeting()");
+  const returned = body.indexOf("return;", closed);
+  assert.ok(closed !== -1 && returned !== -1, "the branch does not both close and return");
+});
+
+test("closing on refusal is declared to the effect that does it", () => {
+  /* `closeMeeting` is `meetingSession.close` read out of the provider. Left out
+     of the dependency list it would be the stale one from an earlier render,
+     which for a callback that tears down media is not a detail. */
+  const detail = code("components/features/meetings/MeetingDetailArea.tsx");
+  assert.match(
+    detail,
+    /\[liveMeeting, left, viewerId, myName, openMeeting, closeMeeting\]/,
+  );
+});
+
+/* ── Asking before a reload ends the meeting ──────────────────────────────── */
+
+test("a reload during a meeting asks first", () => {
+  /* The recorder's own guard is gated on a recording being live, which is a
+     minority of a meeting's life — the host has to press Record, and nobody
+     does in the first seconds. This one is gated on there being a meeting. */
+  const guard = code("components/features/meetings/MeetingReloadGuard.tsx");
+  assert.match(guard, /addEventListener\("beforeunload", handler\)/);
+  assert.match(guard, /const inMeeting = session !== null/);
+});
+
+test("it sets BOTH the things a browser might read", () => {
+  /* `preventDefault` is what the current specification asks for; `returnValue`
+     is what older browsers check. One alone leaves a browser somewhere that
+     does not ask. */
+  const guard = code("components/features/meetings/MeetingReloadGuard.tsx");
+  assert.match(guard, /e\.preventDefault\(\)/);
+  assert.match(guard, /e\.returnValue =/);
+});
+
+test("the listener is removed when the meeting ends", () => {
+  /* Left behind, it would ask about a meeting that is over — and a page that
+     cries wolf on every reload is one people learn to click through. */
+  const guard = code("components/features/meetings/MeetingReloadGuard.tsx");
+  assert.match(guard, /removeEventListener\("beforeunload", handler\)/);
+  assert.match(guard, /if \(!inMeeting\) return;/);
+});
+
+test("it is mounted in the shell, beside the meeting itself", () => {
+  /* It has to ask whether the room is on this page or floating in the corner. */
+  const shell = code("components/layout/shell/ShellFrame.tsx");
+  assert.match(shell, /<MeetingReloadGuard \/>/);
+});
+
+test("the recorder's own guard is left exactly as it was", () => {
+  /* Two handlers both asking is harmless — the browser shows one dialog for a
+     page, not one per listener — and changing the existing one was not asked
+     for. */
+  const hook = code("lib/legacy-ui/useMeetingRecording.ts");
+  assert.match(hook, /if \(!isRecordingRef\.current\) return;\s*e\.preventDefault\(\)/);
+});
+
+test("cancelling a reload does not end the meeting", () => {
+  /**
+   * **The bug the reload dialog exposed.**
+   *
+   * LiveKit's default is `disconnectOnPageLeave: true`, and it registers
+   * `beforeunload` — an event that fires when a reload is PROPOSED, not when it
+   * happens. So the room was already torn down by the time the browser's
+   * "Reload site?" dialog appeared, and pressing Cancel left the reader on a
+   * live page with a dead connection: "You have left this meeting", over a
+   * meeting they had just chosen not to leave.
+   *
+   * Nobody saw it before there was a dialog — without one the page simply
+   * reloads, and a room disconnecting a few milliseconds early on the way out
+   * is invisible. Asking the question is what made the early teardown matter.
+   */
+  const opts = code("components/features/meetings/roomOptions.ts");
+  assert.match(opts, /disconnectOnPageLeave: false/);
+
+  /* Every room, or the one that was missed is the one somebody is in. */
+  for (const path of [
+    ROOM,
+    "components/features/meetings/TaskRoom.tsx",
+    GUEST,
+  ]) {
+    assert.match(
+      code(path),
+      /options=\{COWORK_ROOM_OPTIONS\}/,
+      `${path} still lets LiveKit disconnect on a proposed reload`,
+    );
+  }
+});
+
+test("the recording's own page-hide handler is a separate listener", () => {
+  /* Turning off LiveKit's teardown must not touch the recording's flush and
+     finalize — those are what save the audio on a real unload. */
+  const hook = code("lib/legacy-ui/useMeetingRecording.ts");
+  assert.match(hook, /addEventListener\("pagehide", handler\)/);
 });

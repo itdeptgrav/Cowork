@@ -172,6 +172,46 @@ function sameKey(
  * this deployment are different keys, and the backend's own comment in
  * `fcmPush.service.js` records that trap.
  */
+/**
+ * What to tell somebody whose device would not register.
+ *
+ * The browser's own words are the wrong words. Chrome says **"Registration
+ * failed - push service error"**, which reads as a fault in Cowork and is not
+ * one: it comes from inside the browser, before any key or endpoint of ours is
+ * involved, and it means the browser could not reach Google's push service at
+ * all. On an office network that is nearly always the network — the push
+ * endpoints are a different host from anything else the app talks to, so
+ * everything else can work perfectly while this one thing is blocked.
+ *
+ * Both routes are named because both were tried. Somebody reporting this should
+ * not have to discover that the fallback ran too.
+ *
+ * The browser's string is kept on the end rather than replaced. It is the only
+ * part an administrator can search for, and a message that hides the original
+ * error to sound tidier is a message that costs somebody an afternoon.
+ */
+export function describePushFailure(
+  fcmFailure: string | null,
+  webPushFailure: string | null,
+): string {
+  const raw = webPushFailure ?? fcmFailure;
+  if (!raw) return "Neither messaging nor Web Push could register this device.";
+
+  /* Chrome's wording for "I could not reach the push service." Firefox says
+     its own thing, so this is a contains-check rather than an equality one. */
+  if (/push service error|AbortError/i.test(raw)) {
+    return `This browser could not reach the notification service, so pushes are off on this device. Everything still arrives in Cowork itself — the bell and the notifications page are unaffected. It is usually the network blocking Google's push service rather than anything about your account; a different network, or asking IT to allow it, is the fix. (${raw})`;
+  }
+
+  if (/denied|NotAllowedError/i.test(raw)) {
+    return `This browser has blocked notifications for Cowork. Turn them back on in the browser's own site settings — the page cannot ask again once it has been refused. (${raw})`;
+  }
+
+  return fcmFailure && webPushFailure
+    ? `Messaging refused this device (${fcmFailure}), and the Web Push fallback could not subscribe either (${webPushFailure}).`
+    : `This device could not be registered for notifications. (${raw})`;
+}
+
 async function subscribeWebPush(
   registration: ServiceWorkerRegistration,
 ): Promise<string | null> {
@@ -604,19 +644,33 @@ export async function registerPush(employeeId: string): Promise<PushResult> {
         "[FCM] No token — falling back to Web Push.",
         fcmFailure ?? "getToken returned nothing",
       );
+      /**
+       * **The fallback THROWS as often as it returns nothing.**
+       *
+       * `pushManager.subscribe` rejects when the browser cannot register with
+       * the push service, and that rejection used to fly straight past this
+       * block to the outer `catch` — which reports the raw browser string and
+       * knows nothing about the FCM attempt that came before it. So the one
+       * message written to explain that BOTH routes were tried was produced
+       * only in the case where the fallback quietly returned null, and never in
+       * the case that actually happens.
+       */
+      let webPushFailure: string | null = null;
       if ("PushManager" in window) {
-        const subscription = await subscribeWebPush(registration);
-        if (subscription) {
-          await saveToken(employeeId, subscription);
-          onMessage(messaging, () => { });
-          return { state: "on", detail: null };
+        try {
+          const subscription = await subscribeWebPush(registration);
+          if (subscription) {
+            await saveToken(employeeId, subscription);
+            onMessage(messaging, () => { });
+            return { state: "on", detail: null };
+          }
+        } catch (e) {
+          webPushFailure = e instanceof Error ? e.message : String(e);
         }
       }
       return {
         state: "failed",
-        detail: fcmFailure
-          ? `Messaging refused this device (${fcmFailure}), and the Web Push fallback could not subscribe either.`
-          : "Neither messaging nor Web Push could register this device.",
+        detail: describePushFailure(fcmFailure, webPushFailure),
       };
     }
 

@@ -47,6 +47,10 @@ import {
   getPublicMeetingInfo,
   guestJoinMeeting,
 } from "@/lib/legacy/meetingMedia";
+import { BREAKPOINT, useMediaQuery } from "@/lib/hooks/useMediaQuery";
+import { COWORK_ROOM_OPTIONS } from "./roomOptions";
+import { DeviceIntentSync } from "./DeviceIntentSync";
+import { useFullscreen } from "@/lib/legacy-ui/useFullscreen";
 import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
 
 // ── Component ──────────────────────────────────────────────────────────────────
@@ -707,9 +711,57 @@ function GuestRoom({
      reach Drive instead of finding out from a silent gap in the summary. */
   const uploadFailed = recording.uploadError;
 
+  /* A guest gets the same full-screen control as everybody else. They are the
+     ones most likely to want it — a guest joins to be SHOWN something, and
+     they have no other Cowork window to lose. */
+  const {
+    attach: fullscreenRef,
+    isFullscreen,
+    supported: canFullscreen,
+    toggle: toggleFullscreen,
+  } = useFullscreen();
+
+  /* The live microphone and camera, seeded from the lobby. See the note where
+     they are passed to LiveKitRoom. */
+  const [micOn, setMicOn] = useState(micEnabled);
+  const [camOn, setCamOn] = useState(camEnabled);
+  const onDeviceIntent = useCallback(
+    (next: { mic: boolean; cam: boolean }) => {
+      setMicOn(next.mic);
+      setCamOn(next.cam);
+    },
+    [],
+  );
+
+  /* See the note at the guest's ControlBar. */
+  const wideEnoughForLabels = useMediaQuery(BREAKPOINT.sm);
+
   return (
     <section
-      className="slab slab-flat relative flex min-h-screen flex-col overflow-hidden"
+      /**
+       * **`h-dvh`, not `min-h-screen`.** A minimum lets the column grow past the
+       * viewport, and the control bar is the LAST child of that column — so
+       * everything below the fold, which is the microphone, the camera, the
+       * screen share and Leave. A guest scrolled to find the grid empty and no
+       * way to speak.
+       *
+       * `dvh` rather than `vh` because a phone's address bar changes the
+       * viewport as it hides: `100vh` is the LARGEST it will be, so the bar
+       * spends most of its life just off the bottom of a phone screen.
+       *
+       * The grid inside takes the space left over and scrolls within itself if
+       * it must; the controls never move.
+       */
+      /* `fixed inset-0` on the full screen: Tailwind's `relative` is author CSS
+         and beats the browser's own `:fullscreen { position: fixed }`, which
+         leaves an element painted over everything but still laid out where it
+         sat. See the same note in MeetingRoom's RoomFrame. */
+      className={
+        isFullscreen
+          ? "slab slab-flat fixed inset-0 flex h-full w-full flex-col overflow-hidden"
+          : "slab slab-flat relative flex h-dvh flex-col overflow-hidden"
+      }
+      ref={fullscreenRef}
       data-on-slab
     >
       <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-4 py-3">
@@ -729,6 +781,30 @@ function GuestRoom({
             Your audio is not uploading
           </span>
         ) : null}
+        {canFullscreen && (
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            title={isFullscreen ? "Exit full screen" : "Full screen"}
+            aria-label={
+              isFullscreen
+                ? "Exit full screen"
+                : "Show the meeting full screen"
+            }
+            aria-pressed={isFullscreen}
+            className={`grid h-9 w-9 shrink-0 place-items-center rounded-full sm:h-8 sm:w-8 transition-colors ${
+              isFullscreen
+                ? "bg-white/20 text-slab-ink"
+                : "text-slab-ink-muted hover:bg-white/10 hover:text-slab-ink"
+            }`}
+          >
+            {isFullscreen ? (
+              <Icon.collapse className="h-4 w-4" />
+            ) : (
+              <Icon.expand className="h-4 w-4" />
+            )}
+          </button>
+        )}
         <span className="text-[11px] text-slab-ink-muted">Guest</span>
       </header>
 
@@ -744,8 +820,26 @@ function GuestRoom({
           token={token}
           serverUrl={url}
           connect
-          video={camEnabled ? (camId ? { deviceId: { exact: camId } } : true) : false}
-          audio={micEnabled ? (micId ? { deviceId: { exact: micId } } : true) : false}
+          /* See MeetingRoom: LiveKit tears the room down on `beforeunload`,
+             which is fired when a reload is PROPOSED — so a guest who cancelled
+             the browser's dialog was dropped from a meeting they had just
+             chosen not to leave. */
+          options={COWORK_ROOM_OPTIONS}
+          /**
+           * **The lobby's choice is where this STARTS, not what it is.**
+           *
+           * These props are re-applied on every `SignalConnected`, and that
+           * fires on every reconnect — so passing the lobby values as constants
+           * meant a guest who muted themselves in the room was unmuted again by
+           * the next connection blip, and a guest who unmuted was silently
+           * muted. Held as state and kept level with the real tracks by
+           * `DeviceIntentSync`, a reconnect restores what they actually chose.
+           *
+           * The device constraints still ride along, so a guest who picked a
+           * particular microphone in the lobby keeps that microphone.
+           */
+          video={camOn ? (camId ? { deviceId: { exact: camId } } : true) : false}
+          audio={micOn ? (micId ? { deviceId: { exact: micId } } : true) : false}
           data-lk-theme="default"
           className="flex min-h-0 flex-1 flex-col"
           onDisconnected={onLeave}
@@ -753,9 +847,14 @@ function GuestRoom({
         >
           <GuestStage />
           <div className="shrink-0 border-t border-white/10">
-            <ControlBar variation="verbose" />
+            {/* A guest is the MOST likely person to be on a phone — they were
+                sent a link, and a link opens wherever the reader happens to be.
+                The verbose row does not fit 375px, and `variation` is a prop no
+                stylesheet can override. */}
+            <ControlBar variation={wideEnoughForLabels ? "verbose" : "minimal"} />
           </div>
           <RoomAudioRenderer />
+          <DeviceIntentSync onChange={onDeviceIntent} />
         </LiveKitRoom>
       )}
     </section>

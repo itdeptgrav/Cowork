@@ -502,6 +502,20 @@ export interface MeetingRecording {
   uploadedAt: string;
   /** A later segment of the same person's audio, not a duplicate of it. */
   isRejoin: boolean;
+  /**
+   * Somebody else's browser captured this, because this person's own upload
+   * never arrived.
+   *
+   * A second-generation copy — already compressed by their browser, carried
+   * over the network and decoded — so it sounds worse than a real recording,
+   * and whatever their connection lost is baked into it permanently. It exists
+   * only where the alternative is silence, and it must never be presented as
+   * the same thing: somebody reading a transcript needs to know which file is
+   * evidence and which is a rescue.
+   */
+  isBackup: boolean;
+  /** Who captured it. Empty unless `isBackup`. */
+  recordedByName: string;
 }
 
 /** Why somebody is in the room. Decides their LiveKit grants and nothing else. */

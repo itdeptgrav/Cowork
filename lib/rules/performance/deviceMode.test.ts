@@ -386,3 +386,72 @@ test("the monitor does not run until asked", () => {
      times a second is the cost it is measuring. */
   assert.match(src, /elapsed >= 1000/);
 });
+
+/* ── Essential motion survives both clamps ────────────────────────────────── */
+
+test("a progress spinner keeps turning in plain mode and under reduced motion", () => {
+  /*
+   * **The reported fault.** Both clamps in `globals.css` stop every animation
+   * dead — `animation-duration: 0.01ms` with `animation-iteration-count: 1`.
+   * Measured in the browser under `data-perf="plain"`, an `animate-spin` ring
+   * computed to `animationDuration: 1e-05s, animationIterationCount: 1`: one
+   * ten-microsecond rotation and then frozen for ever.
+   *
+   * That is correct for a flourish and wrong for an indicator whose entire
+   * meaning is that it is moving. A still ring beside "Processing…" is
+   * indistinguishable from a hung upload, which is the one thing the row was
+   * added to rule out.
+   *
+   * The carve-out is deliberately opt-in — a class has to ask for it — so the
+   * clamps go on covering everything decorative. `performanceProfile("plain")
+   * .animations` stays false: the JS profile governs whether a component
+   * chooses to animate at all, which is a different question from whether a
+   * spinner that has already been rendered is allowed to turn.
+   */
+  const css = readFileSync("app/globals.css", "utf8");
+
+  assert.match(
+    css,
+    /:root \.motion-essential,\s*\n\s*:root\[data-perf="plain"\] \.motion-essential \{[^}]*animation-iteration-count: infinite !important;/,
+    "the plain-mode clamp is not lifted for essential motion",
+  );
+
+  /* Reduced motion is HONOURED rather than overridden — slowed, not restored to
+     full speed. WCAG exempts motion essential to conveying information; the
+     answer to "this distracts me" is a calmer turn, not a frozen one. */
+  /* Matched as one block rather than by slicing from the LAST reduced-motion
+     query — there are several in this file, and the last belongs to the
+     spreadsheet's marching ants. */
+  const reduced =
+    /@media \(prefers-reduced-motion: reduce\) \{\s*:root \.motion-essential,\s*:root\[data-perf="plain"\] \.motion-essential \{([^}]*)\}/.exec(
+      css,
+    );
+  assert.ok(reduced, "reduced motion does not mention essential motion at all");
+  assert.match(reduced![1], /animation-iteration-count: infinite !important/);
+
+  const seconds = (s: string) => parseFloat(s.match(/[\d.]+/)![0]);
+  const fast = /animation-duration: 0?\.9s !important/.exec(css);
+  const slow = /animation-duration: 1\.8s !important/.exec(reduced![1]);
+  assert.ok(fast && slow, "both durations are declared");
+  assert.ok(
+    seconds(slow![0]) > seconds(fast![0]),
+    "reduced motion should slow the spin, not speed it up",
+  );
+
+  /* Specificity: the exemption must OUTRANK the clamps and come after them.
+     `:root[data-perf="plain"] *` is (0,2,0); the carve-out is (0,3,0). */
+  assert.ok(
+    css.indexOf(".motion-essential") >
+      css.lastIndexOf(':root[data-perf="plain"] *::after'),
+    "the exemption is declared before the clamp it has to beat",
+  );
+});
+
+test("the upload spinner is the thing that asks for it", () => {
+  /* A rule nothing uses is a rule that quietly stops working. */
+  const row = readFileSync(
+    "components/features/messages/MessageAttachments.tsx",
+    "utf8",
+  );
+  assert.match(row, /motion-essential[^"]*animate-spin/);
+});

@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useMeetingSession } from "./MeetingSessionContext";
 import { MeetingRoom } from "./MeetingRoom";
+import { TaskRoom } from "./TaskRoom";
 import { useDocumentPip } from "@/lib/legacy-ui/useDocumentPip";
 import { useAutoPip } from "@/lib/legacy-ui/useAutoPip";
 
@@ -98,7 +99,12 @@ export function MeetingEngine() {
      offer. It does nothing until the reader accepts it. */
   useAutoPip({
     active: session !== null,
-    title: session?.meeting.title ?? "Meeting",
+    title:
+      session === null
+        ? "Meeting"
+        : session.kind === "task"
+          ? session.taskTitle
+          : session.meeting.title,
     onEnter: openPip,
   });
 
@@ -278,32 +284,67 @@ export function MeetingEngine() {
         document.body,
       )}
 
-      {/* ONE room, portalled into the container wherever it currently lives. */}
+      {/**
+        * ONE room, portalled into the container wherever it currently lives.
+        *
+        * **Two components, one position.** React reconciles by position, and a
+        * `LiveKitRoom` that moves in the tree tears down its media and
+        * reconnects — so the branch is here, at the top, and never inside the
+        * room. A session cannot change kind while it is open, so the branch is
+        * decided once and holds for the life of the call.
+        */}
       {pip.container &&
         createPortal(
-          <MeetingRoom
-            meeting={session.meeting}
-            isOrganiser={session.isOrganiser}
-            displayName={session.displayName}
-            compact={!docked}
-            onReturn={() => {
-              /* Out of the PiP window first — going "back to the meeting"
-                 while the room is still in a detached window would leave the
-                 page showing an empty stage. */
-              if (pip.isOpen) pip.close();
-              router.push(`/meetings/${session.meeting.id}`);
-            }}
-            onPopOut={pip.supported && !pip.isOpen ? openPip : undefined}
-            onDragHandle={!docked && !pip.isOpen ? onDragStart : undefined}
-            onLeave={() => {
-              /* The window goes before the session: closing it moves the
-                 container home, and a container still parented to a destroyed
-                 document is one React would keep rendering into. */
-              if (pip.isOpen) pip.close();
-              session.onLeave?.();
-              close();
-            }}
-          />,
+          session.kind === "task" ? (
+            <TaskRoom
+              session={session}
+              compact={!docked}
+              onReturn={() => {
+                if (pip.isOpen) pip.close();
+                /**
+                 * **`/meetings`, not the task's root.**
+                 *
+                 * Each tab is its own route, and the root renders Overview. So
+                 * pressing Open put the reader on the task's brief with the
+                 * meeting still floating in the corner — the one place where
+                 * the stage it wanted to dock into does not exist. It read as
+                 * the button doing nothing, because visibly it did nothing.
+                 */
+                router.push(`/tasks/${session.taskId}/meetings`);
+              }}
+              onPopOut={pip.supported && !pip.isOpen ? openPip : undefined}
+              onDragHandle={!docked && !pip.isOpen ? onDragStart : undefined}
+              onLeave={() => {
+                if (pip.isOpen) pip.close();
+                session.onLeave?.();
+                close();
+              }}
+            />
+          ) : (
+            <MeetingRoom
+              meeting={session.meeting}
+              isOrganiser={session.isOrganiser}
+              displayName={session.displayName}
+              compact={!docked}
+              onReturn={() => {
+                /* Out of the PiP window first — going "back to the meeting"
+                   while the room is still in a detached window would leave the
+                   page showing an empty stage. */
+                if (pip.isOpen) pip.close();
+                router.push(`/meetings/${session.meeting.id}`);
+              }}
+              onPopOut={pip.supported && !pip.isOpen ? openPip : undefined}
+              onDragHandle={!docked && !pip.isOpen ? onDragStart : undefined}
+              onLeave={() => {
+                /* The window goes before the session: closing it moves the
+                   container home, and a container still parented to a destroyed
+                   document is one React would keep rendering into. */
+                if (pip.isOpen) pip.close();
+                session.onLeave?.();
+                close();
+              }}
+            />
+          ),
           pip.container,
         )}
     </>

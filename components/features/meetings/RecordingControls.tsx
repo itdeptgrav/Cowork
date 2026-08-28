@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useLiveNow } from "@/lib/hooks/useLiveNow";
 import { Icon } from "@/components/ui/Icons";
 import type { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
 import type {
@@ -24,9 +25,18 @@ type Recording = ReturnType<typeof useMeetingRecording>;
 export function RecordingControls({
   recording,
   isHost,
+  indicatorOnly = false,
 }: {
   recording: Recording;
   isHost: boolean;
+  /**
+   * Just the REC light, for the corner and picture-in-picture windows.
+   *
+   * They have no room for the host buttons or the status panel, but they are
+   * exactly where somebody most needs telling that the recording is still
+   * running — it was their absence that made a reset timer read as a restart.
+   */
+  indicatorOnly?: boolean;
 }) {
   const {
     isRecording,
@@ -38,7 +48,14 @@ export function RecordingControls({
 
   return (
     <div className="flex items-center gap-2">
-      {isRecording && <RecIndicator paused={recording.isPaused} />}
+      {isRecording && (
+        <RecIndicator
+          paused={recording.isPaused}
+          startedAtMs={recording.recordingStartedAtMs}
+          pausedTotalMs={recording.pausedTotalMs}
+          pauseStartedAtMs={recording.pauseStartedAtMs}
+        />
+      )}
       {isUploading && (
         <span className="text-[11px] text-slab-ink-muted">Uploading…</span>
       )}
@@ -99,6 +116,12 @@ export function RecordingControls({
         </span>
       )}
 
+      {/* Everything past the REC light needs room the corner window does not
+          have. It stops here rather than shrinking: a status panel squeezed
+          into 340px is unreadable, and the light alone is the one fact that
+          window has to carry. */}
+      {indicatorOnly ? null : (
+        <>
       <StatusPanel statuses={participantStatuses} />
 
       {/* **Pause is separate from Stop, and separate from the microphone.**
@@ -144,30 +167,55 @@ export function RecordingControls({
           onStop={recording.hostStopRecording}
         />
       )}
+        </>
+      )}
     </div>
   );
 }
 
-/** A pulsing red dot and the running time, the universal "we are recording". */
-function RecIndicator({ paused }: { paused: boolean }) {
-  const [secs, setSecs] = useState(0);
-  /**
-   * **The clock stops while paused, and so does the word.**
-   *
-   * It counted wall-clock time from the moment recording began and pulsed red
-   * throughout — so a paused meeting went on saying REC with a rising figure
-   * over a file that was not growing. That is the one thing this indicator
-   * must never do: it exists to tell people they are being recorded, and it
-   * was saying so while they were not.
-   *
-   * The counter measures what is IN the recording, which is why the paused
-   * seconds are skipped rather than the whole thing restarted.
-   */
-  useEffect(() => {
-    if (paused) return;
-    const t = setInterval(() => setSecs((n) => n + 1), 1000);
-    return () => clearInterval(t);
-  }, [paused]);
+/**
+ * A pulsing red dot and the running time, the universal "we are recording".
+ *
+ * ## Why the figure is computed, not counted
+ *
+ * It used to be a counter in this component's own state. This component is
+ * rendered inside the room's header, and the header is not rendered in the
+ * corner window or the picture-in-picture one — so popping the meeting out
+ * unmounted it, and coming back mounted a fresh one starting at 00:00.
+ *
+ * **The recording never stopped.** The recorder lives in `useMeetingRecording`,
+ * which stays mounted through every presentation. But a REC timer that resets
+ * says the recording restarted, and somebody watching it has no way to know it
+ * did not — a person could reasonably have stopped and restarted a meeting over
+ * that, losing the audio the timer was wrongly reporting.
+ *
+ * So it is derived from instants the hook holds: when recording began, and how
+ * much of it has been paused. Those survive any component unmounting, and the
+ * arithmetic gives what is IN the recording rather than wall-clock time.
+ */
+function RecIndicator({
+  paused,
+  startedAtMs,
+  pausedTotalMs,
+  pauseStartedAtMs,
+}: {
+  paused: boolean;
+  startedAtMs: number | null;
+  pausedTotalMs: number;
+  pauseStartedAtMs: number | null;
+}) {
+  /* The shared wall clock, which seeds itself once and advances from an
+     effect — reading `Date.now()` during render is impure and the compiler
+     refuses it. `useLiveNow` is the codebase's answer to that and carries the
+     reasoning; a second one here would be a second thing to keep right. */
+  const now = useLiveNow();
+
+  /* While paused, measure to the moment the pause began — the recording has
+     not grown since, so the figure must not either. */
+  const upTo = paused && pauseStartedAtMs !== null ? pauseStartedAtMs : now;
+  const secs = startedAtMs
+    ? Math.max(0, Math.floor((upTo - startedAtMs - pausedTotalMs) / 1000))
+    : 0;
   const mm = String(Math.floor(secs / 60)).padStart(2, "0");
   const ss = String(secs % 60).padStart(2, "0");
   return (

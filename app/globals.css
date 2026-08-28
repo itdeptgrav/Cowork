@@ -942,6 +942,40 @@
   scroll-behavior: auto !important;
 }
 
+/* ── Essential motion ─────────────────────────────────────────────────────────
+ *
+ * **A spinner is information, not decoration.** Both clamps above stop every
+ * animation dead — `animation-duration: 0.01ms` with `animation-iteration-count:
+ * 1` — which is right for an element that animates IN: it simply arrives at
+ * once, as the note on the plain-mode block says.
+ *
+ * It is wrong for an indicator whose whole meaning is that it is moving. A
+ * frozen ring beside "Processing…" says nothing at all: it is indistinguishable
+ * from a hung upload, which is the thing the indicator was added to rule out.
+ * Reported against the attachment row, where the circle sat perfectly still for
+ * the entire finalize step.
+ *
+ * Reduced motion is honoured rather than overridden — the spin is slowed to a
+ * calm turn instead of being restored to full speed. WCAG's concern is motion
+ * that distracts or triggers, and it exempts motion essential to conveying
+ * information; a loading indicator is that, and stopping it removes the
+ * information rather than the distraction.
+ *
+ * Deliberately opt-in. Nothing gets this by being an animation; a class has to
+ * ask for it, so the clamps go on covering every decorative flourish. */
+:root .motion-essential,
+:root[data-perf="plain"] .motion-essential {
+  animation-duration: 0.9s !important;
+  animation-iteration-count: infinite !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root .motion-essential,
+  :root[data-perf="plain"] .motion-essential {
+    animation-duration: 1.8s !important;
+    animation-iteration-count: infinite !important;
+  }
+}
+
 /* Decorative depth. Controls keep their focus ring — that is not decoration. */
 :root[data-perf="plain"] .frost-panel,
 :root[data-perf="plain"] [class*="shadow-"] {

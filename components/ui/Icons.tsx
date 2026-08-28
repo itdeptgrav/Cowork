@@ -346,6 +346,28 @@ export const Icon = {
       <path d="M9.2 2.8h4v4M13.2 2.8L7.8 8.2" />
     </S>
   ),
+  /**
+   * EXPAND / COLLAPSE — four corner brackets, pointing out and pointing in.
+   *
+   * The pair every video player and every operating system uses for full
+   * screen, drawn the same way here so nobody has to learn a Cowork-specific
+   * glyph for the one control they already know.
+   *
+   * Deliberately NOT the `external` arrow: that one means "open it somewhere
+   * else", this one means "the same thing, bigger". Telling them apart matters
+   * because they sit next to each other in the meeting header — one shrinks
+   * the meeting into a corner window, one fills the screen with it.
+   */
+  expand: (p: P) => (
+    <S {...p}>
+      <path d="M6 2.6H2.6V6M10 2.6h3.4V6M6 13.4H2.6V10M10 13.4h3.4V10" />
+    </S>
+  ),
+  collapse: (p: P) => (
+    <S {...p}>
+      <path d="M2.6 6H6V2.6M13.4 6H10V2.6M2.6 10H6v3.4M13.4 10H10v3.4" />
+    </S>
+  ),
   attach: (p: P) => (
     <S {...p}>
       <path d="M11.6 7.2l-4.3 4.3a2.4 2.4 0 0 1-3.4-3.4l5-5a1.7 1.7 0 0 1 2.4 2.4l-5 5" />

@@ -1,28 +1,18 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import {
-  CarouselLayout,
-  ControlBar,
-  FocusLayout,
-  FocusLayoutContainer,
-  GridLayout,
-  LiveKitRoom,
-  RoomAudioRenderer,
-  useLocalParticipant,
-  useParticipants,
-  useTracks,
-} from "@livekit/components-react";
-import { Track } from "livekit-client";
+import { useCallback, useEffect, useState } from "react";
+import { COWORK_ROOM_OPTIONS } from "./roomOptions";
+import { LiveKitRoom, useParticipants } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import { Chip, InlineError } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
+import { useFullscreen } from "@/lib/legacy-ui/useFullscreen";
 import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
 import { RecordingControls } from "./RecordingControls";
 import { TranscriptPanel } from "./TranscriptPanel";
-import { TileMenu } from "./TileMenu";
+import { RoomInterior } from "./RoomInterior";
 import { formatDateTime } from "@/lib/utils/format";
 import type { Meeting } from "@/lib/domain";
 
@@ -109,6 +99,24 @@ export function MeetingRoom({
     isHost: isOrganiser,
   });
 
+  /**
+   * The microphone and camera the reader has actually chosen.
+   *
+   * Both start false — you arrive muted — and `DeviceIntentSync` keeps them
+   * level with the real tracks from then on. They exist as state because
+   * LiveKit re-applies them on every reconnect; see the note where they are
+   * passed, and the component's own.
+   */
+  const [micOn, setMicOn] = useState(false);
+  const [camOn, setCamOn] = useState(false);
+  const onDeviceIntent = useCallback(
+    (next: { mic: boolean; cam: boolean }) => {
+      setMicOn(next.mic);
+      setCamOn(next.cam);
+    },
+    [],
+  );
+
   const room = meeting.livekitRoomName;
 
   useEffect(() => {
@@ -179,7 +187,13 @@ export function MeetingRoom({
       onPopOut={onPopOut}
       onDragHandle={onDragHandle}
       headerRight={
-        compact ? null : (
+        /* The REC light travels into the corner and picture-in-picture
+           windows, where it is the only thing telling somebody the recording
+           is still running. Its absence there is what made a timer restarting
+           on return read as the recording having restarted. */
+        compact ? (
+          <RecordingControls recording={recording} isHost={false} indicatorOnly />
+        ) : (
         <>
           <RecordingControls recording={recording} isHost={isOrganiser} />
           {/* Transcript toggle */}
@@ -187,7 +201,7 @@ export function MeetingRoom({
             type="button"
             title={transcriptOpen ? "Hide transcript" : "Show transcript"}
             onClick={() => setTranscriptOpen((v) => !v)}
-            className={`grid h-8 w-8 place-items-center rounded-full transition-colors ${
+            className={`grid h-9 w-9 place-items-center rounded-full sm:h-8 sm:w-8 transition-colors ${
               transcriptOpen
                 ? "bg-white/20 text-slab-ink"
                 : "text-slab-ink-muted hover:bg-white/10 hover:text-slab-ink"
@@ -203,6 +217,9 @@ export function MeetingRoom({
         token={creds.token}
         serverUrl={creds.url}
         connect
+        /* Keeps the room up while the browser's "Reload site?" dialog is open,
+           so pressing Cancel leaves the meeting running — see the constant. */
+        options={COWORK_ROOM_OPTIONS}
         /**
          * **You arrive muted, with your camera off.**
          *
@@ -217,9 +234,17 @@ export function MeetingRoom({
          * click to speak is a small friction, and being heard before you meant
          * to be cannot be taken back. The control bar below turns both on, and
          * LiveKit remembers neither — every join starts from silence.
+         *
+         * **They are STATE, not constants, and that is the whole fix for
+         * losing your voice when you change tabs.** These props are re-applied
+         * on every `SignalConnected`, which fires on every reconnect — so a
+         * hardcoded `false` muted you again each time the connection blipped,
+         * silently, while you were looking at another tab. Held as state and
+         * kept level with the real track by `DeviceIntentSync`, a reconnect
+         * now restores the microphone you actually chose.
          */
-        video={false}
-        audio={false}
+        video={camOn}
+        audio={micOn}
         data-lk-theme="default"
         /* `flex-1`, not `h-full`. The frame is a flex column with a header
            above this, so `h-full` asked for the whole frame's height and left
@@ -234,191 +259,34 @@ export function MeetingRoom({
         }}
         onError={(e) => setError(e.message)}
       >
-        {/* Bridges the LiveKit mic state into the recorder, so muting also
-            pauses the recording (and logs a speech interval). */}
-        <MuteBridge onMuteChange={recording.setMuted} />
-
-        {/* Main stage + control bar */}
-        <div className="flex min-h-0 flex-1 flex-col">
-          <Stage />
-          {/* LiveKit's own control bar: camera, microphone, screen share and
-              leave, with the device pickers behind each.
-
-              **It is the same bar when floating**, only narrower — `minimal`
-              drops the text labels and the device chevrons, which do not fit
-              in a 340px window, and keeps microphone, camera, screen share and
-              leave. Building a second set of buttons here would be a second
-              implementation of muting, and the two would disagree the first
-              time one of them was changed. */}
-          <div className="shrink-0 border-t border-white/10">
-            <ControlBar variation={compact ? "minimal" : "verbose"} />
-          </div>
-          <RoomAudioRenderer />
-          {presentState.error && (
-            <div className="p-3">
-              <InlineError compact message={presentState.error} />
-            </div>
-          )}
-        </div>
-
-        {/* Transcript sidebar — always mounted, toggled via CSS so the hook
-            (and its Firestore subscription) stays alive while hidden. */}
-        <TranscriptPanel
+        {/* The inside of the room, shared with a task's meeting so both get
+            every feature and a future fix lands in both. */}
+        <RoomInterior
           meetId={meeting.id}
-          participantName={displayName}
-          open={transcriptOpen}
+          isHost={isOrganiser}
+          recordingActive={recording.isRecording}
+          compact={compact}
+          onDeviceIntent={onDeviceIntent}
+          onMuteChange={recording.setMuted}
+          footer={
+            presentState.error ? (
+              <div className="p-3">
+                <InlineError compact message={presentState.error} />
+              </div>
+            ) : null
+          }
+          aside={
+            /* Always mounted, toggled via CSS so the hook (and its Firestore
+               subscription) stays alive while hidden. */
+            <TranscriptPanel
+              meetId={meeting.id}
+              participantName={displayName}
+              open={transcriptOpen}
+            />
+          }
         />
       </LiveKitRoom>
     </RoomFrame>
-  );
-}
-
-/**
- * The participant grid.
- *
- * Camera and screen-share tracks in one grid, which is what makes a shared
- * screen take the space it needs instead of sitting in a thumbnail beside the
- * faces. `ParticipantTile` carries the active-speaker ring and the muted
- * indicator already.
- */
-/**
- * The participant grid, and one tile enlarged when somebody pins it.
- *
- * ## Why pinning is worth having
- *
- * A shared screen in an equal grid is a thumbnail of a spreadsheet — present,
- * and unreadable. The grid is right when a meeting is faces talking to each
- * other and wrong the moment one tile carries the thing everybody is looking
- * at. Pinning is how a reader says which that is.
- *
- * **It is a decision about your own screen only.** Nothing is broadcast: pinning
- * does not move anybody else's view, because whose turn it is to look at what
- * is not the pinner's call to make for the room.
- *
- * A newly shared screen pins ITSELF, once. Somebody sharing has almost always
- * done it to be looked at, and making every viewer hunt for a pin button first
- * is the wrong default — but it is a default, not a lock: unpin, or pin
- * something else, and the choice is yours from then on. It does not re-pin
- * every time the track updates, only when a share that was not there appears.
- */
-/* No `compact` flag any more: the per-tile menu is the only control on the
-   stage and it fits at every size, so the corner window draws exactly what the
-   page does. */
-function Stage() {
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: true },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { onlySubscribed: false },
-  );
-
-  /** The pinned track's identity+source key, or null for the plain grid. */
-  const [pinnedKey, setPinnedKey] = useState<string | null>(null);
-  /**
-   * Tiles this reader has taken off their own grid.
-   *
-   * Local only, and never applied to the pinned tile: hiding the thing you are
-   * looking at would empty the stage with no obvious way back.
-   */
-  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
-  /* What was auto-pinned, so a share appearing twice does not override a
-     reader who has since chosen something else. */
-  const autoPinnedRef = useRef<string | null>(null);
-
-  const keyOf = (t: (typeof tracks)[number]) =>
-    `${t.participant.identity}:${t.source}`;
-
-  const share = tracks.find((t) => t.source === Track.Source.ScreenShare);
-  useEffect(() => {
-    if (!share) {
-      /* The share ended. Only clear the pin if it was the share's own — a
-         reader who pinned a face keeps it. */
-      if (autoPinnedRef.current) {
-        setPinnedKey((k) => (k === autoPinnedRef.current ? null : k));
-        autoPinnedRef.current = null;
-      }
-      return;
-    }
-    const key = `${share.participant.identity}:${share.source}`;
-    if (autoPinnedRef.current === key) return;
-    autoPinnedRef.current = key;
-    setPinnedKey(key);
-  }, [share]);
-
-  const pinned = pinnedKey
-    ? (tracks.find((t) => keyOf(t) === pinnedKey) ?? null)
-    : null;
-  /* A hidden tile is off the grid but never off the PIN: what somebody chose
-     to look at large outranks a hide they set earlier. */
-  const visible = tracks.filter(
-    (t) => !hiddenKeys.has(keyOf(t)) || keyOf(t) === pinnedKey,
-  );
-  const others = pinned ? visible.filter((t) => keyOf(t) !== pinnedKey) : [];
-
-  const tile = (
-    <TileMenu
-      pinnedKey={pinnedKey}
-      onPin={(k) => {
-        /* A deliberate pin outranks the share's auto-pin, so the share
-           appearing again does not overrule it. */
-        autoPinnedRef.current = null;
-        setPinnedKey(k);
-      }}
-      hiddenKeys={hiddenKeys}
-      onHide={(k, hidden) =>
-        setHiddenKeys((prev) => {
-          const next = new Set(prev);
-          if (hidden) next.add(k);
-          else next.delete(k);
-          return next;
-        })
-      }
-    />
-  );
-
-  return (
-    <div className="relative min-h-0 flex-1 p-2">
-      {pinned ? (
-        <FocusLayoutContainer className="h-full">
-          <FocusLayout trackRef={pinned} />
-          {/* The rest, small, beside it — still visible, still audible, just
-              no longer competing with the thing being looked at. */}
-          {others.length > 0 && (
-            <CarouselLayout tracks={others}>{tile}</CarouselLayout>
-          )}
-        </FocusLayoutContainer>
-      ) : (
-        <GridLayout tracks={visible} className="h-full">
-          {tile}
-        </GridLayout>
-      )}
-
-      {/* **No separate pin button here any more.** It pinned "the share, or
-          whoever is first", which is a guess, and it sat beside a per-tile menu
-          offering the same action against a tile you actually chose. Two
-          controls for one decision is one of them being wrong half the time —
-          the menu, on the tile it acts on, is the one that can be right. */}
-
-      {/* Somewhere to go when everything has been hidden. Without it the stage
-          is simply empty and the way back is not discoverable. */}
-      {visible.length === 0 && tracks.length > 0 && (
-        <div className="grid h-full place-items-center">
-          <div className="text-center">
-            <p className="text-[13px] text-slab-ink">
-              Every tile is hidden on your screen
-            </p>
-            <button
-              type="button"
-              onClick={() => setHiddenKeys(new Set())}
-              className="mt-2 rounded-full bg-white/10 px-3 py-1.5 text-[12px] font-medium text-slab-ink transition-colors hover:bg-white/20"
-            >
-              Show them all again
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -467,8 +335,20 @@ function RoomFrame({
   onPopOut?: () => void;
   onDragHandle?: (e: React.PointerEvent) => void;
 }) {
+  /* The frame — header, grid and control bar together — is what goes full
+     screen, not the video grid alone. Somebody who fills the screen with a
+     shared document still needs the microphone, the REC light and Leave;
+     handing them a grid with no controls is how a meeting ends by accident. */
+  const {
+    attach: fullscreenRef,
+    isFullscreen,
+    supported: canFullscreen,
+    toggle: toggleFullscreen,
+  } = useFullscreen();
+
   return (
     <section
+      ref={fullscreenRef}
       aria-label={`${meeting.title} — meeting room`}
       /* `min-h-[520px]` is right for a page and impossible in a 232px window,
          so the floating presentation fills its container instead. Everything
@@ -483,10 +363,29 @@ function RoomFrame({
        * header, a control bar, and then left the rest of the box empty and
        * black, with the controls stranded at the top of a mostly empty panel.
        */
+      /**
+       * **`fixed inset-0` on the full screen, and `relative` is why.**
+       *
+       * A browser makes an element full screen with a UA rule — roughly
+       * `:fullscreen { position: fixed; inset: 0; width: 100%; height: 100% }`.
+       * UA styles are the WEAKEST origin in the cascade, so Tailwind's
+       * `relative` beats it outright: the element is lifted into the top layer,
+       * painted over everything, and then laid out exactly where it was sitting
+       * in the page. Full screen that is still card-sized and in the wrong
+       * place. Swapping to `fixed inset-0` states the same intent in author CSS
+       * where it actually wins, and `fixed` establishes a containing block for
+       * absolutely-positioned children just as `relative` did.
+       *
+       * Square corners for the same reason the size matters: rounded corners
+       * against the black backdrop a browser paints behind a full-screen
+       * element read as a photograph of a window rather than as the screen.
+       */
       className={
         compact
           ? "slab slab-flat relative flex h-full flex-col overflow-hidden"
-          : "slab slab-flat relative flex h-full min-h-[520px] flex-col overflow-hidden rounded-card"
+          : isFullscreen
+            ? "slab slab-flat fixed inset-0 flex h-full w-full flex-col overflow-hidden"
+            : "slab slab-flat relative flex h-full min-h-[520px] flex-col overflow-hidden rounded-card"
       }
       data-on-slab
     >
@@ -535,6 +434,41 @@ function RoomFrame({
             escape from the tab entirely. Chrome will also do this by itself
             once the reader accepts its own offer — see `useAutoPip` — so this
             is the deliberate route, not the only one. */}
+        {/* **Full screen.** The room already had two ways to make itself
+            SMALLER — pop out to a corner window, and Chrome's own
+            picture-in-picture — and no way to make it bigger. A shared screen
+            inside a card inside a page, next to a details panel and a
+            transcript, is a screen share nobody can read.
+
+            It sits before the pop-out because that is the order of the idea:
+            bigger, then smaller. Hidden in the corner window and the
+            picture-in-picture one — an element already living in a 340px
+            window has no screen to fill, and the way out of there is `Open`. */}
+        {!compact && canFullscreen && (
+          <button
+            type="button"
+            onClick={toggleFullscreen}
+            onPointerDown={(e) => e.stopPropagation()}
+            title={isFullscreen ? "Exit full screen" : "Full screen"}
+            aria-label={
+              isFullscreen
+                ? "Exit full screen"
+                : "Show the meeting full screen"
+            }
+            aria-pressed={isFullscreen}
+            className={`grid h-9 w-9 shrink-0 place-items-center rounded-full sm:h-8 sm:w-8 transition-colors ${
+              isFullscreen
+                ? "bg-white/20 text-slab-ink"
+                : "text-slab-ink-muted hover:bg-white/10 hover:text-slab-ink"
+            }`}
+          >
+            {isFullscreen ? (
+              <Icon.collapse className="h-4 w-4" />
+            ) : (
+              <Icon.expand className="h-4 w-4" />
+            )}
+          </button>
+        )}
         {onPopOut && (
           <button
             type="button"
@@ -547,7 +481,7 @@ function RoomFrame({
             className={
               compact
                 ? "grid h-6 w-6 shrink-0 place-items-center rounded-full text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
-                : "grid h-8 w-8 shrink-0 place-items-center rounded-full text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
+                : "grid h-9 w-9 shrink-0 place-items-center rounded-full sm:h-8 sm:w-8 text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
             }
           >
             <Icon.external className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
@@ -588,18 +522,6 @@ function RoomFrame({
  * context; it draws nothing. Muting pauses the recorder and closes a speech
  * interval, so a muted stretch is neither uploaded nor counted as talking.
  */
-function MuteBridge({
-  onMuteChange,
-}: {
-  onMuteChange: (muted: boolean) => void;
-}) {
-  const { isMicrophoneEnabled } = useLocalParticipant();
-  useEffect(() => {
-    onMuteChange(!isMicrophoneEnabled);
-  }, [isMicrophoneEnabled, onMuteChange]);
-  return null;
-}
-
 function Placeholder({ title, detail }: { title: string; detail: string }) {
   return (
     <div className="grid flex-1 place-items-center px-8 py-16 text-center">

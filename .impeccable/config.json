@@ -11,6 +11,39 @@
         ],
         "createdAt": "2026-08-17T16:06:11.727Z",
         "reason": "User confirmed: the only match is the characters <img> inside a code comment explaining the allowBase64 parse fix; the file contains no JSX image element"
+      },
+      {
+        "rule": "bounce-easing",
+        "value": "animate-bounce",
+        "createdAt": "2026-08-28T14:26:25.788Z",
+        "reason": "Claude's call: the typing indicator at MessagesArea typingLabel - three 4px dots with staggered [animation-delay:-200ms]/-100ms. animate-bounce IS the typing-dots idiom; literal domain motion, not decorative easing. Pre-existing code."
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "components/features/messages/MessagesArea.tsx"
+        ],
+        "createdAt": "2026-08-28T14:26:33.621Z",
+        "reason": "Claude's call: border-s-2 here is the reply-quote bar - on a quoted message and on the 'Replying to...' composer chip. That left rule is the universal signifier for quoted text (WhatsApp/Slack/Telegram/Signal); 2px at 50% token opacity, not an accent slab. Pre-existing code."
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "components/features/tasks/ChatPanel.tsx"
+        ],
+        "createdAt": "2026-08-28T14:26:33.808Z",
+        "reason": "Claude's call: same reply-quote bar as MessagesArea - border-s-2 on the quoted message and the 'Replying to...' chip. Universal chat convention for quoted text, 2px at 50% token opacity. Pre-existing code."
+      },
+      {
+        "rule": "broken-image",
+        "value": "*",
+        "files": [
+          "components/features/messages/MessageAttachments.tsx"
+        ],
+        "createdAt": "2026-08-28T14:31:49.873Z",
+        "reason": "Claude's call: the match is prose - the file explains image sizing and writes <img> inside comments (lines 10, 45, 64, 365). The only actual render is DriveImage, which does 'const src = sources[attempt]; if (!src) return null' - it never emits an empty src. Same shape as the existing DocumentEditor.tsx ignore."
       }
     ]
   }

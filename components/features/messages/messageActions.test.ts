@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { copyPlan } from "@/lib/rules/media/copyMessage";
 
 /**
  * The message menu, and the one rule inside it that is not obvious.
@@ -113,8 +114,38 @@ test("forwarding sends a copy, with its attachments, and never moves it", () => 
 
 test("copying an empty message is refused rather than silently done", () => {
   /* `writeText("")` succeeds and replaces whatever was on the clipboard, which
-     is worse than the action being unavailable. */
+     is worse than the action being unavailable.
+
+     The guard used to be `!m.text` written inline here. It now lives in
+     `copyPlan`, because the same decision is made in the task thread and the
+     two had drifted into duplicate copies of it — and because `!m.text` was
+     itself too strict: it refused a screenshot, which is the ordinary case for
+     a message somebody wants to copy. The rule is asserted directly below, so
+     the refusal is still covered rather than merely relocated. */
   const body = menuBody();
   const copy = body.slice(body.indexOf('id: "copy"'), body.indexOf('id: "edit"'));
-  assert.match(copy, /!m\.text/);
+  assert.match(copy, /label: copy\.label/);
+  assert.match(copy, /disabled: copy\.disabled/);
+  assert.equal(copyPlan({ text: "", attachments: [] }).disabled, true);
+  assert.equal(copyPlan({ text: "   " }).disabled, true);
+});
+
+test("a message that is only a picture can be copied", () => {
+  /* The reported fault: "Copy text" greyed out over a message that was
+     entirely the thing somebody wanted on their clipboard. */
+  const plan = copyPlan({
+    text: "",
+    attachments: [
+      {
+        url: "https://drive.google.com/file/d/shot/view",
+        kind: "image",
+        name: "shot.png",
+        sizeBytes: 10,
+        durationSecs: null,
+        fileId: "shot",
+      },
+    ],
+  });
+  assert.equal(plan.disabled, false);
+  assert.equal(plan.label, "Copy image");
 });

@@ -23,6 +23,11 @@ const strip = (p: string) =>
     .replace(/^\s*\/\/.*$/gm, "");
 
 const PANEL = strip("components/features/tasks/ChatPanel.tsx");
+/* The progress row itself, which BOTH threads now render — see
+   `UploadProgressRow`. The markup these tests guard used to be written out
+   twice; asserting it here keeps the guarantee while there is one copy of it. */
+const ROW = strip("components/features/messages/MessageAttachments.tsx");
+const STAGE = strip("lib/rules/messages/uploadStage.ts");
 const REPO = strip("lib/repositories/legacy/index.ts");
 const MOCK = strip("lib/repositories/mock/index.ts");
 const TYPES = strip("lib/repositories/types.ts");
@@ -47,7 +52,45 @@ test("upload progress is reported per file, from real bytes", () => {
      that is not enough to tell working from hung, which is what made an
      identical upload feel slower here than in a direct message. */
   assert.match(PANEL, /repo\.uploadMessageAttachment!\(file, \(fraction\) =>/);
-  assert.match(PANEL, /role="progressbar"/);
+  assert.match(PANEL, /<UploadProgressRow/, "the panel draws no progress row");
+  assert.match(ROW, /role="progressbar"/);
+});
+
+test("a file still being processed does not look finished", () => {
+  /*
+   * `uploadToDrive` reports 0–1 across the BYTE TRANSFER only — the finalize
+   * call that follows makes the file readable and reports nothing. So the bar
+   * reached 100% and sat there, which reads as done on an attachment that was
+   * still being handled. That is the reported fault.
+   *
+   * The row swaps to an indeterminate spinner for that window. It must not keep
+   * an `aria-valuenow` while it does: a progressbar pinned at 100 tells a screen
+   * reader the opposite of what is true.
+   */
+  assert.match(ROW, /uploadStage\(fraction\)/);
+  assert.match(ROW, /animate-spin/);
+  assert.match(ROW, /aria-valuetext=\{uploadStageLabel\(stage\)\}/);
+  const processing = ROW.slice(ROW.indexOf("processing ? ("), ROW.indexOf(") : ("));
+  assert.equal(
+    /aria-valuenow/.test(processing),
+    false,
+    "the processing stage claims a percentage it does not have",
+  );
+  assert.match(STAGE, />= 100 \? "processing" : "sending"/);
+});
+
+test("Send stays unavailable until the upload actually resolves", () => {
+  /* `uploading` clears only after the batch's promises settle — which is after
+     the finalize, not at 100%. Both the send control and the canSend rule read
+     it, so neither stage of the upload offers a send. */
+  assert.match(PANEL, /const canSend = [^;]*&& !uploading/);
+  assert.match(PANEL, /disabled=\{!canSend \|\| state\.isPending\}/);
+  const finished = PANEL.indexOf("setUploading(false)");
+  const awaited = PANEL.indexOf("await Promise.all");
+  assert.ok(
+    awaited !== -1 && finished > awaited,
+    "uploading clears before the uploads have settled",
+  );
 });
 
 test("a failed upload keeps the file and offers Retry", () => {
@@ -60,9 +103,26 @@ test("a failed upload keeps the file and offers Retry", () => {
 
 test("no number is rounded straight into a style or a label", () => {
   /* `Math.round(undefined)` is NaN: unsayable in `aria-valuenow`, discarded as
-     `width: NaN%`, and printed as "NaN%". */
-  assert.equal(/\{Math\.round\([^}]*\)\}%/.test(PANEL), false);
-  assert.match(PANEL, /formatPercent\(/);
+     `width: NaN%`, and printed as "NaN%".
+
+     The guard moved into `uploadPercent` when the row became shared, so it now
+     protects both threads from one place instead of being written out twice —
+     and is asserted on the row and on the rule rather than on the panel that no
+     longer contains the markup. */
+  for (const [name, src] of [
+    ["ChatPanel", PANEL],
+    ["the shared row", ROW],
+  ] as const) {
+    assert.equal(
+      /\{Math\.round\([^}]*\)\}%/.test(src),
+      false,
+      `${name} rounds straight into a label`,
+    );
+  }
+  assert.match(ROW, /uploadPercent\(fraction\)/);
+  /* The clamp, at its source: NaN in, 0 out — and never above 100. */
+  assert.match(STAGE, /Number\(fraction\) \|\| 0/);
+  assert.match(STAGE, /Math\.max\(0, Math\.min\(100, pct\)\)/);
 });
 
 /* ── The conversation features ────────────────────────────────────────────── */

@@ -1,15 +1,6 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import {
-  ControlBar,
-  GridLayout,
-  LiveKitRoom,
-  ParticipantTile,
-  RoomAudioRenderer,
-  useTracks,
-} from "@livekit/components-react";
-import { Track } from "livekit-client";
 import "@livekit/components-styles";
 import { creditedToTask } from "@/lib/rules/meetings/creditedToTask";
 import { Icon } from "@/components/ui/Icons";
@@ -27,6 +18,12 @@ import {
   realMeetingsOnly,
 } from "@/lib/rules/meetings/realMeeting";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { MeetingStage } from "@/components/features/meetings/MeetingStage";
+import { useMeetingSession } from "@/components/features/meetings/MeetingSessionContext";
+import { RecordingsPanel } from "@/components/features/meetings/RecordingsPanel";
+import { MeetingSummaryPanel } from "@/components/features/meetings/MeetingSummaryPanel";
+import { VerbatimTranscriptPanel } from "@/components/features/meetings/VerbatimTranscriptPanel";
+import { taskMeetingRoomName } from "@/lib/rules/meetings/taskRoom";
 import {
   liveCrossDeptFigures,
   liveMeetingFigures,
@@ -87,67 +84,73 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   /* Whether the "start a meeting?" confirmation is open. Opening the room is
      irreversible and credits time to everybody in it, so the press asks first. */
   const [confirmingJoin, setConfirmingJoin] = useState(false);
+  /* The session this browser last left, which is what triggers the summary. */
+  const [justLeftSession, setJustLeftSession] = useState<string | null>(null);
+  /**
+   * Shrunk to the corner.
+   *
+   * Held here rather than in the session because it is about this PAGE's
+   * presentation, not about the meeting: the engine already floats a room
+   * whose page publishes no stage, so minimising is simply declining to
+   * publish one. Nothing else changes — the call, the recording and the
+   * credited session carry on exactly as they do when you navigate away.
+   */
+  const [minimised, setMinimised] = useState(false);
 
+  const {
+    open: openMeeting,
+    close: closeMeeting,
+    session: shellSession,
+  } = useMeetingSession();
+
+  /**
+   * **The shell is the authority on whether this task's meeting is open.**
+   *
+   * `joined` is local state, and returning to this tab from the floating window
+   * remounts the panel — so on its own it says "nobody is in a meeting" about a
+   * call that is still running in the corner. The page would then publish no
+   * stage, offer no Leave, and show the transcript and summary of a meeting
+   * that had not finished.
+   *
+   * Reading the session back covers every way of arriving: pressing Open on the
+   * corner window, following a link, a reload, or simply switching tabs.
+   */
+  const shellTaskSession =
+    shellSession?.kind === "task" && shellSession.taskId === taskId
+      ? shellSession
+      : null;
+  const inRoom = joined ?? shellTaskSession;
+  const inRoomSessionId = inRoom?.sessionId ?? null;
   const [join, joinState] = useAction((r) => r.joinTaskMeeting(taskId));
-  const [leave] = useAction((r, sessionId: string) =>
-    r.leaveTaskMeeting({ taskId, sessionId }),
-  );
+  /* `leave`, `end` and `touch` are deliberately NOT here any more. They belong
+     to `TaskMeetingLifecycle` in the shell, which is the only place that can
+     run them when this page is not mounted — and a second caller would be a
+     second owner of one settlement. */
   const [end] = useAction((r, sessionId: string) =>
     r.endTaskMeeting({ taskId, sessionId }),
   );
-  const [touch] = useAction((r, sessionId: string) =>
-    r.touchTaskMeeting({ taskId, sessionId }),
-  );
 
   /**
-   * **Leaving is recorded even when nobody presses Leave.**
+   * Which session this page believes is open, for the departure below.
    *
-   * Attendance decides the credit, so a departure that is never written leaves
-   * somebody apparently in the room indefinitely. A closed tab and a navigation
-   * away are the two ordinary ways out that no button sees, so both are caught.
-   * `beforeunload` cannot await, which is why the ref holds the id — the call is
-   * fired and the page may die mid-flight, and the session's own close bounds
-   * the span either way.
+   * The RECORDING of a departure — `beforeunload`, the presence beat, the
+   * settlement — moved to `TaskMeetingLifecycle` in the shell when the room
+   * did. What is left here is the page's own bookkeeping: which session the
+   * Leave button should close.
    */
   const openRef = useRef<string | null>(null);
   useEffect(() => {
-    openRef.current = joined?.sessionId ?? null;
-  }, [joined]);
+    openRef.current = inRoomSessionId;
+  }, [inRoomSessionId]);
 
   /**
-   * **The beat that says this browser is still in the room.**
+   * **The presence beat lives in the shell now — `TaskMeetingLifecycle`.**
    *
-   * `beforeunload` above is best-effort and usually loses its write — the page
-   * is being torn down and the call cannot be awaited. So presence cannot rest
-   * on a departure being recorded: it rests on this. Stop beating, and the row
-   * lapses ninety seconds later (`PRESENCE_TIMEOUT_MS`), the room becomes
-   * empty, and the session settles.
-   *
-   * Twenty seconds, so four consecutive beats have to fail before anybody who
-   * is really there is dropped. One is sent immediately on joining rather than
-   * waiting out the first interval — a tab that dies within twenty seconds of
-   * joining would otherwise lapse from its join time, which is the same answer
-   * but arrived at by accident.
+   * It had to move with the room. Presence is asserted every twenty seconds and
+   * a row that stops beating lapses ninety seconds later, so a beat left on
+   * this page would let a meeting still running in the corner quietly stop
+   * being credited the moment somebody navigated away.
    */
-  const joinedSessionId = joined?.sessionId ?? null;
-  useEffect(() => {
-    if (!joinedSessionId) return;
-    void touch(joinedSessionId);
-    const id = setInterval(() => void touch(joinedSessionId), 20_000);
-    return () => clearInterval(id);
-  }, [joinedSessionId, touch]);
-
-  useEffect(() => {
-    const bail = () => {
-      const id = openRef.current;
-      if (id) void leave(id);
-    };
-    window.addEventListener("beforeunload", bail);
-    return () => {
-      window.removeEventListener("beforeunload", bail);
-      bail();
-    };
-  }, [leave]);
 
   /**
    * Leaving and closing are two calls, and the order is the point.
@@ -163,6 +166,11 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   const depart = async (sessionId: string) => {
     if (departingRef.current === sessionId) return;
     departingRef.current = sessionId;
+    /* **What tells the summary to write itself.** A task meeting has no "End
+       for everyone" — it is over when the last person walks away — so nobody
+       is left to press Generate. Naming the session that just ended means it
+       fires once for this meeting and not once per render. */
+    setJustLeftSession(sessionId);
 
     /**
      * **The room goes at once, and the writes finish behind it.**
@@ -183,15 +191,23 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
      */
     setJoined(null);
 
-    await leave(sessionId);
-    /* Closing is what CREDITS it. Leaving alone would keep the session open for
-       whoever is still inside — which is correct when somebody else remains,
-       and is why the two are separate calls rather than one. */
-    const r = await end(sessionId);
-    /* Reported after the room has already gone, which is the right order: the
-       departure succeeded, and this says the settlement did not. An abandoned
-       session settles itself from the attendance beats regardless. */
-    if (!r.ok) setError(r.message);
+    /**
+     * **The settlement belongs to the shell, and is not raced from here.**
+     *
+     * `leave` and `end` used to run on this line. They cannot any more: the
+     * room lives in the shell, and `TaskMeetingLifecycle` calls both when the
+     * session closes — including when this page is not mounted at all, which is
+     * the case the floating window creates. Calling them here as well would be
+     * two owners of one settlement, closing a session twice against different
+     * clocks.
+     *
+     * Closing the session is therefore the WHOLE departure: it unmounts the
+     * room, which fires the lifecycle's cleanup, which records the leave and
+     * settles. Nothing is awaited, so the room goes at once — which was the
+     * point of clearing first in the original version, only more so.
+     */
+    closeMeeting();
+    setMinimised(false);
     sessions.refetch();
   };
 
@@ -262,7 +278,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * Their own session is the one that describes what they are looking at.
    */
   const open =
-    (joined && list.find((s) => s.id === joined.sessionId)) ??
+    (inRoom && list.find((s) => s.id === inRoom.sessionId)) ??
     list.find((s) => s.endedAt === null) ??
     null;
   /* The COUNTERPARTY, not the owner. On a self task the owner is the assignee,
@@ -298,7 +314,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * the same room and seeing different answers, which is what was reported.
    */
   const openId = open?.id ?? null;
-  const watching = openId !== null || joined !== null;
+  const watching = openId !== null || inRoom !== null;
 
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -326,6 +342,49 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   }, [watching, refetchSessions]);
 
   const viewerId = useViewerId() ?? "";
+  const me = useQuery((r) => r.getCurrentEmployee(), []);
+  const myName = me.data?.displayName ?? "";
+  /**
+   * Whoever ASSIGNED the work owns the recording.
+   *
+   * Somebody has to own starting and stopping, and on a task that is the side
+   * the credit clock already depends on: the credited span is the one where
+   * the assigner was present, so a recording that follows their control
+   * follows the meeting the product believes in.
+   */
+  const isTaskHost = String(view.task.createdById) === String(viewerId);
+
+  /**
+   * The name the recordings are filed under, and the roster to check.
+   *
+   * `taskMeetingRoomName` rather than `joined?.roomName`: the panel must be
+   * able to list a finished meeting's audio when nobody is in the room, and
+   * the rule derives the same name from the task id either way — which is
+   * exactly why it is derived rather than random.
+   *
+   * The roster is everybody who has ever been in one of this task's meetings.
+   * `RecordingsPanel` uses `joinedAt` to decide who OUGHT to have audio, so
+   * somebody who was in the room and has no file is named as missing.
+   */
+  const taskMeetRoomName = taskMeetingRoomName(taskId);
+  const recordedParticipants = Array.from(
+    new Map(
+      list
+        .flatMap((session) => session.attendance ?? [])
+        .map((a) => [
+          String(a.employeeId),
+          {
+            id: `${taskId}-${a.employeeId}`,
+            meetingId: taskMeetRoomName,
+            employeeId: String(a.employeeId),
+            role: "participant" as const,
+            attendanceStatus: "joined" as const,
+            joinedAt: a.joinedAt,
+            leftAt: a.leftAt ?? null,
+          },
+        ]),
+    ).values(),
+  );
 
   const openAttendance = (open?.attendance ?? []).map((a) => ({
     employeeId: a.employeeId,
@@ -462,7 +521,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
           </p>
         </div>
 
-        {joined ? (
+        {inRoom ? (
           <div className="flex shrink-0 items-center gap-2">
             <span className="inline-flex items-center gap-1.5 rounded-full bg-[var(--control)] px-2.5 py-1 text-[11px] text-ink-muted">
               <span
@@ -475,7 +534,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             <Button
               size="sm"
               tone="ghost"
-              onClick={() => void depart(joined.sessionId)}
+              onClick={() => void depart(inRoom.sessionId)}
             >
               Leave
             </Button>
@@ -529,6 +588,29 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
                    once-only guard is released rather than carried over. */
                 departingRef.current = null;
                 setJoined(r.data);
+                /* **Handed to the shell, which is what makes it survive
+                   navigation.** The room is drawn over the stage below while
+                   this page is open, and floats in the corner once it is not.
+                   The presence beat goes with it — see `TaskMeetingLifecycle`. */
+                openMeeting({
+                  kind: "task",
+                  taskId,
+                  taskTitle: view.task.title,
+                  sessionId: r.data.sessionId,
+                  roomName: r.data.roomName,
+                  token: r.data.token,
+                  url: r.data.url,
+                  employeeId: viewerId,
+                  displayName: myName,
+                  isHost: isTaskHost,
+                  /* Connecting is when the other side becomes visible to this
+                     one — re-read rather than wait out the poll. */
+                  onConnected: () => refetchSessions(),
+                  onLeave: () => {
+                    const id = openRef.current;
+                    if (id) void depart(id);
+                  },
+                });
                 /* **Immediately, not on the next tick.** The snapshot this
                    panel holds was taken before this join — it contains neither
                    this reader's own attendance row nor anybody already inside,
@@ -609,41 +691,123 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
           websocket and asks for the camera the moment it renders, and doing
           that to somebody reading the session list would be a meeting they
           never agreed to be in. */}
-      {joined && (
-        <section
-          aria-label="Meeting room"
-          data-on-slab
-          className="slab slab-flat mt-4 flex h-[420px] flex-col overflow-hidden rounded-card"
-        >
-          <LiveKitRoom
-            token={joined.token}
-            serverUrl={joined.url}
-            connect
-            video
-            audio
-            data-lk-theme="default"
-            className="flex min-h-0 flex-1 flex-col"
-            /* The room being up is the moment the other side becomes visible to
-               this one — read the attendance again rather than waiting out the
-               poll. */
-            onConnected={() => refetchSessions()}
-            /* The control bar's own leave button disconnects rather than
-               calling anything here, so the close is hung off the
-               disconnection — otherwise hanging up would leave the session
-               open and the meeting would never be credited. */
-            onDisconnected={() => {
-              const id = openRef.current;
-              if (id) void depart(id);
-            }}
-            onError={(e) => setError(e.message)}
-          >
-            <Stage />
-            <div className="shrink-0 border-t border-white/10">
-              <ControlBar variation="verbose" />
-            </div>
-            <RoomAudioRenderer />
-          </LiveKitRoom>
-        </section>
+      {/**
+       * **The room is not rendered here any more — only its place is.**
+       *
+       * `MeetingEngine` mounts it once in the shell and draws it over this
+       * rectangle, which is what lets Back, a notification or any link keep the
+       * meeting alive: the page stops publishing a place to draw and the
+       * meeting moves to the corner, instead of being unmounted mid-call with
+       * the recording unfinalised and the credited session left open.
+       *
+       * **Minimised means: publish no stage.** There is no second mechanism for
+       * it — the engine already floats a meeting whose page is not showing one,
+       * so not rendering the stage IS minimising, and rendering it again is
+       * restoring. One rule, and the corner window behaves identically whether
+       * you minimised it or walked away from the page.
+       */}
+      {inRoom && (
+        <div className="mt-4">
+          <div className="mb-2 flex items-center justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setMinimised((v) => !v)}
+              title={minimised ? "Bring the meeting back" : "Minimise to the corner"}
+              aria-label={
+                minimised
+                  ? "Bring the meeting back into the page"
+                  : "Minimise the meeting to the corner"
+              }
+              aria-pressed={minimised}
+              className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
+            >
+              {minimised ? (
+                <Icon.expand className="h-3.5 w-3.5" />
+              ) : (
+                <Icon.collapse className="h-3.5 w-3.5" />
+              )}
+              {minimised ? "Maximise" : "Minimise"}
+            </button>
+          </div>
+
+          {minimised ? (
+            <p className="rounded-card border border-hairline px-4 py-6 text-center text-sm text-ink-muted">
+              The meeting is running in the corner. Press Maximise to bring it
+              back here.
+            </p>
+          ) : (
+            <MeetingStage className="min-h-[22rem] w-full rounded-card sm:min-h-[26rem] deck:min-h-[420px]" />
+          )}
+        </div>
+      )}
+
+      {/**
+       * **Whose audio was saved, on the task it was saved about.**
+       *
+       * A task meeting records like any other now, so it needs the same way of
+       * checking that everybody's voice actually arrived — the panel names who
+       * is missing rather than leaving a silent gap to be discovered later.
+       *
+       * Everybody sees it, not only whoever assigned the work: the person most
+       * able to act on their own missing recording is the person it belongs to,
+       * and the recovery — unsent clips kept in their browser — happens in
+       * THEIR browser.
+       *
+       * Shown only once a meeting has actually been held: an empty recordings
+       * panel on a task nobody has met about is a question nobody asked.
+       */}
+      {list.length > 0 && (
+        <div className="mt-4">
+          <RecordingsPanel
+            meetingId={taskMeetRoomName}
+            participants={recordedParticipants}
+            nameFor={nameOf}
+          />
+        </div>
+      )}
+
+      {/**
+       * **The record of a task meeting, on the task.**
+       *
+       * The same two panels the scheduled meeting has, on the same audio and
+       * through the same routes — those look the recording up by `meetId` in
+       * `meeting_audio_recordings`, and a task room's rows are filed under its
+       * own derived name, so nothing about them needed changing.
+       *
+       * The transcript is first and the summary second, for the reason the
+       * scheduled page gives: what was actually said is the record, and the
+       * summary is a reading of it. Putting the reading above the record invites
+       * the reading to be taken for the record.
+       *
+       * `meetStatus="completed"` because a task meeting is over the moment the
+       * room empties — there is no lifecycle to consult, and while somebody is
+       * still in the room `joined` is set and these are not shown at all.
+       */}
+      {list.length > 0 && !inRoom && (
+        <div className="mt-4 flex flex-col gap-4">
+          <div className="border-t border-hairline pt-4">
+            <p className="text-[15px] font-medium text-ink">Transcript</p>
+            <p className="mt-0.5 text-xs text-ink-faint">
+              Verbatim or translated — never the summary&rsquo;s silent paraphrase
+            </p>
+            <VerbatimTranscriptPanel
+              meetId={taskMeetRoomName}
+              meetStatus="completed"
+            />
+          </div>
+
+          <div className="border-t border-hairline pt-4">
+            <p className="text-[15px] font-medium text-ink">AI summary</p>
+            <p className="mt-0.5 text-xs text-ink-faint">
+              Written from the meeting&rsquo;s audio when the last person leaves
+            </p>
+            <MeetingSummaryPanel
+              meetId={taskMeetRoomName}
+              meetStatus="completed"
+              autoGenerateAfter={justLeftSession}
+            />
+          </div>
+        </div>
       )}
 
       {/* The three figures. Shown even at zero: "no meetings yet" is an answer,
@@ -764,30 +928,6 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
   );
 }
 
-/**
- * The participant grid.
- *
- * Camera and screen-share tracks in one grid, so a shared screen takes the
- * space it needs instead of sitting in a thumbnail beside the faces — which is
- * what a task meeting is usually for: showing the thing being discussed.
- */
-function Stage() {
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: true },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { onlySubscribed: false },
-  );
-
-  return (
-    <div className="min-h-0 flex-1 p-2">
-      <GridLayout tracks={tracks} className="h-full">
-        <ParticipantTile />
-      </GridLayout>
-    </div>
-  );
-}
 
 function Figure({ label, value }: { label: string; value: string }) {
   return (

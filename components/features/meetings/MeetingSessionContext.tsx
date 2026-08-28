@@ -46,7 +46,24 @@ import type { Meeting } from "@/lib/domain";
  * restarts.
  */
 
-export interface MeetingSession {
+/**
+ * A meeting the shell is holding open, of either kind.
+ *
+ * **A union rather than one shape with optional halves**, because the two
+ * genuinely differ in how they are entered and what ending one means. A
+ * scheduled meeting fetches its own token from its room name and reports
+ * presence; a task meeting is handed a token by `joinTaskMeeting`, which also
+ * opens a CREDITED session — attendance on it decides how much time is added
+ * to somebody's deadline. Collapsing those into one optional-riddled object is
+ * how the credit arithmetic ends up running for the wrong kind.
+ *
+ * `kind` is what the engine switches on, and what `TaskMeetingLifecycle`
+ * watches for: only a task session has a heartbeat to keep beating.
+ */
+export type MeetingSession = ScheduledSession | TaskSession;
+
+export interface ScheduledSession {
+  kind: "scheduled";
   meeting: Meeting;
   displayName: string;
   isOrganiser: boolean;
@@ -58,6 +75,49 @@ export interface MeetingSession {
    * the meeting. Hanging up from the floating window while the page is not
    * mounted simply means nobody is listening, which is correct.
    */
+  onLeave?: () => void;
+}
+
+/**
+ * A task's own meeting, held open by the shell so navigating away does not end
+ * it.
+ *
+ * **The reason this exists at all.** The task panel used to own the room, the
+ * twenty-second presence beat and the departure. Navigating away unmounted all
+ * three at once, which was survivable while the room was there too — the
+ * meeting simply ended. It stops being survivable the moment the room outlives
+ * the page: the meeting would carry on in the corner while the beat that keeps
+ * its credited session alive had stopped, the row would lapse ninety seconds
+ * later, and the deadline credit would quietly stop for a conversation still
+ * happening. So the beat moves into the shell with the room, and the two live
+ * or die together.
+ */
+export interface TaskSession {
+  kind: "task";
+  taskId: string;
+  /** Shown in the floating window's header, where there is no page to say it. */
+  taskTitle: string;
+  /** The credited session opened by `joinTaskMeeting`. The beat keeps it alive. */
+  sessionId: string;
+  roomName: string;
+  token: string;
+  url: string;
+  /** Whose browser this is. The recording is filed per person. */
+  employeeId: string;
+  displayName: string;
+  /** Whoever assigned the work — the side the credit clock already depends on. */
+  isHost: boolean;
+  /**
+   * The room finished connecting.
+   *
+   * The task page re-reads attendance here: connecting is the moment the other
+   * side becomes visible to this one, and waiting out the poll instead is the
+   * longest avoidable disagreement between what the panel says and who is
+   * actually in the room. It was `onConnected` on the panel's own LiveKitRoom
+   * before the room moved into the shell; it is carried on the session for the
+   * same reason `onLeave` is — the engine has no idea which page is showing it.
+   */
+  onConnected?: () => void;
   onLeave?: () => void;
 }
 
@@ -109,15 +169,30 @@ export function MeetingSessionProvider({ children }: { children: ReactNode }) {
        * room NAME, a string — so this is about not making the rest of the
        * application re-render, not about protecting the call.
        */
-      if (
-        prev &&
-        prev.meeting.id === next.meeting.id &&
-        prev.meeting.livekitRoomName === next.meeting.livekitRoomName &&
-        prev.meeting.status === next.meeting.status &&
-        prev.displayName === next.displayName &&
-        prev.isOrganiser === next.isOrganiser
-      )
-        return prev;
+      if (!prev || prev.kind !== next.kind) return next;
+      if (prev.kind === "scheduled" && next.kind === "scheduled") {
+        if (
+          prev.meeting.id === next.meeting.id &&
+          prev.meeting.livekitRoomName === next.meeting.livekitRoomName &&
+          prev.meeting.status === next.meeting.status &&
+          prev.displayName === next.displayName &&
+          prev.isOrganiser === next.isOrganiser
+        )
+          return prev;
+      }
+      if (prev.kind === "task" && next.kind === "task") {
+        /* The token is deliberately NOT compared: a re-join mints a new one for
+           the same room and session, and swapping it would reconnect a call
+           that is already up. Identity is the session it opened. */
+        if (
+          prev.taskId === next.taskId &&
+          prev.sessionId === next.sessionId &&
+          prev.roomName === next.roomName &&
+          prev.displayName === next.displayName &&
+          prev.isHost === next.isHost
+        )
+          return prev;
+      }
       return next;
     });
   }, []);

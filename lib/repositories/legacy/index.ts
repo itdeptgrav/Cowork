@@ -9814,6 +9814,9 @@ export class LegacyRepository {
             return ms === null ? "" : new Date(ms).toISOString();
           })(),
           isRejoin: r.isRejoin === true,
+          isBackup: r.isBackup === true,
+          recordedByName:
+            typeof r.recordedByName === "string" ? r.recordedByName : "",
         } satisfies MeetingRecording;
       })
       .filter((r): r is MeetingRecording => r !== null)

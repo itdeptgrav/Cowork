@@ -7,6 +7,9 @@ import { NotificationToasts } from "./NotificationToasts";
 import { DemoBar } from "./DemoBar";
 import { PlayerEngine } from "@/components/features/music/PlayerEngine";
 import { MeetingEngine } from "@/components/features/meetings/MeetingEngine";
+import { PendingAudioDrain } from "@/components/features/meetings/PendingAudioDrain";
+import { MeetingReloadGuard } from "@/components/features/meetings/MeetingReloadGuard";
+import { TaskMeetingLifecycle } from "@/components/features/meetings/TaskMeetingLifecycle";
 import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
@@ -346,6 +349,28 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
         recording exactly where they were. It renders nothing at all when
         nobody is in a meeting. */}
       <MeetingEngine />
+      {/* **Sends audio that never made it, from wherever the reader is.** A
+        recording is written to the browser's disk before it is uploaded, so a
+        dropped connection never loses it — but the retry used to live inside
+        the meeting room, so it only ran if the person joined ANOTHER meeting.
+        Somebody whose network died mid-call and who then went back to their
+        tasks kept a finished recording nothing would ever send, until it
+        expired after seven days. A sibling of the shell, so opening Cowork at
+        all is enough. Renders nothing. */}
+      <PendingAudioDrain />
+      {/* **The beat that keeps a task meeting's credited session alive.** It
+        has to live beside the room rather than on the task page: the floating
+        window means the room outlives the page, and a beat that stopped with
+        the page would let the deadline credit lapse ninety seconds into a
+        conversation still happening. Renders nothing, and does nothing at all
+        unless a task meeting is open. */}
+      <TaskMeetingLifecycle />
+      {/* **Asks before a reload takes somebody out of a meeting.** A sibling of
+        the engine because the meeting is: it must ask whether the room is on
+        this page or floating in the corner. The recorder registers its own
+        guard as well, but that one is gated on a recording being live — this
+        one is gated on there being a meeting at all. Renders nothing. */}
+      <MeetingReloadGuard />
       {/* **No presence room here any more, and that is the point.** Sharing a
         screen used to need a Grav Stream iframe mounted beside the shell,
         because the capture prompt can only be opened from inside the frame

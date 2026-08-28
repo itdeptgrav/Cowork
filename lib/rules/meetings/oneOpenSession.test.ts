@@ -43,9 +43,13 @@ test("the panel reads the session THIS person joined", () => {
   assert.ok(from > 0, "the open-session choice was renamed");
   const body = src.slice(from, from + 400);
 
+  /* `inRoom` rather than `joined`: the room lives in the shell now, so being in
+     it survives this panel unmounting — returning from the floating window
+     would otherwise read as never having joined. Same guarantee, one more way
+     of being in the room. */
   assert.match(
     body,
-    /joined && list\.find\(\(s\) => s\.id === joined\.sessionId\)/,
+    /inRoom && list\.find\(\(s\) => s\.id === inRoom\.sessionId\)/,
     "the panel picks an open session without preferring the reader's own, so " +
       "somebody in the room can be told they are not in it",
   );

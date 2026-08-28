@@ -38,9 +38,19 @@ import {
  * The host toggles it for the whole room over the socket (`recording_start` /
  * `_stop`); every participant hears that and starts/stops their own capture, and
  * broadcasts their own record + upload state back so the host's status panel is
- * live. Muting pauses the recorder (and records a speech interval), a page-hide
- * flushes what's buffered via `sendBeacon`, and a rejoin within four hours
- * resumes rather than starting a second file.
+ * live.
+ *
+ * **Two things stop capture, and both must hold for it to run.** Muting means
+ * the microphone is not reaching the room, so it must not reach the file
+ * either — somebody who mutes to take a phone call has said unmistakably that
+ * this is not for the meeting. Pausing is the host stopping the recording for
+ * everybody, whatever anyone's microphone is doing. `syncCapture` owns the
+ * recorder so neither can undo the other: two callers toggling it independently
+ * is how unmuting once resumed a recording the host had paused.
+ *
+ * Muting also marks a speech interval, which is what the summary orders
+ * speakers by. A page-hide flushes what's buffered via `sendBeacon`, and a
+ * rejoin within four hours resumes rather than starting a second file.
  */
 
 const BASE =
@@ -97,7 +107,7 @@ export interface PeerStatus {
  * The order is preference, not availability: Opus in WebM where it exists
  * (Chrome, Edge, Brave, Firefox), MP4 for Safari, Ogg for older Firefox.
  */
-function getSupportedMimeType(): string | null {
+export function getSupportedMimeType(): string | null {
   if (typeof MediaRecorder === "undefined") return null;
   /* Present in every browser that has MediaRecorder except the oldest Safari,
      where the only honest answer is to let it choose. */
@@ -194,29 +204,76 @@ const finalizing = new Set<string>();
 function sessionKey(meetId: string, empId: string): string {
   return `rec_${meetId}_${empId}`;
 }
-function saveSession(meetId: string, empId: string, mimeType: string): void {
+/**
+ * What a reload has to be able to recover.
+ *
+ * `startedAt` is the ORIGINAL start, carried across every reload, so the REC
+ * clock keeps counting the meeting rather than counting this page.
+ *
+ * `nextChunkIndex` is the load-bearing one. Chunks are written server-side as
+ * `chunk_0000`, `chunk_0001` … in one directory per person, with a plain
+ * `writeFileSync` — so a recorder that restarts its numbering at zero
+ * **overwrites the audio recorded before the reload, clip by clip**. That was
+ * happening: the timer restarting from 00:00 was the visible half of a
+ * recording quietly eating itself.
+ */
+interface RecSession {
+  meetId: string;
+  empId: string;
+  mimeType: string;
+  startedAt: number;
+  nextChunkIndex: number;
+}
+
+function saveSession(
+  meetId: string,
+  empId: string,
+  mimeType: string,
+  startedAt: number,
+  nextChunkIndex: number,
+): void {
   try {
-    localStorage.setItem(
-      sessionKey(meetId, empId),
-      JSON.stringify({ meetId, empId, mimeType, startedAt: Date.now() }),
-    );
+    const row: RecSession = { meetId, empId, mimeType, startedAt, nextChunkIndex };
+    localStorage.setItem(sessionKey(meetId, empId), JSON.stringify(row));
   } catch {
     /* private mode / quota — recording still works, just no rejoin resume */
   }
 }
-function getSession(
-  meetId: string,
-  empId: string,
-): { startedAt: number } | null {
+
+/**
+ * Remember where the numbering has reached, on every chunk.
+ *
+ * Written after each flush rather than once at the start, because a reload can
+ * land at any moment and the only safe index to resume from is the last one
+ * actually used. Cheap: one small `localStorage` write per thirty seconds.
+ */
+function rememberChunkIndex(meetId: string, empId: string, next: number): void {
+  try {
+    const raw = localStorage.getItem(sessionKey(meetId, empId));
+    if (!raw) return;
+    const row = JSON.parse(raw) as RecSession;
+    if (next <= (row.nextChunkIndex ?? 0)) return;
+    localStorage.setItem(
+      sessionKey(meetId, empId),
+      JSON.stringify({ ...row, nextChunkIndex: next }),
+    );
+  } catch {
+    /* Same as above: the recording is unaffected, only the resume. */
+  }
+}
+function getSession(meetId: string, empId: string): RecSession | null {
   try {
     const raw = localStorage.getItem(sessionKey(meetId, empId));
     if (!raw) return null;
-    const s = JSON.parse(raw) as { startedAt: number };
+    const s = JSON.parse(raw) as RecSession;
     if (Date.now() - s.startedAt > 4 * 60 * 60 * 1000) {
       localStorage.removeItem(sessionKey(meetId, empId));
       return null;
     }
-    return s;
+    /* An older row, written before the index was kept. Resuming from zero would
+       overwrite, so the safest reading of "unknown" is a number no previous
+       chunk can have used. */
+    return { ...s, nextChunkIndex: s.nextChunkIndex ?? 1000 };
   } catch {
     return null;
   }
@@ -314,6 +371,79 @@ function sendKeepaliveFinalize(args: {
   }
 }
 
+/** Guards against two drains running at once, across every caller on the page. */
+let draining = false;
+
+/**
+ * Re-send everything still on disk, then finalize anything still marked.
+ *
+ * **Module-level, and that is the point.** This used to live inside
+ * `useMeetingRecording`, which mounts only inside a meeting room — so a person
+ * whose upload failed had their audio rescued only if they happened to join
+ * another meeting. Somebody who dropped out of a call and went back to their
+ * tasks kept a finished recording in their browser that nothing would ever
+ * send. Lifted out, `PendingAudioDrain` can run it from the shell on every
+ * page, and the hook keeps a thin wrapper for its own banner.
+ *
+ * Safe to run at any moment, and safe to run twice: chunks are keyed by index
+ * server-side so a replay overwrites rather than appends, and a finalize whose
+ * chunks were already merged answers `skipped` instead of writing a second
+ * file.
+ *
+ * Returns the meetings it finalized, so a caller that cares about one of them
+ * can update itself, and the number still waiting.
+ */
+export async function drainPendingAudio(): Promise<{
+  finalized: string[];
+  pending: number;
+}> {
+  if (draining) return { finalized: [], pending: await pendingCount() };
+  draining = true;
+  const finalized: string[] = [];
+  try {
+    for (const c of await allChunks()) {
+      const ok = await uploadChunkWithRetry({
+        blob: c.blob,
+        meetId: c.meetId,
+        chunkIndex: c.chunkIndex,
+        mimeType: c.mimeType,
+        guestSessionId: c.guestSessionId,
+      });
+      if (ok) await deleteChunk(c.id ?? null);
+    }
+
+    /* Only finalize a recording whose audio is all through — merging while a
+       chunk is still outstanding would cut the end off the file. */
+    const stillWaiting = await allChunks();
+    const ready = sessionsReadyToFinalize(await allSessions(), stillWaiting);
+    for (const sess of ready) {
+      if (finalizing.has(sess.key)) continue;
+      finalizing.add(sess.key);
+      try {
+        await finalizeRecording({
+          meetId: sess.meetId,
+          firstName: sess.firstName,
+          mimeType: sess.mimeType,
+          isRejoin: sess.isRejoin,
+          speechIntervals: (sess.speechIntervals ?? []) as SpeechInterval[],
+          pauseIntervals: (sess.pauseIntervals ?? []) as SpeechInterval[],
+          guestSessionId: sess.guestSessionId,
+        });
+        await deleteSession(sess.key);
+        finalized.push(sess.meetId);
+      } catch {
+        /* Drive still refusing. The marker stays, so the next run tries again —
+           the chunks are safe on the server meanwhile. */
+      } finally {
+        finalizing.delete(sess.key);
+      }
+    }
+    return { finalized, pending: await pendingCount() };
+  } finally {
+    draining = false;
+  }
+}
+
 async function finalizeRecording(args: {
   meetId: string;
   firstName: string;
@@ -377,13 +507,34 @@ export function useMeetingRecording({
   guestSessionId,
 }: MeetingRecordingInput) {
   const [isRecording, setIsRecording] = useState(false);
+  /**
+   * When this recording began, and how much of it has been paused.
+   *
+   * **The clock has to live here, not in the indicator.** It used to be a
+   * counter in `RecIndicator`, which is rendered inside the room's header — and
+   * the header is not rendered in the corner window or the picture-in-picture
+   * one. So popping the meeting out unmounted the indicator, and coming back
+   * mounted a new one starting from zero. The recording never stopped: the
+   * recorder lives in this hook, which stays mounted throughout. But a REC
+   * timer that resets says the recording restarted, and a person watching it
+   * has no way to know it did not.
+   *
+   * Timestamps rather than a tick, so the figure is computed from facts that
+   * survive any component unmounting.
+   */
+  const [recordingStartedAtMs, setRecordingStartedAtMs] = useState<number | null>(
+    null,
+  );
+  /** Completed pauses, summed. Grows on each resume. */
+  const [pausedTotalMs, setPausedTotalMs] = useState(0);
+  /** When the current pause began, or null. */
+  const [pauseStartedAtMs, setPauseStartedAtMs] = useState<number | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadDone, setUploadDone] = useState(false);
   const [uploadError, setUploadError] = useState("");
   /* How many clips are on disk waiting to be sent, so the room can say so
      rather than showing a bare "Upload failed" with no idea what it cost. */
   const [pendingUploads, setPendingUploads] = useState(0);
-  const drainingRef = useRef(false);
   const [uploadResult, setUploadResult] = useState<FinalizeResult | null>(null);
   const [participantStatuses, setParticipantStatuses] = useState<
     Map<string, PeerStatus>
@@ -447,6 +598,36 @@ export function useMeetingRecording({
   }, []);
 
   const prevMutedRef = useRef<boolean | null>(null);
+  /**
+   * Make the recorder match the two things that can silence it.
+   *
+   * **Capture happens only when neither a pause nor a mute is in force**, and
+   * this is the single place that decides it. Two callers each calling
+   * `recorder.pause()` and `recorder.resume()` for their own reason is how
+   * unmuting resumed a recording the host had paused, and how a resume
+   * un-paused a recorder that was only paused because the microphone was off.
+   * Both were live faults; both are impossible from here, because the state is
+   * computed rather than toggled.
+   *
+   * The room is told about the PAUSE only. A muted person is already shown as
+   * muted on their own tile, and reporting them as "Paused" would say the room
+   * had stopped recording when it had not.
+   */
+  const syncCapture = useCallback(() => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder) return;
+    const shouldCapture = !isPausedRef.current && !isMutedRef.current;
+    try {
+      if (!shouldCapture && recorder.state === "recording") recorder.pause();
+      else if (shouldCapture && recorder.state === "paused") recorder.resume();
+    } catch {
+      /* A browser without pause support. The `ondataavailable` guard drops
+         what it produces meanwhile, so nothing muted is kept either way. */
+    }
+    if (isRecordingRef.current)
+      broadcastStatus(isPausedRef.current ? "paused" : "recording");
+  }, [broadcastStatus]);
+
   const setMuted = useCallback(
     (muted: boolean) => {
       isMutedRef.current = muted;
@@ -467,19 +648,18 @@ export function useMeetingRecording({
       }
 
       /**
-       * **Muting no longer pauses the recorder, and that is deliberate.**
+       * **Muted means not recorded.** A microphone that is not reaching the
+       * room must not be reaching the file either — somebody who mutes to take
+       * a phone call has said, unmistakably, that this is not for the meeting.
        *
-       * It used to: mute the microphone and the recording stopped with it. That
-       * made "is this being recorded" depend on a control that means something
-       * else entirely, and left no way to answer the actual question — stop
-       * recording the room, whether or not anybody is muted.
-       *
-       * Pause is now its own thing (`pauseRecording` below). Muting still marks
-       * the speech interval above, because who spoke when is what the summary
-       * orders by; it simply no longer decides what is captured.
+       * It does not decide the recording ON ITS OWN, though, which is the
+       * distinction that took two goes to get right. Pause is a separate
+       * control with a separate meaning, and the recorder has to obey BOTH:
+       * `syncCapture` owns that, so neither one can undo the other.
        */
+      syncCapture();
     },
-    [],
+    [syncCapture],
   );
 
   /**
@@ -499,24 +679,19 @@ export function useMeetingRecording({
   const pauseRecording = useCallback(() => {
     if (isPausedRef.current) return;
     isPausedRef.current = true;
-    pauseStartedAtRef.current = Date.now();
+    const at = Date.now();
+    pauseStartedAtRef.current = at;
     setIsPaused(true);
+    setPauseStartedAtMs(at);
 
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state === "recording") {
-      try {
-        recorder.pause();
-      } catch {
-        /* Unsupported — the guard in `ondataavailable` covers it. */
-      }
-    }
-    if (isRecordingRef.current) broadcastStatus("paused");
-  }, [broadcastStatus]);
+    syncCapture();
+  }, [syncCapture]);
 
   const resumeRecording = useCallback(() => {
     if (!isPausedRef.current) return;
     isPausedRef.current = false;
     setIsPaused(false);
+    setPauseStartedAtMs(null);
 
     const startedAt = pauseStartedAtRef.current;
     pauseStartedAtRef.current = null;
@@ -527,18 +702,15 @@ export function useMeetingRecording({
         endMs,
         durationMs: endMs - startedAt,
       });
+      /* Added to the running total the timer subtracts, so the figure counts
+         what is IN the recording rather than wall-clock time. */
+      setPausedTotalMs((n) => n + (endMs - startedAt));
     }
 
-    const recorder = mediaRecorderRef.current;
-    if (recorder && recorder.state === "paused") {
-      try {
-        recorder.resume();
-      } catch {
-        /* Unsupported — nothing was dropped, so nothing to restore. */
-      }
-    }
-    if (isRecordingRef.current) broadcastStatus("recording");
-  }, [broadcastStatus]);
+    /* Resuming the RECORDING does not un-mute a microphone: if they are still
+       muted, capture stays off and only the pause is lifted. */
+    syncCapture();
+  }, [syncCapture]);
 
   const flushChunks = useCallback(async () => {
     const toSend = [...pendingChunksRef.current, ...bufferedChunksRef.current];
@@ -550,6 +722,9 @@ export function useMeetingRecording({
     if (combined.size < 100) return;
 
     const idx = chunkIndexRef.current++;
+    /* Written now rather than at the end: a reload can land at any moment, and
+       the only safe index to resume from is the last one actually used. */
+    rememberChunkIndex(meetIdRef.current, employeeIdRef.current, chunkIndexRef.current);
 
     /* Durable BEFORE the attempt, not after it fails: the window this closes is
        the upload itself, which is exactly when the tab tends to be shut. */
@@ -643,7 +818,36 @@ export function useMeetingRecording({
         const preferred = getSupportedMimeType();
         isRejoinRef.current = rejoin;
         isFinalizedRef.current = false;
-        chunkIndexRef.current = 0;
+        /**
+         * **Resume the numbering; never restart it.**
+         *
+         * The engine writes chunks as `chunk_0000`, `chunk_0001` … into one
+         * directory per person, with a plain `writeFileSync`. So a recorder
+         * that begins again at zero does not append — it **overwrites the audio
+         * recorded before the reload, clip by clip**, and the finalize then
+         * merges a directory holding the new recording's first minutes
+         * followed by whatever tail of the old one was longer.
+         *
+         * A reload therefore has to pick the numbering up where it left off.
+         * `prior` is the row `saveSession` left behind; where there is none
+         * this is a genuine first start and zero is right.
+         */
+        /**
+         * Read regardless of the `rejoin` flag, and that is deliberate.
+         *
+         * A reload races two callers: this hook's own resume effect, which
+         * passes `rejoin: true` after 2.5s, and the socket replaying
+         * `recording_started` to a late joiner, which passes `false` and
+         * usually arrives first. Trusting the flag would therefore reset the
+         * numbering on exactly the path that actually runs.
+         *
+         * The asymmetry settles it: continuing from a stale row costs a gap in
+         * the numbering, which the merge does not care about, while resetting
+         * over a live one destroys audio. `stopRecording` clears the row, so a
+         * genuine fresh start still begins at zero.
+         */
+        const prior = getSession(meetIdRef.current, employeeIdRef.current);
+        chunkIndexRef.current = prior?.nextChunkIndex ?? 0;
         bufferedChunksRef.current = [];
         pendingChunksRef.current = [];
         speechIntervalsRef.current = [];
@@ -675,7 +879,12 @@ export function useMeetingRecording({
         recorder.ondataavailable = (e) => {
           /* Paused audio is never kept. The recorder is paused too, so this
              only matters where a browser does not implement pause. */
-          if (e.data && e.data.size > 0 && !isPausedRef.current)
+          if (
+            e.data &&
+            e.data.size > 0 &&
+            !isPausedRef.current &&
+            !isMutedRef.current
+          )
             bufferedChunksRef.current.push(e.data);
         };
         recorder.start(1000);
@@ -692,7 +901,7 @@ export function useMeetingRecording({
          *
          * Observed on M053: two people in the meeting, one file in the folder.
          */
-        if (isPausedRef.current) {
+        if (isPausedRef.current || isMutedRef.current) {
           try {
             recorder.pause();
           } catch {
@@ -701,11 +910,26 @@ export function useMeetingRecording({
         }
         mediaRecorderRef.current = recorder;
         setIsRecording(true);
+        /* The ORIGINAL start where there is one, so the REC clock counts the
+           meeting rather than counting this page. A reload showing 00:00 over a
+           recording twenty minutes long is the visible half of the fault above,
+           and on its own it is what made somebody reasonably assume the audio
+           had been thrown away. */
+        const startedAt = prior?.startedAt ?? Date.now();
+        setRecordingStartedAtMs(startedAt);
+        setPausedTotalMs(0);
+        setPauseStartedAtMs(null);
         setUploadDone(false);
         setUploadError("");
         setUploadResult(null);
         startChunkTimer();
-        saveSession(meetIdRef.current, employeeIdRef.current, mimeType);
+        saveSession(
+          meetIdRef.current,
+          employeeIdRef.current,
+          mimeType,
+          startedAt,
+          chunkIndexRef.current,
+        );
         void warmTokenCache();
         /* The room is told what the RECORDER is doing. Keyed on mute, this
            announced "Paused" for everybody who joined muted — over a recorder
@@ -853,53 +1077,14 @@ export function useMeetingRecording({
    * were already merged answers `skipped` instead of writing a second file.
    */
   const drainPending = useCallback(async () => {
-    if (drainingRef.current) return;
-    drainingRef.current = true;
-    try {
-      for (const c of await allChunks()) {
-        const ok = await uploadChunkWithRetry({
-          blob: c.blob,
-          meetId: c.meetId,
-          chunkIndex: c.chunkIndex,
-          mimeType: c.mimeType,
-          guestSessionId: c.guestSessionId,
-        });
-        if (ok) await deleteChunk(c.id ?? null);
-      }
-
-      /* Only finalize a recording whose audio is all through — merging while
-         a chunk is still outstanding would cut the end off the file. */
-      const stillWaiting = await allChunks();
-      const ready = sessionsReadyToFinalize(await allSessions(), stillWaiting);
-      for (const sess of ready) {
-        if (finalizing.has(sess.key)) continue;
-        finalizing.add(sess.key);
-        try {
-          await finalizeRecording({
-            meetId: sess.meetId,
-            firstName: sess.firstName,
-            mimeType: sess.mimeType,
-            isRejoin: sess.isRejoin,
-            speechIntervals: (sess.speechIntervals ?? []) as SpeechInterval[],
-            pauseIntervals: (sess.pauseIntervals ?? []) as SpeechInterval[],
-            guestSessionId: sess.guestSessionId,
-          });
-          await deleteSession(sess.key);
-          if (sess.meetId === meetIdRef.current) {
-            setUploadError("");
-            setUploadDone(true);
-          }
-        } catch {
-          /* Drive still refusing. The marker stays, so the next load tries
-             again — the chunks are safe on the server meanwhile. */
-        } finally {
-          finalizing.delete(sess.key);
-        }
-      }
-      setPendingUploads(await pendingCount());
-    } finally {
-      drainingRef.current = false;
+    const result = await drainPendingAudio();
+    /* Only this meeting's own row clears the banner — finalizing somebody
+       else's leftover recording says nothing about mine. */
+    if (result.finalized.includes(meetIdRef.current)) {
+      setUploadError("");
+      setUploadDone(true);
     }
+    setPendingUploads(result.pending);
   }, []);
 
   /* Rescue on arrival, then keep trying while the page is open. A failed
@@ -972,6 +1157,11 @@ export function useMeetingRecording({
             });
           }
           chunkIndexRef.current = idx + 1;
+          rememberChunkIndex(
+            meetIdRef.current,
+            employeeIdRef.current,
+            chunkIndexRef.current,
+          );
         }
       }
 
@@ -1189,6 +1379,10 @@ export function useMeetingRecording({
 
   return {
     isRecording,
+    /** When it began, so a timer can survive its own component unmounting. */
+    recordingStartedAtMs,
+    pausedTotalMs,
+    pauseStartedAtMs,
     /** Recording is running but capturing nothing. Not the same as muted. */
     isPaused,
     pauseRecording,

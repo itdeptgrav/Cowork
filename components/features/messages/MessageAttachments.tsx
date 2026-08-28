@@ -31,6 +31,12 @@ import {
   driveViewUrl,
 } from "@/lib/rules/media/driveUrls";
 import { dragCarriesFiles, dragDepth } from "@/lib/rules/messages/fileDrop";
+import {
+  uploadAriaLabel,
+  uploadPercent,
+  uploadStage,
+  uploadStageLabel,
+} from "@/lib/rules/messages/uploadStage";
 
 export const MEDIA_BASE = process.env.NEXT_PUBLIC_LEGACY_API_URL ?? "";
 
@@ -469,5 +475,92 @@ export function MessageAttachments({
         />
       )}
     </span>
+  );
+}
+
+/**
+ * One file's row while it is being attached — the bar, then the spinner.
+ *
+ * **Two stages, because the upload has two.** The bar is driven by bytes
+ * actually sent and answers "how much is left"; once they are all sent the
+ * finalize round trip begins, which reports nothing of its own and can take as
+ * long as Drive takes. Leaving the bar full through that window is what made a
+ * file look ready while it was still being processed — 100% reads as done.
+ *
+ * So the row swaps to an indeterminate spinner and says `Processing…`. It
+ * cannot claim a percentage it does not have, and it cannot be mistaken for
+ * finished. The row disappears when the upload actually resolves, which is the
+ * same moment `uploading` clears and Send becomes available again.
+ *
+ * Shared by Messages and a task's discussion: the two had grown near-identical
+ * copies of this row, down to the same clamp guard.
+ */
+export function UploadProgressRow({
+  name,
+  fraction,
+}: {
+  name: string;
+  fraction: number;
+}) {
+  const pct = uploadPercent(fraction);
+  const stage = uploadStage(fraction);
+  const processing = stage === "processing";
+
+  return (
+    <div className="flex items-center gap-2 text-xs text-ink-muted">
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      {processing ? (
+        <span
+          role="progressbar"
+          aria-label={uploadAriaLabel(name, stage)}
+          /* No `aria-valuenow`: the finalize step reports no progress, so the
+             bar is genuinely indeterminate. Pinning it at 100 would tell a
+             screen reader the thing is finished while it is not. */
+          aria-valuetext={uploadStageLabel(stage)}
+          className="flex shrink-0 items-center gap-1.5"
+        >
+          {/* `motion-essential` because both clamps in `globals.css` stop every
+              animation dead — reduced motion and plain device mode alike. That
+              is right for a flourish and wrong here: a ring that does not turn
+              is indistinguishable from a hung upload, which is the one thing
+              this row exists to rule out. See the block in `globals.css`.
+
+              A CONTRASTING top border rather than a transparent one, and 2px
+              rather than 1px. A near-uniform ring looks identical at every
+              angle, so it reads as frozen even while it is turning — which is
+              the pattern the other spinners in this app already use
+              (`StatusButton`, `DailyReportModal`, `GuestMeetingArea`). */}
+          <span
+            aria-hidden
+            className="motion-essential h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-ink-faint border-t-ink"
+          />
+          <span className="text-[11px] whitespace-nowrap">
+            {uploadStageLabel(stage)}
+          </span>
+        </span>
+      ) : (
+        <>
+          <span
+            role="progressbar"
+            aria-label={uploadAriaLabel(name, stage)}
+            aria-valuenow={pct}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            className="h-1.5 w-24 shrink-0 overflow-hidden rounded-full bg-[var(--control)]"
+          >
+            <span
+              className="block h-full rounded-full bg-ink transition-[width] duration-150 ease-out"
+              style={{ width: `${pct}%` }}
+            />
+          </span>
+          <span
+            data-figure
+            className="w-8 shrink-0 text-right text-[11px] tabular-nums"
+          >
+            {pct}%
+          </span>
+        </>
+      )}
+    </div>
   );
 }
