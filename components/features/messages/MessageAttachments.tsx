@@ -308,36 +308,129 @@ function playingId(a: MessageAttachment): string | null {
  * honest link.
  */
 function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
+  /**
+   * **Saving a file was only possible for images.**
+   *
+   * `Thumbnail` has had its own download button since it was written, and this
+   * — the card every PDF, spreadsheet, Word document and unrecognised file
+   * lands on — had none. The whole row was a link to Drive's viewer, which
+   * opens a preview in a new tab and leaves saving it to whatever that page
+   * offers. For a `.docx` or an `.xlsx` Drive offers a converted preview, so
+   * the file people actually wanted never reached their machine.
+   *
+   * The row stays a link, because opening a PDF to read it is the common case
+   * and Drive renders one better than a raw stream. The button is a second
+   * gesture on the same card, exactly as it is on a thumbnail.
+   */
+  const name = a.name ?? (a.kind === "pdf" ? "Document.pdf" : "File");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save() {
+    setError(null);
+    setSaving(true);
+    try {
+      /* `mediaUrl`, not `mediaOpenUrl`: the first is the bytes and the second
+         is Drive's own page. Downloading the page is what once saved an HTML
+         viewer with a `.pdf` name — a file that opens to nothing. */
+      await downloadFile(mediaUrl(a), name, mediaProxyUrl(a));
+    } catch (e) {
+      setError(
+        e instanceof Error
+          ? e.message
+          : "That file could not be downloaded.",
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
   return (
-    <a
-      /* Drive's own page, not the byte proxy: this is a link a person
-         follows, and Drive reads a PDF better than a raw stream does.
-         The `<audio>` above keeps `src` because it needs bytes. */
-      href={mediaOpenUrl(a)}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={`flex w-full items-center gap-2.5 rounded-[10px] p-2 ${
-        mine ? "bg-white/15 hover:bg-white/25" : "bg-[var(--control)] hover:opacity-90"
-      }`}
-    >
+    <span className="block">
       <span
-        className={`grid h-9 w-9 shrink-0 place-items-center rounded-[7px] ${
-          mine ? "bg-white/20" : "bg-[var(--surface-raised)]"
+        className={`flex w-full items-center gap-3 rounded-[10px] p-2.5 ${
+          mine ? "bg-white/15" : "bg-[var(--control)]"
         }`}
       >
-        <Icon.attach className="h-4 w-4" />
-      </span>
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-xs">
-          {a.name ?? (a.kind === "pdf" ? "Document.pdf" : "File")}
-        </span>
-        {a.sizeBytes ? (
-          <span className="block text-[11px] opacity-60">
-            {formatBytes(a.sizeBytes)}
+        <a
+          /* Drive's own page, not the byte proxy: this is a link a person
+             follows to READ the file, and Drive renders a PDF better than a raw
+             stream does. Saving it is the button beside this. */
+          href={mediaOpenUrl(a)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex min-w-0 flex-1 items-center gap-3 rounded-[7px] hover:opacity-80"
+        >
+          <span
+            className={`grid h-11 w-11 shrink-0 place-items-center rounded-[8px] ${
+              mine ? "bg-white/20" : "bg-[var(--surface-raised)]"
+            }`}
+          >
+            <Icon.attach className="h-5 w-5" />
           </span>
-        ) : null}
+          <span className="min-w-0 flex-1">
+            {/**
+             * **Wrapped over two lines, not truncated to one.**
+             *
+             * A real filename carries the version and the format —
+             * `GRAV_Scanner_v5_5_Ozone.pdf` — and `truncate` cut it at
+             * "GRAV_Scanner…", which is the half that identifies nothing. Two
+             * lines fit almost every name people actually send; beyond that
+             * `line-clamp-2` stops one absurd name pushing the thread around,
+             * and `break-all` is what lets a long unbroken string wrap at all
+             * rather than overflow its box.
+             */}
+            <span className="block line-clamp-2 text-sm leading-snug break-all">
+              {name}
+            </span>
+            {a.sizeBytes ? (
+              <span className="mt-0.5 block text-[11px] opacity-60">
+                {formatBytes(a.sizeBytes)}
+              </span>
+            ) : null}
+          </span>
+        </a>
+
+        {/* **A second gesture on the same card**, the way a thumbnail has always
+            had one: the row opens the file to read, this saves it. Separate
+            because they are different intentions, and because Drive's viewer
+            cannot save a `.docx` as a `.docx`. */}
+        <button
+          type="button"
+          onClick={() => void save()}
+          disabled={saving}
+          aria-label={saving ? `Downloading ${name}` : `Download ${name}`}
+          aria-busy={saving}
+          title={saving ? "Downloading…" : "Download"}
+          /* Matches the file icon's size, so the card reads as two equal ends
+             around the name rather than a button tacked on. 44px is also the
+             touch target a thumb wants, which the 36px version was not. */
+          className={`grid h-11 w-11 shrink-0 place-items-center rounded-[8px] transition-opacity disabled:opacity-60 ${
+            mine
+              ? "bg-white/20 hover:bg-white/30"
+              : "bg-[var(--surface-raised)] hover:opacity-80"
+          }`}
+        >
+          {saving ? (
+            /* A spinner rather than a percentage: `downloadFile` reads the whole
+               body through `res.blob()`, which reports nothing until it is done.
+               Showing a made-up figure would be worse than showing motion. */
+            <Icon.sync className="h-5 w-5 animate-spin" />
+          ) : (
+            <Icon.download className="h-5 w-5" />
+          )}
+        </button>
       </span>
-    </a>
+
+      {error && (
+        <span
+          role="alert"
+          className="mt-1 block px-1 text-[11px] leading-tight text-[var(--state-rework-ink)]"
+        >
+          {error}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -368,7 +461,25 @@ export function MessageAttachments({
        photo inside it rendered small — a wide black box around a tiny
        thumbnail. `max-w-full` is what still lets it shrink on a screen
        narrower than 200px. */
-    <span className="flex w-[200px] max-w-full flex-col gap-1.5">
+    /**
+     * **The 200px is for IMAGES, and only images needed it.**
+     *
+     * The note above explains why a definite width exists at all: the bubble
+     * sizes to its content, so a percentage left browsers resolving against
+     * each `<img>`'s natural size and inflating the bubble to fit a
+     * multi-megapixel photo. None of that applies to a file card, which has no
+     * intrinsic width — and boxing one into 200px is what truncated
+     * "GRAV_Scanner_v5_5_O…" to a name nobody can read.
+     *
+     * So the constraint is applied where it is needed. A thread of documents
+     * gets a card wide enough to read, `max-w-full` keeps it inside a phone,
+     * and a thread with any image in it keeps the old behaviour exactly.
+     */
+    <span
+      className={`flex max-w-full flex-col gap-1.5 ${
+        images.length > 0 ? "w-[200px]" : "w-[19rem]"
+      }`}
+    >
       {images.length > 0 && (
         <span className={grid ? "grid w-full grid-cols-2 gap-1" : "block"}>
           {images.map((a, i) => (

@@ -26,6 +26,7 @@ import {
   type MessageMenuItem,
 } from "@/components/features/messages/MessageContextMenu";
 import { MessageTicks } from "@/components/features/messages/MessageTicks";
+import { ChangeEventCard } from "./ChangeEventCard";
 import { formatClock, formatDate } from "@/lib/utils/format";
 import { clearDraft, readDraft, saveDraft } from "@/components/features/messages/draftStorage";
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
@@ -724,12 +725,18 @@ export function ChatPanel({
                 )}
 
                 {system ? (
-                  /* The engine's own record — a confirmation, a deadline
-                     decision. Centred and quiet, because it is not addressed
-                     to anybody and belongs to neither side of the thread. */
-                  <p className="my-2 text-center text-[11px] leading-relaxed text-ink-faint">
-                    {m.text}
-                  </p>
+                  /* The engine's own record. A requirement/ET change renders as
+                     a card people notice — it rewrites the brief of live work;
+                     everything else (an approval, a deadline decision) stays the
+                     quiet centred line. `ChangeEventCard` decides which, from the
+                     message text, and falls back to the quiet line itself.
+                     `by`/`at` give it the same who-and-when a message carries —
+                     the sender's name resolved to a person where we have one. */
+                  <ChangeEventCard
+                    text={m.text}
+                    by={person?.displayName ?? m.senderName}
+                    at={m.createdAt}
+                  />
                 ) : (
                   <div
                     className={`flex flex-col ${mine ? "items-end" : "items-start"} ${

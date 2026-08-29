@@ -1094,6 +1094,131 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(t));
   }
 
+  /**
+   * Replace the requirement list, and optionally move the estimate with it.
+   *
+   * The same permission pair `addRequirements` checks — the person who raised
+   * the task or the person carrying it — because editing and deleting a
+   * requirement is the same act as adding one: changing what done means.
+   */
+  async setRequirements(
+    taskId: TaskId,
+    texts: string[],
+    etAdjustment?: { secs: number; reason?: string },
+    changeLog?: {
+      summary: string;
+      eventType: TaskEvent["type"];
+      payload?: Record<string, unknown>;
+    },
+  ): Promise<ActionResult<Task>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const t = s.tasks.find((x) => x.id === taskId);
+    if (!t) return fail("not_found", "Task not found.");
+
+    const me = actingId();
+    const isOwner = t.createdById === me;
+    const isAssignee = s.assignments.some(
+      (a) => a.taskId === t.id && a.employeeId === me,
+    );
+    if (!isOwner && !isAssignee)
+      return fail(
+        "permission_denied",
+        "Only the person who raised this task or the person carrying it can change what done means.",
+      );
+
+    /* Empty IS allowed here, unlike `addRequirements`: removing the last
+       requirement turns a project back into an ordinary task, and refusing it
+       would mean a list that can only ever grow. */
+    const clean = texts.map((x) => x.trim()).filter(Boolean);
+
+    tick();
+
+    /* Satisfaction is carried across by TEXT. Rebuilding the array from
+       scratch would un-tick every requirement whenever one of its siblings was
+       deleted — the ticks belong to the requirement, not to its position. */
+    const wasSatisfied = new Map(
+      t.requirements.map((r) => [r.text, r] as const),
+    );
+    t.requirements = clean.map((text, i) => {
+      const prior = wasSatisfied.get(text);
+      return {
+        id: prior?.id ?? nextId("req"),
+        text,
+        order: i,
+        satisfiedAt: prior?.satisfiedAt ?? null,
+        satisfiedById: prior?.satisfiedById ?? null,
+      };
+    });
+
+    const delta = Math.round(Number(etAdjustment?.secs) || 0);
+    if (delta !== 0 && t.deadline.mode === "timer") {
+      /* Floored at zero — a negative budget is not a smaller estimate, it is a
+         number every downstream figure would carry into a deadline and a
+         score. The same rule `applyEtAdjustment` enforces on the way in. */
+      const current = Number(t.deadline.currentWindowSecs) || 0;
+      t.deadline.currentWindowSecs = Math.max(0, current + delta);
+    }
+
+    t.updatedAt = nowIso();
+
+    /* One record of the change, written to all three surfaces so they agree —
+       the History event, a system message in the Task Chat, and a notification
+       to everyone else on the task. `changeLog` carries the sentence the rule
+       built; without it (an old caller) this falls back to the plain line it
+       always logged. */
+    const summary =
+      changeLog?.summary ??
+      (etAdjustment && delta !== 0
+        ? `Requirements changed — estimate ${delta > 0 ? "+" : "−"}${formatSecs(Math.abs(delta))}`
+        : "Requirements changed");
+
+    this.#event(
+      t.id,
+      changeLog?.eventType ?? "requirement_added",
+      summary,
+      changeLog?.payload ?? {},
+    );
+
+    /* The same sentence in the thread, as a system message — the surface the
+       people doing the work actually watch. Pushed directly rather than through
+       `sendTaskChat` because that one refuses an empty body. `messageType` is
+       what marks it a system line and centres it; the SENDER is the person who
+       made the change, so the card can say who — the engine attributes it the
+       same way, to the verified caller. */
+    const actor = s.employees.find((e) => e.id === actingId());
+    s.chat.push({
+      id: nextId("ch"),
+      taskId: t.id,
+      thread: "chat",
+      senderId: actingId(),
+      senderName: actor?.displayName ?? "Someone",
+      text: summary,
+      attachmentIds: [],
+      messageType: "system",
+      createdAt: nowIso(),
+      replyToId: null,
+      replyTo: null,
+    });
+
+    /* And a notification to everyone else on the task — the assignees, minus
+       whoever made the change. `#notify` already drops a self-notification. */
+    for (const a of s.assignments.filter((x) => x.taskId === t.id)) {
+      this.#notify(
+        a.employeeId,
+        "task_details_edited",
+        "✏️ Task updated",
+        summary,
+        "task",
+        t.id,
+      );
+    }
+
+    persistStore();
+    return delay(ok(t));
+  }
+
   async getSubtasks(id: TaskId) {
     const s = getStore();
     return delay(
@@ -11108,7 +11233,12 @@ export class MockRepository implements CoworkRepository {
     };
   }
 
-  #event(taskId: TaskId, type: TaskEvent["type"], summary: string) {
+  #event(
+    taskId: TaskId,
+    type: TaskEvent["type"],
+    summary: string,
+    payload: Record<string, unknown> = {},
+  ) {
     const s = getStore();
     const me = s.employees.find((e) => e.id === actingId())!;
     const seq = s.taskEvents.filter((e) => e.taskId === taskId).length + 1;
@@ -11120,7 +11250,7 @@ export class MockRepository implements CoworkRepository {
       actorId: actingId(),
       actorLabel: me.displayName,
       summary,
-      payload: {},
+      payload,
       occurredAt: nowIso(),
     });
   }

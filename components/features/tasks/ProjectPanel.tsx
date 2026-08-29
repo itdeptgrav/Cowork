@@ -22,7 +22,24 @@ import {
   requirementCoverage,
 } from "@/lib/rules/tasks/requirementCoverage";
 import { nextAction, statusMeta } from "./statusMeta";
+import {
+  asksForTimeAdjustment,
+  removalRefusal,
+  requirementChangeSummary,
+  withRequirementEdited,
+  withRequirementRemoved,
+  withRequirementsAdded,
+  type RequirementEdit,
+} from "@/lib/rules/tasks/requirementEdits";
+import { RequirementEtPrompt } from "./RequirementEtPrompt";
+import { applyEtAdjustment } from "@/lib/rules/tasks/etAdjustment";
+import {
+  buildChangeSummary,
+  changeEventType,
+  changePayload,
+} from "@/lib/rules/tasks/taskChangeLog";
 import type { TaskView } from "@/lib/repositories";
+import type { TaskEventType } from "@/lib/domain";
 
 /**
  * A task that has been broken down, and the requirements that decide when it is
@@ -101,6 +118,132 @@ export function ProjectPanel({
       draft.split("\n").map((x) => x.trim()).filter(Boolean),
     ),
   );
+
+  /**
+   * Managing the list after the task exists.
+   *
+   * The composer above only ever appeared on a task with NO requirements —
+   * `addRequirements` is documented as "add to a task that has none yet" — so
+   * once five were written there was no way to add a sixth, correct a typo in
+   * the third, or drop the fourth. Everything below is that gap.
+   *
+   * The texts are read in display order and sent back as a whole list, because
+   * that is how the engine stores them: `edit-details` replaces the array, and
+   * there is no per-item route to address one by.
+   */
+  const texts = c.requirements.map((r) => r.requirement.text);
+  /* How many subtasks claim each requirement, in order. `removalRefusal` reads
+     this to decide whether a removal would move a claim — see the note there:
+     a requirement's id IS its index. */
+  const claimCounts = c.requirements.map((r) => r.claimants.length);
+
+  /**
+   * Who is offered Edit and Remove — the ASSIGNER of record, not `mayDelegate`.
+   *
+   * `edit-details` refuses anybody but `task.assignedBy` once the task has left
+   * draft: "This task has already started — only the sender who assigned it can
+   * edit it now." `mayDelegate` is `isOwner || isAssignee`, and both halves are
+   * wrong for this. An assignee who did not assign the task would be handed a
+   * Remove button that always 403s. And `createdById` is not the assigner
+   * either: `lib/legacy/tasks.ts` maps it as `createdBy ?? assignedBy` — whoever
+   * TYPED the task in — while `assigner` is `assignedBy ?? createdBy`. They
+   * differ on a SELF task, where the engine deliberately makes the assigner the
+   * assignee's own manager.
+   *
+   * So this reads `view.assigner`, which is that field. It is stricter than the
+   * engine before the task leaves draft, where any CEO or TL may also edit — a
+   * capability withheld rather than a control that breaks, which is the safer
+   * side to be wrong on.
+   */
+  const mayEditRequirements = !!me && view.assigner?.id === me;
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editDraft, setEditDraft] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [addDraft, setAddDraft] = useState("");
+  /* A change decided but not yet written, waiting on the time question. Holding
+     it here rather than writing first is what makes the pair one write. */
+  const [pendingEdit, setPendingEdit] = useState<RequirementEdit | null>(null);
+  const [rowError, setRowError] = useState<string | null>(null);
+
+  const [saveRequirements, saveState] = useAction(
+    (
+      r,
+      input: {
+        texts: string[];
+        etSecs?: number;
+        reason?: string;
+        changeLog?: {
+          summary: string;
+          eventType: TaskEventType;
+          payload?: Record<string, unknown>;
+        };
+      },
+    ) =>
+      r.setRequirements(
+        view.task.id,
+        input.texts,
+        input.etSecs
+          ? { secs: input.etSecs, reason: input.reason }
+          : undefined,
+        input.changeLog,
+      ),
+  );
+
+  /** The estimate the prompt adjusts — the window actually in effect. */
+  const currentEtSecs =
+    view.task.deadline.currentWindowSecs ??
+    view.task.estimatedEffortSecs ??
+    0;
+
+  /* A rewording changes no work, so it writes straight through. Adding and
+     removing go to the prompt first — see `asksForTimeAdjustment`. */
+  async function commit(edit: RequirementEdit, et?: { secs: number }) {
+    setRowError(null);
+    /* The one sentence that reaches the History tab, the Task Chat and the
+       notification — built here from the change and the estimate before/after,
+       so all three tell the same story. The ET figures are this client's, which
+       is why the preview and the log agree. */
+    const etBefore = currentEtSecs;
+    const etAfter = applyEtAdjustment(etBefore, et && et.secs < 0 ? "subtract" : "add", Math.abs(et?.secs ?? 0));
+    const summaryInput = {
+      kind: edit.kind,
+      subject: edit.subject,
+      before: edit.before,
+      etBeforeSecs: etBefore,
+      etAfterSecs: etAfter,
+    };
+    const changeLog = {
+      summary: buildChangeSummary(summaryInput),
+      eventType: changeEventType(edit.kind),
+      payload: changePayload(summaryInput),
+    };
+    const r = await saveRequirements({
+      texts: edit.texts,
+      etSecs: et?.secs,
+      reason: requirementChangeSummary(edit),
+      changeLog,
+    });
+    if (r.ok) {
+      setPendingEdit(null);
+      setEditingIndex(null);
+      setAdding(false);
+      setAddDraft("");
+      onChange();
+    } else {
+      setRowError(r.message);
+      /* The prompt stays open on a refusal, holding the figure that was typed —
+         closing it would make somebody enter it again to find out whether the
+         second attempt failed for the same reason. */
+      if (!et) setPendingEdit(null);
+    }
+    return r;
+  }
+
+  function begin(edit: RequirementEdit | null) {
+    if (!edit) return;
+    if (asksForTimeAdjustment(edit.kind)) setPendingEdit(edit);
+    else void commit(edit);
+  }
 
   /* Whether there is anything below this task at all — the same predicate
      `TaskDetail` uses to decide the task has no timer and no deadline of its
@@ -240,8 +383,8 @@ export function ProjectPanel({
           </div>
         ) : (
           <ul className="mt-3 divide-y divide-hairline">
-            {c.requirements.map((r) => (
-              <li key={r.requirement.id} className="px-5 py-2.5">
+            {c.requirements.map((r, i) => (
+              <li key={r.requirement.id} className="group/req px-5 py-2.5">
                 <div className="flex items-start gap-3">
                   {/* A DELEGATED requirement is a status, not a control.
                       It used to render the same circular checkbox as a direct
@@ -292,11 +435,54 @@ export function ProjectPanel({
                   )}
 
                   <div className="min-w-0 flex-1">
-                    <p
-                      className={`text-sm ${r.isSatisfied ? "text-ink-muted line-through decoration-hairline" : "text-ink"}`}
-                    >
-                      {r.requirement.text}
-                    </p>
+                    {editingIndex === i ? (
+                      /* Editing in place, because the requirement being changed
+                         is the one to read while changing it. A dialog would
+                         put the text somewhere else and ask people to remember
+                         it. */
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          autoFocus
+                          value={editDraft}
+                          onChange={(e) => setEditDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Escape") setEditingIndex(null);
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              begin(
+                                withRequirementEdited(texts, i, editDraft),
+                              );
+                              setEditingIndex(null);
+                            }
+                          }}
+                          className="min-w-0 flex-1 rounded-inset bg-[var(--surface-raised)] px-3 py-1.5 text-sm text-ink shadow-[inset_0_0_0_1px_var(--color-hairline)] focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)] focus:outline-none"
+                        />
+                        <Button
+                          size="sm"
+                          tone="primary"
+                          disabled={saveState.isPending}
+                          onClick={() => {
+                            begin(withRequirementEdited(texts, i, editDraft));
+                            setEditingIndex(null);
+                          }}
+                        >
+                          Save
+                        </Button>
+                        <Button
+                          size="sm"
+                          tone="ghost"
+                          onClick={() => setEditingIndex(null)}
+                        >
+                          Cancel
+                        </Button>
+                      </div>
+                    ) : (
+                      <p
+                        className={`text-sm ${r.isSatisfied ? "text-ink-muted line-through decoration-hairline" : "text-ink"}`}
+                      >
+                        {r.requirement.text}
+                      </p>
+                    )}
 
                     {r.ownership === "delegated" ? (
                       <div className="mt-1">
@@ -355,10 +541,121 @@ export function ProjectPanel({
                       </p>
                     )}
                   </div>
+
+                  {/* Edit and remove, on the row they act on.
+                      Offered only to the pair the repository accepts — the
+                      person who raised the task or the person carrying it — for
+                      the reason stated above `mayDelegate`: a control the
+                      server will refuse is its own defect.
+                      A DELEGATED requirement is not editable here: subtasks have
+                      been handed out against its text, and rewriting it would
+                      change what they were accepted to satisfy. */}
+                  {mayDelegate &&
+                    r.ownership !== "delegated" &&
+                    editingIndex !== i && (
+                      <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity duration-[140ms] group-hover/req:opacity-100 focus-within:opacity-100 deck:opacity-0">
+                        <button
+                          type="button"
+                          aria-label={`Edit requirement: ${r.requirement.text}`}
+                          disabled={saveState.isPending}
+                          onClick={() => {
+                            setEditDraft(r.requirement.text);
+                            setEditingIndex(i);
+                          }}
+                          className="grid h-7 w-7 place-items-center rounded-full text-ink-faint transition-colors duration-[140ms] hover:bg-[var(--control)] hover:text-ink disabled:opacity-40"
+                        >
+                          <Icon.rename className="h-3.5 w-3.5" />
+                        </button>
+                        {/* Shown greyed with the reason rather than hidden: a
+                            missing control reads as a fault where a stated rule
+                            does not — the same call the message menu makes. */}
+                        <button
+                          type="button"
+                          aria-label={`Remove requirement: ${r.requirement.text}`}
+                          title={removalRefusal(claimCounts, i) ?? undefined}
+                          disabled={
+                            saveState.isPending ||
+                            removalRefusal(claimCounts, i) !== null
+                          }
+                          onClick={() => {
+                            const refusal = removalRefusal(claimCounts, i);
+                            if (refusal) return setRowError(refusal);
+                            begin(withRequirementRemoved(texts, i));
+                          }}
+                          className="grid h-7 w-7 place-items-center rounded-full text-ink-faint transition-colors duration-[140ms] hover:bg-[var(--control)] hover:text-[var(--state-overdue-ink)] disabled:opacity-40"
+                        >
+                          <Icon.close className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    )}
                 </div>
               </li>
             ))}
           </ul>
+        )}
+
+        {/* Adding to a list that already has some. The composer above only ever
+            appeared on a task with none, so this is the path that was missing:
+            five requirements and no way to write a sixth. */}
+        {c.total > 0 && mayEditRequirements && (
+          <div className="border-t border-hairline px-5 py-3">
+            {rowError && (
+              <div className="mb-2">
+                <InlineError compact message={rowError} />
+              </div>
+            )}
+            {adding ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  autoFocus
+                  value={addDraft}
+                  placeholder="What else has to be true before this is done?"
+                  onChange={(e) => setAddDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") setAdding(false);
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      begin(withRequirementsAdded(texts, [addDraft]));
+                    }
+                  }}
+                  className="min-w-0 flex-1 rounded-inset bg-[var(--surface-raised)] px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint shadow-[inset_0_0_0_1px_var(--color-hairline)] focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)] focus:outline-none"
+                />
+                <Button
+                  size="sm"
+                  tone="primary"
+                  disabled={!addDraft.trim() || saveState.isPending}
+                  onClick={() => begin(withRequirementsAdded(texts, [addDraft]))}
+                >
+                  Add
+                </Button>
+                <Button size="sm" tone="ghost" onClick={() => setAdding(false)}>
+                  Cancel
+                </Button>
+              </div>
+            ) : (
+              <Button size="sm" onClick={() => setAdding(true)}>
+                <Icon.plus className="h-3.5 w-3.5" />
+                Add a requirement
+              </Button>
+            )}
+          </div>
+        )}
+
+        {/* The time question, asked once per add or remove — never for a
+            rewording, which changes no work. */}
+        {pendingEdit && (
+          <RequirementEtPrompt
+            currentSecs={currentEtSecs}
+            summary={requirementChangeSummary(pendingEdit)}
+            busy={saveState.isPending}
+            error={rowError}
+            onCancel={() => void commit(pendingEdit)}
+            onSave={({ direction, secs }) =>
+              void commit(pendingEdit, {
+                secs: direction === "add" ? secs : -secs,
+              })
+            }
+          />
         )}
 
         {requirementsFooterVisible(view, me) && (

@@ -271,9 +271,22 @@ test("the avatar column is reserved even when empty", () => {
 
 test("days are divided, and system lines belong to neither side", () => {
   /* A confirmation or a deadline decision is the engine's own record — it is
-     addressed to nobody, so it is centred and quiet rather than bubbled. */
+     addressed to nobody, so it is centred and quiet rather than bubbled.
+
+     The quiet centred line MOVED into `ChangeEventCard`: a requirement/ET change
+     renders there as a card people notice, and everything else falls through to
+     the same 11px centred line it always was. So the class now lives in that
+     component, and the panel delegates every system message to it. */
   assert.match(PANEL, /formatDate\(m\.createdAt\)/);
-  assert.match(PANEL, /my-2 text-center text-\[11px\]/);
+  assert.match(PANEL, /<ChangeEventCard/);
+  /* The card is given who and when, like a message. */
+  assert.match(PANEL, /by=\{person\?\.displayName \?\? m\.senderName\}/);
+  assert.match(PANEL, /at=\{m\.createdAt\}/);
+  const card = strip("components/features/tasks/ChangeEventCard.tsx");
+  assert.match(card, /my-2 text-center text-\[11px\]/, "the quiet fallback line is gone");
+  /* And it is a FALLBACK: a message the parser does not recognise renders the
+     quiet line, so an approval or deadline decision is unchanged. */
+  assert.match(card, /if \(!change\)/);
 });
 
 test("reaction pills float over the bubble's bottom edge", () => {

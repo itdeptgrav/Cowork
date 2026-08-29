@@ -89,7 +89,7 @@ import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskEvent, TaskEventType, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -6682,12 +6682,58 @@ export class LegacyRepository {
    * messages (read by `listTaskChat`). Returning `[]` here would claim nothing
    * has ever happened to the task, which is false for every task in the system.
    */
-  listTaskEvents(): Promise<never> {
-    return Promise.reject(
-      new Error(
-        "The Cowork engine keeps no event log for a task. What it does record is in the deadline history and the task thread.",
-      ),
+  /**
+   * The task's change history — requirement and ET adjustments, newest first.
+   *
+   * **This used to refuse outright**, because the engine kept no event log and
+   * the History tab fell back to deadline and priority records alone. It now
+   * does keep one: `edit-details` appends to a `cowork_tasks/{id}/events`
+   * subcollection whenever a requirement or the estimate changes, and this
+   * reads it. The `HistoryPanel` already merged this source in — it simply
+   * always came back empty — so nothing downstream changes shape.
+   *
+   * A read failure is not fatal to the panel: it tolerates an errored event
+   * list and still shows the deadline and priority history, so a missing
+   * subcollection on an old task degrades to exactly the previous behaviour.
+   */
+  async listTaskEvents(taskId: TaskId): Promise<TaskEvent[]> {
+    const { collection, getDocs, query, orderBy } = await import(
+      "firebase/firestore"
     );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const ref = collection(
+      legacyDb(),
+      "cowork_tasks",
+      String(taskId),
+      "events",
+    );
+    /* Ordered by the sequence the engine stamps, descending — newest first, the
+       order the panel renders. No composite index needed: one field, one task's
+       subcollection. */
+    const snap = await getDocs(query(ref, orderBy("sequence", "desc")));
+    const out: TaskEvent[] = [];
+    snap.forEach((d) => {
+      const e = d.data() as Record<string, unknown>;
+      out.push({
+        id: d.id,
+        taskId: taskId as TaskId,
+        sequence: Number(e.sequence) || 0,
+        type: (e.type as TaskEvent["type"]) ?? "edited",
+        actorId: (e.actorId as TaskEvent["actorId"]) ?? "system",
+        actorLabel: String(e.actorLabel ?? "System"),
+        summary: String(e.summary ?? ""),
+        payload: (e.payload as Record<string, unknown>) ?? {},
+        /* `readInstant` gives ms (or null) from whatever shape the field holds
+           — a Firestore Timestamp, a number, an ISO string. The domain wants an
+           ISO string; an unreadable stamp becomes "" rather than an invalid
+           date, which the panel renders as no time rather than "Invalid Date". */
+        occurredAt: (() => {
+          const ms = readInstant(e.occurredAt);
+          return ms === null ? "" : new Date(ms).toISOString();
+        })(),
+      });
+    });
+    return out;
   }
 
   /**
@@ -6904,6 +6950,66 @@ export class LegacyRepository {
           token,
           taskId: id,
           requirements: [...current.requirements, ...clean],
+        }),
+      () => id,
+    );
+  }
+
+  /**
+   * Replace the requirement list, and optionally move the estimate with it.
+   *
+   * The same route `addRequirements` uses — the engine has always replaced the
+   * whole array — so editing and deleting cost no new endpoint and inherit the
+   * permission rule that is already there: before the task has left draft only
+   * a CEO or TL may edit it, and afterwards only the sender who assigned it.
+   *
+   * **The time adjustment rides the SAME request.** Two writes would leave a
+   * window where the requirement had changed and the estimate had not, and a
+   * failure between them would strand the task in it with nothing on screen
+   * saying which half had landed.
+   */
+  async setRequirements(
+    taskId: TaskId,
+    texts: string[],
+    etAdjustment?: { secs: number; reason?: string },
+    changeLog?: {
+      summary: string;
+      eventType: TaskEventType;
+      payload?: Record<string, unknown>;
+    },
+  ): Promise<ActionResult<Task>> {
+    const id = String(taskId);
+    /* Empty is legitimate: a task may have its last requirement removed and
+       become an ordinary task again. Only blank LINES are dropped. */
+    const clean = texts.map((t) => t.trim()).filter(Boolean);
+
+    const delta = Math.round(Number(etAdjustment?.secs) || 0);
+
+    return this.#write(
+      (token) =>
+        editTaskDetails({
+          token,
+          taskId: id,
+          requirements: clean,
+          /* Omitted entirely when there is nothing to move, so a rewording
+             sends the request `addRequirements` has always sent. */
+          ...(delta !== 0
+            ? {
+                etAdjustSecs: delta,
+                etAdjustReason: etAdjustment?.reason,
+              }
+            : {}),
+          /* The log rides the same request, so the History event, the chat
+             message and the notification are written in the one transaction
+             that changed the task — never in a second call that could land
+             without the first. */
+          ...(changeLog
+            ? {
+                changeSummary: changeLog.summary,
+                changeEventType: changeLog.eventType,
+                changePayload: changeLog.payload,
+              }
+            : {}),
         }),
       () => id,
     );

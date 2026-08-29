@@ -139,6 +139,7 @@ import type {
   TaskAssignment,
   TaskChatMessage,
   TaskEvent,
+  TaskEventType,
   TaskId,
   TaskReview,
   TaskStatus,
@@ -876,6 +877,39 @@ export interface CoworkRepository {
   addRequirements(
     taskId: TaskId,
     texts: string[],
+  ): Promise<ActionResult<Task>>;
+  /**
+   * Replace a task's completion requirements, optionally moving its estimate.
+   *
+   * **One method for add, edit and delete**, because the engine stores
+   * requirements as a plain array and `edit-details` replaces it wholesale —
+   * there is no per-item route to address one by. The caller sends the list as
+   * it should end up; `lib/rules/tasks/requirementEdits.ts` builds it.
+   *
+   * `etAdjustSecs` is a SIGNED delta and optional. Omitted, no time field is
+   * touched — which is what a rewording should do, and what `addRequirements`
+   * has always done. Supplied, the engine applies it to the window currently in
+   * effect, floors the result at zero and recomputes the deadline from it, the
+   * same way its own set-hours path does. The client never sends a total: a
+   * stale page must not be able to overwrite a budget it has not seen.
+   */
+  setRequirements(
+    taskId: TaskId,
+    texts: string[],
+    etAdjustment?: { secs: number; reason?: string },
+    /**
+     * The human record of what changed, written to the History tab, the Task
+     * Chat and the assignee's notification — the same sentence in all three, so
+     * they cannot tell three versions of one event. Built by
+     * `lib/rules/tasks/taskChangeLog.ts`. Optional: an add through the old
+     * `addRequirements` path carries none and simply logs nothing new, exactly
+     * as it did before.
+     */
+    changeLog?: {
+      summary: string;
+      eventType: TaskEventType;
+      payload?: Record<string, unknown>;
+    },
   ): Promise<ActionResult<Task>>;
   createTask(input: CreateTaskInput): Promise<ActionResult<Task>>;
   updateTask(

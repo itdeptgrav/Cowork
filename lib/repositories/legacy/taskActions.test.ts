@@ -465,14 +465,22 @@ test("chat and daily reports read the SUBCOLLECTIONS legacy writes", () => {
 });
 
 test("absent concepts explain themselves in the product's words", () => {
-  /* The five with nothing behind them are ABSENT, not unwired. The sentence a
-     reader gets should be about the engine's model, not about our build. */
-  for (const phrase of [
-    "keeps no event log",
-    "not part of the Cowork engine's task model",
-  ]) {
+  /* The ones with nothing behind them are ABSENT, not unwired. The sentence a
+     reader gets should be about the engine's model, not about our build.
+
+     "keeps no event log" USED TO BE HERE and is deliberately gone: the task
+     event log is no longer absent. `listTaskEvents` reads the
+     `cowork_tasks/{id}/events` subcollection that `edit-details` now writes on
+     a requirement or ET change, so the concept explains itself by existing
+     rather than by a refusal. Re-adding the phrase would be asserting the
+     absence of something that is present. */
+  for (const phrase of ["not part of the Cowork engine's task model"]) {
     assert.ok(source.includes(phrase), `missing explanation: ${phrase}`);
   }
+
+  /* And the log is a real read now, not a rejection. */
+  assert.match(source, /async listTaskEvents\(taskId: TaskId\): Promise<TaskEvent\[\]>/);
+  assert.match(source, /"cowork_tasks",\s*String\(taskId\),\s*"events"/);
 
   /* REMOVED ON PURPOSE — "does not record priority cascades" used to be listed
      here as an absent concept. It was never absent: the engine writes one entry

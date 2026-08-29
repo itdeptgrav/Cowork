@@ -55,13 +55,40 @@ export async function createTask(input: {
   });
 }
 
-/** `PATCH /cowork/task/:id/edit-details` — title, description, requirements. */
+/**
+ * `PATCH /cowork/task/:id/edit-details` — title, description, requirements.
+ *
+ * **`etAdjustSecs` is a SIGNED DELTA, and optional.** Omitted, the request is
+ * byte-for-byte what it always was and the engine leaves every time field
+ * alone; that is what keeps every existing caller — `updateTask`,
+ * `addRequirements` — behaving exactly as before.
+ *
+ * A delta rather than a new total because the client must not be the thing that
+ * decides a task's budget. It says "ninety minutes more than whatever this task
+ * has"; the engine reads the current window, applies the delta, floors it at
+ * zero and recomputes the deadline from it. Sending an absolute figure would
+ * mean a stale page could overwrite a budget somebody else had just changed,
+ * and the write would look deliberate.
+ */
 export async function editTaskDetails(input: {
   token: string;
   taskId: string;
   title?: string;
   description?: string;
   requirements?: string[];
+  etAdjustSecs?: number;
+  /** What the adjustment was for, kept on the task's audit trail. */
+  etAdjustReason?: string;
+  /**
+   * The one-line record of the change, for the History tab, the Task Chat and
+   * the notification. The server posts and stores it verbatim, attributing it
+   * to the verified caller — the who and when are the engine's, never the
+   * body's. Absent for a plain title/description edit, which logs as it always
+   * did.
+   */
+  changeSummary?: string;
+  changeEventType?: string;
+  changePayload?: Record<string, unknown>;
 }): Promise<LegacyResult<unknown>> {
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/edit-details`,
@@ -70,6 +97,11 @@ export async function editTaskDetails(input: {
       title: input.title,
       description: input.description,
       requirements: input.requirements,
+      etAdjustSecs: input.etAdjustSecs,
+      etAdjustReason: input.etAdjustReason,
+      changeSummary: input.changeSummary,
+      changeEventType: input.changeEventType,
+      changePayload: input.changePayload,
     },
     token: input.token,
   });
