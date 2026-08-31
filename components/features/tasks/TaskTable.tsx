@@ -1495,7 +1495,14 @@ function Row({
       </span>
 
       <span className={CELL}>
-      <span className={LINE}>
+      {/* WRAPS, unlike the shared `LINE`: the status cell is 152px and can carry
+          three chips — the status, Important, and In review. `LINE`'s fixed
+          `h-7` with no wrap let them spill past the cell and collide with the
+          deadline in the next column ("Important" over "27 Aug"). `flex-wrap`
+          drops the overflow onto a second line inside the cell, `min-w-0` lets
+          the row shrink to its column, and `min-h-7` keeps a one-chip row the
+          exact height it was. */}
+      <span className="flex min-h-7 min-w-0 flex-wrap items-center gap-1">
         <Chip tone={meta.tone} className="max-w-full truncate">
           {meta.label}
         </Chip>

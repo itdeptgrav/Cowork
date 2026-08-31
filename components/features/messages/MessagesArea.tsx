@@ -41,6 +41,7 @@ import { COPIED_NOTICE, runCopyPlan } from "@/lib/utils/copyToClipboard";
 import { formatClock, formatDate, formatRelative, istDayKey } from "@/lib/utils/format";
 import { linkifyMessage } from "@/lib/utils/linkify";
 import { useNow } from "@/lib/hooks/useNow";
+import { useAutoGrowTextarea } from "@/lib/hooks/useAutoGrowTextarea";
 import { MESSAGE_PAGE_SIZE, MESSAGE_QUICK_REACTIONS } from "@/lib/domain";
 import {
   conversationsNeedingDelivery,
@@ -848,6 +849,11 @@ function Thread({
   const [showGroupSettings, setShowGroupSettings] = useState(false);
   const typingSentRef = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
+  /* The composer grows with what is typed, up to `max-h-32` (128px), then
+     scrolls — see `useAutoGrowTextarea`. Keyed on `text`, so a restored draft
+     and the clear after send resize it too, not only keystrokes. */
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrowTextarea(composerRef, text, 128);
   /* The attach control only appears where the backend actually accepts uploads;
      the in-memory prototype omits `uploadMessageAttachment`, so it stays off
      rather than failing silently. */
@@ -2253,6 +2259,7 @@ function Thread({
           </button>
 
           <Textarea
+            ref={composerRef}
             rows={1}
             value={text}
             onChange={(e) => onType(e.target.value)}

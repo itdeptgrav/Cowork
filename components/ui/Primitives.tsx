@@ -1,3 +1,4 @@
+import { forwardRef } from "react";
 import type { ReactNode } from "react";
 
 /* ── Surfaces ─────────────────────────────────────────────────────────────── */
@@ -614,16 +615,23 @@ export function Input(props: React.InputHTMLAttributes<HTMLInputElement>) {
   );
 }
 
-export function Textarea(
-  props: React.TextareaHTMLAttributes<HTMLTextAreaElement>,
-) {
+/**
+ * `forwardRef` so a caller can measure the element — the composer's auto-grow
+ * sets its height from `scrollHeight`. Callers that pass no ref are unaffected;
+ * this is purely additive.
+ */
+export const Textarea = forwardRef<
+  HTMLTextAreaElement,
+  React.TextareaHTMLAttributes<HTMLTextAreaElement>
+>(function Textarea(props, ref) {
   return (
     <textarea
       {...props}
+      ref={ref}
       className={`${inputBase} resize-y ${props.className ?? ""}`}
     />
   );
-}
+});
 
 export function Select(props: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (

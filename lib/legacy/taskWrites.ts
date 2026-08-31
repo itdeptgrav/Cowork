@@ -667,10 +667,18 @@ export async function setDepartmentHours(input: {
    * multiplier, so passing seconds under a made-up unit name would have
    * multiplied the budget by 3600.
    */
+  /*
+   * Sent in MINUTES, not hours, so a budget with minutes survives the round
+   * trip exactly. The route multiplies `hoursValue` by the unit — `unit ===
+   * "minutes" ? 60 : … : 3600` — so `minutes × 60` reconstructs the exact
+   * seconds, where `hours × 3600` on a value like 4.3333 (4h 20m) lands on
+   * 15599.88 and stores a budget one second short. Whole-hour presets are
+   * unaffected: 4h is 240 minutes is 14400 seconds either way.
+   */
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/department-tl-set-hours`,
     method: "POST",
-    body: { hoursValue: input.windowSecs / 3600, hoursUnit: "hours" },
+    body: { hoursValue: Math.round(input.windowSecs / 60), hoursUnit: "minutes" },
     token: input.token,
   });
 }

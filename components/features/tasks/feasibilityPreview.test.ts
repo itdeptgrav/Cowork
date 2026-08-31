@@ -89,7 +89,9 @@ test("the budget form shows the preview between the number and the button", () =
   const previewAt = form.indexOf("<FeasibilityPreview");
   const buttonAt = form.indexOf("Set hours");
   assert.ok(previewAt > 0 && buttonAt > previewAt, "the preview is not before the commit");
-  assert.match(form.slice(0, 2600), /estimatedWorkSeconds=\{hours \* 3600\}/);
+  /* The preview reads `budgetSecs` — `Math.round(hours * 3600)` — so a custom
+     minutes entry moves the verdict just as a chip does. */
+  assert.match(form.slice(0, 3200), /estimatedWorkSeconds=\{budgetSecs\}/);
 });
 
 test("a figure is never shown as an answer to a question it does not answer", () => {
@@ -140,9 +142,9 @@ test("setting hours is never blocked by a risky verdict", () => {
   /* Advisory. The button's only condition is a positive number. */
   const detail = code("components/features/tasks/TaskDetail.tsx");
   const form = detail.slice(detail.indexOf("function EffortEstimateForm("));
-  assert.match(form.slice(0, 2600), /disabled=\{state\.isPending \|\| !\(hours > 0\)\}/);
+  assert.match(form.slice(0, 3200), /disabled=\{state\.isPending \|\| !\(budgetSecs > 0\)\}/);
   assert.equal(
-    /feasible/.test(form.slice(0, 2600)),
+    /feasible/.test(form.slice(0, 3200)),
     false,
     "the verdict is gating the commit",
   );

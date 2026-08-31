@@ -244,5 +244,7 @@ test("invalid hours are refused before a request is made", () => {
   /* The engine refuses `val <= 0`; catching it here means the reader is not
      told about a field they cannot see. */
   const detail = code(DETAIL);
-  assert.match(detail, /disabled=\{state\.isPending \|\| !\(hours > 0\)\}/);
+  /* `budgetSecs` is `Math.round(hours * 3600)` — the same positive-number gate,
+     now on the whole-seconds value so a custom minutes entry is covered too. */
+  assert.match(detail, /disabled=\{state\.isPending \|\| !\(budgetSecs > 0\)\}/);
 });

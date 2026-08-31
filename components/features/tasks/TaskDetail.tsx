@@ -1536,14 +1536,19 @@ function EffortEstimateForm({
   view: import("@/lib/repositories").TaskView;
   onDone: () => void;
 }) {
+  /* Hours, and it may be FRACTIONAL now that minutes can be typed — 4h 30m is
+     4.5 here. `Math.round(hours * 3600)` at every use turns it into whole
+     seconds, so 4h 20m (4.3333…) banks 15600 exactly rather than 15599.88; the
+     float only ever exists between the keystroke and the round. */
   const [hours, setHours] = useState(4);
+  const budgetSecs = Math.round(hours * 3600);
   /* Advisory only: the preview never disables the button. The spec's optional
      "continue with deadline risk" acknowledgement is NOT built — it is meant to
      be stored with a feasibility snapshot, and the engine has no field for one.
      A checkbox that recorded nothing would look like an audit trail and be
      none. */
   const [set, state] = useAction((r) =>
-    r.setEffortEstimate(taskId, hours * 3600),
+    r.setEffortEstimate(taskId, budgetSecs),
   );
   /* The person who will DO the work — a held cross-department task keeps them
      in `pendingAssigneeIds` until it is handed over, so they are not in
@@ -1584,7 +1589,7 @@ function EffortEstimateForm({
            null unless the VIEWER is an assignee, and the manager sizing a
            cross-department task never is — so every preview ran at P1, ahead
            of work the assignee was already committed to. */
-        estimatedWorkSeconds={hours * 3600}
+        estimatedWorkSeconds={budgetSecs}
         committedDeadline={view.task.deadline.dueAt}
         /* Position is not committed on this card — trying one shows the impact
            without setting anything, which is the question being asked here. */
@@ -1618,7 +1623,7 @@ function EffortEstimateForm({
           /* The engine refuses `val <= 0`; refusing it here means the reader
              finds out before a round trip rather than through a validation
              message about a field they cannot see. */
-          disabled={state.isPending || !(hours > 0)}
+          disabled={state.isPending || !(budgetSecs > 0)}
           onClick={async () => {
             const r = await set();
             if (r.ok) onDone();
@@ -1717,9 +1722,118 @@ function BudgetChoice({
           );
         })}
       </div>
+
+      {/* An EXACT figure, for the budget the chips do not offer. The presets
+          cover the common trials in one tap; this covers "4h 20m" without a
+          chip for every quarter hour. It writes the same `hours` the chips do —
+          fractional now — so the feasibility preview beside it and the Set-hours
+          write both read one number, and a chip lights up only when the exact
+          value happens to equal it. */}
+      <CustomBudgetFields hours={hours} onChange={onChange} />
+
       <p className="mt-2 text-[11px] text-ink-faint">
         The estimated working hours for this task.
       </p>
+    </div>
+  );
+}
+
+/**
+ * Hours and minutes typed exactly, kept in step with the chips above.
+ *
+ * ## Two-way, without a fight
+ *
+ * The fields mirror the current budget: pick the 6h chip and they read 6 and 0;
+ * type here and the chips deselect because the value no longer equals a preset.
+ * The sync from outside is GUARDED — it rewrites the fields only when the budget
+ * arrived from elsewhere (a chip, an arrow key), never on the change this very
+ * input just raised, so a half-typed "2" is not clobbered back to "0" between
+ * keystrokes.
+ *
+ * ## Minutes are allowed to overflow, then settle
+ *
+ * You can type 90 into minutes; while you do, the budget is already 1h 30m more
+ * than the hours field. On blur the fields normalise — 4h and 90m become 5h and
+ * 30m — so what is shown always adds up, but you were never interrupted mid-entry.
+ */
+function CustomBudgetFields({
+  hours,
+  onChange,
+}: {
+  hours: number;
+  onChange: (hours: number) => void;
+}) {
+  const wholeH = Math.floor(Math.max(0, hours));
+  const wholeM = Math.round((Math.max(0, hours) - wholeH) * 60);
+  const [hStr, setHStr] = useState(String(wholeH));
+  const [mStr, setMStr] = useState(String(wholeM));
+
+  /* Resync only when the budget changed from OUTSIDE this control — compared at
+     second resolution so a rounding wobble does not count as a change. */
+  useEffect(() => {
+    const fieldsSecs = Math.round(
+      ((Number(hStr) || 0) + (Number(mStr) || 0) / 60) * 3600,
+    );
+    if (fieldsSecs !== Math.round(hours * 3600)) {
+      const h = Math.floor(Math.max(0, hours));
+      setHStr(String(h));
+      setMStr(String(Math.round((Math.max(0, hours) - h) * 60)));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hours]);
+
+  const push = (hs: string, ms: string) => {
+    const hh = Math.max(0, Math.floor(Number(hs) || 0));
+    const mm = Math.max(0, Math.floor(Number(ms) || 0));
+    onChange(hh + mm / 60);
+  };
+
+  /* Carry overflow minutes into hours, and drop a stray decimal — only when the
+     person has finished typing, so it never rewrites a field under the cursor. */
+  const normalise = () => {
+    const total = Math.round(hours * 60); // whole minutes
+    setHStr(String(Math.floor(total / 60)));
+    setMStr(String(total % 60));
+  };
+
+  const field =
+    "w-14 rounded-inset bg-[var(--surface-raised)] px-2 py-1 text-[12px] text-ink tabular-nums text-center shadow-[inset_0_0_0_1px_var(--color-hairline)] focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)] focus:outline-none";
+
+  return (
+    <div className="mt-2.5 flex items-center gap-2">
+      <span className="text-[11px] text-ink-faint">Or exact:</span>
+      <label className="flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          inputMode="numeric"
+          aria-label="Hours"
+          value={hStr}
+          onChange={(e) => {
+            setHStr(e.target.value);
+            push(e.target.value, mStr);
+          }}
+          onBlur={normalise}
+          className={field}
+        />
+        <span className="text-[11px] text-ink-faint">h</span>
+      </label>
+      <label className="flex items-center gap-1">
+        <input
+          type="number"
+          min={0}
+          inputMode="numeric"
+          aria-label="Minutes"
+          value={mStr}
+          onChange={(e) => {
+            setMStr(e.target.value);
+            push(hStr, e.target.value);
+          }}
+          onBlur={normalise}
+          className={field}
+        />
+        <span className="text-[11px] text-ink-faint">m</span>
+      </label>
     </div>
   );
 }

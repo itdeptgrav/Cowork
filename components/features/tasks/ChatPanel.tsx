@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/Primitives";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { useAutoGrowTextarea } from "@/lib/hooks/useAutoGrowTextarea";
 import {
   MessageContextMenu,
   type MessageMenuItem,
@@ -194,6 +195,9 @@ export function ChatPanel({
   /** One-line confirmations that do not deserve an error banner. */
   const [notice, setNotice] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /* Auto-growing composer, same helper as Messages — see there. */
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrowTextarea(composerRef, text, 128);
   /* The attach control only appears where the backend actually accepts uploads;
      the in-memory prototype omits `uploadMessageAttachment`, so it stays off
      rather than failing silently. */
@@ -1133,9 +1137,16 @@ export function ChatPanel({
               </>
             )}
             <Textarea
-              rows={2}
+              ref={composerRef}
+              rows={1}
               value={text}
               onChange={(e) => setText(e.target.value)}
+              /* Grows with the text up to 128px, then scrolls — the same
+                 behaviour and helper as the message thread's composer, so the
+                 two feel identical. `resize-none` because the drag handle and
+                 an auto-growing box fight each other. */
+              style={{ resize: "none" }}
+              className="max-h-32 min-h-[38px] py-2"
               onKeyDown={(e) => {
                 /* Enter sends, Shift+Enter breaks the line — the convention
                    every messaging product shares. */

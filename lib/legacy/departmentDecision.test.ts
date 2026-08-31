@@ -149,16 +149,19 @@ async function hoursWriter() {
   return (await import("./taskWrites.ts")).setDepartmentHours;
 }
 
-test("hours are sent as hoursValue and hoursUnit", async () => {
+test("the budget is sent as hoursValue and hoursUnit", async () => {
   /* The route destructures `{ hoursValue, hoursUnit }` and then does
-     `Number(hoursValue) || 0`, refusing `<= 0`. This sent `{ windowSecs, hours }`,
-     so every submission arrived as 0 and came back "Enter a valid number of
-     hours." — a validation message about a field the form never sent. */
+     `Number(hoursValue) || 0`, refusing `<= 0`. This once sent `{ windowSecs,
+     hours }`, so every submission arrived as 0 and came back "Enter a valid
+     number of hours."
+
+     Now sent in MINUTES so a budget with minutes survives exactly — 4h is 240
+     minutes, and the route reconstructs 240 × 60 = 14400 seconds. */
   const { body } = await capture(async () =>
     (await hoursWriter())({ token: "t", taskId: "T633", windowSecs: 4 * 3600 }),
   );
-  assert.equal(body.hoursValue, 4);
-  assert.equal(body.hoursUnit, "hours");
+  assert.equal(body.hoursValue, 240);
+  assert.equal(body.hoursUnit, "minutes");
   assert.equal("windowSecs" in body, false, "the old field is still sent");
 });
 
@@ -185,7 +188,29 @@ test("a whole-hour budget survives the round trip exactly", async () => {
     const { body } = await capture(async () =>
       (await hoursWriter())({ token: "t", taskId: "T633", windowSecs: h * 3600 }),
     );
-    assert.equal(body.hoursValue, h);
+    /* Minutes now: h hours is h × 60 minutes, and the route rebuilds the exact
+       seconds as minutes × 60. */
+    assert.equal(body.hoursValue, h * 60);
+    assert.equal(body.hoursValue * 60, h * 3600);
+  }
+});
+
+test("a budget WITH minutes survives the round trip exactly", async () => {
+  /* The reason the unit changed. 4h 20m is 15600 seconds; the old hours path
+     sent 15600 / 3600 = 4.3333, which the route turned back into 15599.88 and
+     stored a budget one second short. As minutes it is 260, and 260 × 60 is
+     15600 on the nose. */
+  for (const [secs, mins] of [
+    [15600, 260], // 4h 20m
+    [2700, 45], //   45m
+    [8100, 135], //  2h 15m
+    [3900, 65], //   1h 05m
+  ] as const) {
+    const { body } = await capture(async () =>
+      (await hoursWriter())({ token: "t", taskId: "T633", windowSecs: secs }),
+    );
+    assert.equal(body.hoursValue, mins, `${secs}s should send ${mins} minutes`);
+    assert.equal(body.hoursValue * 60, secs, "the engine would store a different budget");
   }
 });
 
