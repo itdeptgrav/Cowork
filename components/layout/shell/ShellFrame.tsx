@@ -14,6 +14,7 @@ import { DutySync } from "@/components/features/status/DutySync";
 import { HelpAssistant } from "@/components/layout/help/HelpAssistant";
 import { PriorityAckGate } from "@/components/features/tasks/PriorityAckGate";
 import { NewAssignmentGate } from "@/components/features/tasks/NewAssignmentGate";
+import { PtsChangePopup } from "@/components/features/score/PtsChangePopup";
 import { NotificationPrompt } from "@/components/features/notifications/NotificationPrompt";
 import { GlobalCommandPalette } from "./GlobalCommandPalette";
 import { SupportShortcut } from "@/components/features/support/SupportShortcut";
@@ -398,6 +399,7 @@ function WorkspaceShell({ children }: { children: ReactNode }) {
         that when both are due, the one that cannot be dismissed is the one
         underneath — clearing it first, then this. */}
       <NewAssignmentGate />
+      <PtsChangePopup />
       {/* Global ⌘K palette — available on every authenticated route.
           On /workspace routes the shortcut is handed off to the workspace's
           own CommandPalette; the two never register at the same time. */}
