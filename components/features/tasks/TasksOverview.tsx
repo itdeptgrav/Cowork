@@ -84,6 +84,20 @@ export function TasksOverview({ scope }: { scope: TaskScope }) {
   const active = useQuery((r) => r.getActiveTimer(), []);
   const timers = useQuery((r) => r.listTimers(), []);
   /**
+   * Tasks the viewer RAISED for other people, shown on the Overview in their
+   * own section regardless of the scope above.
+   *
+   * The rest of this page summarises ONE scope — your own work by default — so a
+   * task you handed to somebody else appeared nowhere on it: you are not its
+   * assignee, so it is not in "Mine", and the Overview had no switch of its own
+   * until now. This section is always here (when there is anything in it), so
+   * the work you sent out is visible without hunting for a scope pill. Fetched
+   * separately, so it does not move or depend on the scope selector. */
+  const givenOut = useQuery(
+    (r) => r.listTasks({ scope: "assigned_out" }).then((p) => p.items),
+    [],
+  );
+  /**
    * Cell 4 reads the VIEWER’s own score, never the scope’s.
    *
    * A score belongs to one person — “Visible only to you and your reporting
@@ -724,6 +738,63 @@ export function TasksOverview({ scope }: { scope: TaskScope }) {
           </div>
         )}
       </Panel>
+
+      {/* **Tasks you gave to others.** Always here when there are any, so work
+          you handed off is visible on your own Overview rather than only under a
+          scope pill. Each row names who it went to and where it has got to. */}
+      {(givenOut.data?.length ?? 0) > 0 && (
+        <Panel padded={false}>
+          <div className="flex items-center gap-2 border-b border-hairline px-4 py-2">
+            <h2 className="text-sm font-medium text-ink">
+              Tasks you gave to others
+            </h2>
+            <span data-figure className="text-xs text-ink-faint">
+              {givenOut.data!.length}
+            </span>
+            <Link
+              href="/tasks?view=tasks"
+              className="ml-auto flex items-center gap-1 text-xs text-ink-faint transition-colors hover:text-ink"
+            >
+              All tasks
+              <Icon.chevronRight className="h-3 w-3" />
+            </Link>
+          </div>
+          <div className="divide-y divide-hairline">
+            {givenOut.data!.slice(0, 8).map((view) => {
+              const meta = statusMeta(view);
+              /* Whoever holds it — an accepted assignee first, else the person
+                 it is parked on at a gate. Mirrors the People cell and the team
+                 grouping so one task reads the same everywhere. */
+              const holder =
+                view.assignees[0] ?? view.pendingAssignees[0] ?? null;
+              const holderPending =
+                !view.assignees[0] && Boolean(view.pendingAssignees[0]);
+              const due =
+                view.task.deadline.dueAt ??
+                view.task.deadline.operationalDueAt;
+              return (
+                <div
+                  key={view.task.id}
+                  className="flex items-center gap-3 px-4 py-2 transition-colors hover:bg-[var(--control)]"
+                >
+                  <Link href={`/tasks/${view.task.id}`} className="min-w-0 flex-1">
+                    <span className="block truncate text-sm text-ink">
+                      {view.task.title}
+                    </span>
+                    <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
+                      {holder
+                        ? `${holderPending ? "waiting on " : ""}${holder.displayName}`
+                        : "Not assigned yet"}
+                      {due && ` · due ${formatDate(due)}`}
+                    </span>
+                  </Link>
+                  <Chip tone={meta.tone}>{meta.label}</Chip>
+                </div>
+              );
+            })}
+          </div>
+        </Panel>
+      )}
     </div>
   );
 }

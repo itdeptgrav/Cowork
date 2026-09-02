@@ -1,6 +1,7 @@
 import { readConfig } from "./config.ts";
 import { PUBLIC_ENV } from "./publicEnv.ts";
 import type { LegacyResult } from "./envelope.ts";
+import { putToSession } from "./driveUpload.ts";
 
 /**
  * Private Cowork attachments, over the wire.
@@ -62,22 +63,112 @@ function failure(status: number, message: string): LegacyResult<never> {
   };
 }
 
-/**
- * Upload one file.
- *
- * `onProgress` reports 0–1 and is driven by `XMLHttpRequest` rather than
- * `fetch`, which cannot report upload progress at all. That is the only reason
- * this is not a `fetch` call — a 40 MB reference document uploading behind a
- * silent spinner is indistinguishable from a hung one.
- */
-export function uploadAttachment(input: {
+interface UploadInput {
   token: string;
   file: File;
   entityType: AttachmentEntity;
   entityId: string;
   onProgress?: (fraction: number) => void;
   signal?: AbortSignal;
-}): Promise<LegacyResult<AttachmentMeta>> {
+}
+
+/**
+ * Upload one private attachment.
+ *
+ * **Resumable, direct-to-Drive — with the multipart route as a fallback.** The
+ * bytes go straight from the browser to Google (a session, then a resumable
+ * PUT), so this never routes a large submission through the server's memory and
+ * a drop at 95% resumes rather than restarting. The file stays PRIVATE: the
+ * finalize records it with no public grant, exactly as the multipart path did,
+ * and it is only reachable through the authenticated download route.
+ *
+ * If the resumable path cannot even START — a server or network failure opening
+ * the session, never a permission refusal — it falls back to the old multipart
+ * upload, so a file still lands. A refusal (auth/permission) is returned as-is:
+ * it would fail identically on the fallback.
+ */
+export async function uploadAttachment(
+  input: UploadInput,
+): Promise<LegacyResult<AttachmentMeta>> {
+  const r = await uploadViaResumable(input);
+  if (r.ok) return r;
+  /* Only fall back when the RESUMABLE path failed to start for a reason the
+     multipart path might survive — not on a refusal, which is the same either
+     way, and not once bytes were already flowing. */
+  if (r.error.kind === "auth" || r.error.kind === "permission") return r;
+  if ((r as { fallback?: boolean }).fallback !== true) return r;
+  return uploadViaMultipart(input);
+}
+
+/** Open a private resumable session, PUT the bytes straight to Google, then
+ *  finalize into the private record. */
+async function uploadViaResumable(
+  input: UploadInput,
+): Promise<LegacyResult<AttachmentMeta> & { fallback?: boolean }> {
+  const auth = { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" };
+
+  /* 1 — open the session. A failure here is before any byte moved, so it is
+     safe to fall back to multipart. */
+  let sessionUrl: string;
+  try {
+    const res = await fetch(`${baseUrl()}/cowork/attachments/resumable-session`, {
+      method: "POST",
+      headers: auth,
+      signal: input.signal,
+      body: JSON.stringify({
+        fileName: input.file.name,
+        mimeType: input.file.type || "application/octet-stream",
+        fileSize: input.file.size,
+        entityType: input.entityType,
+        entityId: input.entityId,
+      }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { sessionUrl?: string; error?: string };
+    if (!res.ok || !body.sessionUrl) {
+      /* A refusal is returned as-is; anything else is fallback-eligible. */
+      const f = failure(res.status, body.error ?? "Could not start the upload.");
+      return { ...f, fallback: res.status !== 401 && res.status !== 403 };
+    }
+    sessionUrl = body.sessionUrl;
+  } catch {
+    if (input.signal?.aborted) return failure(0, "Upload cancelled.");
+    return { ...failure(0, "Could not start the upload."), fallback: true };
+  }
+
+  /* 2 — the browser streams the file to Google, resumable, with progress. */
+  const put = await putToSession(sessionUrl, input.file, input.onProgress, input.signal);
+  if ("expired" in put) {
+    return { ...failure(0, "The upload session expired — please try again."), fallback: false };
+  }
+  if (!put.ok) return put; // already a LegacyResult; do not fall back mid-flight
+  const fileId = put.data.id;
+
+  /* 3 — finalize into the private record (sniffs the mime, no public grant). */
+  try {
+    const res = await fetch(`${baseUrl()}/cowork/attachments/finalize`, {
+      method: "POST",
+      headers: auth,
+      signal: input.signal,
+      body: JSON.stringify({ fileId, entityType: input.entityType, entityId: input.entityId }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { attachment?: AttachmentMeta; error?: string };
+    if (res.ok && body.attachment) return { ok: true, data: body.attachment };
+    return failure(res.status, body.error ?? "The upload could not be saved.");
+  } catch {
+    if (input.signal?.aborted) return failure(0, "Upload cancelled.");
+    return failure(0, "The upload could not be saved.");
+  }
+}
+
+/**
+ * The original multipart upload — kept as the fallback.
+ *
+ * `onProgress` reports 0–1 and is driven by `XMLHttpRequest` rather than
+ * `fetch`, which cannot report upload progress at all. That is the only reason
+ * this is not a `fetch` call — a 40 MB reference document uploading behind a
+ * silent spinner is indistinguishable from a hung one.
+ */
+function uploadViaMultipart(input: UploadInput): Promise<LegacyResult<AttachmentMeta>> {
   return new Promise((resolve) => {
     const form = new FormData();
     form.append("file", input.file);

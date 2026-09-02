@@ -107,6 +107,7 @@ import type {
   MonitoringPerformance,
   MonitoringSubject,
   Notification,
+  GoalBasedConfig,
   Observation,
   PriorityAcknowledgement,
   PriorityCascade,
@@ -873,6 +874,43 @@ export interface CoworkRepository {
     requirementId: string,
     satisfied: boolean,
   ): Promise<ActionResult<Task>>;
+  /**
+   * One requirement's own progress mark, and who left it.
+   *
+   * **Progress, not satisfaction.** A requirement is SATISFIED when the
+   * reviewer says so, or by a subtask completing — that is what lets a task be
+   * accepted, and nothing here touches it. This is the person doing the work
+   * saying "I have done this one", so whoever raised the task can see movement
+   * without asking and without waiting for review.
+   *
+   * Kept apart on purpose. Writing a tick onto the requirement itself would put
+   * a second answer beside the reviewer's on one question, and the first time
+   * they disagreed there would be no rule for which wins.
+   */
+  listRequirementProgress(taskId: TaskId): Promise<
+    {
+      requirementId: string;
+      done: boolean;
+      byEmployeeId: EmployeeId | null;
+      byName: string;
+      at: string;
+    }[]
+  >;
+  /**
+   * Mark one requirement done, or clear the mark.
+   *
+   * Marking it done notifies whoever raised the task. Clearing it does not: an
+   * untick is a correction, and announcing it would read as work having been
+   * undone.
+   */
+  setRequirementProgress(input: {
+    taskId: TaskId;
+    requirementId: string;
+    done: boolean;
+    /** Quoted in the notification, so the reader knows which one moved. */
+    requirementText: string;
+  }): Promise<ActionResult<void>>;
+
   /** Add completion requirements to a task that has none yet. */
   addRequirements(
     taskId: TaskId,
@@ -1153,6 +1191,31 @@ export interface CoworkRepository {
     windowSecs: number,
     reason: string,
   ): Promise<ActionResult<DeadlineChangeRequest>>;
+
+  /**
+   * The receiver's manager proposes a LATER deadline before assignment.
+   *
+   * Only valid while the task is at `pending_tl_hours` — before hours are set
+   * and before anyone is assigned. It records a request against the creator and
+   * moves nothing on its own. Distinct from `requestDeadlineChange`, which is
+   * the assignee's hours extension after work has started; see
+   * `lib/rules/tasks/preAssignDeadline.ts` for why they are kept apart.
+   */
+  requestPreAssignDeadline(
+    taskId: TaskId,
+    proposedDueAt: string,
+    reason: string,
+  ): Promise<ActionResult<Task>>;
+
+  /**
+   * The creator answers a pre-assignment deadline request: approve (the date
+   * moves), counter (offer another), or reject (it stands).
+   */
+  decidePreAssignDeadline(
+    taskId: TaskId,
+    decision: "approve" | "reject" | "counter",
+    opts?: { counterDueAt?: string; reason?: string },
+  ): Promise<ActionResult<Task>>;
   /**
    * The assignor answers an outstanding deadline proposal.
    *
@@ -1591,8 +1654,20 @@ export interface CoworkRepository {
    * A missed beat (closed tab, sleeping laptop) is what caps how much a later
    * pause may credit. Idempotent and cheap; a no-op on a paused or absent
    * session.
+   *
+   * `aliveSinceMs` is the instant the CALLING TAB has been continuously alive
+   * since, by its own local ticks — see `lib/hooks/useLiveness.ts`. A beat is a
+   * network write, so its absence says only that the network or the engine was
+   * unreachable; this says whether the tab itself was running. Passing it lets
+   * a gap-close resume the run where banking stopped instead of at `now`,
+   * which is what stops a reachability failure taking worked minutes off
+   * somebody's record. Omitted, the gap-close restarts at `now` exactly as it
+   * did before.
    */
-  heartbeatTimer(taskId: TaskId): Promise<ActionResult<void>>;
+  heartbeatTimer(
+    taskId: TaskId,
+    aliveSinceMs?: number | null,
+  ): Promise<ActionResult<void>>;
   listWorkCommits(taskId: TaskId): Promise<WorkCommit[]>;
   listDayCommits(
     date: string,
@@ -1940,6 +2015,28 @@ export interface CoworkRepository {
       newSecs: number;
       reason: string;
       byEmployeeId: string | null;
+    }[];
+    /**
+     * Every recorded move of the task's DUE DATE, oldest first.
+     *
+     * Separate from `credits` because they are different facts. A credit grows
+     * the budget — the work is now allowed to take longer. A move shifts the
+     * date without touching the budget: going offline does not make the work
+     * smaller, it takes hours out of the day available to do it in.
+     *
+     * That distinction is why the history read "Nothing has been credited"
+     * directly underneath a deadline somebody had just watched move. The record
+     * existed — `cowork_task_deadline_extensions` has been written on every
+     * shift for a long time — and nothing read it.
+     */
+    deadlineMoves: {
+      id: string;
+      at: string;
+      fromIso: string;
+      toIso: string;
+      reason: string;
+      /** A rule applying itself, rather than a person approving something. */
+      automatic: boolean;
     }[];
   }>;
 
@@ -3169,6 +3266,14 @@ export interface CreateProjectInput {
   priority?: Project["priority"];
   tags?: string[];
   initialTaskIds?: TaskId[];
+  /**
+   * "Taskgoal" — marks the project as oriented around a measurable objective.
+   * Descriptive only, and deliberately NOT the C2 goal task — see
+   * `lib/rules/projects/goalBased.ts`. Omitted leaves the project exactly as it
+   * was; the store keeps only the marker and the objective, nothing derived.
+   */
+  isGoalBased?: boolean;
+  goalBased?: GoalBasedConfig | null;
 }
 
 /**

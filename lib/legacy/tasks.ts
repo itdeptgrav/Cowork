@@ -193,6 +193,13 @@ export interface LegacyTaskDoc {
   isFolder?: boolean;
   /** Set by hand to mark a task important. A label only — see `Task.isImportant`. */
   isImportant?: boolean;
+  /** Raw pre-assignment deadline pushback as stored; shape-checked by
+      `readPreAssignDeadline`. See `Task.preAssignDeadline`. */
+  preAssignDeadline?: unknown;
+  /** "Taskgoal" — a project folder's objective marker. A label only, distinct
+      from the C2 goal task (`isGoal`/`goalConfig`). See `Task.isGoalBased`. */
+  isGoalBased?: boolean;
+  goalBased?: unknown;
   isRepeat?: boolean;
   isThirdParty?: boolean;
   isGoal?: boolean;
@@ -310,6 +317,12 @@ export interface LegacyTask {
   description: string | null;
   /** Set by hand to mark a task important. A label only — see `Task.isImportant`. */
   isImportant?: boolean;
+  /** Receiver-manager's pre-assignment deadline pushback — see `Task.preAssignDeadline`. */
+  preAssignDeadline?: import("@/lib/domain").PreAssignDeadlineRequest | null;
+  /** "Taskgoal" — a project folder's objective marker. A label only, distinct
+      from the C2 goal task (`isGoal`/`goalConfig`). See `Task.isGoalBased`. */
+  isGoalBased?: boolean;
+  goalBased?: unknown;
   kind: LegacyTaskKind;
   /** Raw, both axes, exactly as stored. */
   status: string | null;
@@ -633,6 +646,49 @@ export function readInstant(value: unknown): number | null {
   return null;
 }
 
+/** An instant as an ISO string, or null — for fields the domain carries as ISO. */
+function readIso(value: unknown): string | null {
+  const ms = readInstant(value);
+  return ms === null ? null : new Date(ms).toISOString();
+}
+
+/**
+ * A pre-assignment deadline request off the raw document, or null.
+ *
+ * Defensive: the object may be absent, half-written, or carry its dates as
+ * Firestore Timestamps rather than ISO strings, so every date goes through
+ * `readIso` and a shape with no recognised `status` is treated as none.
+ */
+function readPreAssignDeadline(
+  value: unknown,
+): import("@/lib/domain").PreAssignDeadlineRequest | null {
+  if (!value || typeof value !== "object") return null;
+  const v = value as Record<string, unknown>;
+  const status = v.status;
+  if (
+    status !== "pending" &&
+    status !== "approved" &&
+    status !== "rejected" &&
+    status !== "countered"
+  )
+    return null;
+  const proposed = readIso(v.proposedDueAt);
+  if (!proposed) return null;
+  return {
+    proposedDueAt: proposed,
+    previousDueAt: readIso(v.previousDueAt),
+    requestedById: String(v.requestedById ?? ""),
+    requestedByName: String(v.requestedByName ?? ""),
+    reason: typeof v.reason === "string" ? v.reason : "",
+    status,
+    counterDueAt: readIso(v.counterDueAt),
+    decidedById: v.decidedById ? String(v.decidedById) : null,
+    decidedByName: v.decidedByName ? String(v.decidedByName) : null,
+    decisionReason:
+      typeof v.decisionReason === "string" ? v.decisionReason : null,
+  };
+}
+
 /**
  * The deadline, from whichever field carries it.
  *
@@ -884,6 +940,14 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
     /* Carried through as stored. Nothing here decides it and nothing derives
        anything from it — see `Task.isImportant`. */
     isImportant: doc.isImportant === true,
+    /* The receiver-manager's pre-assignment deadline pushback, coerced to the
+       domain shape. Null on every task that has never had one. */
+    preAssignDeadline: readPreAssignDeadline(doc.preAssignDeadline),
+    /* "Taskgoal" — carried through as stored, for a project folder to read
+       back. `taskMap` normalises it; here it is a raw passthrough, like
+       `isImportant`. See `Task.isGoalBased`. */
+    isGoalBased: doc.isGoalBased === true,
+    goalBased: doc.goalBased ?? null,
     subtaskIds: Array.isArray(doc.subtaskIds)
       ? doc.subtaskIds.filter(
           (id): id is string => typeof id === "string" && id !== "",

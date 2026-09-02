@@ -537,7 +537,7 @@ export function NewMeetingForm() {
                 Schedule another
               </Button>
             ) : (
-              <Button
+              <Button loading={state.isPending}
                 tone="primary"
                 disabled={state.isPending || !title.trim() || !startsAt}
                 onClick={async () => {

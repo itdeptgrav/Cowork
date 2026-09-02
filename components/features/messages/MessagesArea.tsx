@@ -35,10 +35,22 @@ import {
   formatBytes,
   UploadProgressRow,
   mediaUrl,
+  mediaProxyUrl,
 } from "./MessageAttachments";
+import { GalleryLightbox } from "@/components/ui/GalleryLightbox";
+import {
+  collectConversationImages,
+  galleryIndexOf,
+} from "@/lib/rules/media/conversationGallery";
 import { copyPlan } from "@/lib/rules/media/copyMessage";
 import { COPIED_NOTICE, runCopyPlan } from "@/lib/utils/copyToClipboard";
-import { formatClock, formatDate, formatRelative, istDayKey } from "@/lib/utils/format";
+import {
+  formatClock,
+  formatDate,
+  formatDateTime,
+  formatRelative,
+  istDayKey,
+} from "@/lib/utils/format";
 import { linkifyMessage } from "@/lib/utils/linkify";
 import { useNow } from "@/lib/hooks/useNow";
 import { useAutoGrowTextarea } from "@/lib/hooks/useAutoGrowTextarea";
@@ -2053,6 +2065,7 @@ function Thread({
               onContextMenu={(m, x, y) => setMenu({ message: m, x, y })}
               onJumpTo={(id) => void jumpToMessage(id)}
               onReact={(m, emoji) => void react(m, emoji)}
+              onStar={(m) => void toggleStar(m)}
               canReact={typeof repo.toggleMessageReaction === "function"}
             />
           </div>
@@ -2434,6 +2447,7 @@ function MessageList({
   onContextMenu,
   onJumpTo,
   onReact,
+  onStar,
   canReact,
 }: {
   messages: Message[];
@@ -2453,6 +2467,8 @@ function MessageList({
   onJumpTo: (id: string) => void;
   /** Toggle one emoji on one message — what a reaction chip does on click. */
   onReact: (m: Message, emoji: string) => void;
+  /** Toggle a personal star on one message — for the image viewer's toolbar. */
+  onStar: (m: Message) => void;
   /** Whether the backend supports reactions at all. Chips still RENDER without
    *  it (the data may exist), they just stop being buttons that lie. */
   canReact: boolean;
@@ -2463,6 +2479,60 @@ function MessageList({
   const recipientIds = participants
     .map((p) => p.id)
     .filter((id) => id !== viewerId);
+
+  /* Every image in the whole thread, in order — so opening one opens the strip
+     of all of them, not just its own message's. Assembled from the loaded
+     message list, since a message only knows its own attachments. */
+  const galleryItems = useMemo(
+    () => collectConversationImages(messages),
+    [messages],
+  );
+  const galleryImages = useMemo(
+    () =>
+      galleryItems.map((it) => ({
+        fileId: it.attachment.fileId,
+        url: it.attachment.url,
+        alt: it.attachment.name ?? "Image",
+        downloadUrl: mediaUrl(it.attachment),
+        downloadName: it.attachment.name ?? "image.jpg",
+        proxyUrl: mediaProxyUrl(it.attachment),
+        title: it.senderName,
+        subtitle: formatDateTime(it.createdAt),
+      })),
+    [galleryItems],
+  );
+  const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
+  const openImage = (messageId: string, imageIndex: number) =>
+    setGalleryIndex(galleryIndexOf(galleryItems, messageId, imageIndex));
+
+  /* The viewer's per-image actions, bound to each image's message. Messages
+     chat offers the full set — reply, react, star and forward — the same the
+     message menu does. Reply and Forward close the viewer so the composer or
+     the forward picker is seen; react and star act in place. */
+  const galleryActions = galleryItems.map((it) => {
+    const m = messages.find((x) => x.id === it.messageId);
+    if (!m) return {};
+    return {
+      onReply: () => {
+        onReply(m);
+        setGalleryIndex(null);
+      },
+      onForward: () => {
+        onForward(m);
+        setGalleryIndex(null);
+      },
+      onStar: () => onStar(m),
+      starred: (m.starredBy ?? []).includes(viewerId ?? ""),
+      reactions:
+        canReact && !m.isDeleted
+          ? {
+              emojis: MESSAGE_QUICK_REACTIONS,
+              selected: myReaction(m.reactions, viewerId ?? ""),
+              onPick: (emoji: string) => onReact(m, emoji),
+            }
+          : undefined,
+    };
+  });
 
   /**
    * Touch gestures on a message row: swipe LEFT to reply, hold to open the
@@ -2581,6 +2651,7 @@ function MessageList({
   }
 
   return (
+    <>
     <ol className="flex flex-col gap-0.5">
       {messages.map((m, i) => {
         const prev = messages[i - 1];
@@ -2718,7 +2789,11 @@ function MessageList({
                     </button>
                   )}
                   {!deleted && m.attachments && m.attachments.length > 0 && (
-                    <MessageAttachments items={m.attachments} mine={mine} />
+                    <MessageAttachments
+                      items={m.attachments}
+                      mine={mine}
+                      onOpenImage={(li) => openImage(m.id, li)}
+                    />
                   )}
                   {m.text && (
                     <span
@@ -2899,6 +2974,19 @@ function MessageList({
         );
       })}
     </ol>
+
+      {/* One viewer for the whole thread's images — opened at the clicked
+          thumbnail, Previous/Next and the filmstrip walk the rest. */}
+      {galleryIndex !== null && (
+        <GalleryLightbox
+          images={galleryImages}
+          startIndex={galleryIndex}
+          apiBase={MEDIA_BASE}
+          actions={galleryActions}
+          onClose={() => setGalleryIndex(null)}
+        />
+      )}
+    </>
   );
 }
 

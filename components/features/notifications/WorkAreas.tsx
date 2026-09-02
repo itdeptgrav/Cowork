@@ -538,7 +538,7 @@ export function NotificationsPage() {
           />
         }
         action={
-          <Button
+          <Button loading={allState.isPending}
             size="sm"
             disabled={allState.isPending || unread === 0}
             onClick={async () => {

@@ -100,10 +100,65 @@ export interface Project {
   priority: "high" | "normal" | "low" | null;
   /** Restricted projects are visible only to members plus authorised scope. */
   isRestricted: boolean;
+  /**
+   * "Taskgoal" — a DESCRIPTIVE marker that this project is oriented around a
+   * measurable objective. Deliberately separate from the C2 goal task
+   * (`Task.isGoal` / `goalConfig` / the roadmap): it carries no weightage, no
+   * points, no roadmap steps, and nothing here feeds scoring. It only stores
+   * and displays. Absent on every project that was not marked.
+   *
+   * The two must never be conflated — see `lib/rules/projects/goalBased.ts`.
+   */
+  isGoalBased?: boolean;
+  goalBased?: GoalBasedConfig | null;
   createdById: EmployeeId;
   createdAt: string;
   updatedAt: string;
   archivedAt: string | null;
+}
+
+/**
+ * What KIND of goal a Taskgoal is — so the marker fits ANY goal, not only a
+ * number to hit. Descriptive; nothing branches on it beyond which fields are
+ * worth showing.
+ *
+ *  · `numeric`     — a measurable target (120 → 500 users). The metric/unit and
+ *                    the start/target numbers apply.
+ *  · `milestone`   — a thing to ship or land ("Launch v2"). Done or not.
+ *  · `qualitative` — an outcome judged by description ("Improve onboarding").
+ *  · `other`       — anything that does not fit the three above.
+ */
+export type GoalKind = "numeric" | "milestone" | "qualitative" | "other";
+
+/**
+ * The objective behind a "Taskgoal" project. Descriptive only.
+ *
+ * NOT the C2 goal config: no `weightPercent`, no `maximumPoints`, no roadmap.
+ * Just what the project is aiming at, for display.
+ *
+ * **Works for any goal type**, not only a numeric target. The `numeric` fields
+ * (`metric`/`unit`/`targetValue`/`startValue`) apply when `goalType` is
+ * `numeric`; every other type leans on `successCriteria` and `currentStatus`
+ * instead. All of it is optional except the objective.
+ */
+export interface GoalBasedConfig {
+  /** The outcome, in one line. The one field a Taskgoal must have. */
+  objective: string;
+  /** Which kind of goal this is. Defaults to `numeric` on older records. */
+  goalType: GoalKind;
+  /** How you will know it is achieved — the definition of done, in words.
+      Carries a non-numeric goal the way the numbers carry a numeric one. */
+  successCriteria: string | null;
+  /** Where it stands now, in words — the baseline for a goal with no number. */
+  currentStatus: string | null;
+  /** What is measured — "Active users". Numeric goals. Optional. */
+  metric: string | null;
+  /** A unit for the numbers — "%", "users". Numeric goals. Optional. */
+  unit: string | null;
+  /** The number to reach. Numeric goals. Optional. */
+  targetValue: number | null;
+  /** Where it starts, so a reader can see the distance. Numeric goals. Optional. */
+  startValue: number | null;
 }
 
 /**

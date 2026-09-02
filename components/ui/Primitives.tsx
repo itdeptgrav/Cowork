@@ -394,11 +394,22 @@ export function Button({
   tone = "secondary",
   size = "md",
   className = "",
+  loading = false,
   ...rest
 }: {
   children: ReactNode;
   tone?: ButtonTone;
   size?: "sm" | "md";
+  /**
+   * A slow action in flight. Shows a spinner before the label and marks the
+   * button `aria-busy`; the caller still owns `disabled`, because "busy" and
+   * "not allowed" are different states and a form may want a button disabled
+   * for reasons other than a request being open.
+   *
+   * Additive: no existing caller passes it, so every current button renders
+   * exactly as before.
+   */
+  loading?: boolean;
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const tones: Record<ButtonTone, string> = {
     // The filled control uses deck ink against the body background, so it
@@ -417,10 +428,23 @@ export function Button({
   return (
     <button
       {...rest}
+      aria-busy={loading || undefined}
       className={`inline-flex shrink-0 items-center justify-center gap-1.5 rounded-full font-medium tracking-[-0.012em] transition-[background-color,opacity,color] duration-[180ms] ease-[var(--ease-deck)] disabled:cursor-not-allowed ${
         size === "sm" ? "px-3 py-1.5 text-sm" : "px-4 py-2 text-[15px]"
       } ${tones[tone]} ${className}`}
     >
+      {loading && (
+        /* `motion-essential`, because both clamps in `globals.css` freeze every
+           animation under reduced motion and plain device mode — a still ring
+           beside "Saving…" is indistinguishable from a hung request, which is
+           the exact thing a loading state exists to rule out. `currentColor` so
+           it reads on a filled primary button (light on dark) and a tinted one
+           alike, without a second token. */
+        <span
+          aria-hidden
+          className="motion-essential inline-block h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent opacity-70"
+        />
+      )}
       {children}
     </button>
   );

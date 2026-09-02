@@ -89,7 +89,7 @@ export function MrfChat({ mrfId }: { mrfId: string }) {
             }
           }}
         />
-        <Button
+        <Button loading={state.isPending}
           size="sm"
           tone="primary"
           disabled={!text.trim() || state.isPending}

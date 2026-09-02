@@ -552,6 +552,12 @@ export function ReviewPanel({
           <div className="mt-3 flex justify-end">
             <Button
               tone="primary"
+              /* The spinner turns for the whole backend round trip — the review
+                 route awaits the Firestore write AND the chat message, the push
+                 notifications and the queue rechaining before it answers, so
+                 "Saving…" is a real wait, not a flicker. Without the spinner the
+                 grey pill read as stuck. */
+              loading={state.isPending}
               /* The engine refuses a rework with nothing selected, so the
                  button refuses first — a round trip to be told to pick
                  something is worse than not being able to press it. */

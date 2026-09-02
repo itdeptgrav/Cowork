@@ -3,7 +3,10 @@
 import { useState } from "react";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDurationTimer } from "@/lib/utils/format";
-import { budgetHistoryView } from "@/lib/rules/tasks/budgetHistory";
+import {
+  budgetHistoryView,
+  deadlineMoveEntries,
+} from "@/lib/rules/tasks/budgetHistory";
 import { deadlineOrigin } from "@/lib/rules/tasks/deadlineOrigin";
 import type { TaskId } from "@/lib/domain";
 
@@ -60,6 +63,10 @@ export function BudgetHistory({
     clockStartsAtSource: null,
     windowSecs: null,
   });
+
+  /* Read straight off the record the engine already wrote. Nothing here
+     decides anything about a deadline — see `deadlineMoveEntries`. */
+  const moves = history.data ? deadlineMoveEntries(history.data.deadlineMoves) : [];
 
   const view = history.data
     ? budgetHistoryView({
@@ -155,6 +162,57 @@ export function BudgetHistory({
                 <p className="mt-1.5 text-[11px] text-ink-faint">
                   Nothing has been credited — this is the budget it was given.
                 </p>
+              )}
+
+              {/**
+               * **The deadline's own history, which had nowhere to appear.**
+               *
+               * Going offline moves a due date and does not touch the budget:
+               * the work does not get smaller, the day simply has fewer hours
+               * left to do it in. So everything above stayed correct — "Nothing
+               * has been credited" was true — while sitting directly under a
+               * deadline the reader had just watched move. Two different facts,
+               * and only one of them had a place on this panel.
+               *
+               * Its own section rather than mixed into the credits, because a
+               * row reading "+ 20m" means two different things in the two
+               * lists: twenty minutes MORE WORK ALLOWED, or twenty minutes
+               * LATER IN THE DAY. Interleaving them would make the panel
+               * ambiguous in exactly the place it is read for certainty.
+               */}
+              {moves.length > 0 && (
+                <div className="mt-3 border-t border-hairline pt-2.5">
+                  <p className="mb-1.5 text-[11px] font-medium text-ink-muted">
+                    Deadline changes
+                  </p>
+                  {moves.map((m) => (
+                    <div key={m.id} className="mt-1.5 first:mt-0">
+                      <Row
+                        label={m.label}
+                        value={`${m.deltaSecs > 0 ? "+" : "−"} ${formatDurationTimer(
+                          Math.abs(m.deltaSecs),
+                        )}`}
+                      />
+                      <p className="text-[11px] leading-relaxed text-ink-faint">
+                        {/* The engine's own sentence, exactly as it does for a
+                            credit above — it names the cause ("Offline",
+                            "Break", a meeting) more precisely than any label
+                            written here could. */}
+                        {m.reason ||
+                          (m.automatic
+                            ? "Applied automatically."
+                            : "Approved change.")}
+                        {" · "}
+                        <span data-figure>{formatDateTime(m.fromIso)}</span>
+                        {" → "}
+                        <span data-figure>{formatDateTime(m.toIso)}</span>
+                      </p>
+                      <p className="text-[11px] text-ink-faint/80">
+                        Recorded <span data-figure>{formatDateTime(m.at)}</span>
+                      </p>
+                    </div>
+                  ))}
+                </div>
               )}
             </>
           )}

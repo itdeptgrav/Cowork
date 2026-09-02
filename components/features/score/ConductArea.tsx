@@ -332,7 +332,7 @@ function DeductionRow({ entry }: { entry: LedgerRow }) {
               />
             </Field>
             <div className="mt-2 flex items-center gap-2">
-              <Button
+              <Button loading={state.isPending}
                 tone="primary"
                 size="sm"
                 disabled={!note.trim() || state.isPending}
@@ -535,7 +535,7 @@ function WriteRule({ onDone }: { onDone: () => void }) {
         Your own manager approves this before it can be applied to anybody.
       </p>
       <div className="mt-3 flex items-center gap-2">
-        <Button
+        <Button loading={state.isPending}
           tone="primary"
           size="sm"
           disabled={!name.trim() || !costValid || state.isPending}
@@ -632,7 +632,7 @@ function ApprovalQueue({
                     />
                   </Field>
                   <div className="mt-2 flex items-center gap-2">
-                    <Button
+                    <Button loading={state.isPending}
                       tone="destructive"
                       size="sm"
                       disabled={!reason.trim() || state.isPending}
@@ -660,7 +660,7 @@ function ApprovalQueue({
                 </div>
               ) : (
                 <div className="mt-2 flex items-center gap-2">
-                  <Button
+                  <Button loading={state.isPending}
                     tone="primary"
                     size="sm"
                     disabled={state.isPending}
@@ -776,7 +776,7 @@ function DisputeQueue({
                       "reject", where confirm reverses it — the wrong way round
                       for anybody reading, so they stop at the wire. */}
                   <div className="mt-2 flex flex-wrap items-center gap-2">
-                    <Button
+                    <Button loading={state.isPending}
                       tone="primary"
                       size="sm"
                       disabled={!note.trim() || state.isPending}
@@ -999,7 +999,7 @@ export function ApplyConductRule({
         </p>
       )}
       <div className="mt-3 flex items-center gap-2">
-        <Button
+        <Button loading={state.isPending}
           tone="primary"
           size="sm"
           disabled={!policyId || !reason.trim() || state.isPending}

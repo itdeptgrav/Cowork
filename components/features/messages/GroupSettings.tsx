@@ -123,7 +123,7 @@ export function GroupSettings({
                   aria-label="Group name"
                   className="flex-1"
                 />
-                <Button
+                <Button loading={nameState.isPending}
                   tone="primary"
                   size="sm"
                   onClick={rename}

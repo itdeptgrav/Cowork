@@ -68,3 +68,39 @@ export function canManagerViewTask(
   const people = [...task.assigneeIds, ...(task.pendingAssigneeIds ?? [])];
   return people.some((id) => reach.has(String(id)));
 }
+
+/**
+ * Does this task belong in the viewer's "My team" list?
+ *
+ * Two ways in, and the second is the fix for a task vanishing from its
+ * sender's own side:
+ *
+ *  · **Someone on it reports to the viewer** — the reporting answer above.
+ *  · **The viewer RAISED it** — a manager who sends work out is overseeing it
+ *    until it lands, and a CROSS-DEPARTMENT task is exactly the case the first
+ *    rule misses: its assignee is in another department and reports to someone
+ *    else, so `canManagerViewTask` is false for the sender. Without this the
+ *    task they had just created appeared in no tab they look at — not "My
+ *    tasks" (they are not the assignee), not "My team" (they do not manage the
+ *    assignee) — and looked lost.
+ *
+ * **Held by another, either way.** `heldByAnother` keeps the viewer's own solo
+ * work out of a list that means "other people's": a task whose only holder is
+ * the viewer is theirs to do, not theirs to oversee. A task held jointly by the
+ * viewer and someone else stays — it is genuinely the other person's work too.
+ */
+export function teamScopeKeeps(
+  viewerId: string | null,
+  task: {
+    assigneeIds: string[];
+    pendingAssigneeIds?: string[];
+    createdById?: string | null;
+  },
+  tree: ReportingTree,
+): boolean {
+  if (!viewerId) return false;
+  const holders = [...task.assigneeIds, ...(task.pendingAssigneeIds ?? [])];
+  const heldByAnother = holders.some((id) => String(id) !== viewerId);
+  if (!heldByAnother) return false;
+  return canManagerViewTask(viewerId, task, tree) || task.createdById === viewerId;
+}

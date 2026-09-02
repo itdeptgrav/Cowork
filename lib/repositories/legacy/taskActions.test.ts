@@ -798,3 +798,54 @@ test("nothing in the client decides the cross-department gate", () => {
   );
   assert.equal(/departmentApproval|assignerDept|targetDept/.test(create), false);
 });
+
+/* ── The gap-close that could not recover ─────────────────────────────────── */
+
+test("only one gap-close runs per timer session at a time", () => {
+  /**
+   * Reported as a console flooding with `failed-precondition` on
+   * `cowork_task_timers/.../sessions/<task>`, several times a second, forever.
+   *
+   * The ~350ms cadence was Firestore's own transaction retry, and every attempt
+   * carried a `currentDocument.updateTime` precondition that was already stale
+   * — invalidated by another run of this same path.
+   *
+   * What made it permanent rather than merely noisy: the branch that calls this
+   * is entered when `now - heartbeatAt` exceeds the grace, and the only thing
+   * that advances `heartbeatAt` there is this transaction SUCCEEDING. Once
+   * enough were racing that none committed, the condition that started them
+   * stayed true and every beat started more. It could not recover on its own.
+   */
+  assert.match(source, /const closingTimerGap = new Set<string>\(\)/);
+  assert.match(source, /if \(closingTimerGap\.has\(key\)\) return;/);
+  assert.match(source, /closingTimerGap\.add\(key\)/);
+});
+
+test("the guard is released whichever way the transaction goes", () => {
+  /* Left set, a single failure would stop this session's gap ever being closed
+     again — the opposite fault, and a quieter one, so it would take longer to
+     find than the flood it replaced. */
+  /* Scoped to the function. The file has many `finally` blocks, and a window
+     search finds whichever one happens to be nearest. */
+  const fn = source.slice(source.indexOf("async #closeGapAndKeepRunning("));
+  const body = fn.slice(0, fn.indexOf("\n  }\n"));
+  assert.match(body, /\} finally \{/, "the guard is released only on success");
+  assert.match(body, /closingTimerGap\.delete\(key\)/);
+});
+
+test("the guard is module scope, not per repository instance", () => {
+  /* A per-instance guard is no guard at all the moment the page builds two. */
+  const cls = source.indexOf("export class LegacyRepository");
+  const decl = source.indexOf("const closingTimerGap");
+  assert.ok(decl !== -1 && (cls === -1 || decl < cls));
+});
+
+test("the banking arithmetic is untouched", () => {
+  /* The fix is about how many transactions run, never about what they credit.
+     `bankableRunSecs` still caps the credit at the last beat plus the grace,
+     and the transaction's own re-check stays for races this cannot see — a
+     second tab, which is not in this browser's Set. */
+  assert.match(source, /graceMs:\s*TIMER_BANKABLE_GRACE_MS/);
+  assert.match(source, /if \(d\.isActive !== true\) return;/);
+  assert.match(source, /if \(now - lastBeat <= TIMER_BANKABLE_GRACE_MS\) return;/);
+});

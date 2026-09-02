@@ -9,6 +9,7 @@
 
 import type { EmployeeId } from "./identity";
 import type { MessageAttachment, MessageReply } from "./work";
+import type { GoalBasedConfig } from "./projects";
 
 export type TaskId = string;
 
@@ -355,6 +356,35 @@ export interface Task {
    * absent means the ordinary case: not marked.
    */
   isImportant?: boolean;
+
+  /**
+   * A deadline pushback raised by the receiver's manager before assignment.
+   *
+   * Present only while a `pending_tl_hours` task has an open or just-decided
+   * request on it; absent is the ordinary case. See
+   * {@link PreAssignDeadlineRequest} and `lib/rules/tasks/preAssignDeadline.ts`.
+   */
+  preAssignDeadline?: PreAssignDeadlineRequest | null;
+
+  /**
+   * "Taskgoal" — a PROJECT was marked as oriented around a measurable
+   * objective, and its folder task carries the marker.
+   *
+   * **Only meaningful on a project folder** (`isFolder`), which is the one kind
+   * of task that is also a project — see `Project.isGoalBased`. It rides here so
+   * `#projectFromContainer` can read it back off the folder task, exactly as
+   * `isImportant` rides here: a label read straight off the document that
+   * decides no ordering, deadline, score or permission.
+   *
+   * **Deliberately NOT the C2 goal task.** That concept is `isGoal` /
+   * `goalConfig` and its scored roadmap, and it is kept entirely separate — the
+   * name here is `goalBased` so the two never touch. See
+   * `lib/rules/projects/goalBased.ts`.
+   *
+   * Optional because every task stored before it existed has no such field.
+   */
+  isGoalBased?: boolean;
+  goalBased?: GoalBasedConfig | null;
 
   estimatedEffortSecs: number | null;
   deadline: TaskDeadline;
@@ -908,4 +938,40 @@ export interface DeadlineChangeRequest {
   decisionReason: string | null;
   requestedAt: string;
   decidedAt: string | null;
+}
+
+/**
+ * A deadline pushback raised BEFORE the work is assigned.
+ *
+ * **Distinct from `DeadlineChangeRequest`, and deliberately so.** That one is
+ * the assignee's post-assignment extension, asked in HOURS and owned by the
+ * assignee's side once work is underway. This one is a different moment and a
+ * different question: a cross-department task sits at `pending_tl_hours`, the
+ * receiver's manager is about to set the hours and hand it over, and they look
+ * at the creator's fixed date and judge it too tight before committing anybody
+ * to it. So they ask the creator for a later DATE first.
+ *
+ * The two never share a field because they never happen at the same time and
+ * are answered by different people — collapsing them would let a pre-assignment
+ * date proposal read as an assignee's hours extension, or the reverse.
+ *
+ * **A request, not a change.** The creator owns the deadline they committed to,
+ * possibly onward to a client, so the receiver's manager can only propose. The
+ * creator accepts (the date moves), counters (offers another), or rejects (it
+ * stands). Nothing about the date changes until the creator acts.
+ */
+export interface PreAssignDeadlineRequest {
+  /** The later date the receiver's manager is asking for, ISO. */
+  proposedDueAt: string;
+  /** The date as it stood when they asked — for the decision card to show both. */
+  previousDueAt: string | null;
+  requestedById: EmployeeId;
+  requestedByName: string;
+  reason: string;
+  status: "pending" | "approved" | "rejected" | "countered";
+  /** The creator's counter-offer, ISO, when they countered. */
+  counterDueAt: string | null;
+  decidedById: EmployeeId | null;
+  decidedByName: string | null;
+  decisionReason: string | null;
 }

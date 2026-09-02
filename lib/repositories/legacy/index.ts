@@ -28,6 +28,7 @@ import {
 import type { DutyFacts } from "../../rules/presence/roster.ts";
 import {
   bankableRunSecs,
+  runRestartAtMs,
   TIMER_BANKABLE_GRACE_MS,
 } from "../../rules/tasks/timer.ts";
 import { presenceWriteRefusal } from "../../rules/presence/taskGate.ts";
@@ -52,8 +53,8 @@ import {
 } from "../../legacy/officePolicy.ts";
 import { compositeId, taskIdOf } from "./compositeId.ts";
 import {
-  canManagerViewTask,
   reportingSubtree,
+  teamScopeKeeps,
 } from "../../rules/tasks/managerVisibility.ts";
 import {
   calculateDeadlineFeasibility,
@@ -87,6 +88,7 @@ import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepositor
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
+import { validateProposedDeadline } from "../../rules/tasks/preAssignDeadline.ts";
 import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
 import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskEvent, TaskEventType, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
@@ -106,6 +108,8 @@ import {
   departmentApprove,
   editTaskDeadline,
   editTaskDetails,
+  requestPreAssignDeadline as requestPreAssignDeadlineCall,
+  decidePreAssignDeadline as decidePreAssignDeadlineCall,
   resetTaskToDraft,
   reviewCompletion,
   reworkTask,
@@ -512,6 +516,15 @@ export interface LegacyRepositoryContext {
    */
   archetype?: RoleArchetype | null;
 }
+
+/**
+ * Timer sessions whose gap is being closed right now, by document path.
+ *
+ * Module scope rather than an instance field: the guard has to hold across
+ * every repository this page builds, and a per-instance one would be no guard
+ * at all the moment two of them existed. See `#closeGapAndKeepRunning`.
+ */
+const closingTimerGap = new Set<string>();
 
 /** Thrown when a screen reaches for something the engine is not wired to yet. */
 export class NotConnectedError extends Error {
@@ -1562,22 +1575,22 @@ export class LegacyRepository {
        * viewer. A task held jointly by a manager and a report stays — it is
        * genuinely the report's work too.
        */
-      const heldByAnother = (t: { assigneeIds: string[]; pendingAssigneeId?: string | null }) =>
-        [...t.assigneeIds, ...(t.pendingAssigneeId ? [t.pendingAssigneeId] : [])]
-          .some((id) => String(id) !== viewerId);
-
-      legacyTasks = [...byId.values()].filter(
-        (t) =>
-          canManagerViewTask(
-            viewerId,
-            {
-              assigneeIds: t.assigneeIds,
-              pendingAssigneeIds: t.pendingAssigneeId
-                ? [t.pendingAssigneeId]
-                : [],
-            },
-            tree,
-          ) && heldByAnother(t),
+      /* One rule, shared with the team COUNT and tested directly: a task is on
+         a viewer's team list when someone else holds it AND either the viewer
+         manages a holder or the viewer raised it. That last clause is what
+         keeps a cross-department task the sender just created from vanishing
+         from their own side — they manage nobody on it, but they own it until
+         it is assigned. */
+      legacyTasks = [...byId.values()].filter((t) =>
+        teamScopeKeeps(
+          viewerId,
+          {
+            assigneeIds: t.assigneeIds,
+            pendingAssigneeIds: t.pendingAssigneeId ? [t.pendingAssigneeId] : [],
+            createdById: t.createdById,
+          },
+          tree,
+        ),
       );
     } else if (q.scope === "mine") {
       legacyTasks = legacyTasks.filter((t) => {
@@ -1774,7 +1787,17 @@ export class LegacyRepository {
     if (q.overdueOnly) views = views.filter((v) => v.isOverdue);
     if (q.search) {
       const needle = q.search.toLowerCase();
-      views = views.filter((v) => v.task.title.toLowerCase().includes(needle));
+      /* Task-name search UNCHANGED — a title substring still matches exactly as
+         before. Person-name search is ADDED on top: type a person's name and
+         every task they are on comes back too. "On" means the people the task
+         is for — its accepted assignees and anyone still held behind a
+         cross-department gate — the same set the People column shows. */
+      views = views.filter((v) => {
+        if (v.task.title.toLowerCase().includes(needle)) return true;
+        return [...v.assignees, ...v.pendingAssignees].some((p) =>
+          p.displayName.toLowerCase().includes(needle),
+        );
+      });
     }
 
     /* **Surface the extension decisions the viewer owns.**
@@ -4881,7 +4904,10 @@ export class LegacyRepository {
    * between them was not worked and is not credited — but the clock is NOT
    * stopped. See `#closeGapAndKeepRunning`.
    */
-  async heartbeatTimer(taskId: TaskId): Promise<ActionResult<void>> {
+  async heartbeatTimer(
+    taskId: TaskId,
+    aliveSinceMs?: number | null,
+  ): Promise<ActionResult<void>> {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
     const { getDoc, setDoc } = await import("firebase/firestore");
@@ -4904,7 +4930,7 @@ export class LegacyRepository {
        minutes restarted the run for gaps that were never going to lose a
        second. This fires only where time would actually be dropped. */
     if (now - lastBeat > TIMER_BANKABLE_GRACE_MS) {
-      await this.#closeGapAndKeepRunning(ref, id);
+      await this.#closeGapAndKeepRunning(ref, id, aliveSinceMs ?? null);
       return { ok: true, data: undefined };
     }
     await setDoc(ref, { heartbeatAt: now, updatedAt: now }, { merge: true });
@@ -4943,7 +4969,44 @@ export class LegacyRepository {
   async #closeGapAndKeepRunning(
     ref: import("firebase/firestore").DocumentReference,
     id: string,
+    aliveSinceMs: number | null,
   ): Promise<void> {
+    /**
+     * **One gap-close per session at a time, and this is the whole fix.**
+     *
+     * Reported as a console flooding with `failed-precondition` on
+     * `cowork_task_timers/.../sessions/<task>` several times a second, forever.
+     * The cadence — roughly 350ms — is Firestore's own transaction retry, not a
+     * heartbeat, and every attempt carried a `currentDocument.updateTime`
+     * precondition that was already stale.
+     *
+     * Stale because the writer invalidating it was this same path. Beats can
+     * overlap — the comment below already says two racing beats is why this is a
+     * transaction — and several concurrent gap-closes on one document each read,
+     * each try to commit, and all but one lose. That alone would be noisy and
+     * self-correcting.
+     *
+     * What made it permanent is the branch that calls this: the caller enters it
+     * when `now - heartbeatAt` exceeds the grace, and the ONLY thing that
+     * advances `heartbeatAt` in that branch is this transaction succeeding. So
+     * once enough of them are racing that none commits, the condition that
+     * started them stays true and the next beat starts more. It cannot recover
+     * on its own.
+     *
+     * Holding the document path is enough to break it: the racing writers are
+     * all in one browser, so removing self-contention leaves the transaction
+     * uncontended and it commits. A beat that finds one in flight simply returns
+     * — the gap is being closed by the call that got there first, and closing it
+     * twice is the exact thing this transaction exists to prevent.
+     *
+     * **The arithmetic is untouched.** `bankableRunSecs` still caps the credit
+     * at the last beat plus the grace, and the transaction's own re-check inside
+     * is still there for the races this cannot see, such as a second tab.
+     */
+    const key = ref.path;
+    if (closingTimerGap.has(key)) return;
+    closingTimerGap.add(key);
+
     const { runTransaction } = await import("firebase/firestore");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     try {
@@ -4967,20 +5030,36 @@ export class LegacyRepository {
            racing beat may have closed this gap already. */
         if (now - lastBeat <= TIMER_BANKABLE_GRACE_MS) return;
 
-        const banked = bankableRunSecs({
+        const runWindow = {
           startedAtRealMs: Number(d.lastStartTime) || now,
           heartbeatAtRealMs: Number(d.heartbeatAt) || null,
           nowRealMs: now,
           graceMs: TIMER_BANKABLE_GRACE_MS,
-        });
+        };
+        const banked = bankableRunSecs(runWindow);
+        /**
+         * **Where the run resumes, and the reported backward jump.**
+         *
+         * This restarted at `now` unconditionally. The figure on screen is
+         * `totalSeconds + (now - lastStartTime)`, so banking a capped span and
+         * then moving the origin to `now` DROPPED the display by the
+         * difference, in one tick — the reported "after 40 minutes it goes
+         * back to 25", which is a 30-minute silence against a 15-minute grace.
+         *
+         * `runRestartAtMs` resumes at the later of the banked instant and the
+         * moment the calling tab began its current unbroken run of local ticks.
+         * A tab that never stopped resumes exactly where banking stopped, so
+         * nothing is lost and nothing is counted twice and the display does not
+         * move. A tab that was frozen or asleep resumes at its wake, leaving
+         * the sleep between the two spans and uncredited — the cap, unchanged.
+         * No `aliveSinceMs` reported falls back to `now`, as before.
+         */
+        const restartAt = runRestartAtMs({ ...runWindow, aliveSinceMs });
         tx.set(
           ref,
           {
             totalSeconds: (Number(d.totalSeconds) || 0) + banked,
-            /* The run restarts HERE. Everything between the last beat and now
-               is outside both the old run and the new one, which is exactly
-               how it goes uncredited without the clock stopping. */
-            lastStartTime: now,
+            lastStartTime: restartAt,
             heartbeatAt: now,
             isActive: true,
             updatedAt: now,
@@ -4997,6 +5076,11 @@ export class LegacyRepository {
         "[timer] gap reconcile failed:",
         e instanceof Error ? e.message : e,
       );
+    } finally {
+      /* Released whichever way it went. Left set, a single failure would stop
+         this session's gap ever being closed again — which is the opposite
+         fault and a quieter one, so it would take longer to find. */
+      closingTimerGap.delete(key);
     }
   }
 
@@ -7016,6 +7100,83 @@ export class LegacyRepository {
   }
 
   /**
+   * The receiver's manager proposes a later deadline before assignment.
+   *
+   * The date is validated client-side by the same rule the panel uses, so an
+   * obviously-bad figure is refused without a round trip; the engine is still
+   * the real gate (it re-checks the status and the caller's authority). The
+   * task view is re-read on success so the panel shows the pending request at
+   * once. Nothing about the deadline moves here — see the rule module.
+   */
+  async requestPreAssignDeadline(
+    taskId: TaskId,
+    proposedDueAt: string,
+    reason: string,
+  ): Promise<ActionResult<Task>> {
+    const id = String(taskId);
+    const current = await this.#taskDoc(id);
+    const currentDueAt =
+      current && current.dueAtMs != null
+        ? new Date(current.dueAtMs).toISOString()
+        : null;
+    const check = validateProposedDeadline({
+      proposedDueAt,
+      currentDueAt,
+      reason,
+      nowMs: Date.now(),
+    });
+    if (!check.ok)
+      return {
+        ok: false,
+        code: "validation_failed",
+        field: "proposedDueAt",
+        message: check.message,
+      };
+    return this.#write(
+      (token) =>
+        requestPreAssignDeadlineCall({
+          token,
+          taskId: id,
+          proposedDueAt: check.iso,
+          reason: reason.trim(),
+        }),
+      () => id,
+    );
+  }
+
+  /**
+   * The creator answers a pre-assignment deadline request.
+   *
+   * A counter needs a date; the rest do not. The engine owns the effect on the
+   * stored deadline — the client only names the decision.
+   */
+  async decidePreAssignDeadline(
+    taskId: TaskId,
+    decision: "approve" | "reject" | "counter",
+    opts?: { counterDueAt?: string; reason?: string },
+  ): Promise<ActionResult<Task>> {
+    const id = String(taskId);
+    if (decision === "counter" && !opts?.counterDueAt)
+      return {
+        ok: false,
+        code: "validation_failed",
+        field: "counterDueAt",
+        message: "Offer a date to counter with.",
+      };
+    return this.#write(
+      (token) =>
+        decidePreAssignDeadlineCall({
+          token,
+          taskId: id,
+          decision,
+          counterDueAt: opts?.counterDueAt,
+          reason: opts?.reason,
+        }),
+      () => id,
+    );
+  }
+
+  /**
    * Tick a requirement off directly.
    *
    * Genuinely absent from the engine — unlike the requirement text itself,
@@ -7025,6 +7186,67 @@ export class LegacyRepository {
    * a checklist the submitter ticks to unlock submission. The refusal stays so
    * that a future caller is told why rather than silently doing nothing.
    */
+  /**
+   * The assignee's own progress marks — a different fact from the refusal
+   * below, and the reason that refusal can stay.
+   *
+   * `setRequirementSatisfied` answers "is this requirement MET", which the
+   * engine has no field for and which the reviewer decides anyway. This answers
+   * "has the person doing the work reported this one done", which is theirs to
+   * say and now has somewhere to live.
+   */
+  async listRequirementProgress(taskId: TaskId) {
+    const r = await legacyFetch<{
+      marks?: {
+        requirementId?: unknown;
+        done?: unknown;
+        byEmployeeId?: unknown;
+        byName?: unknown;
+        at?: unknown;
+      }[];
+    }>({
+      path: `/cowork/task/${encodeURIComponent(String(taskId))}/requirement-progress`,
+      method: "GET",
+      token: await this.#token(),
+    });
+    if (!r.ok || !Array.isArray(r.data?.marks)) return [];
+    return r.data.marks.map((m) => ({
+      requirementId: String(m.requirementId ?? ""),
+      done: m.done === true,
+      byEmployeeId: typeof m.byEmployeeId === "string" ? m.byEmployeeId : null,
+      byName: typeof m.byName === "string" ? m.byName : "",
+      at: typeof m.at === "string" ? m.at : "",
+    }));
+  }
+
+  async setRequirementProgress(input: {
+    taskId: TaskId;
+    requirementId: string;
+    done: boolean;
+    requirementText: string;
+  }): Promise<ActionResult<void>> {
+    const r = await legacyFetch<{ success?: boolean; error?: string }>({
+      path: `/cowork/task/${encodeURIComponent(String(input.taskId))}/requirement-progress`,
+      method: "POST",
+      body: {
+        requirementId: input.requirementId,
+        done: input.done,
+        requirementText: input.requirementText,
+      },
+      token: await this.#token(),
+    });
+    if (!r.ok)
+      return {
+        ok: false,
+        /* The engine refuses this for anyone who is neither carrying the task
+           nor raised it. That is a permission answer, not a fault, and saying
+           so is what lets the panel word the refusal properly. */
+        code: r.error?.status === 403 ? "permission_denied" : "invalid_state",
+        message: r.error?.message ?? "That could not be saved.",
+      } as ActionResult<void>;
+    return { ok: true, data: undefined } as ActionResult<void>;
+  }
+
   async setRequirementSatisfied(): Promise<ActionResult<never>> {
     return {
       ok: false,
@@ -10330,6 +10552,12 @@ export class LegacyRepository {
       status,
       startDate: t.createdAt,
       targetDate,
+      /* "Taskgoal" — carried back off the folder task, where `taskMap` read and
+         normalised it. Absent/malformed reads as not marked, so every project
+         made before this keeps exactly its old shape. Display only; see
+         `lib/rules/projects/goalBased.ts`. */
+      isGoalBased: t.isGoalBased === true && !!t.goalBased,
+      goalBased: t.goalBased ?? null,
       completedAt: status === "completed" ? t.updatedAt : null,
       tags: [],
       priority: null,
@@ -10537,6 +10765,12 @@ export class LegacyRepository {
     const deadline = input?.targetDate ? String(input.targetDate) : null;
     const owner = input?.ownerId ? String(input.ownerId) : null;
 
+    /* "Taskgoal" — a descriptive marker, sent only when a real objective came
+       with it, and stored on the folder document with no special casing (like
+       `isImportant`). NOT the C2 goal task: no `isGoal`, no `goalConfig`. */
+    const goalBased =
+      input?.isGoalBased === true && input?.goalBased ? input.goalBased : null;
+
     const r = await createTaskRequest({
       token,
       body: {
@@ -10548,6 +10782,7 @@ export class LegacyRepository {
         assigneeIds: owner ? [owner] : [],
         hasTimer: false,
         fixedDeadline: deadline,
+        ...(goalBased ? { isGoalBased: true, goalBased } : {}),
       },
     });
     if (!r.ok) {
@@ -10582,6 +10817,10 @@ export class LegacyRepository {
         startDate: now,
         /* No tasks yet, so no deadline — the empty case the owner named. */
         targetDate: null,
+        /* "Taskgoal" — echoed back from what was sent, so the project page
+           shows the marker on the first render before it refetches. */
+        isGoalBased: goalBased != null,
+        goalBased,
         completedAt: null,
         tags: [],
         priority: null,
@@ -12445,6 +12684,34 @@ export class LegacyRepository {
     queries.push(query(ref, where("status", "==", "pending_department_approval"), limit(100)));
 
     /**
+     * Tasks held at the TIME-BUDGET gate, before any negotiation has begun.
+     *
+     * The sibling of the query above, and missing until now — which is the bug
+     * behind an empty Actionable tab on a task plainly asking for hours. A
+     * `pending_tl_hours` task is invisible to every query here for the person
+     * who has to act on it: the gate parks the assignee in `pendingAssigneeId`
+     * with **empty `assigneeIds`**, so `array-contains` misses; `assignedBy`
+     * names the sender, not the assignee's manager who sets the hours; and
+     * `approverId` is CEO-only.
+     *
+     * `budgetNegotiation.waitingForId` above looks like it should cover this and
+     * does not: that field is written once the budget is being NEGOTIATED — a
+     * counter, a re-proposal — whereas this is the FIRST step, where the manager
+     * is asked for an opening figure and no negotiation object exists yet. So
+     * the manager's copy was never fetched, the scoping filter that already
+     * knows how to narrow `pending_tl_hours` (below) had nothing to narrow, and
+     * `pendingApprovalsFor` never raised the `effort_estimate` obligation the
+     * inbox reads. The task page saw it only because `getTask` reads that one
+     * document by id.
+     *
+     * Queried by status alone, scoped below to the sender, the pending
+     * assignee, the department approvers and the assignee's manager — exactly
+     * as the gate query is. No `orderBy`, for the same reason: the set is small
+     * by construction, and `listTasks` sorts the merged result anyway.
+     */
+    queries.push(query(ref, where("status", "==", "pending_tl_hours"), limit(100)));
+
+    /**
      * Tasks whose TIME BUDGET is waiting on this viewer to decide.
      *
      * Invisible to every query above, and for a reason that is only obvious
@@ -13686,7 +13953,7 @@ export class LegacyRepository {
    * migration to pay for a sort of a handful of rows.
    */
   async getBudgetHistory(taskId: TaskId) {
-    const empty = { givenSecs: 0, currentSecs: 0, credits: [] };
+    const empty = { givenSecs: 0, currentSecs: 0, credits: [], deadlineMoves: [] };
     try {
       const { collection, doc, getDoc, getDocs, query, where } = await import(
         "firebase/firestore"
@@ -13694,11 +13961,30 @@ export class LegacyRepository {
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
 
-      const [taskSnap, creditSnap] = await Promise.all([
+      const [taskSnap, creditSnap, moveSnap] = await Promise.all([
         getDoc(doc(db, "cowork_tasks", String(taskId))),
         getDocs(
           query(
             collection(db, "cowork_task_budget_credits"),
+            where("taskId", "==", String(taskId)),
+          ),
+        ),
+        /**
+         * **The deadline's own record, which nothing was reading.**
+         *
+         * `#compensateOneDeadline` has written one of these on every move for
+         * a long time — a break, an offline span, an emergency, an approved
+         * extension, credited meeting time. The panel beside the deadline read
+         * only budget credits, so a move that did not also grow the budget —
+         * which is exactly what going offline does — left the history saying
+         * "Nothing has been credited" under a date the reader had just watched
+         * change.
+         *
+         * Read, not computed. Nothing here decides anything about a deadline.
+         */
+        getDocs(
+          query(
+            collection(db, "cowork_task_deadline_extensions"),
             where("taskId", "==", String(taskId)),
           ),
         ),
@@ -13727,6 +14013,28 @@ export class LegacyRepository {
               typeof c.forEmployeeId === "string" ? c.forEmployeeId : null,
           };
         }),
+        /* Only the ones that were actually APPLIED. The same collection carries
+           pending and rejected requests — a proposal nobody approved never
+           moved a date, and listing it as history would say it did. */
+        deadlineMoves: moveSnap.docs
+          .map((d) => {
+            const x = d.data() as Record<string, unknown>;
+            const from = readInstant(x.previousDeadline);
+            const to = readInstant(x.proposedDeadline);
+            if (from === null || to === null) return null;
+            if (String(x.status ?? "") !== "approved") return null;
+            const at =
+              readInstant(x.approvedAt) ?? readInstant(x.createdAt) ?? to;
+            return {
+              id: d.id,
+              at: new Date(at).toISOString(),
+              fromIso: new Date(from).toISOString(),
+              toIso: new Date(to).toISOString(),
+              reason: typeof x.reason === "string" ? x.reason : "",
+              automatic: x.automatic === true,
+            };
+          })
+          .filter((m): m is NonNullable<typeof m> => m !== null),
       };
     } catch (e) {
       /* The panel this feeds hangs off Details. A history that cannot be read

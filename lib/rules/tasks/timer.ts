@@ -134,10 +134,12 @@ export function bankableRunSecs(input: {
   nowRealMs: number;
   graceMs: number;
 }): number {
-  const { startedAtRealMs, heartbeatAtRealMs, nowRealMs, graceMs } = input;
+  const { startedAtRealMs } = input;
   if (startedAtRealMs === null) return 0;
-  const lastBeat = heartbeatAtRealMs ?? startedAtRealMs;
-  const bankedUntil = Math.min(nowRealMs, lastBeat + graceMs);
+  /* One expression of the cap, shared with `runRestartAtMs` — the restart has
+     to land exactly where banking stopped, and two copies of this arithmetic
+     are two chances for it not to. */
+  const bankedUntil = bankedUntilMs({ ...input, startedAtRealMs });
   return Math.max(0, Math.round((bankedUntil - startedAtRealMs) / 1000));
 }
 
@@ -206,4 +208,112 @@ export function displaySecs(
   const state = timerDisplayState(session, bankedSecs, nowRealMs);
   if (state !== "running") return bankedSecs;
   return bankedSecs + elapsedSecs(session?.startedAtRealMs ?? null, nowRealMs);
+}
+
+/**
+ * ─────────────────────── the tab's own proof that it was there ──────────────
+ *
+ * **The backward jump this exists to stop.** `#closeGapAndKeepRunning` banks
+ * `bankableRunSecs` — capped at the last beat plus the grace — and then restarts
+ * the run at `now`. Everything between those two instants belongs to neither the
+ * old run nor the new one, so the displayed figure, which is
+ * `totalSeconds + (now - lastStartTime)`, DROPS by exactly that span the moment
+ * the close commits:
+ *
+ *     beat silent 30m, grace 15m → banked 15m, 15m discarded
+ *     40:00 on screen → 25:00 on screen, in one tick
+ *
+ * That is the reported "after 40 minutes it goes back to 25".
+ *
+ * **Why the discarded span is not always absence.** The cap asks one question:
+ * was this tab alive? It answers it with "did a beat arrive", which conflates
+ * two unrelated failures — a tab that died, and a tab that was fine while the
+ * network or the engine was not. A backend restart, a wifi drop or a stalled
+ * write silences the beat from a tab that never stopped running, and the person
+ * at their desk loses the difference off their record.
+ *
+ * A tab can answer the real question itself. Its own interval keeps firing while
+ * it lives, needing nothing from the network: an unbroken chain of local ticks
+ * is first-hand evidence of liveness in a way an arriving beat is only ever
+ * second-hand. `aliveSinceMs` is the start of that chain.
+ *
+ * **This does not weaken the cap.** A tab that was frozen, slept or closed stops
+ * ticking too, so its chain breaks and the grace decides exactly as it does
+ * today. `aliveSinceMs` of `null` — an older client, or the mock — reproduces
+ * the present behaviour to the millisecond.
+ */
+export const LOCAL_CONTINUITY_GAP_MS = 3 * 60_000;
+
+/**
+ * The instant up to which a run may be banked: the last beat plus the grace,
+ * never past now.
+ *
+ * Pulled out of `bankableRunSecs` because the restart point below has to land
+ * exactly here — a restart earlier double-counts the overlap, and a restart
+ * later is the discarded span this file is about.
+ */
+export function bankedUntilMs(input: {
+  startedAtRealMs: number;
+  heartbeatAtRealMs: number | null;
+  nowRealMs: number;
+  graceMs: number;
+}): number {
+  const lastBeat = input.heartbeatAtRealMs ?? input.startedAtRealMs;
+  return Math.min(input.nowRealMs, lastBeat + input.graceMs);
+}
+
+/**
+ * Where the run restarts after a gap-close.
+ *
+ * `max(aliveSince, bankedUntil)` is the whole rule, and both halves are load
+ * bearing. The `max` against `bankedUntil` is what stops a tab that was alive
+ * throughout being paid twice for the span already banked; the `aliveSince`
+ * half is what stops it being paid for none of it.
+ *
+ *   tab alive throughout   → aliveSince is older than bankedUntil, so the run
+ *                            resumes exactly where banking stopped. The figure
+ *                            on screen does not move at all.
+ *   laptop slept 30m       → aliveSince is the wake, so the sleep sits between
+ *                            the banked span and the new run and goes
+ *                            uncredited. Unchanged, and correct.
+ *   no aliveSince reported → `now`, which is what this did before.
+ */
+export function runRestartAtMs(input: {
+  startedAtRealMs: number;
+  heartbeatAtRealMs: number | null;
+  nowRealMs: number;
+  graceMs: number;
+  aliveSinceMs: number | null;
+}): number {
+  if (input.aliveSinceMs === null) return input.nowRealMs;
+  return Math.min(
+    input.nowRealMs,
+    Math.max(input.aliveSinceMs, bankedUntilMs(input)),
+  );
+}
+
+/**
+ * One local tick, folded into the liveness chain.
+ *
+ * Called by the tab's own interval. A gap wider than `maxGapMs` means the tab
+ * was not running — frozen, asleep, or freshly mounted — so the chain starts
+ * again from now and the grace alone covers what came before.
+ *
+ * `maxGapMs` sits well above the roughly one-a-minute a browser clamps a hidden
+ * tab's timers to, and well below the banking grace, so an ordinary
+ * backgrounded tab keeps one unbroken chain.
+ */
+export function nextLiveness(
+  prev: { aliveSinceMs: number; lastSeenMs: number } | null,
+  nowRealMs: number,
+  maxGapMs: number,
+): { aliveSinceMs: number; lastSeenMs: number } {
+  if (prev === null || nowRealMs - prev.lastSeenMs > maxGapMs) {
+    return { aliveSinceMs: nowRealMs, lastSeenMs: nowRealMs };
+  }
+  /* Never forward: a clock that stepped back must not shorten the chain. */
+  return {
+    aliveSinceMs: prev.aliveSinceMs,
+    lastSeenMs: Math.max(prev.lastSeenMs, nowRealMs),
+  };
 }

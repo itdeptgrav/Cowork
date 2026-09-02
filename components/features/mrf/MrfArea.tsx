@@ -904,7 +904,7 @@ function NewMrf({ onDone }: { onDone: () => void }) {
       )}
 
       <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
-        <Button
+        <Button loading={state.isPending}
           tone="primary"
           size="sm"
           disabled={state.isPending}
@@ -1107,7 +1107,7 @@ function ApprovalCard({
               <Field label="Reason for rejecting" required className="min-w-[200px] flex-1">
                 <Input value={note} onChange={(e) => setNote(e.target.value)} />
               </Field>
-              <Button
+              <Button loading={state.isPending}
                 tone="primary"
                 size="sm"
                 disabled={!note.trim() || state.isPending}
@@ -1124,7 +1124,7 @@ function ApprovalCard({
             </div>
           ) : (
             <div className="flex items-center gap-2">
-              <Button
+              <Button loading={state.isPending}
                 tone="primary"
                 size="sm"
                 disabled={state.isPending}

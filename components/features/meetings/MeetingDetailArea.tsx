@@ -173,7 +173,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
   const organiserActions = (
     <>
             {m.status === "scheduled" && (
-              <Button
+              <Button loading={statusState.isPending}
                 tone="secondary"
                 size="sm"
                 disabled={statusState.isPending}
@@ -183,7 +183,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               </Button>
             )}
             {(m.status === "scheduled" || m.status === "waiting") && (
-              <Button
+              <Button loading={statusState.isPending}
                 tone="primary"
                 size="sm"
                 disabled={statusState.isPending}
@@ -193,7 +193,7 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
               </Button>
             )}
             {(m.status === "live" || m.status === "waiting") && (
-              <Button
+              <Button loading={statusState.isPending}
                 tone="secondary"
                 size="sm"
                 disabled={statusState.isPending}

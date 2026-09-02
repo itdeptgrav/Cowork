@@ -79,6 +79,24 @@ export function Avatar({
       role="img"
       aria-label={name ? `${name} avatar` : undefined}
       aria-hidden={name ? undefined : true}
+      /**
+       * **The name on hover, wherever an avatar appears.**
+       *
+       * A monogram is a two-letter guess and a photograph at 28px is barely
+       * one. In a column of them, side by side, telling colleagues apart is
+       * exactly what a reader is trying to do and cannot — the name was
+       * already here for screen readers, and this puts it in front of
+       * everybody else too.
+       *
+       * A native `title` rather than a styled tooltip because that is what
+       * this codebase already uses for the same job — `TaskTable` alone
+       * carries a dozen — and one avatar behaving differently from every
+       * other hover label in the product would be its own small surprise.
+       *
+       * `aria-label` still wins the accessible name, so a screen reader is
+       * not made to read the person out twice.
+       */
+      title={name || undefined}
     >
       {initials}
       {photo && (

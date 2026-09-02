@@ -540,7 +540,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             </Button>
           </div>
         ) : (
-          <Button
+          <Button loading={joinState.isPending}
             size="sm"
             disabled={joinState.isPending}
             /**
@@ -575,7 +575,7 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             afterwards.
           </p>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button
+            <Button loading={joinState.isPending}
               disabled={joinState.isPending}
               onClick={async () => {
                 setConfirmingJoin(false);

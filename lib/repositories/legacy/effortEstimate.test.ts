@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { toTaskView } from "./taskMap.ts";
+import { actionableFor } from "../../rules/tasks/actionable.ts";
+import { readFileSync } from "node:fs";
 import type { Employee } from "../../domain/index.ts";
 import { ROLE_MANAGER } from "../../auth/systemRoles.ts";
 
@@ -280,4 +282,57 @@ test("an open department gate still offers its own approval and no budget", () =
   assert.equal(v.pendingApprovals.length, 1);
   assert.equal(v.pendingApprovals[0].kind, "cross_department");
   assert.equal(v.pendingApprovals[0].approverId, "IT_TL");
+});
+
+/* ── 4 · The inbox surfaces it, and the document reaches the inbox ────────── */
+
+test("the budget manager's Actionable inbox shows a task waiting for hours", () => {
+  /*
+   * The reported fault: T208 sat at `pending_tl_hours` waiting for RR to set
+   * hours, the task page said "YOUR MOVE — Set the time budget", and the
+   * Actionable tab said "Nothing waiting on you". `actionableFor` is what the
+   * inbox is built from, so it must return a verdict for the manager.
+   */
+  const v = view({
+    status: "pending_tl_hours",
+    viewerId: "DESIGN_TL",
+    pendingAssigneeId: "ASSIGNEE",
+    budgetOwner: "DESIGN_TL",
+    approvals: [
+      { approverId: "SENDER", side: "sender", status: "approved" },
+      { approverId: "IT_TL", side: "receiver", status: "approved" },
+    ],
+  });
+  const verdict = actionableFor(v, "DESIGN_TL");
+  assert.ok(verdict, "the manager's inbox showed nothing for a task asking hours of them");
+  assert.equal(verdict!.reason, "approval");
+});
+
+test("someone who is not the budget owner gets no inbox row", () => {
+  /* The receiving-department head answered a different question and is done. */
+  const v = view({
+    status: "pending_tl_hours",
+    viewerId: "IT_TL",
+    pendingAssigneeId: "ASSIGNEE",
+    budgetOwner: "DESIGN_TL",
+    approvals: [{ approverId: "IT_TL", side: "receiver", status: "approved" }],
+  });
+  assert.equal(actionableFor(v, "IT_TL"), null);
+});
+
+test("the document is actually fetched, or the inbox has nothing to read", () => {
+  /*
+   * `actionableFor` deciding correctly is worth nothing if the task never
+   * reaches the list it scans. A `pending_tl_hours` task is invisible to every
+   * other query in `#taskDocuments` for the manager — empty `assigneeIds`, the
+   * sender in `assignedBy`, `approverId` CEO-only, and `budgetNegotiation`
+   * absent until a negotiation starts — so it needs its own org-wide fetch,
+   * the sibling of the department-gate one. This pins that it is there.
+   */
+  const src = readFileSync("lib/repositories/legacy/index.ts", "utf8");
+  assert.match(
+    src,
+    /where\("status", "==", "pending_tl_hours"\), limit\(100\)\)/,
+    "the pending_tl_hours gate is not fetched org-wide, so the manager never sees it",
+  );
 });

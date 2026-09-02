@@ -136,7 +136,7 @@ function RequestCard({ request }: { request: EmergencyRequest }) {
             >
               Cancel
             </Button>
-            <Button
+            <Button loading={state.isPending}
               tone="secondary"
               size="sm"
               disabled={!reason.trim() || state.isPending}
@@ -155,7 +155,7 @@ function RequestCard({ request }: { request: EmergencyRequest }) {
             >
               Decline
             </Button>
-            <Button
+            <Button loading={state.isPending}
               tone="primary"
               size="sm"
               disabled={state.isPending}

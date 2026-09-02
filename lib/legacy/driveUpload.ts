@@ -363,7 +363,7 @@ function putFrom(
  * A CANCELLED upload is never retried. The signal aborting is somebody's
  * decision, not a fault, and retrying it would ignore them.
  */
-async function putToSession(
+export async function putToSession(
   sessionUrl: string,
   file: File,
   onProgress?: (fraction: number) => void,

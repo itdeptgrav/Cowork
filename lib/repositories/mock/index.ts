@@ -23,6 +23,10 @@ import {
   type DeadlineExtensionRecord,
   type TimeBudgetExtensionRecord,
 } from "@/lib/rules/tasks/extensionRecords";
+import {
+  resolvePreAssignDecision,
+  validateProposedDeadline,
+} from "@/lib/rules/tasks/preAssignDeadline";
 import type { AttachmentEntity, AttachmentMeta } from "@/lib/legacy/attachments";
 import {
   calculateDeadlineFeasibility,
@@ -525,6 +529,18 @@ function guard() {
    every screen reads one truth and a toggle flips the whole app at once. */
 let hrHolidaySyncMock = true;
 
+/** Requirement progress marks, keyed `taskId__requirementId`. */
+const requirementProgress = new Map<
+  string,
+  {
+    requirementId: string;
+    done: boolean;
+    byEmployeeId: string | null;
+    byName: string;
+    at: string;
+  }
+>();
+
 export class MockRepository implements CoworkRepository {
   /* ── Identity ───────────────────────────────────────────────────────────── */
 
@@ -818,7 +834,24 @@ export class MockRepository implements CoworkRepository {
        * legacy let any TL see everyone, and D10 reverses that.
        */
       const under = peopleUnder(viewer);
-      list = list.filter((t) => under.some((id) => assignedTo(t.id, id)));
+      /* Held by someone who is not the viewer — a real assignment to another,
+         or a person parked in `pendingAssigneeIds` at a gate. */
+      const heldByAnother = (t: (typeof list)[number]) =>
+        (t.pendingAssigneeIds ?? []).some(
+          (id) => id !== viewer.employeeId,
+        ) ||
+        s.assignments.some(
+          (a) => a.taskId === t.id && a.employeeId !== viewer.employeeId,
+        );
+      list = list.filter(
+        (t) =>
+          under.some((id) => assignedTo(t.id, id)) ||
+          /* A task the viewer RAISED and sent out — including a cross-department
+             one whose assignee they do not manage — is theirs to oversee until
+             it is assigned, so it stays on their team list rather than vanishing
+             from their own side. Matches the legacy repository's `teamScopeKeeps`. */
+          (t.createdById === viewer.employeeId && heldByAnother(t)),
+      );
     } else if (q.scope === "assigned_out") {
       list = list.filter(
         (t) =>
@@ -873,10 +906,22 @@ export class MockRepository implements CoworkRepository {
       list = list.filter((t) => (t.parentTaskId ?? null) === q.parentTaskId);
     if (q.search) {
       const needle = q.search.toLowerCase();
+      /* Task-name/reference search UNCHANGED. Person-name search ADDED on top:
+         resolve the term to the ids of people whose name matches, then a task
+         also matches when it is assigned to any of them — so typing a person's
+         name returns everything they are on. */
+      const peopleMatchIds = new Set(
+        s.employees
+          .filter((e) => e.displayName.toLowerCase().includes(needle))
+          .map((e) => e.id),
+      );
       list = list.filter(
         (t) =>
           t.title.toLowerCase().includes(needle) ||
-          t.reference.toLowerCase().includes(needle),
+          t.reference.toLowerCase().includes(needle) ||
+          s.assignments.some(
+            (a) => a.taskId === t.id && peopleMatchIds.has(a.employeeId),
+          ),
       );
     }
 
@@ -995,6 +1040,36 @@ export class MockRepository implements CoworkRepository {
    * work still running. The refusal names the subtasks so the reader knows
    * what they are waiting on rather than being told "no".
    */
+  /**
+   * Progress marks, held in memory.
+   *
+   * Deliberately separate from `setRequirementSatisfied` below, which is the
+   * reviewer's answer. See the interface for why the two must not merge.
+   */
+  async listRequirementProgress(taskId: TaskId) {
+    return delay(
+      [...requirementProgress.entries()]
+        .filter(([k]) => k.startsWith(`${taskId}__`))
+        .map(([, v]) => v),
+    );
+  }
+
+  async setRequirementProgress(input: {
+    taskId: TaskId;
+    requirementId: string;
+    done: boolean;
+    requirementText: string;
+  }): Promise<ActionResult<void>> {
+    requirementProgress.set(`${input.taskId}__${input.requirementId}`, {
+      requirementId: input.requirementId,
+      done: input.done,
+      byEmployeeId: (await this.getViewer()).employeeId,
+      byName: "You",
+      at: new Date().toISOString(),
+    });
+    return delay({ ok: true as const, data: undefined });
+  }
+
   async setRequirementSatisfied(
     taskId: TaskId,
     requirementId: string,
@@ -3463,6 +3538,128 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(req));
   }
 
+  /**
+   * The receiver's manager proposes a later deadline before assignment.
+   *
+   * The prototype counterpart of the legacy route: it records the request on
+   * the task and moves nothing. The date only moves when the creator approves,
+   * in `decidePreAssignDeadline`. The gate is the pure rule's — a task at the
+   * budget stage with no request already open.
+   */
+  async requestPreAssignDeadline(
+    taskId: TaskId,
+    proposedDueAt: string,
+    reason: string,
+  ): Promise<ActionResult<Task>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const t = s.tasks.find((x) => x.id === taskId);
+    if (!t) return fail("not_found", "Task not found.");
+    /* The budget gate, by its domain marker — the raw `pending_tl_hours`
+       status maps to `approvalReason: "effort_estimate"`. */
+    if (t.approvalReason !== "effort_estimate")
+      return fail(
+        "invalid_state",
+        "A deadline can only be pushed back before the task is assigned.",
+      );
+    if (t.preAssignDeadline && t.preAssignDeadline.status === "pending")
+      return fail("invalid_state", "A request is already awaiting a decision.");
+    const check = validateProposedDeadline({
+      proposedDueAt,
+      currentDueAt: t.deadline.dueAt,
+      reason,
+      nowMs: Date.parse(nowIso()),
+    });
+    if (!check.ok) return fail("validation_failed", check.message, "proposedDueAt");
+
+    const me = s.employees.find((e) => e.id === actingId());
+    tick();
+    t.preAssignDeadline = {
+      proposedDueAt: check.iso,
+      previousDueAt: t.deadline.dueAt,
+      requestedById: actingId(),
+      requestedByName: me?.displayName ?? "",
+      reason: reason.trim(),
+      status: "pending",
+      counterDueAt: null,
+      decidedById: null,
+      decidedByName: null,
+      decisionReason: null,
+    };
+    t.updatedAt = nowIso();
+    this.#notify(
+      t.createdById,
+      "deadline_change_requested",
+      "Deadline change requested",
+      `${t.preAssignDeadline.requestedByName} asked to move the deadline on “${t.title}” before it is assigned.`,
+      "task",
+      taskId,
+    );
+    this.#event(taskId, "deadline_change_requested", `Deadline pushback requested — ${reason}`);
+    persistStore();
+    return delay(ok(t));
+  }
+
+  /**
+   * The creator answers a pre-assignment deadline request.
+   *
+   * The effect on the stored date comes from the pure rule, so this and the
+   * legacy route cannot disagree about what approve/counter/reject each do.
+   */
+  async decidePreAssignDeadline(
+    taskId: TaskId,
+    decision: "approve" | "reject" | "counter",
+    opts?: { counterDueAt?: string; reason?: string },
+  ): Promise<ActionResult<Task>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const t = s.tasks.find((x) => x.id === taskId);
+    if (!t) return fail("not_found", "Task not found.");
+    const req = t.preAssignDeadline;
+    if (!req || req.status !== "pending")
+      return fail("invalid_state", "There is no open deadline request to decide.");
+    if (t.createdById !== actingId())
+      return fail(
+        "permission_denied",
+        "Only the person who set the deadline can decide this.",
+      );
+    if (decision === "counter" && !opts?.counterDueAt)
+      return fail("validation_failed", "Offer a date to counter with.", "counterDueAt");
+
+    const me = s.employees.find((e) => e.id === actingId());
+    const outcome = resolvePreAssignDecision(req, decision, opts?.counterDueAt ?? null);
+    tick();
+    if (outcome.newDueAt) {
+      /* The commitment moves. `officialDueAt` moves with it — this is an agreed
+         change to the date, not a charged extension that leaves scoring where
+         it was. */
+      t.deadline.dueAt = outcome.newDueAt;
+      t.deadline.officialDueAt = outcome.newDueAt;
+    }
+    t.preAssignDeadline = {
+      ...req,
+      status: outcome.status,
+      counterDueAt: decision === "counter" ? (opts?.counterDueAt ?? null) : null,
+      decidedById: actingId(),
+      decidedByName: me?.displayName ?? "",
+      decisionReason: opts?.reason?.trim() || null,
+    };
+    t.updatedAt = nowIso();
+    this.#notify(
+      req.requestedById,
+      "deadline_change_decided",
+      "Deadline request decided",
+      `Your deadline request on “${t.title}” was ${outcome.status}.`,
+      "task",
+      taskId,
+    );
+    this.#event(taskId, "deadline_change_decided", `Deadline request ${outcome.status}`);
+    persistStore();
+    return delay(ok(t));
+  }
+
   async decideDeadlineChange(
     requestId: string,
     accept: boolean,
@@ -5179,7 +5376,10 @@ export class MockRepository implements CoworkRepository {
      legacy adapter uses to cap an abandoned session, so there is nothing to move
      forward here. Accepted as a no-op so the timer control can beat against
      either backend without knowing which it is on. */
-  async heartbeatTimer(_taskId: TaskId): Promise<ActionResult<void>> {
+  async heartbeatTimer(
+    _taskId: TaskId,
+    _aliveSinceMs?: number | null,
+  ): Promise<ActionResult<void>> {
     const g = guard();
     if (g) return g;
     return delay(ok(undefined));
@@ -6478,6 +6678,11 @@ export class MockRepository implements CoworkRepository {
       tags: input.tags ?? [],
       priority: input.priority ?? null,
       isRestricted: false,
+      /* "Taskgoal" — a descriptive marker, stored and displayed, nothing more.
+         Kept only when a real objective came with it. See
+         `lib/rules/projects/goalBased.ts`. */
+      isGoalBased: input.isGoalBased === true && !!input.goalBased,
+      goalBased: input.isGoalBased === true ? (input.goalBased ?? null) : null,
       createdById: actingId(),
       createdAt: nowIso(),
       updatedAt: nowIso(),
@@ -7094,6 +7299,16 @@ export class MockRepository implements CoworkRepository {
         newSecs: number;
         reason: string;
         byEmployeeId: string | null;
+      }[],
+      /* The seeded prototype records no deadline moves, so the panel shows the
+         same "nothing recorded" line it shows for credits. */
+      deadlineMoves: [] as {
+        id: string;
+        at: string;
+        fromIso: string;
+        toIso: string;
+        reason: string;
+        automatic: boolean;
       }[],
     });
   }

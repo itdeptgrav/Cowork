@@ -339,6 +339,20 @@ export const Icon = {
       <path d="M8 10.4v3.2" />
     </S>
   ),
+  /** REPLY — a curved arrow turning back on itself. */
+  reply: (p: P) => (
+    <S {...p}>
+      <path d="M6 4.5 2.5 8 6 11.5" />
+      <path d="M2.5 8h6.5a3.5 3.5 0 0 1 3.5 3.5V13" />
+    </S>
+  ),
+  /** FORWARD — the reply arrow mirrored: pass it onward to someone else. */
+  forward: (p: P) => (
+    <S {...p}>
+      <path d="M10 4.5 13.5 8 10 11.5" />
+      <path d="M13.5 8H7a3.5 3.5 0 0 0-3.5 3.5V13" />
+    </S>
+  ),
   /** EXTERNAL — leaves Cowork. Always paired with a visible label. */
   external: (p: P) => (
     <S {...p}>

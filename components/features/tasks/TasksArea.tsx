@@ -169,11 +169,14 @@ export function TasksArea() {
    * "Everyone" is kept. It is organisation-scope only, so it is absent for
    * almost everybody and was not on the row this replaces.
    */
+  const hasTeam =
+    viewScope === "direct_reports" ||
+    viewScope === "hierarchy" ||
+    viewScope === "organisation";
+
   const scopeOptions = [
     { id: "mine" as const, label: "My tasks", count: mine.data ?? undefined },
-    ...(viewScope === "direct_reports" ||
-    viewScope === "hierarchy" ||
-    viewScope === "organisation"
+    ...(hasTeam
       ? [
           {
             id: "team" as const,
@@ -182,6 +185,27 @@ export function TasksArea() {
           },
         ]
       : []),
+    /* **Assigned out — the work you raised for other people.**
+     *
+     * Offered to anyone WITHOUT a My team tab, which is the case that had no
+     * home for it: My tasks is work assigned TO you, and the person who sent a
+     * task out is not its assignee, so a non-manager who assigned work to
+     * somebody — a cross-department task included — could see it nowhere. A
+     * manager needs no separate tab because My team already carries the work
+     * they created, grouped by whoever it went to (`teamScopeKeeps`). A stable
+     * tab rather than one that appears only when the count is non-zero: a tab
+     * that comes and goes with the data is harder to find than one that is
+     * simply there, and the help has always said "everyone sees Mine and
+     * Assigned out". */
+    ...(hasTeam
+      ? []
+      : [
+          {
+            id: "assigned_out" as const,
+            label: "Assigned out",
+            count: out.data ?? undefined,
+          },
+        ]),
     ...(viewScope === "organisation"
       ? [
           {
@@ -266,7 +290,21 @@ export function TasksArea() {
         }
       />
 
-      {view === "overview" && <TasksOverview scope={scope} />}
+      {view === "overview" && (
+        /* The scope switch belongs here too, not only on the list. Without it
+           the Overview was locked to whatever scope was last set — "My tasks"
+           by default — so it only ever summarised your OWN work, with no way to
+           see the same figures for the work you sent out ("Assigned out") or
+           your team's ("My team"). The list and board already carry it; the
+           Overview simply did not, which read as "the Overview cannot show what
+           I gave to others". Same placement the board uses. */
+        <>
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            {scopeControl}
+          </div>
+          <TasksOverview scope={scope} />
+        </>
+      )}
       {view === "tasks" &&
         (layout === "list" ? (
           <TaskTable scope={scope} scopeControl={scopeControl} />

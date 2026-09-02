@@ -17,6 +17,7 @@ import {
 } from "../../rules/tasks/resolveTaskPriority.ts";
 import { getPersonPriority } from "../../rules/tasks/priority.ts";
 import { resolveTimeBudget } from "../../rules/tasks/resolveTimeBudget.ts";
+import { readGoalBased } from "../../rules/projects/goalBased.ts";
 import type { TaskView } from "@/lib/repositories/types";
 import type { LegacyTask } from "@/lib/legacy/tasks";
 import { LEGACY_ORGANISATION_ID } from "./map.ts";
@@ -225,6 +226,14 @@ export function toTask(legacy: LegacyTask): Task {
     /* Read straight off the document, as written. Nothing derives it and
        nothing else reads it — see `Task.isImportant`. */
     isImportant: legacy.isImportant === true,
+    /* Passthrough — `readTask` already coerced it to the domain shape. */
+    preAssignDeadline: legacy.preAssignDeadline ?? null,
+    /* "Taskgoal" — the project marker, read straight off the folder document
+       and normalised. `readGoalBased` drops anything malformed to null, so a
+       non-folder task or a doc without a real objective simply reads as not
+       marked. Display only; see `Task.isGoalBased`. */
+    isGoalBased: legacy.isGoalBased === true && !!readGoalBased(legacy.goalBased),
+    goalBased: readGoalBased(legacy.goalBased),
     /*
      * The task's time budget, from the task document.
      *

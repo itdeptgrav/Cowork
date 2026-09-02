@@ -28,7 +28,7 @@ import {
 } from "@/components/features/messages/MessageContextMenu";
 import { MessageTicks } from "@/components/features/messages/MessageTicks";
 import { ChangeEventCard } from "./ChangeEventCard";
-import { formatClock, formatDate } from "@/lib/utils/format";
+import { formatClock, formatDate, formatDateTime } from "@/lib/utils/format";
 import { clearDraft, readDraft, saveDraft } from "@/components/features/messages/draftStorage";
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { MESSAGE_QUICK_REACTIONS } from "@/lib/domain";
@@ -49,7 +49,13 @@ import {
   formatBytes,
   UploadProgressRow,
   mediaUrl,
+  mediaProxyUrl,
 } from "@/components/features/messages/MessageAttachments";
+import { GalleryLightbox } from "@/components/ui/GalleryLightbox";
+import {
+  collectConversationImages,
+  galleryIndexOf,
+} from "@/lib/rules/media/conversationGallery";
 import { copyPlan } from "@/lib/rules/media/copyMessage";
 import { COPIED_NOTICE, runCopyPlan } from "@/lib/utils/copyToClipboard";
 
@@ -241,6 +247,33 @@ export function ChatPanel({
     );
     return waiting.length ? [...stored, ...waiting] : stored;
   }, [data, sending, landed]);
+
+  /* Every image in the whole thread, in order — so opening one opens the strip
+     of all of them, not just its own message's. Assembled here, from the
+     message list, because a message only knows its own attachments. */
+  const galleryItems = useMemo(
+    () => collectConversationImages(shown),
+    [shown],
+  );
+  const galleryImages = useMemo(
+    () =>
+      galleryItems.map((it) => ({
+        fileId: it.attachment.fileId,
+        url: it.attachment.url,
+        alt: it.attachment.name ?? "Image",
+        downloadUrl: mediaUrl(it.attachment),
+        downloadName: it.attachment.name ?? "image.jpg",
+        proxyUrl: mediaProxyUrl(it.attachment),
+        title: it.senderName,
+        subtitle: formatDateTime(it.createdAt),
+      })),
+    [galleryItems],
+  );
+  /* Which image the viewer is showing, as an index into `galleryImages`, or
+     null when it is closed. */
+  const [galleryIndex, setGalleryIndex] = useState<number | null>(null);
+  const openImage = (messageId: string, imageIndex: number) =>
+    setGalleryIndex(galleryIndexOf(galleryItems, messageId, imageIndex));
   /* Who can see this thread, for the read tick. Read from the task rather than
      from who has posted: somebody who has not spoken yet is still an audience,
      and a tick that ignored them would claim more than it knows. */
@@ -601,6 +634,31 @@ export function ChatPanel({
      not on screen and can never be sent. */
   const canDrop = canUpload && !composerReadOnly;
 
+  /* The viewer's per-image actions, bound to each image's message. Task chat
+     offers reply, react and star — the same actions its message menu does; it
+     has no Forward and no Pin (pins are a Conversation feature, and a task has
+     no conversation). Reply closes the viewer so the composer is seen. */
+  const galleryActions = galleryItems.map((it) => {
+    const m = shown.find((x) => x.id === it.messageId);
+    if (!m) return {};
+    return {
+      onReply: () => {
+        startReply(m);
+        setGalleryIndex(null);
+      },
+      onStar: () => void toggleStar(m),
+      starred: (m.starredBy ?? []).includes(viewerId ?? ""),
+      reactions:
+        repo.toggleTaskChatReaction && !m.isDeleted
+          ? {
+              emojis: MESSAGE_QUICK_REACTIONS,
+              selected: myReaction(m.reactions, viewerId ?? ""),
+              onPick: (emoji: string) => void react(m, emoji),
+            }
+          : undefined,
+    };
+  });
+
   return (
     <Panel
       padded={false}
@@ -834,7 +892,11 @@ export function ChatPanel({
                           )}
 
                           {!deleted && attachments.length > 0 && (
-                            <MessageAttachments items={attachments} mine={mine} />
+                            <MessageAttachments
+                              items={attachments}
+                              mine={mine}
+                              onOpenImage={(li) => openImage(m.id, li)}
+                            />
                           )}
 
                           {(m.text || deleted) && (
@@ -1168,7 +1230,7 @@ export function ChatPanel({
               placeholder="Write a message"
               aria-label="Message"
             />
-            <Button
+            <Button loading={state.isPending}
               tone="primary"
               disabled={!canSend || state.isPending}
               onClick={submit}
@@ -1199,6 +1261,18 @@ export function ChatPanel({
               : undefined
           }
           onClose={() => setMenu(null)}
+        />
+      )}
+
+      {/* One viewer for the whole thread's images — opened at whichever
+          thumbnail was clicked, Previous/Next and the filmstrip walk the rest. */}
+      {galleryIndex !== null && (
+        <GalleryLightbox
+          images={galleryImages}
+          startIndex={galleryIndex}
+          apiBase={MEDIA_BASE}
+          actions={galleryActions}
+          onClose={() => setGalleryIndex(null)}
         />
       )}
     </Panel>

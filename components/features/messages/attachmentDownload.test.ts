@@ -94,11 +94,13 @@ test("the proxy is the fallback, so a blocked direct fetch still saves", () => {
 });
 
 test("task chat renders through this shared component", () => {
-  /* The reason one fix covers task chat, direct messages and groups. */
-  assert.match(
-    code("components/features/tasks/ChatPanel.tsx"),
-    /<MessageAttachments items=\{attachments\} mine=\{mine\} \/>/,
-  );
+  /* The reason one fix covers task chat, direct messages and groups. The props
+     may grow (an image-gallery hook was added), so this pins the shared
+     component and its two load-bearing props, not the exact tag formatting. */
+  const src = code("components/features/tasks/ChatPanel.tsx");
+  assert.match(src, /<MessageAttachments/);
+  assert.match(src, /items=\{attachments\}/);
+  assert.match(src, /mine=\{mine\}/);
 });
 
 test("images and video keep the route they already had", () => {

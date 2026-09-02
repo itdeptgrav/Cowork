@@ -722,12 +722,17 @@ test("starting costs one round of reads and one write, like pausing", () => {
 
 test("both engine paths bank with that same grace", () => {
   const src = code(REPO);
-  const calls = src.match(/bankableRunSecs\(\{[\s\S]*?\}\)/g) ?? [];
-  assert.ok(calls.length >= 2, "expected pauseTimer and the gap-closer");
-  for (const call of calls) {
-    assert.match(
-      call,
-      /graceMs: TIMER_BANKABLE_GRACE_MS/,
+  /* Matched on the grace itself rather than on the call. The gap-closer now
+     names its window — `const runWindow = { ... }` — so the restart point can
+     be computed against the SAME instant it banks up to, and a pattern pinned
+     to `bankableRunSecs({` stopped seeing it. Every grace the engine passes,
+     wherever it passes it, still has to be the one the screen shows. */
+  const graces = src.match(/graceMs: [A-Za-z_.]+/g) ?? [];
+  assert.ok(graces.length >= 2, "expected pauseTimer and the gap-closer");
+  for (const grace of graces) {
+    assert.equal(
+      grace,
+      "graceMs: TIMER_BANKABLE_GRACE_MS",
       "an engine path banks with a different grace than the screen shows",
     );
   }

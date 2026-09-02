@@ -1872,7 +1872,7 @@ export function NewTaskForm({
 
           <div className="flex justify-end gap-2">
             <Button onClick={() => router.back()}>Cancel</Button>
-            <Button
+            <Button loading={state.isPending}
               data-help="task-create-submit"
               tone="primary"
               disabled={

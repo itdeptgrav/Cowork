@@ -626,7 +626,7 @@ function TimerSopCard({ canEdit }: { canEdit: boolean }) {
 
       {canEdit && (
         <div className="flex items-center gap-3 border-t border-hairline px-4 py-3">
-          <Button
+          <Button loading={saveState.isPending}
             tone="primary"
             size="sm"
             disabled={!dirty || saveState.isPending}

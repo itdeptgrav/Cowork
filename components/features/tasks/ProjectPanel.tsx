@@ -13,8 +13,13 @@ import {
   Panel,
   PanelHead,
 } from "@/components/ui/Primitives";
-import { useAction } from "@/lib/hooks/useRepository";
+import {
+  RequirementProgressToggle,
+  type RequirementMark,
+} from "./RequirementProgressToggle";
+import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
+import { formatDateTime } from "@/lib/utils/format";
 import { useMyDutyMode } from "@/lib/hooks/useDutyMode";
 import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import {
@@ -107,6 +112,26 @@ export function ProjectPanel({
      would offer something the server refuses — the refusal is still the real
      gate, but an offer that cannot be taken is its own defect. */
   const mayDelegate = isOwner || isAssignee;
+
+  /**
+   * Who may leave a progress mark: the same two the engine accepts.
+   *
+   * The person carrying the work reports their own progress; whoever raised it
+   * may correct a mark. A manager reading the task is looking at somebody
+   * else's checklist, and a tick from them would say the assignee had reported
+   * something they had not.
+   */
+  const mayMarkProgress = isOwner || isAssignee;
+
+  /* Read separately from the task, because it is a separate record — see
+     `RequirementProgressToggle`. A failure here costs the marks and never the
+     requirements themselves. */
+  const progress = useQuery(
+    (r) => r.listRequirementProgress(view.task.id),
+    [view.task.id],
+  );
+  const progressFor = (requirementId: string): RequirementMark | null =>
+    (progress.data ?? []).find((m) => m.requirementId === requirementId) ?? null;
   /* A subtask may hold its own requirements but may not be broken down again —
      depth of one, enforced by `subtaskRefusal`. Offering the button here would
      be an offer the repository refuses. */
@@ -355,7 +380,7 @@ export function ProjectPanel({
                   className="mt-1.5 w-full rounded-inset bg-[var(--surface-raised)] px-3.5 py-2.5 text-sm text-ink placeholder:text-ink-faint shadow-[inset_0_0_0_1px_var(--color-hairline)] focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)] focus:outline-none"
                 />
                 <div className="mt-2 flex items-center gap-2">
-                  <Button
+                  <Button loading={reqState.isPending}
                     size="sm"
                     tone="primary"
                     disabled={!draft.trim() || reqState.isPending}
@@ -412,26 +437,36 @@ export function ProjectPanel({
                       )}
                     </span>
                   ) : (
-                    /* READ-ONLY. Acceptance criteria are the reviewer's
-                       reference for rework, not a checklist the submitter ticks
-                       to unlock submission — so there is no tick here, and a
-                       criterion never blocks a submission. The reviewer decides
-                       which are met, in `ReviewPanel`. */
-                    <span
-                      aria-hidden="true"
-                      title={
-                        r.isSatisfied
-                          ? "Met"
-                          : "Acceptance criterion — the reviewer decides if it is met."
-                      }
-                      className={`mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full ${
-                        r.isSatisfied
-                          ? "bg-[color-mix(in_srgb,var(--state-positive)_28%,transparent)] text-[var(--state-positive-ink)]"
-                          : "bg-[var(--surface-sunken)] text-ink-faint"
-                      }`}
-                    >
-                      {r.isSatisfied && <Icon.check className="h-3 w-3" />}
-                    </span>
+                    /**
+                     * **The reviewer still decides. This records progress.**
+                     *
+                     * The circle used to be inert, on the reasoning that
+                     * acceptance criteria are the reviewer's reference rather
+                     * than a checklist the submitter ticks to unlock
+                     * submission. That reasoning is untouched and still true:
+                     * `r.isSatisfied` is the reviewer's answer, it is what
+                     * gates submission, and nothing here writes it.
+                     *
+                     * What the inert circle also did was leave the person doing
+                     * the work with no way to say "I have finished this one",
+                     * and whoever raised the task with no way to see it short
+                     * of asking. That is what this records — a separate mark,
+                     * in its own collection, that notifies the creator and
+                     * changes no rule.
+                     *
+                     * A met requirement shows the reviewer's tick and stops
+                     * being pressable: once it is genuinely met, a progress
+                     * mark about it would be answering a settled question.
+                     */
+                    <RequirementProgressToggle
+                      taskId={view.task.id}
+                      requirementId={r.requirement.id}
+                      requirementText={r.requirement.text}
+                      satisfied={r.isSatisfied}
+                      marked={progressFor(r.requirement.id)}
+                      canMark={mayMarkProgress}
+                      onChanged={() => void progress.refetch()}
+                    />
                   )}
 
                   <div className="min-w-0 flex-1">
@@ -457,7 +492,7 @@ export function ProjectPanel({
                           }}
                           className="min-w-0 flex-1 rounded-inset bg-[var(--surface-raised)] px-3 py-1.5 text-sm text-ink shadow-[inset_0_0_0_1px_var(--color-hairline)] focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)] focus:outline-none"
                         />
-                        <Button
+                        <Button loading={saveState.isPending}
                           size="sm"
                           tone="primary"
                           disabled={saveState.isPending}
@@ -534,6 +569,30 @@ export function ProjectPanel({
                       <p className="mt-1 text-[11px] text-[var(--state-rework-ink)]">
                         Pending — no subtask has taken this yet. Break one out,
                         or leave it for the reviewer.
+                      </p>
+                    ) : progressFor(r.requirement.id)?.done ? (
+                      /**
+                       * **What the person who raised the task came here to see.**
+                       *
+                       * Named and dated, because "done" without a name is a
+                       * claim nobody owns — and on a task with two people on it
+                       * the first question about a tick is who left it.
+                       *
+                       * The second sentence is not padding. This row previously
+                       * said "checked by the reviewer", and replacing that with
+                       * a tick would quietly suggest the requirement had been
+                       * accepted. It has not: the reviewer still decides, and
+                       * the line says so where somebody is looking at the tick.
+                       */
+                      <p className="mt-1 text-[11px] text-ink-muted">
+                        Marked done by{" "}
+                        {progressFor(r.requirement.id)?.byName || "the assignee"}
+                        {progressFor(r.requirement.id)?.at
+                          ? ` · ${formatDateTime(progressFor(r.requirement.id)!.at)}`
+                          : ""}
+                        <span className="block text-ink-faint">
+                          The reviewer still decides whether it is met.
+                        </span>
                       </p>
                     ) : (
                       <p className="mt-1 text-[11px] text-ink-faint">
@@ -620,7 +679,7 @@ export function ProjectPanel({
                   }}
                   className="min-w-0 flex-1 rounded-inset bg-[var(--surface-raised)] px-3 py-1.5 text-sm text-ink placeholder:text-ink-faint shadow-[inset_0_0_0_1px_var(--color-hairline)] focus:shadow-[inset_0_0_0_1.5px_var(--color-ink)] focus:outline-none"
                 />
-                <Button
+                <Button loading={saveState.isPending}
                   size="sm"
                   tone="primary"
                   disabled={!addDraft.trim() || saveState.isPending}

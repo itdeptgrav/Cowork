@@ -175,3 +175,74 @@ export function budgetHistoryView(input: {
     complete: givenSecs > 0 && unaccountedSecs === 0,
   };
 }
+
+/* ── Deadline moves ───────────────────────────────────────────────────────── */
+
+/**
+ * One recorded shift of a task's due date.
+ *
+ * Read from `cowork_task_deadline_extensions`, which is where every move is
+ * already filed — a break, an offline span, an approved emergency, an approved
+ * extension and credited meeting time all write one. The record has been
+ * written all along; nothing displayed it.
+ */
+export interface DeadlineMove {
+  id: string;
+  /** When the move was applied. */
+  at: string;
+  /** ISO instants, before and after. */
+  fromIso: string;
+  toIso: string;
+  /** The engine's own sentence — it names the cause better than a label can. */
+  reason: string;
+  /** True where a rule applied itself, false where a person approved it. */
+  automatic: boolean;
+}
+
+export interface DeadlineMoveEntry extends DeadlineMove {
+  /** Seconds the date moved by. Negative where a deadline was pulled in. */
+  deltaSecs: number;
+  /** What to call it, when the reason is empty. */
+  label: string;
+}
+
+/**
+ * The deadline's own history, oldest first.
+ *
+ * ## Why this exists beside the budget's
+ *
+ * Going offline moves a due date and does **not** touch the budget — the work
+ * still takes as long, the day simply has less of it left. So the budget
+ * history correctly said "Nothing has been credited", and a reader who had just
+ * watched their deadline move read that as the system having no idea it had
+ * happened. Two different facts, and only one of them had somewhere to appear.
+ *
+ * **Nothing here computes a shift.** The dates are read back off the record the
+ * engine already wrote; `deltaSecs` is the difference between the two instants
+ * on that record, so a row can never claim a size that disagrees with the pair
+ * beside it.
+ *
+ * A move of zero seconds is dropped: a record whose before and after are the
+ * same instant explains nothing and is noise in a list read for explanations.
+ */
+export function deadlineMoveEntries(
+  moves: readonly DeadlineMove[],
+): DeadlineMoveEntry[] {
+  return [...moves]
+    .map((m) => {
+      const from = Date.parse(m.fromIso);
+      const to = Date.parse(m.toIso);
+      if (!Number.isFinite(from) || !Number.isFinite(to)) return null;
+      const deltaSecs = Math.round((to - from) / 1000);
+      if (deltaSecs === 0) return null;
+      return {
+        ...m,
+        deltaSecs,
+        /* Named for the direction, because "moved" alone leaves a reader
+           working out which way from two timestamps. */
+        label: deltaSecs > 0 ? "Deadline moved later" : "Deadline moved earlier",
+      };
+    })
+    .filter((m): m is DeadlineMoveEntry => m !== null)
+    .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+}

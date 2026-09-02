@@ -110,6 +110,9 @@ export function ProjectSlab({
           <div className="flex shrink-0 flex-col items-end gap-1.5">
             <SlabChip>{p.status.replace(/_/g, " ")}</SlabChip>
             <SlabChip>{pr.health.replace("_", " ")}</SlabChip>
+            {/* "Taskgoal" — the descriptive marker, shown where projects are
+                browsed so it reads the same on the card as on the detail. */}
+            {p.isGoalBased && p.goalBased && <SlabChip>Taskgoal</SlabChip>}
           </div>
         </div>
 

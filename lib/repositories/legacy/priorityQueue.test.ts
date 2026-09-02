@@ -228,9 +228,11 @@ test("gated tasks survive the merge", () => {
 
 test("the repository does not decide visibility itself", () => {
   /* One rule, so a team list and a team count cannot disagree about whose work
-     it is. */
+     it is. The branch defers to `teamScopeKeeps`, which is `canManagerViewTask`
+     plus "or I created it" — the clause that keeps a cross-department task on
+     its sender's own list. Tested directly in `managerVisibility.test.ts`. */
   const branch = code(REPO).slice(code(REPO).indexOf('if (q.scope === "team") {'));
-  assert.match(branch.slice(0, 2600), /canManagerViewTask\(/);
+  assert.match(branch.slice(0, 2600), /teamScopeKeeps\(/);
   assert.equal(
     /directReportIds/.test(branch.slice(0, 2600)),
     false,

@@ -244,7 +244,7 @@ function DetailsPanel({
       </div>
       {may && (
         <div className="mt-4 flex items-center gap-3">
-          <Button
+          <Button loading={state.isPending}
             size="sm"
             tone="primary"
             disabled={!dirty || state.isPending}
@@ -650,7 +650,7 @@ function DangerPanel({
           : "Deactivation keeps every record they authored — submissions, reviews and ledger entries all still cite them. Nothing is deleted."}
       </p>
       <div className="mt-4">
-        <Button
+        <Button loading={state.isPending}
           size="sm"
           tone={p.exitedAt ? "secondary" : "destructive"}
           disabled={state.isPending}

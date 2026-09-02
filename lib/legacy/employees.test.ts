@@ -240,3 +240,26 @@ test("departments named on employees but absent from the master are reported", (
     ["Sales"],
   );
 });
+
+/* ── Bandwidth: the directory revalidates instead of re-downloading ────────── */
+
+import { readFileSync } from "node:fs";
+
+test("listMembers opts into revalidation, and http honours it", () => {
+  /*
+   * The employee directory is byte-identical between reads almost every time
+   * and every name/avatar resolution fetches it — 99% duplicate traffic. It
+   * asks the browser to revalidate (send If-None-Match) rather than always
+   * re-download, so an unchanged copy comes back as a bodyless 304. The route
+   * sets the ETag; freshness is untouched because the request still goes out
+   * every time. This guards both halves of the wiring.
+   */
+  const employees = readFileSync("lib/legacy/employees.ts", "utf8");
+  const membersAt = employees.indexOf("export async function listMembers");
+  const fn = employees.slice(membersAt, membersAt + 1200);
+  assert.match(fn, /revalidate: true/, "listMembers no longer revalidates");
+
+  const http = readFileSync("lib/legacy/http.ts", "utf8");
+  /* The default is still no-store — only an opt-in read revalidates. */
+  assert.match(http, /request\.revalidate \? "no-cache" : "no-store"/);
+});

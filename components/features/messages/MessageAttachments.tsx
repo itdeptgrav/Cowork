@@ -21,7 +21,8 @@ import { useRef, useState } from "react";
 import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
 import { DriveImage } from "@/components/ui/DriveImage";
-import { ImageLightbox, downloadFile } from "@/components/ui/ImageLightbox";
+import { downloadFile } from "@/components/ui/ImageLightbox";
+import { GalleryLightbox } from "@/components/ui/GalleryLightbox";
 import { VideoLightbox } from "@/components/ui/VideoLightbox";
 import {
   driveFileIdFrom,
@@ -437,14 +438,26 @@ function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
 export function MessageAttachments({
   items,
   mine,
+  onOpenImage,
 }: {
   items: MessageAttachment[];
   mine: boolean;
+  /**
+   * Open the image viewer at this message's i-th image, where the surrounding
+   * chat wants the viewer to span the WHOLE conversation rather than this one
+   * message. `i` indexes the images shown here (see `images` below), which is
+   * the order the container aggregates in.
+   *
+   * Omitted, the component falls back to its own single-message gallery — so it
+   * still works anywhere it is used without a chat around it.
+   */
+  onOpenImage?: (imageIndex: number) => void;
 }) {
-  /* The one image currently at full size — null the rest of the time, since
-     only one lightbox can be open regardless of how many threads or bubbles
-     are on screen. */
-  const [zoomed, setZoomed] = useState<MessageAttachment | null>(null);
+  /* Which image is open at full size, as an index into `images` below — null
+     the rest of the time. An index rather than the attachment itself so the
+     gallery can walk Previous/Next from where it opened; only one lightbox is
+     ever open regardless of how many threads or bubbles are on screen. */
+  const [zoomIndex, setZoomIndex] = useState<number | null>(null);
   /* The one video currently open, for the same reason as `zoomed` — and kept
      separate from it so the two lightboxes can never both be mounted. */
   const [playing, setPlaying] = useState<MessageAttachment | null>(null);
@@ -488,7 +501,7 @@ export function MessageAttachments({
             <Thumbnail
               key={a.fileId ?? a.url ?? i}
               a={a}
-              onZoom={() => setZoomed(a)}
+              onZoom={() => (onOpenImage ? onOpenImage(i) : setZoomIndex(i))}
               className={
                 grid
                   ? "aspect-square w-full rounded-[8px] object-cover"
@@ -557,15 +570,22 @@ export function MessageAttachments({
         return <FileRow key={i} a={a} mine={mine} />;
       })}
 
-      {zoomed && (
-        <ImageLightbox
-          fileId={zoomed.fileId}
-          url={zoomed.url}
+      {zoomIndex !== null && (
+        /* The whole image set, opened at the clicked one — so Previous/Next and
+           the ← / → keys walk the rest without closing. One image shows no
+           arrows or filmstrip, i.e. exactly the old zoom. */
+        <GalleryLightbox
+          images={images.map((a) => ({
+            fileId: a.fileId,
+            url: a.url,
+            alt: a.name ?? "Image",
+            downloadUrl: mediaUrl(a),
+            downloadName: a.name ?? "image.jpg",
+            proxyUrl: mediaProxyUrl(a),
+          }))}
+          startIndex={zoomIndex}
           apiBase={MEDIA_BASE}
-          alt={zoomed.name ?? "Image"}
-          downloadUrl={mediaUrl(zoomed)}
-          downloadName={zoomed.name ?? "image.jpg"}
-          onClose={() => setZoomed(null)}
+          onClose={() => setZoomIndex(null)}
         />
       )}
 

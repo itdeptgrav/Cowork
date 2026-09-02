@@ -195,7 +195,7 @@ export function GoalRoadmapPanel({ view }: { view: TaskView }) {
                reshapes their own targets. `isHead` is the same test the Edit
                and Remove controls on each step already used. */
             isHead && !adding && editing === null ? (
-              <Button
+              <Button loading={saveState.isPending}
                 size="sm"
                 onClick={() => setAdding(true)}
                 disabled={pool <= 0 || saveState.isPending}
@@ -440,7 +440,7 @@ export function GoalRoadmapPanel({ view }: { view: TaskView }) {
               {cannotSubmit && (
                 <p className="mb-2 text-[11px] text-ink-faint">{cannotSubmit}</p>
               )}
-              <Button
+              <Button loading={submitState.isPending}
                 tone="primary"
                 size="sm"
                 disabled={cannotSubmit !== null || submitState.isPending}
@@ -876,7 +876,7 @@ function StepRow({
                 )}
               </div>
               <div className="mt-3 flex items-center gap-2">
-                <Button
+                <Button loading={reportState.isPending || uploadState.isPending}
                   tone="primary"
                   size="sm"
                   disabled={
@@ -920,7 +920,7 @@ function StepRow({
           {personName && (
             <span className="text-[11px] text-ink-faint">{personName}&apos;s:</span>
           )}
-          <Button
+          <Button loading={decideState.isPending}
             tone="primary"
             size="sm"
             disabled={decideState.isPending}

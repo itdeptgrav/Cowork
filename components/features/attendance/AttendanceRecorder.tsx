@@ -206,7 +206,7 @@ export function AttendanceRecorder() {
               </div>
 
               <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
-                <Button
+                <Button loading={state.isPending}
                   tone="primary"
                   size="sm"
                   disabled={!employeeId || !date || state.isPending}

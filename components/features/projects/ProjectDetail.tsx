@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDate, formatDateTime } from "@/lib/utils/format";
+import { formatGoalTarget, GOAL_TYPE_LABEL } from "@/lib/rules/projects/goalBased";
 import { PROVISIONAL_RULES } from "@/lib/config/provisional";
 
 /**
@@ -142,6 +143,11 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 {pr.health.replace("_", " ")}
               </Chip>
               {p.isRestricted && <Chip tone="blocked">Restricted</Chip>}
+              {/* "Taskgoal" — a descriptive marker, not the C2 goal task. A
+                  plain chip; it colours nothing because it decides nothing. */}
+              {p.isGoalBased && p.goalBased && (
+                <Chip title={p.goalBased.objective}>Taskgoal</Chip>
+              )}
               {p.targetDate && (
                 <span className="text-xs text-ink-faint">
                   Target {formatDate(p.targetDate)}
@@ -512,6 +518,38 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 </Fact>
               )}
             </dl>
+
+            {/* "Taskgoal" — the objective and whatever else was set, given room
+                of their own rather than squeezed into a Fact row. Reads for any
+                goal type: a numeric goal shows its target, others their success
+                criteria and status. Shown only when marked; a plain project
+                renders exactly as before. Descriptive: it feeds no score and
+                moves no deadline. */}
+            {p.isGoalBased && p.goalBased && (
+              <div className="mt-3 border-t border-hairline pt-3">
+                <p className="text-xs text-ink-faint">
+                  Taskgoal · {GOAL_TYPE_LABEL[p.goalBased.goalType]}
+                </p>
+                <p className="mt-1 text-sm text-ink">{p.goalBased.objective}</p>
+                {formatGoalTarget(p.goalBased) && (
+                  <p className="mt-1 text-xs text-ink-muted">
+                    {formatGoalTarget(p.goalBased)}
+                  </p>
+                )}
+                {p.goalBased.successCriteria && (
+                  <p className="mt-1.5 text-xs text-ink-muted">
+                    <span className="text-ink-faint">Success: </span>
+                    {p.goalBased.successCriteria}
+                  </p>
+                )}
+                {p.goalBased.currentStatus && (
+                  <p className="mt-1 text-xs text-ink-muted">
+                    <span className="text-ink-faint">Now: </span>
+                    {p.goalBased.currentStatus}
+                  </p>
+                )}
+              </div>
+            )}
           </Panel>
 
           <Panel>

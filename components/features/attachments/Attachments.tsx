@@ -1,7 +1,11 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRepo } from "@/lib/hooks/useRepository";
+import {
+  getRepositoryVersion,
+  subscribeToRepository,
+} from "@/lib/repositories/events";
 import type {
   AttachmentEntity,
   AttachmentMeta,
@@ -527,6 +531,26 @@ export function EntityAttachments({
     error: string | null;
   } | null>(null);
 
+  /**
+   * **Revalidate when the repository changes, not only when the entity does.**
+   *
+   * This effect keyed on `[repo, entityType, entityId]` alone, so it fetched
+   * once and never again. A file uploaded to this very entity — a submission's
+   * work, a task's reference file — bumps the repository version but not the
+   * entity id, so the list did not re-read and went on showing "No files
+   * attached" over a file that was now there. Reported on the Submission tab:
+   * the note said a sheet was attached and the section said there was none.
+   *
+   * Including the version makes it behave like `useQuery` — the standard way
+   * every other read in the app stays fresh — so a freshly attached file
+   * appears without navigating away and back.
+   */
+  const version = useSyncExternalStore(
+    subscribeToRepository,
+    getRepositoryVersion,
+    () => 0,
+  );
+
   useEffect(() => {
     let cancelled = false;
     void repo.getAttachments(entityType, entityId).then((r) => {
@@ -540,7 +564,7 @@ export function EntityAttachments({
     return () => {
       cancelled = true;
     };
-  }, [repo, entityType, entityId]);
+  }, [repo, entityType, entityId, version]);
 
   const heading = title ? (
     <>

@@ -331,7 +331,7 @@ export function SubmissionPanel({
                 </Button>
               </>
             )}
-            <Button
+            <Button loading={state.isPending}
               data-help="task-submit-work-button"
               tone="primary"
               disabled={state.isPending || !message.trim()}

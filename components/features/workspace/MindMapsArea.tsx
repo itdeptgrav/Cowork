@@ -328,7 +328,7 @@ export function MindMapsArea({
           title="No mindmaps yet"
           body="A mindmap is stored with your account and shared only with the people you add to it. It opens on the whole screen; Back returns you to this list."
           action={
-            <Button
+            <Button loading={createState.isPending}
               disabled={createState.isPending}
               onClick={() => void createAndOpen()}
             >
@@ -390,7 +390,7 @@ export function MindMapsArea({
         )}
         <span className="flex-1" />
         <CommandPalette commands={commands} surface="Workspace" />
-        <Button
+        <Button loading={createState.isPending}
           size="sm"
           disabled={createState.isPending}
           onClick={() => void createAndOpen()}
@@ -412,7 +412,7 @@ export function MindMapsArea({
             Importing it makes it a mindmap like the others; nobody else sees it
             until you add them.
           </p>
-          <Button
+          <Button loading={importState.isPending}
             size="sm"
             disabled={importState.isPending}
             onClick={() => void runImport()}

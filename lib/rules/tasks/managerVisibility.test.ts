@@ -139,3 +139,55 @@ test("somebody absent from the tree still sees their own work", () => {
   /* A directory gap must cost a manager their team view, not their own tasks. */
   assert.deepEqual([...reportingSubtree(TREE, "GHOST")], ["GHOST"]);
 });
+
+/* ── teamScopeKeeps: whose work belongs in "My team" ──────────────────────── */
+
+import { teamScopeKeeps } from "./managerVisibility.ts";
+
+const teamTask = (
+  over: Partial<{
+    assigneeIds: string[];
+    pendingAssigneeIds: string[];
+    createdById: string | null;
+  }>,
+) => ({ assigneeIds: [], pendingAssigneeIds: [], createdById: null, ...over });
+
+test("a task a sender created for ANOTHER department stays on their team list", () => {
+  /*
+   * The reported bug. UMUNG raises a cross-department task for PRAMOD, who
+   * reports to RAKESH, not UMUNG. UMUNG manages nobody on it — but they created
+   * it and it is theirs to oversee until it is assigned. It must not vanish
+   * from their own side.
+   */
+  const t = teamTask({ pendingAssigneeIds: ["PRAMOD"], createdById: "UMUNG" });
+  assert.equal(teamScopeKeeps("UMUNG", t, TREE), true);
+});
+
+test("a manager sees a report's task in their team even if they did not create it", () => {
+  const t = teamTask({ assigneeIds: ["PRAMOD"], createdById: "SOMEONE" });
+  assert.equal(teamScopeKeeps("RAKESH", t, TREE), true);
+});
+
+test("a viewer's OWN solo work is not in their team list", () => {
+  /* "My team" is other people's work. A task whose only holder is the viewer —
+     even one they created — is theirs to do, not to oversee. */
+  const solo = teamTask({ assigneeIds: ["UMUNG"], createdById: "UMUNG" });
+  assert.equal(teamScopeKeeps("UMUNG", solo, TREE), false);
+});
+
+test("a task jointly held by the viewer and another stays — it is also the other's", () => {
+  const joint = teamTask({ assigneeIds: ["RAKESH", "PRAMOD"], createdById: "X" });
+  assert.equal(teamScopeKeeps("RAKESH", joint, TREE), true);
+});
+
+test("someone unrelated — neither manager nor creator — does not see it", () => {
+  const t = teamTask({ assigneeIds: ["PRAMOD"], createdById: "RAKESH" });
+  assert.equal(teamScopeKeeps("UMUNG", t, TREE), false);
+});
+
+test("no viewer id, nothing to show", () => {
+  assert.equal(
+    teamScopeKeeps(null, teamTask({ assigneeIds: ["PRAMOD"] }), TREE),
+    false,
+  );
+});

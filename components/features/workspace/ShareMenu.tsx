@@ -291,7 +291,7 @@ export function ShareMenu({
                     ))}
                   </select>
                 </div>
-                <Button
+                <Button loading={inviteState.isPending}
                   size="sm"
                   tone="secondary"
                   className="mt-1.5 w-full"

@@ -173,7 +173,7 @@ export function NewEmployee({ onDone }: { onDone: () => void }) {
       </div>
 
       <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
-        <Button
+        <Button loading={state.isPending}
           tone="primary"
           size="sm"
           disabled={
@@ -413,7 +413,7 @@ function NewPolicy({
         />
       </Field>
       <div className="mt-3 flex items-center gap-2">
-        <Button
+        <Button loading={state.isPending}
           tone="primary"
           size="sm"
           disabled={

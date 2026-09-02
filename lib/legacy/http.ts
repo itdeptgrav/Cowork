@@ -45,6 +45,24 @@ export interface LegacyRequest {
   signal?: AbortSignal;
   /** Override the default 20s timeout for calls that are expected to be slow. */
   timeoutMs?: number;
+  /**
+   * Let the browser REVALIDATE this GET instead of always re-downloading it.
+   *
+   * Everything here fetches `cache: "no-store"` by default — never keep a copy,
+   * always fetch fresh — which is right for data that changes on every write and
+   * is why the app trusts its own version-based cache instead of the browser's.
+   *
+   * A few reads are different: the employee directory is byte-identical between
+   * calls almost every time, and it measured 99% duplicate traffic. For those,
+   * `revalidate: true` switches to `cache: "no-cache"` — the browser keeps a
+   * copy but still contacts the server EVERY time, sending `If-None-Match`. When
+   * nothing changed the server answers `304` with no body and the browser serves
+   * its copy; when it did, the browser gets the new body. **The data is never
+   * stale** — the request still goes out every time and the server still decides
+   * — only the bytes of an unchanged body stop crossing the wire. Pair only with
+   * a route that sets an ETag (`services/httpCache.js`).
+   */
+  revalidate?: boolean;
 }
 
 /**
@@ -153,7 +171,11 @@ export async function legacyFetch<T>(
       headers,
       body: request.body === undefined ? undefined : JSON.stringify(request.body),
       signal,
-      cache: "no-store",
+      /* `no-cache` still hits the server every time — it just lets the browser
+         hold a copy and revalidate with `If-None-Match`, so an unchanged body
+         comes back as a bodyless 304. `no-store` keeps nothing at all. Only
+         reads that opt in and whose route sets an ETag use the former. */
+      cache: request.revalidate ? "no-cache" : "no-store",
     });
   } catch (e) {
     /* A timeout aborts, so it arrives here as an AbortError like any other.

@@ -77,7 +77,7 @@ export function BreakAllowanceEditor({ canEdit }: { canEdit: boolean }) {
             : "—"}
         </p>
         {canEdit && (
-          <Button
+          <Button loading={state.isPending}
             size="sm"
             tone="primary"
             className="mb-1"

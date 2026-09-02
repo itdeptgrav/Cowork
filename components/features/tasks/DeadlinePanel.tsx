@@ -15,6 +15,7 @@ import {
 import { Icon } from "@/components/ui/Icons";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { BudgetNegotiationCard } from "./BudgetNegotiationCard";
+import { PreAssignDeadlineCard } from "./PreAssignDeadlineCard";
 import { BudgetConfirmationCard } from "./BudgetConfirmationCard";
 import { extensionFromAddition, extensionOf } from "@/lib/rules/tasks/deadlineExtension";
 import { hasLiveBudgetExtension } from "@/lib/rules/tasks/extensionAuthority";
@@ -155,6 +156,11 @@ export function DeadlinePanel({
           />
         </dl>
       </Panel>
+
+      {/* The receiver-manager's pre-assignment deadline pushback — before hours
+          are set, before anyone is assigned. Decides for itself whether to
+          render for this viewer; nothing shows on an ordinary task. */}
+      <PreAssignDeadlineCard view={view} viewerId={me} onChange={onChange} />
 
       {/* Whoever's move it is gets the form. */}
       {open && isCreator && (
@@ -599,7 +605,7 @@ function ProposeForm({
 
       <div className="mt-3 flex justify-end gap-2">
         {onCancel && <Button onClick={onCancel}>Cancel</Button>}
-        <Button
+        <Button loading={state.isPending}
           data-help="deadline-request-button"
           tone="primary"
           disabled={state.isPending}
@@ -785,7 +791,7 @@ function DecideProposal({
         {mode === "decide" ? (
           <>
             <Button onClick={() => setMode("counter")}>Counter</Button>
-            <Button
+            <Button loading={decideState.isPending}
               disabled={decideState.isPending}
               onClick={async () => {
                 const r = await decide("rejected");
@@ -794,7 +800,7 @@ function DecideProposal({
             >
               Reject
             </Button>
-            <Button
+            <Button loading={decideState.isPending}
               tone="primary"
               disabled={decideState.isPending}
               onClick={async () => {
@@ -808,7 +814,7 @@ function DecideProposal({
         ) : (
           <>
             <Button onClick={() => setMode("decide")}>Back</Button>
-            <Button
+            <Button loading={counterState.isPending}
               tone="primary"
               disabled={counterState.isPending}
               onClick={async () => {
@@ -1036,7 +1042,7 @@ function ExtensionForm({
         </div>
       )}
       <div className="mt-3 flex justify-end">
-        <Button
+        <Button loading={state.isPending}
           disabled={state.isPending || !reason.trim()}
           onClick={async () => {
             const r = await request();

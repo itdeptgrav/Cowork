@@ -145,7 +145,7 @@ export function ApprovalActionCard({
             />
           </Field>
           <div className="mt-2 flex flex-wrap gap-2">
-            <Button
+            <Button loading={state.isPending}
               tone="destructive"
               size="sm"
               disabled={state.isPending || reason.trim() === ""}
@@ -172,7 +172,7 @@ export function ApprovalActionCard({
         </div>
       ) : (
         <div className="mt-3 flex flex-wrap items-center gap-2">
-          <Button
+          <Button loading={state.isPending}
             tone="primary"
             size="sm"
             disabled={state.isPending}
@@ -184,7 +184,7 @@ export function ApprovalActionCard({
           >
             {state.isPending ? "Approving…" : "Approve"}
           </Button>
-          <Button
+          <Button loading={state.isPending}
             tone="destructive"
             size="sm"
             disabled={state.isPending}

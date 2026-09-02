@@ -122,6 +122,12 @@ export async function listMembers(
     path: "/cowork/employee/list-members",
     envelopeKey: "employees",
     token,
+    /* The directory is the same bytes between reads far more often than not,
+       and every feature that resolves a name or an avatar fetches it — the 99%
+       duplicate traffic. Revalidating lets an unchanged copy come back as a
+       304; the route sets the ETag. Freshness is unaffected: the request still
+       goes out every time and a real change still returns the new list. */
+    revalidate: true,
   });
   return r.ok ? { ok: true, data: readEmployees(r.data) } : r;
 }

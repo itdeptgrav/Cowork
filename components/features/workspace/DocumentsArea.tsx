@@ -324,7 +324,7 @@ export function DocumentsArea({
           title={`No ${noun}s yet`}
           body={`Anything you create here is shared only with the people you add to it. It opens on the whole screen; Back returns you to this list.`}
           action={
-            <Button disabled={createState.isPending} onClick={() => void createAndOpen()}>
+            <Button loading={createState.isPending} disabled={createState.isPending} onClick={() => void createAndOpen()}>
               {createState.isPending ? "…" : `New ${noun}`}
             </Button>
           }
@@ -390,7 +390,7 @@ export function DocumentsArea({
         )}
         <span className="flex-1" />
         <CommandPalette commands={commands} surface="Workspace" />
-        <Button
+        <Button loading={createState.isPending}
           size="sm"
           disabled={createState.isPending}
           onClick={() => void createAndOpen()}

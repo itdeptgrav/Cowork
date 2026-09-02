@@ -298,6 +298,16 @@ export interface QueryResult<T> {
 
 interface Settled<T> {
   key: string;
+  /**
+   * The deps portion of `key`, WITHOUT the nonce/version suffix.
+   *
+   * This is what tells "revalidating the same query" (a mutation bumped the
+   * version, or `refetch` bumped the nonce — deps unchanged) apart from "the
+   * deps changed to a different query" (a scope switch, a new filter). The
+   * first keeps its last answer on screen; the second must not, because that
+   * answer belongs to a different question.
+   */
+  depsKey: string;
   data: T | null;
   error: string | null;
   unavailable?: boolean;
@@ -332,7 +342,8 @@ export function useQuery<T>(
     getRepositoryVersion,
     () => 0,
   );
-  const key = JSON.stringify(deps) + `#${nonce}#${version}`;
+  const depsKey = JSON.stringify(deps);
+  const key = depsKey + `#${nonce}#${version}`;
 
   // Derive the repository method name from the fetcher's source so we can look
   // up a default staleTime without needing every call site to pass one.
@@ -395,7 +406,7 @@ export function useQuery<T>(
       const preloaded = preloadCache.get(methodName + JSON.stringify(deps));
       if (preloaded && Date.now() - preloaded.resolvedAt < 30_000) {
         preloadCache.delete(methodName + JSON.stringify(deps));
-        if (!cancelled) setSettled({ key, data: preloaded.data as T, error: null });
+        if (!cancelled) setSettled({ key, depsKey, data: preloaded.data as T, error: null });
         return () => {
           cancelled = true;
         };
@@ -409,10 +420,11 @@ export function useQuery<T>(
       const stale = staleResultCache.get(fetcherKey);
       if (stale && Date.now() - stale.resolvedAt < effectiveStaleTime) {
         if (stale.error === undefined) {
-          setSettled({ key, data: stale.data as T, error: null });
+          setSettled({ key, depsKey, data: stale.data as T, error: null });
         } else {
           setSettled({
             key,
+            depsKey,
             data: null,
             error: stale.error,
             unavailable: stale.unavailable,
@@ -444,7 +456,7 @@ export function useQuery<T>(
     (inflightCache.get(dedupKey) as Promise<T>)
       .then((data) => {
         if (!cancelled) {
-          setSettled({ key, data, error: null });
+          setSettled({ key, depsKey, data, error: null });
           if (effectiveStaleTime > 0) {
             staleResultCache.set(fetcherKey, { data, resolvedAt: Date.now() });
           }
@@ -469,7 +481,7 @@ export function useQuery<T>(
         if (!unavailable) noteQueryFailure(methodName, e);
         if (!cancelled) {
           const error = e instanceof Error ? e.message : "Something went wrong.";
-          setSettled({ key, data: null, error, unavailable });
+          setSettled({ key, depsKey, data: null, error, unavailable });
           if (effectiveStaleTime > 0) {
             staleResultCache.set(fetcherKey, { error, unavailable, resolvedAt: Date.now() });
           }
@@ -497,10 +509,22 @@ export function useQuery<T>(
           ? { status: "unavailable", data: null, error: fresh.error }
           : { status: "error", data: null, error: fresh.error }
         : { status: "ready", data: fresh.data as T, error: null };
-  } else if (settled && settled.error === null) {
-    // Revalidating: keep the last good answer on screen.
+  } else if (
+    settled &&
+    settled.error === null &&
+    settled.depsKey === depsKey
+  ) {
+    // Revalidating the SAME query — a mutation bumped the version, or `refetch`
+    // bumped the nonce, but the deps are unchanged. Keep the last good answer
+    // on screen so a single click does not blank every panel on the page.
     state = { status: "ready", data: settled.data as T, error: null };
   } else {
+    // Either nothing has settled yet, or the DEPS changed — this is a different
+    // query now (a task scope switched from "mine" to "team", a filter moved).
+    // The previous answer belongs to a different question: keeping it showed a
+    // "mine" result of zero tasks as an empty "team", so the list rendered "No
+    // tasks here" over 33 tasks that were still loading. Report loading and let
+    // the caller show its skeleton.
     state = { status: "loading", data: null, error: null };
   }
 

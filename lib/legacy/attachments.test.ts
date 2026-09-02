@@ -256,17 +256,20 @@ test("every route is authenticated, including the download", (t) => {
      cannot carry a token — acceptable only because those files are already
      public. These are not. */
   const src = code(ROUTE);
-  /* Five now — a health diagnostic joined them, and it is authenticated too:
-     it reports whether a credential is present and whether Drive answers,
-     which is infrastructure detail. */
+  /* Seven now — the resumable pair joined them: `/attachments/resumable-session`
+     opens a private direct-to-Drive session and `/attachments/finalize` records
+     it, and BOTH are authenticated and make the same `mayViewTask` check as the
+     multipart upload. That they are guarded is the whole point of this path: it
+     lets the browser upload straight to Google, so a route that skipped the
+     token would be an unguarded way to attach a private file. */
   const routes = src.match(/router\.(post|get|delete)\(/g) ?? [];
-  assert.equal(routes.length, 5);
+  assert.equal(routes.length, 7);
   /* Minus one for the import line — the earlier count included it and was
-     therefore satisfied by three guarded routes plus a destructure. */
+     therefore satisfied by the guarded routes plus a destructure. */
   const uses = (name: string) =>
     (src.match(new RegExp(name, "g")) ?? []).length - 1;
-  assert.equal(uses("verifyCoworkToken"), 5, "a route is missing authentication");
-  assert.equal(uses("verifyEmployeeToken"), 5);
+  assert.equal(uses("verifyCoworkToken"), 7, "a route is missing authentication");
+  assert.equal(uses("verifyEmployeeToken"), 7);
 });
 
 test("access follows the task's own visibility, not a new rule", (t) => {

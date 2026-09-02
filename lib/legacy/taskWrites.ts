@@ -107,6 +107,48 @@ export async function editTaskDetails(input: {
   });
 }
 
+/**
+ * `POST /cowork/task/:id/preassign-deadline/request` — the receiver's manager
+ * proposes a later deadline before the task is assigned. Body carries the ISO
+ * date and a reason; the engine records it and moves nothing.
+ */
+export async function requestPreAssignDeadline(input: {
+  token: string;
+  taskId: string;
+  proposedDueAt: string;
+  reason: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/preassign-deadline/request`,
+    method: "POST",
+    body: { proposedDueAt: input.proposedDueAt, reason: input.reason },
+    token: input.token,
+  });
+}
+
+/**
+ * `POST /cowork/task/:id/preassign-deadline/decide` — the creator answers the
+ * request: approve (the date moves), counter (offer another), or reject.
+ */
+export async function decidePreAssignDeadline(input: {
+  token: string;
+  taskId: string;
+  decision: "approve" | "reject" | "counter";
+  counterDueAt?: string;
+  reason?: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/preassign-deadline/decide`,
+    method: "POST",
+    body: {
+      decision: input.decision,
+      counterDueAt: input.counterDueAt,
+      reason: input.reason,
+    },
+    token: input.token,
+  });
+}
+
 /** `POST /cowork/task/:id/confirm` — the assignee acknowledges receipt. */
 export async function confirmTask(input: {
   token: string;

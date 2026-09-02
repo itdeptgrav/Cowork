@@ -461,7 +461,7 @@ export function MailCompose({
               <Button tone="ghost" size="sm" onClick={onClose}>
                 Cancel
               </Button>
-              <Button
+              <Button loading={state.isPending}
                 tone="primary"
                 size="sm"
                 disabled={!!refusal || state.isPending}

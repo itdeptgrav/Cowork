@@ -69,6 +69,7 @@ import {
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions } from "@/lib/hooks/usePermissions";
 import { tabBadges } from "@/lib/rules/tasks/tabBadges";
+import { pendingSubmissionCount } from "@/lib/rules/tasks/pendingSubmissions";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import { useMyDutyMode } from "@/lib/hooks/useDutyMode";
@@ -329,14 +330,32 @@ export function TaskDetail({
     seen: tabActivity.data?.seen,
     viewerId: me,
   });
-  const badgedTabs = tabs.map((t) => {
-    /* Never on the tab you are looking at: it is being read right now, and a
-       badge there would sit under your eyes until you navigated away. */
-    if (t.id === tab) return t;
-    const b = badges[t.id];
-    if (!b) return t;
-    return { ...t, count: b.count > 0 ? b.count : undefined, dot: b.dot };
-  });
+  /**
+   * A submission awaiting review is a STATE, not an event, so the Submission
+   * tab carries a count that persists until the decision is made — unlike the
+   * activity badges above, which clear the moment the tab is read. `in_review`
+   * with no decision means somebody's work is on a reviewer's desk; the reader
+   * should see that without opening the tab. See `pendingSubmissionCount`.
+   */
+  const pendingSubs = pendingSubmissionCount(v);
+  const badgedTabs = tabs
+    .map((t) => {
+      /* Never on the tab you are looking at: it is being read right now, and a
+         badge there would sit under your eyes until you navigated away. */
+      if (t.id === tab) return t;
+      const b = badges[t.id];
+      if (!b) return t;
+      return { ...t, count: b.count > 0 ? b.count : undefined, dot: b.dot };
+    })
+    .map((t) =>
+      /* Layered AFTER the activity badges so the pending-review count is
+         authoritative on Submission: it shows whether or not there is new
+         activity, and keeps showing after the tab has been read, for as long
+         as the submission is unresolved. */
+      t.id === "submission" && t.id !== tab && pendingSubs > 0
+        ? { ...t, count: pendingSubs }
+        : t,
+    );
 
   return (
     <>
@@ -1617,7 +1636,7 @@ function EffortEstimateForm({
             <InlineError message={state.error} />
           </div>
         )}
-        <Button
+        <Button loading={state.isPending}
           tone="primary"
           size="sm"
           /* The engine refuses `val <= 0`; refusing it here means the reader

@@ -210,7 +210,7 @@ export function RoleEditor({
       </div>
 
       <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
-        <Button
+        <Button loading={saveState.isPending}
           tone="primary"
           size="sm"
           disabled={!canEdit || !dirty || saveState.isPending}

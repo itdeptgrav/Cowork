@@ -153,7 +153,10 @@ test("an unauthorised download surfaces the engine's refusal", () => {
 
 test("upload and download both carry the bearer token", () => {
   const src = code(WIRE);
-  assert.equal((src.match(/Authorization/g) ?? []).length, 4);
+  /* Five now, not four: the resumable path adds one — the `auth` header shared
+     by the session-open and finalize calls — on top of the multipart upload,
+     the download and the list. Every path still carries the token. */
+  assert.equal((src.match(/Authorization/g) ?? []).length, 5);
 });
 
 test("a refusal is not offered a retry, a dropped connection is", () => {
@@ -526,4 +529,26 @@ test("the UI shows the failure rather than rendering nothing", () => {
   assert.match(src, /Unable to load files — \{error\}/);
   /* And an empty section still means genuinely zero files. */
   assert.match(src, /if \(files\.length === 0\) \{/);
+});
+
+/* ── EntityAttachments revalidates when the repository changes ─────────────── */
+
+test("EntityAttachments re-reads on a repository change, not only on entity change", () => {
+  /*
+   * The reported bug: submit with a file, and the Submission tab kept showing
+   * "No files attached" over the file that was now there. The section fetched
+   * once on `[repo, entityType, entityId]` and never revalidated — a file
+   * uploaded to the SAME entity bumps the repository version but not the id, so
+   * the read never re-ran. Including the version makes it behave like every
+   * other read in the app.
+   */
+  const src = code(COMPONENTS);
+  const at = src.indexOf("export function EntityAttachments");
+  const fn = src.slice(at, at + 2000);
+  assert.match(fn, /useSyncExternalStore\(\s*subscribeToRepository/);
+  assert.match(
+    fn,
+    /\[repo, entityType, entityId, version\]/,
+    "the effect does not depend on the repository version, so a new file will not appear",
+  );
 });
