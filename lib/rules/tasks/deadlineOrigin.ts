@@ -20,6 +20,8 @@
 export type ClockStartSource =
   | "hours_granted"
   | "first_online"
+  | "first_task"
+  | "self_approved"
   | "acceptance"
   | "after_priority_work";
 
@@ -40,6 +42,15 @@ export function clockStartReason(source: string | null): string | null {
       /* Not "when you accepted": sitting on an acceptance while online does not
          push the deadline later — that wait was the assignee's own. */
       return "when you first came online for it";
+    case "first_task":
+      /* Nothing else of theirs was open, so there was no work to sit on and the
+         gap before they took this on was never work time — the one case where
+         the clock waits for the person rather than the task. */
+      return "when you took it on, as you had nothing else open";
+    case "self_approved":
+      /* A self-assigned task they raised themselves: accepting says nothing,
+         because the approval is what released the work. */
+      return "when your manager approved it";
     case "acceptance":
       /* Accepted while not online, so the press itself is the first moment
          presence can be proven. */

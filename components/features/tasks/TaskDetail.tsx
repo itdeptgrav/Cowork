@@ -739,12 +739,22 @@ export function TaskDetail({
               `tab === "review"` still lands here: /tasks/:id/review is a URL
               people hold in bookmarks and notifications, and it now shows the
               tab that absorbed it rather than an empty column. */}
-          {(tab === "submission" || tab === "review") && (
-            <>
-              <SubmissionPanel view={v} onChange={refetch} />
-              <ReviewPanel view={v} onChange={refetch} />
-            </>
-          )}
+          {(tab === "submission" || tab === "review") &&
+            (tab === "review" ? (
+              /* The reviewer decides on the current work, so it leads: the
+                 submitted work and the decision up top, and the earlier attempts
+                 as history BELOW the decision rather than above it. */
+              <>
+                <ReviewPanel view={v} onChange={refetch} />
+                <SubmissionPanel view={v} onChange={refetch} historyOnly />
+              </>
+            ) : (
+              /* The submission tab leads with the composer, for the assignee. */
+              <>
+                <SubmissionPanel view={v} onChange={refetch} />
+                <ReviewPanel view={v} onChange={refetch} />
+              </>
+            ))}
           {tab === "meetings" && <TaskMeetingPanel view={v} />}
 
           {tab === "roadmap" && <GoalRoadmapPanel view={v} />}

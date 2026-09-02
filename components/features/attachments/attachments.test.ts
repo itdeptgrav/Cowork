@@ -135,6 +135,31 @@ test("every object URL is revoked", () => {
   );
 });
 
+test("a staged file can be previewed before it is submitted", () => {
+  /* Staged files are local `File`s with no id and nothing stored, so the
+     preview is drawn straight from an object URL — images in the lightbox, PDFs
+     in a tab. Offered only where a browser can actually show it. */
+  const src = code(COMPONENTS);
+  assert.match(src, /const canPreview = \(f: File\) =>/);
+  assert.match(src, /f\.type\.startsWith\("image\/"\) \|\| isPdf\(f\.type\)/);
+  /* The Preview control sits beside Remove on a staged row, gated on canPreview. */
+  assert.match(src, /canPreview\(f\) &&/);
+  assert.match(src, />\s*Preview\s*</);
+  /* Image → the shared lightbox; PDF → a new tab. */
+  assert.match(src, /<ImageLightbox url=\{preview\.url\}/);
+  assert.match(src, /window\.open\(url, "_blank"/);
+});
+
+test("the staged preview URL is owned once and freed once", () => {
+  /* One object URL, held in a ref and revoked in a single place — on close, on
+     the next preview, and on unmount — so nothing leaks and the create/revoke
+     balance above still holds. */
+  const src = code(COMPONENTS);
+  assert.match(src, /const previewUrlRef = useRef<string \| null>\(null\)/);
+  assert.match(src, /function cleanupPreviewUrl\(\)/);
+  assert.match(src, /useEffect\(\(\) => cleanupPreviewUrl, \[\]\)/);
+});
+
 test("a preview is fetched through the same checked path as a download", () => {
   /* A thumbnail that skipped the check would be the leak this system exists to
      prevent — which is also why `next/image` is disabled here: it re-fetches

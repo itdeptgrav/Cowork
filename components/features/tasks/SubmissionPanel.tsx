@@ -14,8 +14,10 @@ import { Icon } from "@/components/ui/Icons";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import {
   EntityAttachments,
+  FileList,
   FileUploader,
 } from "@/components/features/attachments/Attachments";
+import { clusterSubmissionAttempts } from "@/lib/rules/tasks/submissionAttempts";
 import { SubmittedFiles } from "./SubmittedFiles";
 import { OutputSubmitList } from "./OutputSubmitList";
 import { useViewerId } from "@/lib/hooks/usePermissions";
@@ -39,9 +41,17 @@ import type { TaskView } from "@/lib/repositories";
 export function SubmissionPanel({
   view,
   onChange,
+  historyOnly = false,
 }: {
   view: TaskView;
   onChange: () => void;
+  /**
+   * Render ONLY the earlier attempts, as a history section — no composer, no
+   * "current submission". The reviewer's screen wants the current work and the
+   * decision up top (that is `ReviewPanel`'s job) and the older attempts below
+   * it, so it renders this panel in history-only mode beneath the decision.
+   */
+  historyOnly?: boolean;
 }) {
   const me = useViewerId();
   const taskId = view.task.id;
@@ -113,6 +123,9 @@ export function SubmissionPanel({
 
   const [filing, setFiling] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  /* Previous attempts start shown — a rework cycle is exactly what a reviewer
+     opens this tab to read — with a control to fold them away. */
+  const [prevCollapsed, setPrevCollapsed] = useState(false);
 
   /**
    * A daily report needs its supporting documents; a submission does not.
@@ -181,6 +194,169 @@ export function SubmissionPanel({
   const canSubmit =
     isAssignee && !deliversByOutput && view.task.status === "in_progress";
   const latest = submissions.data?.[0];
+  const submissionId = latest?.id ?? null;
+
+  /**
+   * The pooled files on the single submission record.
+   *
+   * The engine keeps NO submission history — one `completionSubmission`,
+   * overwritten on every resubmit, its files all under one fixed id (see
+   * `listSubmissions`). So this one read returns every attempt's files mixed
+   * together, which is exactly why the tab used to read as one submission with
+   * two files. They are split back into attempts below, by upload time.
+   */
+  const pooled = useQuery(
+    (r) =>
+      submissionId
+        ? r
+            .getAttachments("submission", submissionId)
+            .then((res) => (res.ok ? res.data : []))
+        : Promise.resolve([]),
+    [submissionId, view.task.updatedAt],
+  );
+
+  /**
+   * The attempts, reconstructed. One submit uploads its files in a burst; a
+   * resubmission comes minutes later — so a gap between uploads (or a recorded
+   * rework) marks the boundary between attempts. Oldest first; the last is the
+   * current one. See `clusterSubmissionAttempts`.
+   */
+  const attempts = useMemo(
+    () =>
+      latest
+        ? clusterSubmissionAttempts(pooled.data ?? [], reworks.data ?? [])
+        : [],
+    [latest, pooled.data, reworks.data],
+  );
+
+  function renderAttempt(a: (typeof attempts)[number]) {
+    const { isCurrent, rework } = a;
+    const kind = a.attempt === 1 ? "Initial submission" : "Resubmission";
+    /* The current attempt's status follows the task; an earlier attempt was
+       superseded by a later submit, which only happens after it is sent back —
+       so it reads "Rework requested" whether or not a rework record survived to
+       name the reason. */
+    const status = isCurrent
+      ? view.task.status === "completed"
+        ? { label: "Approved", tone: "positive" as const }
+        : view.task.status === "in_review"
+          ? { label: "Under review", tone: "extension" as const }
+          : { label: "Submitted", tone: "neutral" as const }
+      : { label: "Rework requested", tone: "rework" as const };
+    /* A coloured left edge signals which is which at a glance — the current
+       attempt in the review tone, a reworked one in the rework tone. */
+    const accent = isCurrent
+      ? "var(--state-extension)"
+      : "var(--state-rework)";
+    /* The current attempt carries the submission's real time; an earlier one has
+       none on the record, so its header falls back to its last file's upload. */
+    const stamp = isCurrent
+      ? (latest?.submittedAt ?? null)
+      : (a.files
+          .map((f) => f.uploadedAt ?? "")
+          .filter(Boolean)
+          .sort()
+          .at(-1) ?? null);
+    return (
+      <div
+        key={a.attempt}
+        className="rounded-xl border border-hairline border-l-2 p-4"
+        style={{ borderLeftColor: accent }}
+      >
+        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+          <span className="text-sm font-medium text-ink">Attempt {a.attempt}</span>
+          <span className="text-xs text-ink-faint">· {kind}</span>
+          {isCurrent ? <Chip tone="extension">Latest</Chip> : <Chip>Previous</Chip>}
+          {stamp && (
+            <span className="ml-auto text-xs text-ink-faint">
+              {formatDateTime(stamp)}
+            </span>
+          )}
+        </div>
+
+        <div className="mt-2 flex items-center gap-2">
+          <span className="text-xs text-ink-faint">Status</span>
+          <Chip tone={status.tone}>{status.label}</Chip>
+        </div>
+
+        {/* This attempt's files — split out of the pooled record by upload time,
+            so what was sent first is no longer mixed with what was sent after. */}
+        <p className="mt-3 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+          Submitted files ({a.files.length})
+        </p>
+        {a.files.length > 0 ? (
+          <FileList attachments={a.files} />
+        ) : (
+          <p className="mt-2 text-xs text-ink-faint">No files on this attempt.</p>
+        )}
+        {/* Legacy URL attachments (old application) sit on the record itself, not
+            in the file service, and cannot be dated — so they show on current. */}
+        {isCurrent && latest && (
+          <SubmittedFiles files={latest.attachments} label="Also attached" />
+        )}
+
+        {isCurrent && latest?.message && (
+          <div className="mt-3">
+            <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+              Notes
+            </p>
+            <p className="mt-1 text-sm text-ink-muted">{latest.message}</p>
+          </div>
+        )}
+
+        {rework && (
+          <div className="mt-3 rounded-lg border border-hairline bg-[var(--surface-sunken)] p-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="flex items-center gap-1.5 text-xs font-medium text-ink">
+                <Icon.chat className="h-3.5 w-3.5" />
+                Reviewer feedback
+              </span>
+              {rework.deductionWaived && (
+                <Chip tone="positive">Deduction waived</Chip>
+              )}
+              <span className="ml-auto text-xs text-ink-faint">
+                {formatDateTime(rework.requestedAt)}
+              </span>
+            </div>
+            <p className="mt-1.5 text-sm text-ink">{rework.reason}</p>
+            {rework.newDueAt && (
+              <p className="mt-1 text-xs text-ink-faint">
+                Deadline re-granted to {formatDateTime(rework.newDueAt)} — you
+                keep the time you had left when you submitted.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* History-only: just the earlier attempts, for the reviewer's screen where the
+     current work and the decision live above (in `ReviewPanel`). Nothing to show
+     until there has BEEN an earlier attempt — a first submission has no history,
+     so this renders nothing rather than an empty box. */
+  if (historyOnly) {
+    const previous = attempts.slice(0, -1);
+    if (submissions.isLoading || pooled.isLoading || previous.length === 0) {
+      return null;
+    }
+    return (
+      <div className="flex flex-col gap-4">
+        <section>
+          <div className="mb-2 flex items-center gap-2">
+            <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+              Previous submissions
+            </p>
+            <Chip>{previous.length}</Chip>
+          </div>
+          <div className="flex flex-col gap-3">
+            {/* Newest previous attempt first — nearest the current one. */}
+            {[...previous].reverse().map((a) => renderAttempt(a))}
+          </div>
+        </section>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -197,42 +373,6 @@ export function SubmissionPanel({
          */
         <OutputSubmitList view={view} viewerId={me} onChange={onChange} />
       )}
-      {reworks.data && reworks.data.length > 0 && (
-        <Panel>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-medium text-ink">Rework requested</h2>
-            <Chip tone="rework">{reworks.data.length}×</Chip>
-          </div>
-          <ul className="mt-3 space-y-2.5">
-            {reworks.data.map((rw) => (
-              <li
-                key={rw.id}
-                className="border-t border-hairline pt-2.5 first:border-0 first:pt-0"
-              >
-                <div className="flex items-baseline gap-2">
-                  <span className="text-xs text-ink-faint">
-                    Rework #{rw.occurrence}
-                  </span>
-                  <span className="text-xs text-ink-faint">
-                    {formatDateTime(rw.requestedAt)}
-                  </span>
-                  {rw.deductionWaived && (
-                    <Chip tone="positive">Deduction waived</Chip>
-                  )}
-                </div>
-                <p className="mt-1 text-sm text-ink">{rw.reason}</p>
-                {rw.newDueAt && (
-                  <p className="mt-1 text-xs text-ink-faint">
-                    Deadline re-granted to {formatDateTime(rw.newDueAt)} — you
-                    keep the time you had left when you submitted.
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-        </Panel>
-      )}
-
       {canSubmit ? (
         <Panel>
           <h2 className="text-sm font-medium text-ink">
@@ -398,58 +538,104 @@ export function SubmissionPanel({
         </Panel>
       )}
 
-      <Panel padded={false}>
-        <div className="flex items-center gap-2 border-b border-hairline px-5 py-3">
-          <h2 className="text-sm font-medium text-ink">Attempts</h2>
-          <span data-figure className="text-xs text-ink-faint">
-            {submissions.data?.length ?? 0}
-          </span>
-        </div>
-        {submissions.isLoading ? (
-          <div className="px-5 py-3">
-            <SkeletonRows rows={2} />
-          </div>
-        ) : !submissions.data?.length ? (
-          <p className="px-5 py-4 text-sm text-ink-faint">Not yet submitted.</p>
+      {/* Submissions, split back into attempts so a rework cycle reads as a
+          sequence — what was sent first, what came after the rework — rather
+          than one merged pile of files. The current attempt is shown in full;
+          earlier ones sit below, foldable, each carrying the feedback that sent
+          it back. */}
+      {submissions.isLoading || pooled.isLoading ? (
+        <Panel>
+          <SkeletonRows rows={2} />
+        </Panel>
+      ) : deliversByOutput ? (
+        /* Output tasks submit per output, so each submission is one output's
+           attempt and keeps its own id — the rework-boundary reconstruction
+           does not apply. They are listed as they are, each naming its output. */
+        !submissions.data?.length ? (
+          <Panel>
+            <p className="text-sm text-ink-faint">Not yet submitted.</p>
+          </Panel>
         ) : (
-          <div className="divide-y divide-hairline">
+          <div className="flex flex-col gap-3">
             {submissions.data.map((s) => (
-              <div key={s.id} className="px-5 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* **Which output, where there is one.** A task delivering
-                      three outputs listed three rows reading "Attempt 1", and
-                      the person who submitted them could not tell which was
-                      which — the one question this list exists to answer. */}
-                  <span className="text-sm text-ink">
+              <div key={s.id} className="rounded-xl border border-hairline p-4">
+                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1.5">
+                  <span className="text-sm font-medium text-ink">
                     {s.outputId
                       ? (view.task.outputs.find((o) => o.id === s.outputId)
                           ?.label ?? "Output")
-                      : "Attempt"}{" "}
-                    {s.outputId ? `· attempt ${s.attempt}` : s.attempt}
+                      : "Output"}{" "}
+                    · attempt {s.attempt}
                   </span>
                   {s.wasLate && <Chip tone="overdue">Late</Chip>}
-                  {s.supersededById && <Chip>Superseded</Chip>}
                   <span className="ml-auto text-xs text-ink-faint">
                     {formatDateTime(s.submittedAt)}
                   </span>
                 </div>
-                <p className="mt-1.5 text-sm text-ink-muted">{s.message}</p>
-                {/* Both origins, exactly as the reviewer sees them — Cowork's
-                    uploader writes to the attachment service, the old
-                    application wrote URLs onto the task record. A chip carrying
-                    the raw URL as text stood here before: unreadable, and not a
-                    link, so the file could be neither identified nor opened. */}
                 <EntityAttachments
                   entityType="submission"
                   entityId={s.id}
-                  title="Attached"
+                  title="Submitted files"
                 />
                 <SubmittedFiles files={s.attachments} label="Also attached" />
+                {s.message && (
+                  <p className="mt-2 text-sm text-ink-muted">{s.message}</p>
+                )}
               </div>
             ))}
           </div>
-        )}
-      </Panel>
+        )
+      ) : attempts.length === 0 ? (
+        <Panel>
+          <p className="text-sm text-ink-faint">Not yet submitted.</p>
+        </Panel>
+      ) : (
+        <>
+          <section>
+            <p className="mb-2 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+              Current submission
+            </p>
+            {renderAttempt(attempts[attempts.length - 1])}
+          </section>
+
+          {attempts.length > 1 && (
+            <section>
+              {/* The break Pic 2 draws — "previous submissions below". */}
+              <div className="mb-3 flex items-center gap-3 text-xs text-ink-faint">
+                <span className="h-px flex-1 bg-[var(--color-hairline)]" />
+                <span>Previous submissions below</span>
+                <span className="h-px flex-1 bg-[var(--color-hairline)]" />
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setPrevCollapsed((c) => !c)}
+                aria-expanded={!prevCollapsed}
+                className="mb-2 flex w-full items-center gap-2 text-left text-ink-muted transition-colors hover:text-ink"
+              >
+                <span className="text-[11px] tracking-[0.09em] uppercase">
+                  Previous submissions
+                </span>
+                <Chip>{attempts.length - 1}</Chip>
+                <span className="ml-auto flex items-center gap-1 text-xs">
+                  {prevCollapsed ? "Show" : "Collapse"}
+                  {prevCollapsed ? <Icon.chevronRight /> : <Icon.chevronDown />}
+                </span>
+              </button>
+
+              {!prevCollapsed && (
+                <div className="flex flex-col gap-3">
+                  {/* Newest previous attempt first — nearest the current one. */}
+                  {attempts
+                    .slice(0, -1)
+                    .reverse()
+                    .map((a) => renderAttempt(a))}
+                </div>
+              )}
+            </section>
+          )}
+        </>
+      )}
     </div>
   );
 }

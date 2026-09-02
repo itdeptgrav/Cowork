@@ -32,6 +32,7 @@ const FORM = strip("components/features/tasks/OutputHandoverForm.tsx");
 const OUTPUTS = strip("components/features/tasks/OutputsPanel.tsx");
 const SUBMISSION = strip("components/features/tasks/SubmissionPanel.tsx");
 const REVIEW = strip("components/features/tasks/ReviewPanel.tsx");
+const DETAIL = strip("components/features/tasks/TaskDetail.tsx");
 const REPO = strip("lib/repositories/legacy/index.ts");
 const MOCK = strip("lib/repositories/mock/index.ts");
 const TYPES = strip("lib/repositories/types.ts");
@@ -240,7 +241,59 @@ test("the reviewer's panel renders what arrived", () => {
 
 test("the attempts list names which output it is about", () => {
   /* Three outputs listed three rows reading "Attempt 1", and the person who
-     submitted them could not tell which was which. */
+     submitted them could not tell which was which. Each attempt card names its
+     output (from `s.outputId`) ahead of the attempt number. */
   assert.match(SUBMISSION, /s\.outputId/);
-  assert.match(SUBMISSION, /attempt \$\{s\.attempt\}/);
+  assert.match(SUBMISSION, /outputs\.find\(\(o\) => o\.id === s\.outputId\)/);
+  assert.match(SUBMISSION, /· attempt \{s\.attempt\}/);
+});
+
+test("submissions are grouped: the current attempt, then previous ones", () => {
+  /* The whole point of the redesign — a rework cycle reads as distinct attempts,
+     not one merged pile of files, so a reviewer can tell what was sent first
+     from what was sent after the rework. */
+  assert.match(SUBMISSION, /Current submission/);
+  assert.match(SUBMISSION, /Previous submissions/);
+  assert.match(SUBMISSION, /renderAttempt\(attempts\[attempts\.length - 1\]\)/);
+  assert.match(SUBMISSION, /attempts\s*\.slice\(0, -1\)\s*\.reverse\(\)\s*\.map\(\(a\) => renderAttempt\(a\)\)/);
+});
+
+test("the pooled files are split back into attempts by rework boundary", () => {
+  /* The engine keeps one submission and pools every resubmission's files under
+     it, so the attempts are reconstructed from upload time against the reworks
+     rather than read from a history the engine does not keep. */
+  assert.match(SUBMISSION, /clusterSubmissionAttempts\(pooled\.data \?\? \[\], reworks\.data \?\? \[\]\)/);
+  assert.match(SUBMISSION, /getAttachments\("submission", submissionId\)/);
+  /* Each attempt renders ITS files, not the whole pool. */
+  assert.match(SUBMISSION, /<FileList attachments=\{a\.files\}/);
+});
+
+test("on the review tab, history sits BELOW the decision", () => {
+  /* The reviewer's screen leads with the current work and the decision
+     (ReviewPanel), and the earlier attempts follow as history-only below it —
+     not above, where they used to sit. */
+  assert.match(DETAIL, /tab === "review" \? \(/);
+  assert.match(
+    DETAIL,
+    /<ReviewPanel[\s\S]*?<SubmissionPanel view=\{v\} onChange=\{refetch\} historyOnly/,
+  );
+});
+
+test("history-only mode shows just the previous attempts, no composer", () => {
+  assert.match(SUBMISSION, /historyOnly = false/);
+  assert.match(SUBMISSION, /if \(historyOnly\) \{/);
+  assert.match(SUBMISSION, /const previous = attempts\.slice\(0, -1\);/);
+  /* Nothing to show for a first submission — renders null, not an empty box. */
+  assert.match(SUBMISSION, /previous\.length === 0\s*\)?\s*\)?\s*\{?\s*[\s\S]*?return null/);
+});
+
+test("each attempt carries its own status, notes and reviewer feedback", () => {
+  /* Feedback is the rework that ENDED the attempt (a.rework), folded into the
+     card rather than a separate top panel divorced from the files it judged. */
+  assert.match(SUBMISSION, /const \{ isCurrent, rework \} = a;/);
+  assert.match(SUBMISSION, /Reviewer feedback/);
+  assert.match(SUBMISSION, /Initial submission/);
+  assert.match(SUBMISSION, /Resubmission/);
+  assert.match(SUBMISSION, /Under review/);
+  assert.match(SUBMISSION, /Rework requested/);
 });

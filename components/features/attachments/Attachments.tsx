@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useRepo } from "@/lib/hooks/useRepository";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import {
   getRepositoryVersion,
   subscribeToRepository,
@@ -327,8 +328,49 @@ export function FileUploader({
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState<Pending[]>([]);
+  /* A staged file being previewed in the lightbox, or null. Staged files are
+     local `File`s that have not been uploaded, so the preview is drawn straight
+     from an object URL of the file in hand — nothing is fetched or stored. */
+  const [preview, setPreview] = useState<{ url: string; name: string } | null>(
+    null,
+  );
+  /* The one live preview object URL, held in a ref so it can be freed exactly
+     once — on close, on opening the next preview, or on unmount — no matter
+     which happens. `cleanupPreviewUrl` is the single place it is revoked, so
+     every `createObjectURL` here has one matching `revokeObjectURL`. */
+  const previewUrlRef = useRef<string | null>(null);
+  function cleanupPreviewUrl() {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  }
 
   const isStaging = entityId === null;
+
+  /** What can be shown before submitting: an image inline, a PDF in a tab. */
+  const canPreview = (f: File) =>
+    f.type.startsWith("image/") || isPdf(f.type);
+  function openPreview(f: File) {
+    cleanupPreviewUrl();
+    const url = URL.createObjectURL(f);
+    previewUrlRef.current = url;
+    /* A PDF opens in its own tab — the browser's viewer reads it better than an
+       inline frame, and this is the person's own file, in hand. The URL stays
+       live so the tab can load it, and is freed by `cleanupPreviewUrl` on the
+       next preview or unmount. */
+    if (isPdf(f.type)) {
+      window.open(url, "_blank", "noopener");
+      return;
+    }
+    setPreview({ url, name: f.name });
+  }
+  function closePreview() {
+    cleanupPreviewUrl();
+    setPreview(null);
+  }
+  /* Never leak the object URL if the panel unmounts with a preview open. */
+  useEffect(() => cleanupPreviewUrl, []);
 
   async function send(files: FileList | File[]) {
     /* No id to attach to yet: hold the files and let the caller send them once
@@ -475,6 +517,15 @@ export function FileUploader({
               <span data-figure className="text-[11px] text-ink-faint">
                 {formatBytes(f.size)}
               </span>
+              {canPreview(f) && (
+                <button
+                  type="button"
+                  onClick={() => openPreview(f)}
+                  className="text-[12px] text-ink-faint underline decoration-[var(--hairline)] underline-offset-2 hover:text-ink"
+                >
+                  Preview
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() =>
@@ -487,6 +538,11 @@ export function FileUploader({
             </li>
           ))}
         </ul>
+      )}
+
+      {/* Preview of a staged image, before it is ever submitted. */}
+      {preview && (
+        <ImageLightbox url={preview.url} alt={preview.name} onClose={closePreview} />
       )}
 
       {!isStaging && (

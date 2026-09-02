@@ -28,6 +28,10 @@ import {
 } from "@/components/features/messages/MessageContextMenu";
 import { MessageTicks } from "@/components/features/messages/MessageTicks";
 import { ChangeEventCard } from "./ChangeEventCard";
+import { ReworkEventCard } from "./ReworkEventCard";
+import { SubmissionEventCard } from "./SubmissionEventCard";
+import { parseReworkNotice } from "@/lib/rules/tasks/reworkNotice";
+import { parseSubmissionNotice } from "@/lib/rules/tasks/submissionNotice";
 import { formatClock, formatDate, formatDateTime } from "@/lib/utils/format";
 import { clearDraft, readDraft, saveDraft } from "@/components/features/messages/draftStorage";
 import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
@@ -752,6 +756,12 @@ export function ChatPanel({
             const person = people?.find((p) => p.id === m.senderId);
             const deleted = m.isDeleted === true;
             const attachments = m.attachments ?? [];
+            /* The engine posts a submission AS the submitter, so it arrives as a
+               personal bubble; recognised here so it renders as an event card
+               instead. Not for a deleted message — that is a tombstone. */
+            const submissionNotice = deleted
+              ? null
+              : parseSubmissionNotice(m.text);
 
             /* A run is one person talking without interruption. The avatar
                leads it and the time closes it, so a fast exchange is not a
@@ -787,17 +797,59 @@ export function ChatPanel({
                 )}
 
                 {system ? (
-                  /* The engine's own record. A requirement/ET change renders as
-                     a card people notice — it rewrites the brief of live work;
-                     everything else (an approval, a deadline decision) stays the
-                     quiet centred line. `ChangeEventCard` decides which, from the
-                     message text, and falls back to the quiet line itself.
-                     `by`/`at` give it the same who-and-when a message carries —
-                     the sender's name resolved to a person where we have one. */
-                  <ChangeEventCard
-                    text={m.text}
-                    by={person?.displayName ?? m.senderName}
+                  (() => {
+                    /* A rework line is a decision about the work AND the score,
+                       so it gets its own card — reason plus the deduction
+                       outcome, pulled from the matching rework record. Every
+                       other system line (approval, deadline decision, a
+                       requirement/ET change) still goes to `ChangeEventCard`. */
+                    const notice = parseReworkNotice(m.text);
+                    if (notice) {
+                      return (
+                        <ReworkEventCard
+                          byName={notice.byName || m.senderName}
+                          occurrence={notice.occurrence}
+                          reason={notice.reason}
+                          at={m.createdAt}
+                          /* The outcome rides on the message itself — the
+                             points are the admin-set value the engine wrote
+                             there, never a hardcoded number here. Unused when
+                             there is no deduction (the card omits the line). */
+                          deductionWaived={
+                            notice.deduction ? notice.deduction.waived : null
+                          }
+                          deductionPoints={notice.deduction?.points ?? 0}
+                        />
+                      );
+                    }
+                    /* `by`/`at` give the card the same who-and-when a message
+                       carries — the sender resolved to a person where we have
+                       one. */
+                    return (
+                      <ChangeEventCard
+                        text={m.text}
+                        by={person?.displayName ?? m.senderName}
+                        at={m.createdAt}
+                      />
+                    );
+                  })()
+                ) : submissionNotice ? (
+                  /* A submission is a milestone, not a chat line — a centred
+                     event card, with the note and any proof, rather than a
+                     personal bubble that reads like the submitter typed it. */
+                  <SubmissionEventCard
+                    byName={person?.displayName ?? m.senderName}
+                    note={submissionNotice.note}
                     at={m.createdAt}
+                    attachments={
+                      attachments.length > 0 ? (
+                        <MessageAttachments
+                          items={attachments}
+                          mine={false}
+                          onOpenImage={(li) => openImage(m.id, li)}
+                        />
+                      ) : null
+                    }
                   />
                 ) : (
                   <div

@@ -31,7 +31,10 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  CarouselLayout,
   ControlBar,
+  FocusLayout,
+  FocusLayoutContainer,
   GridLayout,
   LiveKitRoom,
   ParticipantTile,
@@ -869,11 +872,55 @@ function GuestStage() {
     ],
     { onlySubscribed: false },
   );
+  /**
+   * **A shared screen takes the large slot, on its own.**
+   *
+   * An equal grid is the wrong shape the moment somebody shares: the thing
+   * everyone joined to look at gets the same few hundred pixels as a face,
+   * and text on a shared document is unreadable at that size. `RoomStage`
+   * has promoted a share for Cowork people all along — a guest was the one
+   * reader left squinting at it in a tile.
+   *
+   * **Automatic, with no control beside it, and that is deliberate.** A
+   * guest has no tile menu — nothing here is pinnable, hideable or
+   * silenceable by them — so the layout has to be right on its own rather
+   * than offering a fix. When the share ends the grid simply returns.
+   */
+  const share =
+    tracks.find((t) => t.source === Track.Source.ScreenShare) ?? null;
+  /* The sharer's own camera stays in the strip: they are still a person in
+     the room, and only their SHARE has been promoted. Matched on identity
+     AND source so the one track that moved is the one removed. */
+  const others = share
+    ? tracks.filter(
+        (t) =>
+          t.participant.identity !== share.participant.identity ||
+          t.source !== share.source,
+      )
+    : [];
+
   return (
     <div className="min-h-0 flex-1 p-2">
-      <GridLayout tracks={tracks} className="h-full">
-        <ParticipantTile />
-      </GridLayout>
+      {share ? (
+        /**
+         * **Carousel FIRST, focus second.** The container's contract, not a
+         * style choice: it expects the small side component before the large
+         * main one. Written the other way round it silently swaps them — the
+         * share lands in the thumbnail strip and a face fills the screen,
+         * which is the exact opposite of the point. `RoomStage` carries the
+         * same warning for the same reason.
+         */
+        <FocusLayoutContainer className="h-full">
+          <CarouselLayout tracks={others}>
+            <ParticipantTile />
+          </CarouselLayout>
+          <FocusLayout trackRef={share} />
+        </FocusLayoutContainer>
+      ) : (
+        <GridLayout tracks={tracks} className="h-full">
+          <ParticipantTile />
+        </GridLayout>
+      )}
     </div>
   );
 }

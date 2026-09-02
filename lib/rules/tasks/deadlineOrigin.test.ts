@@ -173,3 +173,42 @@ test("an unknown source still shows the date, without a reason", () => {
   assert.equal(o?.reason, null);
   assert.equal(o?.startedAt, "2026-08-17T07:53:42.433Z");
 });
+
+/* ── The first task for a person ───────────────────────────────────────────── */
+
+test("a first task says the clock waited for the person, not the task", () => {
+  /* `first_online` and `first_task` differ by WHOSE wait it was, and the date on
+     screen is otherwise identical — so the reason is the only thing telling the
+     two apart. Falling through to null would leave the one deadline that moved
+     as the one with no explanation. */
+  const reason = clockStartReason("first_task");
+  assert.ok(reason, "a first-task anchor has no reason on screen");
+  assert.match(reason!, /nothing else open/i);
+  assert.notEqual(reason, clockStartReason("first_online"));
+});
+
+test("a self-assigned task approved by a manager says so", () => {
+  const reason = clockStartReason("self_approved");
+  assert.ok(reason, "a self-approved anchor has no reason on screen");
+  assert.match(reason!, /approved/i);
+});
+
+test("every source the engine can stamp has words", () => {
+  /* The engine writes these five; any one without a reason renders a date with
+     no explanation, which is the state this file exists to prevent. */
+  for (const s of [
+    "hours_granted",
+    "first_online",
+    "first_task",
+    "self_approved",
+    "acceptance",
+    "after_priority_work",
+  ]) {
+    assert.ok(clockStartReason(s), `${s} has no reason`);
+  }
+});
+
+test("an unknown source is still null rather than invented", () => {
+  assert.equal(clockStartReason("something_else"), null);
+  assert.equal(clockStartReason(null), null);
+});
