@@ -118,8 +118,17 @@ export interface LegacyTaskDoc {
    */
   originalAssignedBy?: string;
 
-  /** The engine's submission record. `submittedBy` is who filed it. */
-  completionSubmission?: { submittedBy?: string } | null;
+  /**
+   * The engine's submission record. `submittedBy` is who filed it, and
+   * `submittedAt` is WHEN — which decides whether the work met its
+   * deadline. The engine has always written it (`taskTabSeen.routes.js`
+   * reads `completionSubmission.submittedAt`); this type simply never
+   * declared it, so nothing on this side could ask.
+   */
+  completionSubmission?: {
+    submittedBy?: string;
+    submittedAt?: unknown;
+  } | null;
 
   /** Assignees who have acknowledged receipt. `confirmTaskReceipt` appends. */
   confirmedBy?: string[];
@@ -600,6 +609,8 @@ export interface LegacyTask {
   }[];
   /** Who filed the completion submission, when one exists. */
   submittedById: string | null;
+  /** When the work was handed in, in ms. Null when nothing has been. */
+  submittedAtMs: number | null;
   /** Whether the assignee raised this task themselves, for an approver to clear. */
   isSelfAssigned: boolean;
   /** Extra viewers on a self-assigned task. */
@@ -1027,6 +1038,10 @@ export function readTask(doc: LegacyTaskDoc): LegacyTask | null {
           }))
       : [],
     submittedById: doc.completionSubmission?.submittedBy ?? null,
+    /* The instant the work was handed in. `readInstant` because the engine
+       writes this key as a Firestore timestamp, an ISO string or a number
+       depending on which path filed it. */
+    submittedAtMs: readInstant(doc.completionSubmission?.submittedAt),
     isSelfAssigned: doc.isSelfAssigned === true,
     visibleTo: Array.isArray(doc.visibleTo) ? doc.visibleTo.filter(Boolean) : [],
     hasTimer: doc.hasTimer === true,

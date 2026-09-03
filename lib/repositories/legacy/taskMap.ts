@@ -18,6 +18,7 @@ import {
 import { getPersonPriority } from "../../rules/tasks/priority.ts";
 import { resolveTimeBudget } from "../../rules/tasks/resolveTimeBudget.ts";
 import { readGoalBased } from "../../rules/projects/goalBased.ts";
+import { handedInAt, taskOverdue } from "../../rules/tasks/overdue.ts";
 import type { TaskView } from "@/lib/repositories/types";
 import type { LegacyTask } from "@/lib/legacy/tasks";
 import { LEGACY_ORGANISATION_ID } from "./map.ts";
@@ -1099,7 +1100,25 @@ export function toTaskView(input: {
     reworkCount: Array.isArray(legacy.reworkHistory)
       ? legacy.reworkHistory.length
       : 0,
-    isOverdue: dueAtMs !== null && !terminal && dueAtMs < input.nowMs,
+    /**
+     * **Judged at the hand-in, not at the moment somebody looks.**
+     *
+     * This was `dueAtMs < input.nowMs`, so work submitted on Tuesday for a
+     * Wednesday deadline grew an Overdue chip on Thursday while it sat in
+     * a reviewer's queue — accusing the assignee of being late for a
+     * hand-in they had made early, with nothing they could do about it.
+     * See `lib/rules/tasks/overdue.ts` for what is deliberately unchanged:
+     * late work stays late, and work sent back is live again.
+     */
+    isOverdue: taskOverdue({
+      dueAtMs,
+      nowMs: input.nowMs,
+      terminal,
+      handedInAtMs: handedInAt({
+        status: task.status,
+        submittedAtMs: legacy.submittedAtMs,
+      }),
+    }),
     /*
      * How many children this task holds.
      *

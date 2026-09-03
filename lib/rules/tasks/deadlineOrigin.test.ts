@@ -5,6 +5,7 @@ import {
   clockStartReason,
   deadlineOrigin,
   formatWindow,
+  referenceTimes,
 } from "./deadlineOrigin.ts";
 
 /**
@@ -138,7 +139,19 @@ test("the line carries the instant alone — no rule name, no arithmetic", () =>
       `the history renders ${shown} — the owner asked for the date alone`,
     );
   }
-  assert.match(history, /formatDateTime\(origin\.startedAt\)/);
+  /**
+   * **The "one line, the instant alone" half of that decision was superseded.**
+   *
+   * It held while the panel showed a single instant. Once a deadline could be
+   * counted from a moment that is NOT the creation — accepted, approved, hours
+   * granted — one bare date could no longer answer the question a reader has,
+   * because nothing on screen said which of the two it was. The owner asked for
+   * both instants, with the one that counted marked.
+   *
+   * What did NOT change, and is what the loop above still holds: the window and
+   * the rule name stay out. The panel shows instants, never arithmetic.
+   */
+  assert.match(history, /formatDateTime\(r\.at\)/);
 });
 
 test("a deadline pushed by the queue says so", () => {
@@ -211,4 +224,127 @@ test("every source the engine can stamp has words", () => {
 test("an unknown source is still null rather than invented", () => {
   assert.equal(clockStartReason("something_else"), null);
   assert.equal(clockStartReason(null), null);
+});
+
+/* ── The two instants a reader compares ────────────────────────────────────── */
+
+const CREATED = "2026-09-02T07:30:00.000Z"; // 1:00 PM IST
+const ACCEPTED = "2026-09-02T08:00:00.000Z"; // 1:30 PM IST
+
+test("both times are listed, and only the one that counted is marked", () => {
+  /* The whole point of showing two: without the creation there is no way to
+     see the anchor moved, and without the anchor the date is unexplainable. */
+  const rows = referenceTimes({
+    createdAt: CREATED,
+    clockStartsAt: ACCEPTED,
+    clockStartsAtSource: "first_task",
+  });
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((r) => [r.label, r.isReference]),
+    [
+      ["Created", false],
+      ["Accepted", true],
+    ],
+  );
+});
+
+test("the earlier instant is listed first", () => {
+  /* Chronological, so the reader follows the task forward to the moment that
+     counted rather than reading the answer before the question. */
+  const rows = referenceTimes({
+    createdAt: CREATED,
+    clockStartsAt: ACCEPTED,
+    clockStartsAtSource: "acceptance",
+  });
+  assert.equal(rows[0].at, CREATED);
+  assert.equal(rows[1].at, ACCEPTED);
+});
+
+test("exactly one row is ever the reference", () => {
+  for (const src of [
+    "first_task",
+    "self_approved",
+    "hours_granted",
+    "first_online",
+    "acceptance",
+    "after_priority_work",
+    null,
+  ]) {
+    const rows = referenceTimes({
+      createdAt: CREATED,
+      clockStartsAt: ACCEPTED,
+      clockStartsAtSource: src,
+    });
+    assert.equal(
+      rows.filter((r) => r.isReference).length,
+      1,
+      `${src} produced ${rows.filter((r) => r.isReference).length} references`,
+    );
+  }
+});
+
+test("an anchor at the creation is ONE row, not two identical ones", () => {
+  /* A task accepted by somebody already online anchors exactly at its creation.
+     Printing that twice invites a hunt for a difference that is not there. */
+  const rows = referenceTimes({
+    createdAt: CREATED,
+    clockStartsAt: CREATED,
+    clockStartsAtSource: "first_online",
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].label, "Created");
+  assert.equal(rows[0].isReference, true);
+});
+
+test("a second apart is the same instant written by two clocks", () => {
+  const rows = referenceTimes({
+    createdAt: CREATED,
+    clockStartsAt: "2026-09-02T07:30:00.900Z",
+    clockStartsAtSource: "first_online",
+  });
+  assert.equal(rows.length, 1);
+});
+
+test("each rule names its own moment", () => {
+  const labelFor = (src: string) =>
+    referenceTimes({
+      createdAt: CREATED,
+      clockStartsAt: ACCEPTED,
+      clockStartsAtSource: src,
+    }).find((r) => r.isReference)!.label;
+
+  assert.equal(labelFor("first_task"), "Accepted");
+  assert.equal(labelFor("self_approved"), "Approved");
+  assert.equal(labelFor("hours_granted"), "Hours granted");
+  assert.equal(labelFor("first_online"), "Came online");
+  assert.equal(labelFor("after_priority_work"), "Earlier work finished");
+});
+
+test("an older task with no anchor still shows when it was created", () => {
+  const rows = referenceTimes({
+    createdAt: CREATED,
+    clockStartsAt: null,
+    clockStartsAtSource: null,
+  });
+  assert.deepEqual(rows, [{ label: "Created", at: CREATED, isReference: true }]);
+});
+
+test("nothing to say is said as nothing", () => {
+  assert.deepEqual(
+    referenceTimes({ createdAt: null, clockStartsAt: null, clockStartsAtSource: null }),
+    [],
+  );
+  assert.deepEqual(
+    referenceTimes({ createdAt: "not a date", clockStartsAt: "", clockStartsAtSource: null }),
+    [],
+  );
+});
+
+test("the panel renders the reference in bold and the other faint", () => {
+  /* The rule deciding correctly is worth nothing if the panel renders both the
+     same — the mark IS the answer to "which time was used". */
+  const src = readFileSync("components/features/tasks/BudgetHistory.tsx", "utf8");
+  assert.match(src, /referenceTimes\(/);
+  assert.match(src, /r\.isReference \? "font-medium text-ink" : "text-ink-faint"/);
 });

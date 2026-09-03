@@ -1423,6 +1423,8 @@ function FactsRail({
             <BudgetHistory
               taskId={v.task.id}
               countedFrom={v.task.deadline.clockStartsAt}
+              countedFromSource={v.task.deadline.clockStartsAtSource}
+              createdAt={v.task.createdAt}
             />
           </Fact>
         )}

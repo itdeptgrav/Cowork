@@ -7,7 +7,7 @@ import {
   budgetHistoryView,
   deadlineMoveEntries,
 } from "@/lib/rules/tasks/budgetHistory";
-import { deadlineOrigin } from "@/lib/rules/tasks/deadlineOrigin";
+import { referenceTimes } from "@/lib/rules/tasks/deadlineOrigin";
 import type { TaskId } from "@/lib/domain";
 
 /**
@@ -32,6 +32,8 @@ import type { TaskId } from "@/lib/domain";
 export function BudgetHistory({
   taskId,
   countedFrom = null,
+  createdAt = null,
+  countedFromSource = null,
 }: {
   taskId: TaskId;
   /**
@@ -46,6 +48,15 @@ export function BudgetHistory({
    * said at all rather than a half sentence.
    */
   countedFrom?: string | null;
+  /**
+   * The task’s own creation instant, and the rule that chose the anchor.
+   *
+   * Both are needed to answer the question a reader actually has: the deadline
+   * counted from ONE of these, and without the other on screen there is no way
+   * to see that it moved — or that it did not.
+   */
+  createdAt?: string | null;
+  countedFromSource?: string | null;
 }) {
   const [open, setOpen] = useState(false);
   /* Fetched only once opened. Every task detail would otherwise pay for a
@@ -58,10 +69,10 @@ export function BudgetHistory({
   /* Only the instant is rendered. `deadlineOrigin` also resolves which rule
      chose it and the window added — kept, tested and deliberately not shown:
      the owner asked for one line and nothing else. */
-  const origin = deadlineOrigin({
+  const rows = referenceTimes({
+    createdAt,
     clockStartsAt: countedFrom,
-    clockStartsAtSource: null,
-    windowSecs: null,
+    clockStartsAtSource: countedFromSource,
   });
 
   /* Read straight off the record the engine already wrote. Nothing here
@@ -89,15 +100,34 @@ export function BudgetHistory({
 
       {open && (
         <div className="mt-2 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
-          {/* Before the figures, because it is the only line here that is not a
+          {/* Before the figures, because it is the only part here that is not a
               figure: it says when the clock started, which is what the rest is
               measured from. Rendered whatever the history read does, since it
               needs no request of its own. */}
-          {origin && (
-            <p className="mb-2 border-b border-hairline pb-2 text-[11px] text-ink-faint">
-              Counted from{" "}
-              <span data-figure>{formatDateTime(origin.startedAt)}</span>
-            </p>
+          {rows.length > 0 && (
+            <div className="mb-2 space-y-0.5 border-b border-hairline pb-2">
+              {rows.map((r) => (
+                <p
+                  key={r.label}
+                  className={
+                    /* The instant the arithmetic USED is the answer; the other
+                       is only context for it. Weight and colour carry that, so
+                       a reader sees which one counted without a label saying
+                       so — the same way the budget figures below are read. */
+                    "flex items-baseline justify-between gap-3 text-[11px] " +
+                    (r.isReference ? "font-medium text-ink" : "text-ink-faint")
+                  }
+                >
+                  <span>{r.label}</span>
+                  <span data-figure>{formatDateTime(r.at)}</span>
+                </p>
+              ))}
+              <p className="pt-0.5 text-[11px] text-ink-faint">
+                {rows.length > 1
+                  ? "Counted from the time in bold."
+                  : "Counted from this time."}
+              </p>
+            </div>
           )}
           {history.isLoading || !view ? (
             <p className="text-[11px] text-ink-faint">Reading the history…</p>

@@ -32,6 +32,7 @@ import {
   calculateDeadlineFeasibility,
   type Feasibility,
 } from "@/lib/rules/tasks/deadlineFeasibility";
+import { handedInAt, taskOverdue } from "@/lib/rules/tasks/overdue";
 import type {
   ActionableItem,
   ParentContext,
@@ -755,11 +756,28 @@ export class MockRepository implements CoworkRepository {
         .filter((a) => a.taskId === task.id)
         .sort((a, b) => a.stage - b.stage),
       reworkCount: s.reworkRequests.filter((r) => r.taskId === task.id).length,
-      isOverdue:
-        Boolean(due) &&
-        new Date(due as string) < now() &&
-        task.status !== "completed" &&
-        task.status !== "cancelled",
+      /* Judged at the hand-in, exactly as the engine does — see
+         `lib/rules/tasks/overdue.ts`. The mock has no
+         `completionSubmission`, so the submission it holds for this task is
+         the record of when the work went in. */
+      isOverdue: taskOverdue({
+        dueAtMs: due ? new Date(due as string).getTime() : null,
+        nowMs: now().getTime(),
+        terminal:
+          task.status === "completed" || task.status === "cancelled",
+        handedInAtMs: handedInAt({
+          status: task.status,
+          submittedAtMs: (() => {
+            const sub = s.submissions
+              .filter((x) => x.taskId === task.id && x.submittedAt)
+              .sort((a, b) =>
+                a.submittedAt < b.submittedAt ? 1 : -1,
+              )[0];
+            const ms = sub ? new Date(sub.submittedAt).getTime() : NaN;
+            return Number.isFinite(ms) ? ms : null;
+          })(),
+        }),
+      }),
       openSubmissions: s.submissions.filter(
         (x) =>
           x.taskId === task.id &&
