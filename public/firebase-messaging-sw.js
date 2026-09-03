@@ -409,7 +409,35 @@ self.addEventListener('push', (event) => {
                silhouette with the check punched out as real transparency, which
                is what survives that treatment. */
             badge: '/badge-96.png',
-            tag: 'cowork-' + (data.type || 'notif'),
+            /**
+             * **A tag REPLACES whatever is already showing under it.**
+             *
+             * Keyed on the TYPE alone, every notification of a kind shared one
+             * slot: a second `task_assigned` replaced the first in the tray, so
+             * somebody given three tasks in a row saw one notification and the
+             * other two were discarded by the browser before they read them.
+             * That is the "sometimes it arrives, sometimes it doesn't" — the
+             * push was delivered every time and then overwritten.
+             *
+             * So the tag identifies the EVENT, not its category. It still
+             * collapses a genuine duplicate delivery of the same event, which
+             * is what a tag is for, and no longer collapses unrelated ones.
+             *
+             * `notificationId` is the notification's own id and is exact.
+             * Older payloads do not carry it, so it falls back to whatever the
+             * notification is ABOUT, and finally to a value that collides with
+             * nothing: showing one duplicate is a smaller wrong than silently
+             * dropping something a person needed to read.
+             */
+            tag:
+                'cowork-' +
+                (data.type || 'notif') +
+                '-' +
+                (data.notificationId ||
+                    data.taskId ||
+                    data.messageId ||
+                    data.conversationId ||
+                    Date.now()),
             renotify: true,
             data,
         })

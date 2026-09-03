@@ -123,9 +123,6 @@ export function SubmissionPanel({
 
   const [filing, setFiling] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
-  /* Previous attempts start shown — a rework cycle is exactly what a reviewer
-     opens this tab to read — with a control to fold them away. */
-  const [prevCollapsed, setPrevCollapsed] = useState(false);
 
   /**
    * A daily report needs its supporting documents; a submission does not.
@@ -331,29 +328,28 @@ export function SubmissionPanel({
     );
   }
 
-  /* History-only: just the earlier attempts, for the reviewer's screen where the
-     current work and the decision live above (in `ReviewPanel`). Nothing to show
-     until there has BEEN an earlier attempt — a first submission has no history,
-     so this renders nothing rather than an empty box. */
+  /* History-only: the earlier attempts, rendered INSIDE the reviewer's "Review
+     history" section (by `ReviewPanel`) so all of a task's history — the files
+     submitted before AND the decisions taken before — reads as one block beneath
+     the decision, rather than as a second "Previous submissions" panel above it.
+     Self-contained: it carries its own padding and caption to sit in a
+     `padded={false}` Panel, and returns null until there has actually been an
+     earlier attempt so a first submission adds no empty row. */
   if (historyOnly) {
     const previous = attempts.slice(0, -1);
     if (submissions.isLoading || pooled.isLoading || previous.length === 0) {
       return null;
     }
     return (
-      <div className="flex flex-col gap-4">
-        <section>
-          <div className="mb-2 flex items-center gap-2">
-            <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-              Previous submissions
-            </p>
-            <Chip>{previous.length}</Chip>
-          </div>
-          <div className="flex flex-col gap-3">
-            {/* Newest previous attempt first — nearest the current one. */}
-            {[...previous].reverse().map((a) => renderAttempt(a))}
-          </div>
-        </section>
+      <div className="border-b border-hairline px-5 py-4">
+        <p className="mb-2 flex items-center gap-2 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+          Previous submissions
+          <Chip>{previous.length}</Chip>
+        </p>
+        <div className="flex flex-col gap-3">
+          {/* Newest previous attempt first — nearest the current one. */}
+          {[...previous].reverse().map((a) => renderAttempt(a))}
+        </div>
       </div>
     );
   }
@@ -590,51 +586,16 @@ export function SubmissionPanel({
           <p className="text-sm text-ink-faint">Not yet submitted.</p>
         </Panel>
       ) : (
-        <>
-          <section>
-            <p className="mb-2 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-              Current submission
-            </p>
-            {renderAttempt(attempts[attempts.length - 1])}
-          </section>
-
-          {attempts.length > 1 && (
-            <section>
-              {/* The break Pic 2 draws — "previous submissions below". */}
-              <div className="mb-3 flex items-center gap-3 text-xs text-ink-faint">
-                <span className="h-px flex-1 bg-[var(--color-hairline)]" />
-                <span>Previous submissions below</span>
-                <span className="h-px flex-1 bg-[var(--color-hairline)]" />
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setPrevCollapsed((c) => !c)}
-                aria-expanded={!prevCollapsed}
-                className="mb-2 flex w-full items-center gap-2 text-left text-ink-muted transition-colors hover:text-ink"
-              >
-                <span className="text-[11px] tracking-[0.09em] uppercase">
-                  Previous submissions
-                </span>
-                <Chip>{attempts.length - 1}</Chip>
-                <span className="ml-auto flex items-center gap-1 text-xs">
-                  {prevCollapsed ? "Show" : "Collapse"}
-                  {prevCollapsed ? <Icon.chevronRight /> : <Icon.chevronDown />}
-                </span>
-              </button>
-
-              {!prevCollapsed && (
-                <div className="flex flex-col gap-3">
-                  {/* Newest previous attempt first — nearest the current one. */}
-                  {attempts
-                    .slice(0, -1)
-                    .reverse()
-                    .map((a) => renderAttempt(a))}
-                </div>
-              )}
-            </section>
-          )}
-        </>
+        /* Only the CURRENT submission here — the earlier attempts moved into the
+           reviewer's "Review history" (rendered by `ReviewPanel` in `historyOnly`
+           mode), so the history reads as one section beneath the decision rather
+           than a second block above it. */
+        <section>
+          <p className="mb-2 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+            Current submission
+          </p>
+          {renderAttempt(attempts[attempts.length - 1])}
+        </section>
       )}
     </div>
   );

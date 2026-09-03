@@ -129,6 +129,7 @@ import { listMembers } from "../../legacy/employees.ts";
 import { fromHierarchyId, toHierarchyId } from "../../legacy/identityMap.ts";
 import {
   buildReportingTree,
+  fetchAllManagers,
   fetchMyManagers,
   type LegacyManagers,
   type ReportingNode,
@@ -958,26 +959,58 @@ export class LegacyRepository {
       const employees = await this.#employeesById();
       const ids = [...employees.keys()];
 
+      /**
+       * **One request for the whole tree, where the engine offers it.**
+       *
+       * Deriving the tree costs one request PER PERSON — the loop below — and
+       * it runs again every time the directory cache expires, in every open
+       * tab. The bandwidth dashboard measured 288,406 of those calls in a
+       * week, about 1,717 an hour, for answers that change a handful of times
+       * a year.
+       *
+       * `fetchAllManagers` asks once. It returns null rather than failing when
+       * the route is not there — a deployment older than it answers 404 — and
+       * the per-person loop below is kept, unchanged, for exactly that case.
+       * So this is safe to ship before the engine has it, and safe if it ever
+       * goes away again.
+       *
+       * **Nothing else changes.** Same `answers` map, same `buildReportingTree`,
+       * same cache stamp and the same five-minute expiry — a reader cannot tell
+       * which path filled it, which is the point.
+       */
       const answers = new Map<string, LegacyManagers>();
-      /* Bounded concurrency. A directory of a few hundred would otherwise open
-         a few hundred sockets at once and be rate-limited into looking like an
-         outage. */
-      const BATCH = 8;
-      for (let i = 0; i < ids.length; i += BATCH) {
-        const slice = ids.slice(i, i + BATCH);
-        const results = await Promise.all(
-          slice.map((id) =>
-            fetchMyManagers({ token, employeeId: id }).catch(() => null),
-          ),
-        );
-        results.forEach((result, index) => {
+      const bulk = await fetchAllManagers({ token });
+      if (bulk) {
+        /* Keyed off the directory, not off the reply, so somebody the engine
+           has no HR record for still gets an entry — `no managers`, which is
+           what asking for them one at a time answered too. */
+        for (const id of ids) {
           answers.set(
-            slice[index],
-            result?.ok
-              ? result.data
-              : { primaryManager: null, secondaryManager: null },
+            id,
+            bulk.get(id) ?? { primaryManager: null, secondaryManager: null },
           );
-        });
+        }
+      } else {
+        /* Bounded concurrency. A directory of a few hundred would otherwise open
+           a few hundred sockets at once and be rate-limited into looking like an
+           outage. */
+        const BATCH = 8;
+        for (let i = 0; i < ids.length; i += BATCH) {
+          const slice = ids.slice(i, i + BATCH);
+          const results = await Promise.all(
+            slice.map((id) =>
+              fetchMyManagers({ token, employeeId: id }).catch(() => null),
+            ),
+          );
+          results.forEach((result, index) => {
+            answers.set(
+              slice[index],
+              result?.ok
+                ? result.data
+                : { primaryManager: null, secondaryManager: null },
+            );
+          });
+        }
       }
       /* Same stamp as the directory: the two are filled together and expire
          together, so a fresh tree can never be read against a stale directory. */

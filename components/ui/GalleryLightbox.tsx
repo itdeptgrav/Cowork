@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { Icon } from "./Icons";
 import { DriveImage } from "./DriveImage";
 import { downloadFile } from "./ImageLightbox";
+import { browserDownload } from "@/lib/utils/browserDownload";
 import { clampIndex, stepIndex, canStep } from "@/lib/rules/media/galleryNav";
 
 /**
@@ -36,6 +37,10 @@ export interface GalleryImage {
   downloadName?: string;
   /** Backend byte proxy, tried when the direct download is blocked. */
   proxyUrl?: string | null;
+  /** A URL that streams the file to the browser (Content-Disposition:
+      attachment). When set, the download hands off to the browser natively
+      instead of buffering the file into a Blob — the right path for a large one. */
+  downloadHref?: string | null;
   /** Header line — who sent this image, where the caller knows. */
   title?: string;
   /** Header sub-line — when it was sent. */
@@ -252,6 +257,13 @@ export function GalleryLightbox({
             aria-label={`Download ${current.downloadName}`}
             disabled={downloading}
             onClick={async () => {
+              /* Stream to the browser when there is a streaming URL — the right
+                 path for a large image or video, saved directly with no Blob in
+                 memory. The Blob path stays only where there is no such URL. */
+              if (current.downloadHref) {
+                browserDownload(current.downloadHref, current.downloadName);
+                return;
+              }
               setDownloading(true);
               try {
                 await downloadFile(

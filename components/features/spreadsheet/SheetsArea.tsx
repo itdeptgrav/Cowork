@@ -14,7 +14,7 @@
  * answerable from the row itself.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   deleteWorkbook,
   duplicateWorkbook,
@@ -24,11 +24,13 @@ import {
   WorkbookRequestError,
   type WorkbookSummary,
 } from "@/lib/spreadsheet/workbookClient";
+import { useQuery } from "@/lib/hooks/useRepository";
 import { Spreadsheet } from "./Spreadsheet";
 import {
   RecordTable,
   type RecordItem,
   type RecordMember,
+  type DirectoryPerson,
 } from "@/components/features/workspace/RecordTable";
 
 const primaryBtn =
@@ -38,6 +40,21 @@ export function SheetsArea() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [list, setList] = useState<WorkbookSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  /* Cowork's people, so a sheet is shared by searching a NAME rather than
+     pasting an internal id. The whole directory — sharing is not limited to
+     people you have messaged — filtered client-side as you type. If it cannot
+     load, the share panel simply falls back to its id field. */
+  const peopleQ = useQuery((r) => r.listEmployees(), []);
+  const directory = useMemo<DirectoryPerson[]>(
+    () =>
+      (peopleQ.data ?? []).map((p) => ({
+        id: p.id,
+        name: p.displayName,
+        sub: p.designation ?? p.departmentName ?? undefined,
+      })),
+    [peopleQ.data],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -153,6 +170,11 @@ export function SheetsArea() {
         <RecordTable
           noun="Sheet"
           items={list.map(toRecord)}
+          /* Only once people are actually loaded — an empty array is truthy and
+             would show the name search with nothing to find and no id fallback.
+             Until then (or if the directory fails to load) the panel keeps its
+             id field, so sharing is never blocked. */
+          directory={directory.length ? directory : undefined}
           onOpen={(id) => setOpenId(id)}
           onRename={(id, title) => {
             /* Optimistic: the row shows the new name at once, and a failed

@@ -47,3 +47,57 @@ export async function workbookPrincipal(request: Request): Promise<WorkbookPrinc
     return null;
   }
 }
+
+function legacyApiBase(): string | null {
+  const raw =
+    process.env.NEXT_PUBLIC_LEGACY_API_URL ??
+    process.env.NEXT_PUBLIC_API_URL ??
+    "";
+  const trimmed = raw.replace(/\/+$/, "");
+  return trimmed || null;
+}
+
+/**
+ * The caller's Cowork EMPLOYEE id — the id the people directory uses, and so the
+ * id a workbook is shared BY when somebody is picked by name.
+ *
+ * Distinct from `ownerId`. Ownership is held by whichever principal created the
+ * workbook — a server account id, or `fb:<uid>` on the Firebase path — but a
+ * SHARE names a person from the directory, and the directory speaks employee
+ * ids. Without this bridge a sheet shared with a colleague's employee id would
+ * never match the `fb:<uid>` their session presents, so the share would grant
+ * nothing; this is what lets sharing-by-name actually admit them.
+ *
+ * Resolved the way `mailPrincipal` resolves the same id: the server session
+ * carries it directly; on the Firebase path the LEGACY `/cowork/me` is the
+ * authority and VERIFIES the token (the identical signature check middleware
+ * makes), so trusting its answer trusts a verified identity, never a client
+ * claim. Null when it cannot be established — the caller then reaches only what
+ * their `ownerId` already reaches, exactly as before.
+ */
+export async function workbookEmployeeId(request: Request): Promise<string | null> {
+  const session = await currentSession();
+  if (session) return session.employeeId || null;
+
+  const token = readFirebaseCookie(request.headers.get("cookie"));
+  if (!token) return null;
+
+  const base = legacyApiBase();
+  if (!base) return null;
+
+  try {
+    const r = await fetch(`${base}/cowork/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+      cache: "no-store",
+    });
+    if (!r.ok) return null;
+    const me = (await r.json()) as {
+      employeeId?: unknown;
+      data?: { employeeId?: unknown };
+    };
+    const employeeId = String(me.employeeId ?? me.data?.employeeId ?? "").trim();
+    return employeeId || null;
+  } catch {
+    return null;
+  }
+}

@@ -251,11 +251,13 @@ test("the attempts list names which output it is about", () => {
 test("submissions are grouped: the current attempt, then previous ones", () => {
   /* The whole point of the redesign — a rework cycle reads as distinct attempts,
      not one merged pile of files, so a reviewer can tell what was sent first
-     from what was sent after the rework. */
+     from what was sent after the rework. The current attempt leads the panel;
+     the earlier ones render in history-only mode (newest first), which the
+     reviewer's "Review history" section embeds. */
   assert.match(SUBMISSION, /Current submission/);
-  assert.match(SUBMISSION, /Previous submissions/);
   assert.match(SUBMISSION, /renderAttempt\(attempts\[attempts\.length - 1\]\)/);
-  assert.match(SUBMISSION, /attempts\s*\.slice\(0, -1\)\s*\.reverse\(\)\s*\.map\(\(a\) => renderAttempt\(a\)\)/);
+  assert.match(SUBMISSION, /Previous submissions/);
+  assert.match(SUBMISSION, /\[\.\.\.previous\]\.reverse\(\)\.map\(\(a\) => renderAttempt\(a\)\)/);
 });
 
 test("the pooled files are split back into attempts by rework boundary", () => {
@@ -268,15 +270,22 @@ test("the pooled files are split back into attempts by rework boundary", () => {
   assert.match(SUBMISSION, /<FileList attachments=\{a\.files\}/);
 });
 
-test("on the review tab, history sits BELOW the decision", () => {
-  /* The reviewer's screen leads with the current work and the decision
-     (ReviewPanel), and the earlier attempts follow as history-only below it —
-     not above, where they used to sit. */
+test("on the review tab, the earlier submissions live inside Review history", () => {
+  /* All of a task's history reads as ONE "Review history" section: the earlier
+     submissions and the earlier decisions together, beneath the current work and
+     the decision. ReviewPanel renders that history itself — a history-only
+     SubmissionPanel under its "Review history" heading — so the review tab is
+     ReviewPanel alone and the previous attempts never sit in a second panel
+     above (or beside) it. */
   assert.match(DETAIL, /tab === "review" \? \(/);
+  assert.match(REVIEW, /import \{ SubmissionPanel \}/);
   assert.match(
-    DETAIL,
-    /<ReviewPanel[\s\S]*?<SubmissionPanel view=\{v\} onChange=\{refetch\} historyOnly/,
+    REVIEW,
+    /Review history[\s\S]*?<SubmissionPanel view=\{view\} onChange=\{onChange\} historyOnly/,
   );
+  /* The review tab no longer appends its own history panel — that would render
+     the previous attempts twice. */
+  assert.doesNotMatch(DETAIL, /historyOnly/);
 });
 
 test("history-only mode shows just the previous attempts, no composer", () => {

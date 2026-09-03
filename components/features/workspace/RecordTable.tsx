@@ -18,17 +18,33 @@
  * open-the-document detour.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { usePerformanceProfile } from "@/components/layout/shell/DeviceModeContext";
 
 export type RecordRole = "viewer" | "commenter" | "editor";
 
 export interface RecordMember {
-  /** The person's id. A directory lookup would turn this into a name; there is
-      none on this surface, so callers pass what they have. */
+  /** The person's id. A directory lookup turns this into a name for display and
+      for the search box — see `directory` on the table's props. Absent a
+      directory, callers pass, and the panel shows, the raw id. */
   id: string;
   role: RecordRole;
+}
+
+/**
+ * One of Cowork's people, so the share panel can be searched by NAME instead of
+ * requiring a raw id to be typed in. Given a directory the panel becomes a
+ * name-search picker and resolves each member's id to their name; without one it
+ * keeps the raw-id field, unchanged — the prop is optional, so no surface is
+ * forced to supply it.
+ */
+export interface DirectoryPerson {
+  id: string;
+  name: string;
+  /** A quiet second line — role or department — so two people of the same name
+      are still distinguishable. */
+  sub?: string;
 }
 
 /** What a mindmap adds, and the other two surfaces omit. */
@@ -76,6 +92,9 @@ export interface RecordTableProps {
   onDelete: (id: string) => void;
   /** Replace a record's whole member list. Resolves with what was stored. */
   onSetMembers: (id: string, members: RecordMember[]) => Promise<RecordMember[]>;
+  /** Cowork's people, so the share panel searches by name and shows names rather
+      than ids. Omit to keep the raw-id field. */
+  directory?: DirectoryPerson[];
 }
 
 /* ── Layout ───────────────────────────────────────────────────────────────── */
@@ -195,6 +214,7 @@ function SharePanel({
   anchor,
   onSetMembers,
   onClose,
+  directory,
 }: {
   recordId: string;
   initial: RecordMember[];
@@ -202,6 +222,7 @@ function SharePanel({
   anchor: Anchor;
   onSetMembers: RecordTableProps["onSetMembers"];
   onClose: () => void;
+  directory?: DirectoryPerson[];
 }) {
   const [members, setMembers] = useState<RecordMember[]>(initial);
   const [who, setWho] = useState("");
@@ -258,12 +279,41 @@ function SharePanel({
     }
   }
 
-  /** Several people at once — commas or spaces separate them. */
+  /** Several people at once — commas or spaces separate them. The raw-id path,
+      used only when no directory was supplied. */
   function add() {
     const ids = who.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
     if (ids.length === 0) return;
     const kept = members.filter((m) => !ids.includes(m.id));
     void commit([...kept, ...ids.map((id) => ({ id, role }))]);
+    setWho("");
+  }
+
+  /* Id → person, for showing a name where the record stores only an id. */
+  const dirById = useMemo(
+    () => new Map((directory ?? []).map((p) => [p.id, p] as const)),
+    [directory],
+  );
+  const nameOf = (id: string) => dirById.get(id)?.name ?? id;
+
+  /* The people the search box offers: those in the directory, not already
+     shared with, whose name or second line contains what has been typed. Capped
+     so a blank-ish query does not render the whole company. */
+  const matches = useMemo(() => {
+    const q = who.trim().toLowerCase();
+    if (!q || !directory) return [];
+    const taken = new Set(members.map((m) => m.id));
+    return directory
+      .filter((p) => !taken.has(p.id))
+      .filter((p) => `${p.name} ${p.sub ?? ""}`.toLowerCase().includes(q))
+      .slice(0, 12);
+  }, [who, directory, members]);
+
+  /** Add one person picked from the directory, at the chosen role. */
+  function addPerson(id: string) {
+    if (!members.some((m) => m.id === id)) {
+      void commit([...members, { id, role }]);
+    }
     setWho("");
   }
 
@@ -304,37 +354,100 @@ function SharePanel({
         <button type="button" className={action} onClick={onClose}>Done</button>
       </div>
 
-      <div className="flex items-center gap-1.5">
-        <input
-          className={`${field} flex-1`}
-          aria-label="Add collaborators"
-          placeholder="Ids, comma separated"
-          value={who}
-          onChange={(e) => setWho(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              add();
-            }
-          }}
-        />
-        <select
-          className={`${field} shrink-0`}
-          aria-label="Role for new collaborators"
-          value={role}
-          onChange={(e) => setRole(e.target.value as RecordRole)}
-        >
-          {roles.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
-        </select>
-      </div>
-      <button
-        type="button"
-        disabled={!who.trim() || busy}
-        onClick={add}
-        className="h-7 shrink-0 rounded-full bg-ink px-3 text-[12px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90 disabled:opacity-40"
-      >
-        Add collaborators
-      </button>
+      {directory ? (
+        <>
+          <div className="flex items-center gap-1.5">
+            <input
+              className={`${field} flex-1`}
+              aria-label="Search people to add"
+              placeholder="Search people by name"
+              value={who}
+              onChange={(e) => setWho(e.target.value)}
+              onKeyDown={(e) => {
+                /* Enter adds the top match — the quick path once the name has
+                   narrowed the list to the person meant. */
+                if (e.key === "Enter" && matches[0]) {
+                  e.preventDefault();
+                  addPerson(matches[0].id);
+                }
+              }}
+            />
+            <select
+              className={`${field} shrink-0`}
+              aria-label="Role for new collaborators"
+              value={role}
+              onChange={(e) => setRole(e.target.value as RecordRole)}
+            >
+              {roles.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            </select>
+          </div>
+          {who.trim() && (
+            /* Results are listed in flow, not an absolute dropdown: the panel is
+               `overflow-hidden`, which would clip a positioned menu. Its own cap
+               and scroll keep it from crowding the member list below. */
+            <div className="scroll-slim max-h-40 overflow-y-auto rounded-inset shadow-[inset_0_0_0_1px_var(--color-hairline)]">
+              {matches.length === 0 ? (
+                <p className="px-2.5 py-2 text-[12px] text-ink-muted">
+                  No people match “{who.trim()}”.
+                </p>
+              ) : (
+                matches.map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={busy}
+                    onClick={() => addPerson(p.id)}
+                    className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left transition-colors hover:bg-[var(--control)] disabled:opacity-40"
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[12px] text-ink">
+                      {p.name}
+                    </span>
+                    {p.sub && (
+                      <span className="shrink-0 truncate text-[11px] text-ink-muted">
+                        {p.sub}
+                      </span>
+                    )}
+                  </button>
+                ))
+              )}
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div className="flex items-center gap-1.5">
+            <input
+              className={`${field} flex-1`}
+              aria-label="Add collaborators"
+              placeholder="Ids, comma separated"
+              value={who}
+              onChange={(e) => setWho(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  add();
+                }
+              }}
+            />
+            <select
+              className={`${field} shrink-0`}
+              aria-label="Role for new collaborators"
+              value={role}
+              onChange={(e) => setRole(e.target.value as RecordRole)}
+            >
+              {roles.map((r) => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+            </select>
+          </div>
+          <button
+            type="button"
+            disabled={!who.trim() || busy}
+            onClick={add}
+            className="h-7 shrink-0 rounded-full bg-ink px-3 text-[12px] font-medium text-[var(--body-bg)] transition-opacity hover:opacity-90 disabled:opacity-40"
+          >
+            Add collaborators
+          </button>
+        </>
+      )}
 
       {error && (
         <p role="alert" className="text-[11px] text-[var(--state-overdue-ink)]">
@@ -350,10 +463,15 @@ function SharePanel({
         ) : (
           members.map((m) => (
             <div key={m.id} className="flex items-center gap-1.5">
-              <span className="min-w-0 flex-1 truncate text-[12px] text-ink" title={m.id}>{m.id}</span>
+              <span
+                className="min-w-0 flex-1 truncate text-[12px] text-ink"
+                title={nameOf(m.id)}
+              >
+                {nameOf(m.id)}
+              </span>
               <select
                 className={`${field} shrink-0`}
-                aria-label={`Role for ${m.id}`}
+                aria-label={`Role for ${nameOf(m.id)}`}
                 value={m.role}
                 disabled={busy}
                 onChange={(e) =>
@@ -370,8 +488,8 @@ function SharePanel({
                 type="button"
                 className={action}
                 disabled={busy}
-                aria-label={`Remove ${m.id}`}
-                title={`Remove ${m.id}`}
+                aria-label={`Remove ${nameOf(m.id)}`}
+                title={`Remove ${nameOf(m.id)}`}
                 onClick={() => void commit(members.filter((x) => x.id !== m.id))}
               >
                 ×
@@ -434,6 +552,7 @@ export function RecordTable({
   onDuplicate,
   onDelete,
   onSetMembers,
+  directory,
 }: RecordTableProps) {
   const GRID = gridFor(showBranches);
   /* Low- and high-spec rendering come from the device mode the app already
@@ -476,6 +595,7 @@ export function RecordTable({
             onDuplicate={onDuplicate ? () => onDuplicate(item.id) : undefined}
             onDelete={() => onDelete(item.id)}
             onSetMembers={onSetMembers}
+            directory={directory}
           />
         ))}
       </ul>
@@ -503,6 +623,7 @@ function Row({
   onDuplicate,
   onDelete,
   onSetMembers,
+  directory,
 }: {
   item: RecordItem;
   grid: string;
@@ -513,6 +634,7 @@ function Row({
   onDuplicate?: () => void;
   onDelete: () => void;
   onSetMembers: RecordTableProps["onSetMembers"];
+  directory?: DirectoryPerson[];
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(item.title);
@@ -606,6 +728,7 @@ function Row({
             anchor={share}
             onSetMembers={onSetMembers}
             onClose={closeShare}
+            directory={directory}
           />
         )}
       </div>

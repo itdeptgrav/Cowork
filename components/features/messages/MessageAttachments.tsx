@@ -22,6 +22,7 @@ import type { MessageAttachment } from "@/lib/domain";
 import { Icon } from "@/components/ui/Icons";
 import { DriveImage } from "@/components/ui/DriveImage";
 import { downloadFile } from "@/components/ui/ImageLightbox";
+import { browserDownload } from "@/lib/utils/browserDownload";
 import { GalleryLightbox } from "@/components/ui/GalleryLightbox";
 import { VideoLightbox } from "@/components/ui/VideoLightbox";
 import {
@@ -82,6 +83,20 @@ export function mediaOpenUrl(a: MessageAttachment): string {
 export function mediaProxyUrl(a: MessageAttachment): string | null {
   const id = a.fileId || driveFileIdFrom(a.url);
   return id ? driveProxySrc(MEDIA_BASE, id) : null;
+}
+
+/**
+ * A URL that STREAMS the file to the browser as a download.
+ *
+ * `?download=1` makes the media proxy answer with `Content-Disposition:
+ * attachment` and the real filename, so handing this to `browserDownload` lets
+ * the browser save it directly — no whole-file-in-memory Blob, its own progress,
+ * and instant on a click. Null for a non-Drive attachment (no proxy), which
+ * falls back to the Blob download; those are the small legacy files.
+ */
+export function mediaDownloadUrl(a: MessageAttachment): string | null {
+  const proxy = mediaProxyUrl(a);
+  return proxy ? `${proxy}?download=1` : null;
 }
 
 /**
@@ -270,10 +285,18 @@ function Thumbnail({
         aria-label={`Download ${name}`}
         onClick={(e) => {
           e.stopPropagation();
-          /* `downloadFile` throws now rather than navigating to a URL it could
-             not fetch — which is what saved Google's HTML viewer page as the
-             file. Caught here so a failure is a message, not an unhandled
-             rejection and a mystery file in the downloads tray. */
+          /* A Drive file streams straight to the browser (the proxy answers
+             with `Content-Disposition: attachment`), so a large one saves
+             immediately with the browser's own progress rather than being
+             pulled whole into memory first. A non-Drive file has no proxy and
+             keeps the Blob path — `downloadFile` throws rather than navigating
+             to a URL it could not fetch (which once saved Google's HTML viewer
+             page as the file), so a failure is a message, not a mystery file. */
+          const stream = mediaDownloadUrl(a);
+          if (stream) {
+            browserDownload(stream, name);
+            return;
+          }
           void downloadFile(mediaUrl(a), name, mediaProxyUrl(a)).catch((err) => {
             setError(
               err instanceof Error ? err.message : "That file could not be downloaded.",
@@ -329,11 +352,22 @@ function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
 
   async function save() {
     setError(null);
+    /* A Drive file streams straight to the browser — the proxy answers with
+       `Content-Disposition: attachment`, so the browser saves it directly with
+       its own progress and never holds the whole file in memory. This is what
+       fixes a large file (a 380 MB PDF) sitting on a spinner: no more fetching
+       the entire thing into a Blob before the save dialog even appears. */
+    const stream = mediaDownloadUrl(a);
+    if (stream) {
+      browserDownload(stream, name);
+      return;
+    }
     setSaving(true);
     try {
-      /* `mediaUrl`, not `mediaOpenUrl`: the first is the bytes and the second
-         is Drive's own page. Downloading the page is what once saved an HTML
-         viewer with a `.pdf` name — a file that opens to nothing. */
+      /* Non-Drive (a Cloudinary asset from the old app): no proxy to stream
+         through, so the Blob path stays. `mediaUrl`, not `mediaOpenUrl` — the
+         first is the bytes, the second Drive's own page, and downloading the
+         page once saved an HTML viewer with a `.pdf` name. */
       await downloadFile(mediaUrl(a), name, mediaProxyUrl(a));
     } catch (e) {
       setError(
@@ -582,6 +616,7 @@ export function MessageAttachments({
             downloadUrl: mediaUrl(a),
             downloadName: a.name ?? "image.jpg",
             proxyUrl: mediaProxyUrl(a),
+            downloadHref: mediaDownloadUrl(a),
           }))}
           startIndex={zoomIndex}
           apiBase={MEDIA_BASE}

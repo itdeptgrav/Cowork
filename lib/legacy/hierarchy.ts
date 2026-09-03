@@ -64,6 +64,67 @@ export async function fetchMyManagers(input: {
   });
 }
 
+/**
+ * Everybody's managers, in ONE request.
+ *
+ * **What this replaces.** The tree above can only be derived — ask every
+ * employee who their manager is and invert the answers — so building it cost
+ * one request per person, in batches of eight, and the whole thing was rebuilt
+ * whenever the directory cache expired. The bandwidth dashboard measured the
+ * result: 288,406 calls in a week, about 1,717 an hour, for a set of answers
+ * that changes a handful of times a year.
+ *
+ * The engine now answers the same question once. Same collection, same
+ * per-manager shape; only the loop moved from the network into the database.
+ *
+ * **A failure here is not an error.** The bulk route is an addition, and a
+ * deployment that predates it answers 404 — so the caller treats any failure as
+ * `null` and falls back to asking one at a time, exactly as it did before. That
+ * is what makes this safe to ship ahead of the backend rather than in lockstep
+ * with it.
+ *
+ * `revalidate` for the same reason the directory uses it: the reply is
+ * byte-identical between reads far more often than not, and an unchanged tree
+ * comes back as a bare 304.
+ */
+export async function fetchAllManagers(input: {
+  token: string;
+}): Promise<Map<string, LegacyManagers> | null> {
+  const r = await legacyFetch<Record<string, LegacyManagers>>({
+    path: "/cowork/employee/my-managers-bulk",
+    envelopeKey: "managers",
+    token: input.token,
+    revalidate: true,
+  });
+  if (!r.ok) return null;
+  return readAllManagers(r.data);
+}
+
+/**
+ * The bulk reply, shaped — separated from the request so it can be tested
+ * against a fixture rather than a server.
+ *
+ * **Defensive on purpose.** This is the one place a malformed entry could put
+ * a half-built manager into every tree at once, so anything that is not a
+ * recognisable row is skipped rather than passed on. A person the engine has
+ * no row for is absent from the map, and the caller reads that absence as `no
+ * managers` — the same answer asking for them one at a time gives.
+ */
+export function readAllManagers(
+  rows: Record<string, LegacyManagers> | null | undefined,
+): Map<string, LegacyManagers> | null {
+  if (!rows || typeof rows !== "object") return null;
+  const out = new Map<string, LegacyManagers>();
+  for (const [id, value] of Object.entries(rows)) {
+    if (!id || !value || typeof value !== "object") continue;
+    out.set(String(id), {
+      primaryManager: value.primaryManager ?? null,
+      secondaryManager: value.secondaryManager ?? null,
+    });
+  }
+  return out;
+}
+
 /** One employee's place in the tree. */
 export interface ReportingNode {
   employeeId: string;

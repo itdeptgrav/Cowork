@@ -742,12 +742,11 @@ export function TaskDetail({
           {(tab === "submission" || tab === "review") &&
             (tab === "review" ? (
               /* The reviewer decides on the current work, so it leads: the
-                 submitted work and the decision up top, and the earlier attempts
-                 as history BELOW the decision rather than above it. */
-              <>
-                <ReviewPanel view={v} onChange={refetch} />
-                <SubmissionPanel view={v} onChange={refetch} historyOnly />
-              </>
+                 submitted work and the decision up top, then one "Review
+                 history" section that carries BOTH the earlier submissions and
+                 the earlier decisions — `ReviewPanel` renders that history
+                 itself, so there is nothing to append below it here. */
+              <ReviewPanel view={v} onChange={refetch} />
             ) : (
               /* The submission tab leads with the composer, for the assignee. */
               <>

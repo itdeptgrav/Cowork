@@ -309,7 +309,7 @@ export function MessagesPage({
           </div>
 
           <div
-            className={`min-h-0 deck:col-span-8 ${!conversationId ? "hidden deck:block" : ""}`}
+            className={`chat-select min-h-0 deck:col-span-8 ${!conversationId ? "hidden deck:block" : ""}`}
           >
             {activeConversation ? (
               <Thread
@@ -927,6 +927,15 @@ function Thread({
    * my place alone", and only the reader's own scrolling changes it.
    */
   const pinnedRef = useRef(true);
+  /**
+   * Whether to offer the "jump to latest" button.
+   *
+   * Distinct from `pinnedRef` (48px, the auto-follow threshold): the button
+   * appears only once the reader is MEANINGFULLY up the history — far enough
+   * that the newest message is well off-screen — so it does not flicker in on a
+   * stray pixel of scroll. State rather than a ref, because it is rendered.
+   */
+  const [showJump, setShowJump] = useState(false);
 
   const others = c.participants.filter((p) => p.id !== viewerId);
   /**
@@ -1048,7 +1057,12 @@ function Thread({
        bubble: a reader a few pixels off the bottom is still following, and
        demanding an exact zero makes the pin feel like it randomly stops
        working. */
-    pinnedRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+    const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedRef.current = distFromBottom < 48;
+    /* The jump button rides a larger threshold than the pin so it does not
+       appear the instant you nudge off the bottom. `setState` to the same value
+       is a no-op in React, so this is free while sitting still. */
+    setShowJump(distFromBottom > 240);
     if (
       !shouldLoadOlder({
         scrollTop: el.scrollTop,
@@ -1058,6 +1072,16 @@ function Thread({
     )
       return;
     void loadOlder();
+  }
+
+  /* Jump to the newest message and resume following it. Re-arms the pin at once
+     because a message can land mid-animation, and without it the pin would
+     still read "scrolled up" and hold the old place instead of the new bottom. */
+  function scrollToBottom() {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedRef.current = true;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }
 
   const typingNames = typingIds
@@ -2076,7 +2100,23 @@ function Thread({
           every device without one, so the desktop padding is unchanged — and
           without it the send button sits under the home indicator on exactly
           the phones that have no hardware buttons to fall back on. */}
-      <div className="border-t border-hairline px-2.5 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:px-4 sm:pt-3 sm:pb-3">
+      <div className="relative border-t border-hairline px-2.5 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] sm:px-4 sm:pt-3 sm:pb-3">
+        {/* Jump to the newest message. Anchored to the composer's top edge with
+            `bottom-full`, so it floats just above the box whatever the composer's
+            height (a reply preview, attachment chips), over the bottom of the
+            thread — where every chat app puts it. Shown only once the reader is
+            well up the history (`showJump`). */}
+        {showJump && (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            aria-label="Scroll to latest messages"
+            title="Jump to latest"
+            className="absolute right-3 bottom-full z-10 mb-2 grid h-9 w-9 place-items-center rounded-full border border-hairline bg-[var(--surface-raised)] text-ink-muted shadow-lg transition-colors hover:text-ink sm:right-4"
+          >
+            <Icon.chevronDown className="h-5 w-5" />
+          </button>
+        )}
         {typingLabel && (
           <div className="mb-1.5 flex items-center gap-1.5 text-[11px] text-ink-faint">
             <span className="flex gap-0.5" aria-hidden>
@@ -2945,17 +2985,26 @@ function MessageList({
                 )}
               </div>
 
-              {endsRun && (
+              {/* **The time ends a run; the ticks belong to every message.**
+                  The time is grouped deliberately — one stamp under a run of
+                  messages sent together, rather than the same minute repeated
+                  down the thread. A DELIVERY STATE is not like that: it is a
+                  fact about one message, and three sent in a row can genuinely
+                  be in three different states. Tying the ticks to the run's end
+                  left the first two with no status at all, which is not what
+                  the convention everybody reads promises — every bubble carries
+                  its own. So the row now appears for either reason, and each
+                  part decides for itself whether it is shown. */}
+              {(endsRun || (mine && !deleted)) && (
                 <span
                   data-figure
                   className={`mt-1 flex items-center text-[11px] text-ink-faint ${mine ? "pe-9" : "ps-9"}`}
                 >
-                  {clock(m.createdAt)}
-                  {m.editedAt ? " · edited" : ""}
-                  {/* Only on your OWN messages, and only where a time is
-                      already shown. Ticks on somebody else's bubble would be
-                      telling them whether THEY have read it, which they
-                      plainly have — and a deleted message has no delivery
+                  {endsRun && clock(m.createdAt)}
+                  {endsRun && m.editedAt ? " · edited" : ""}
+                  {/* Only on your OWN messages. Ticks on somebody else's bubble
+                      would be telling them whether THEY have read it, which
+                      they plainly have — and a deleted message has no delivery
                       worth reporting. */}
                   {mine && !deleted && (
                     <MessageTicks

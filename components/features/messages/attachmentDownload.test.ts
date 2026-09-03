@@ -111,3 +111,38 @@ test("images and video keep the route they already had", () => {
   assert.match(thumb, /downloadFile\(mediaUrl\(a\), name, mediaProxyUrl\(a\)\)/);
   assert.match(code("components/ui/VideoLightbox.tsx"), /Download \$\{name\}/);
 });
+
+/* ── Large files stream to the browser instead of buffering in memory ─────── */
+
+test("a Drive file's download URL asks the proxy to stream as an attachment", () => {
+  const src = code(ATT);
+  assert.match(src, /export function mediaDownloadUrl/);
+  assert.match(src, /\$\{proxy\}\?download=1/);
+});
+
+test("the file card hands a Drive download to the browser, not a Blob", () => {
+  /* The reported 380 MB PDF: with a streaming URL it saves via the browser
+     (no whole-file-in-memory Blob); only a non-Drive file falls back to the
+     Blob download. */
+  const src = code(ATT);
+  const row = src.slice(src.indexOf("async function save()"), src.indexOf("async function save()") + 700);
+  assert.match(row, /const stream = mediaDownloadUrl\(a\);/);
+  assert.match(row, /browserDownload\(stream, name\);/);
+  /* The Blob path is still there for the non-Drive fallback. */
+  assert.match(row, /downloadFile\(mediaUrl\(a\), name, mediaProxyUrl\(a\)\)/);
+});
+
+test("the thumbnail download streams a Drive file too", () => {
+  const src = code(ATT);
+  const thumb = src.slice(src.indexOf("function Thumbnail("), src.indexOf("function playingId("));
+  assert.match(thumb, /const stream = mediaDownloadUrl\(a\);/);
+  assert.match(thumb, /browserDownload\(stream, name\);/);
+});
+
+test("browserDownload hands a URL to the browser via an anchor", () => {
+  const util = code("lib/utils/browserDownload.ts");
+  assert.match(util, /createElement\("a"\)/);
+  assert.match(util, /a\.click\(\)/);
+  /* It does NOT fetch the bytes itself — that is the whole point. */
+  assert.doesNotMatch(util, /fetch\(/);
+});

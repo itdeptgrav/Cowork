@@ -1,6 +1,10 @@
 import "server-only";
 import { NextResponse } from "next/server";
-import { workbookPrincipal, type WorkbookPrincipal } from "./workbookPrincipal";
+import {
+  workbookPrincipal,
+  workbookEmployeeId,
+  type WorkbookPrincipal,
+} from "./workbookPrincipal";
 import {
   roleAllows,
   workbookStore,
@@ -35,13 +39,22 @@ export type WorkbookAccess =
     }
   | { ok: false; response: NextResponse };
 
-/** The caller's standing on a record, or null when they have none. */
+/**
+ * The caller's standing on a record, or null when they have none.
+ *
+ * Takes one id or SEVERAL, because a caller reaches a workbook under two ids at
+ * once: the principal that OWNS it (a server account id, or `fb:<uid>` on the
+ * Firebase path) and their directory EMPLOYEE id, which is what a name-based
+ * share is granted by. Ownership is checked against the owner id; a grant is
+ * matched against any of them.
+ */
 export function standingOn(
   record: WorkbookRecord,
-  principalId: string,
+  principal: string | readonly string[],
 ): "owner" | ShareRole | null {
-  if (record.ownerId === principalId) return "owner";
-  const grant = record.shares?.find((s) => s.principalId === principalId);
+  const ids = typeof principal === "string" ? [principal] : principal;
+  if (ids.includes(record.ownerId)) return "owner";
+  const grant = record.shares?.find((s) => ids.includes(s.principalId));
   return grant ? grant.role : null;
 }
 
@@ -63,11 +76,23 @@ export async function accessWorkbook(
   if (!principal) return deny(401, "Not authenticated.");
 
   const record = await workbookStore.load(id);
+  if (!record) return deny(404, "Workbook not found.");
+
   /* Not found and not yours are the SAME answer — otherwise a 403 confirms the
      id exists to someone who may not access it. A share grant is what turns a
-     stranger into someone who may see it; without one this stays a 404. */
-  const access = record ? standingOn(record, principal.ownerId) : null;
-  if (!record || !access) return deny(404, "Workbook not found.");
+     stranger into someone who may see it; without one this stays a 404.
+
+     Ownership is settled by the owner id alone and needs no lookup — the common
+     path, including every autosave of your own workbook. Only when that fails do
+     we resolve the caller's directory EMPLOYEE id (a `/cowork/me` round trip on
+     the Firebase path) to see whether a NAME-BASED share admits them, and only
+     when there is a share list to match against. */
+  let access = standingOn(record, principal.ownerId);
+  if (!access && record.shares?.length) {
+    const employeeId = await workbookEmployeeId(request);
+    if (employeeId) access = standingOn(record, [principal.ownerId, employeeId]);
+  }
+  if (!access) return deny(404, "Workbook not found.");
 
   /* A read is allowed by any standing. A WRITE needs `editor` or ownership, and
      is checked here rather than in each route, so a new route cannot forget. */

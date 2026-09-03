@@ -666,7 +666,7 @@ export function ChatPanel({
   return (
     <Panel
       padded={false}
-      className="relative"
+      className="chat-select relative"
       /* The same drop behaviour as the message thread, and for the same
          reason — this panel already shares that composer's paste handler, its
          upload path and its attachment rendering. */
@@ -1024,15 +1024,24 @@ export function ChatPanel({
                         the one people look for is when the other person
                         stopped. The 36px inset is the avatar column plus its
                         gap, so name, bubble and time share one edge. */}
-                    {endsRun && (
+                    {/* The time ends a run; the ticks belong to every message —
+                        see the same note in `MessagesArea`. A delivery state is
+                        a fact about ONE message, so three sent together can sit
+                        in three different states, and hanging the ticks off the
+                        run's end left the first two saying nothing. */}
+                    {(endsRun || (mine && !deleted && !unsent)) && (
                       <span
                         data-figure
                         className={`mt-1 flex items-center gap-1 text-[11px] text-ink-faint ${
                           mine ? "pe-9" : "ps-9"
                         }`}
                       >
-                        {unsent ? "Sending…" : formatClock(m.createdAt)}
-                        {m.editedAt && !deleted ? " · edited" : ""}
+                        {unsent
+                          ? "Sending…"
+                          : endsRun
+                            ? formatClock(m.createdAt)
+                            : ""}
+                        {endsRun && m.editedAt && !deleted ? " · edited" : ""}
                         {/* The message thread's own ticks — one, two, two blue.
                             This drew a pair of literal "✓✓" characters in the
                             green that means "positive" everywhere else in the

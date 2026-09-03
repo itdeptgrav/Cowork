@@ -166,10 +166,18 @@ test("the re-pin is gated on the reader still following the conversation", () =>
 
 test("scrolling decides whether the reader is following, from where they are", () => {
   const src = code();
+  /* The distance from the bottom is measured from where the reader actually is,
+     and the pin engages within 48px of it. That same distance now also drives
+     the jump-to-latest button, at a larger threshold — see scrollToBottom.test. */
   assert.match(
     src,
-    /pinnedRef\.current =\s*el\.scrollHeight - el\.scrollTop - el\.clientHeight < 48;/,
-    "the pinned state is not derived from the actual scroll position",
+    /const distFromBottom = el\.scrollHeight - el\.scrollTop - el\.clientHeight;/,
+    "the distance from the bottom is not measured from the actual scroll position",
+  );
+  assert.match(
+    src,
+    /pinnedRef\.current = distFromBottom < 48;/,
+    "the pinned state is not derived from that distance with a 48px threshold",
   );
 });
 

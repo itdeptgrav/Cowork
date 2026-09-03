@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { getRepository } from "@/lib/repositories";
-import { useSession } from "@/components/features/auth/SessionProvider";
+import { useViewerId } from "@/lib/hooks/usePermissions";
 import { Icon } from "@/components/ui/Icons";
 import { formatDateTime } from "@/lib/utils/format";
 import {
@@ -70,9 +70,11 @@ function fmtPts(n: number): string {
 }
 
 export function PtsChangePopup() {
-  const session = useSession();
-  const employeeId =
-    session.status === "authenticated" ? session.employeeId : null;
+  /* The SAME resolved viewer id the score/conduct pages pass to `listLedger`
+     (`getViewer().employeeId`), so this reads exactly the ledger they render —
+     the auth session id can be a different representation and would miss. Null
+     until the viewer resolves, which also covers "not signed in". */
+  const employeeId = useViewerId();
   const [shown, setShown] = useState<PtsChangeResult | null>(null);
 
   /* One read when the person is known — no listener, because a score change is

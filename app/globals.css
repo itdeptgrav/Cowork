@@ -409,6 +409,21 @@
     color: var(--body-bg);
   }
 
+  /* Chat and message surfaces get the familiar blue text-selection highlight
+     instead of the app's monochrome ink selection. These are the places people
+     select, copy and paste real content — a message, a quoted line, a link — and
+     the standard blue reads as "selected text you can copy" the way the quiet
+     ink-on-background selection, which can look like a UI highlight, does not.
+     The blue is the app's own accent (#1a73e8); white text keeps contrast on
+     both light and dark bubbles. Scoped to `.chat-select`, so the rest of the
+     app keeps its quieter selection. Higher specificity than the rule above, so
+     it wins inside chat without a global override. */
+  .chat-select ::selection,
+  .chat-select::selection {
+    background: #1a73e8;
+    color: #fff;
+  }
+
   /* Firefox has no backdrop-filter parity in every config; keep frost opaque
      enough that text contrast never depends on the blur landing. */
   @supports not (backdrop-filter: blur(1px)) {

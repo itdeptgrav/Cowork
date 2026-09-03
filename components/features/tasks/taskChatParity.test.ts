@@ -260,7 +260,20 @@ test("a run of messages shows one face and one time", () => {
   assert.match(PANEL, /const sameRun = continuesRun\(prev, m\)/);
   assert.match(PANEL, /const endsRun = !continuesRun\(m, next\)/);
   assert.match(PANEL, /!mine && !sameRun && person/, "the avatar repeats within a run");
-  assert.match(PANEL, /endsRun && \(/, "the timestamp repeats within a run");
+  /**
+   * **The TIME is what may not repeat — asserted on the clock itself.**
+   *
+   * This read `endsRun && (`, the whole status row's condition, which held only
+   * while the time was the sole reason that row existed. The ticks now appear
+   * for a mid-run message of your own, because a delivery state is a fact about
+   * ONE message and three sent together can differ — so the row has two reasons
+   * to exist and the clock keeps this one to itself.
+   */
+  assert.match(
+    PANEL,
+    /endsRun\s*\?\s*formatClock\(m\.createdAt\)/,
+    "the timestamp repeats within a run",
+  );
 });
 
 test("the avatar column is reserved even when empty", () => {
@@ -343,8 +356,13 @@ test("an unsent message offers no actions and claims no receipt", () => {
      and a tick would report a delivery that has not happened. */
   assert.match(PANEL, /const unsent = m\.id\.startsWith\("pending-"\)/);
   assert.match(PANEL, /onContextMenu=\{\s*unsent\s*\?\s*undefined/);
-  assert.match(PANEL, /unsent \? "Sending…" : formatClock/);
+  /* "Sending…" stands in for the time, whatever follows it — the else branch
+     gained the run check when the ticks stopped depending on it. */
+  assert.match(PANEL, /unsent\s*\?\s*"Sending…"/);
   assert.match(PANEL, /mine && !deleted && !unsent && \(/);
+  /* And the row itself must still refuse to appear for an unsent message of
+     your own — the reason the ticks carry `!unsent` into their new condition. */
+  assert.match(PANEL, /\(endsRun \|\| \(mine && !deleted && !unsent\)\)/);
 });
 
 /* ── Live, and never doubled ──────────────────────────────────────────────── */

@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
-import { workbookPrincipal } from "@/lib/server/workbookPrincipal";
+import {
+  workbookPrincipal,
+  workbookEmployeeId,
+} from "@/lib/server/workbookPrincipal";
 import { workbookStore } from "@/lib/server/workbookStore";
 import type { SerializedWorkbook } from "@/lib/spreadsheet/persistence";
 
@@ -28,8 +31,17 @@ export async function GET(request: Request) {
   const principal = await workbookPrincipal(request);
   if (!principal) return NextResponse.json({ error: "Not authenticated." }, { status: 401 });
   try {
-    const workbooks = await workbookStore.listForPrincipal(principal.ownerId);
-    /* The owner id is internal — the client never needs to see it. */
+    /* Owned workbooks are found by the owner id; a workbook shared with this
+       person by NAME is found by their directory employee id, so the listing
+       spans both. The employee id costs a resolve (a `/cowork/me` round trip on
+       the Firebase path); a listing is not the hot path, so it is paid here. */
+    const employeeId = await workbookEmployeeId(request);
+    const ids = employeeId ? [principal.ownerId, employeeId] : [principal.ownerId];
+    const workbooks = await workbookStore.listForPrincipal(ids);
+    /* The owner id is internal — the client never needs to see it. `access` says
+       whether each row is theirs or shared with them, and `shares` (present only
+       on rows they OWN — the store scopes it) is what the collaborators panel
+       reads back, so a share survives a refresh instead of vanishing from view. */
     return NextResponse.json(
       {
         workbooks: workbooks.map((w) => ({
@@ -38,6 +50,8 @@ export async function GET(request: Request) {
           revision: w.revision,
           createdAt: w.createdAt,
           updatedAt: w.updatedAt,
+          access: w.access,
+          ...(w.shares ? { shares: w.shares } : {}),
         })),
       },
       { headers: { "Cache-Control": "no-store" } },

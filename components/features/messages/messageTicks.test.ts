@@ -123,3 +123,57 @@ test("every tick state carries an accessible label", () => {
   );
   assert.match(body, /label \?\?/, "the wording can no longer be overridden");
 });
+
+/* ── Every message carries its own status, not just the last of a run ──────── */
+
+test("the ticks are not tied to the run's timestamp", () => {
+  /*
+   * The time is grouped deliberately: one stamp under a run of messages sent
+   * together, rather than the same minute repeated down the thread. A DELIVERY
+   * STATE is not like that — it is a fact about one message, and three sent in
+   * a row can genuinely be sent, delivered and read at once. Hanging the ticks
+   * off `endsRun` left the first two of a run with no status at all, which is
+   * not what the convention promises: every bubble carries its own.
+   */
+  for (const file of [
+    "components/features/messages/MessagesArea.tsx",
+    "components/features/tasks/ChatPanel.tsx",
+  ]) {
+    const src = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    assert.doesNotMatch(
+      src,
+      /\{endsRun && \(\s*<span\s+data-figure/,
+      `${file} still shows the status row only at the end of a run`,
+    );
+    assert.match(
+      src,
+      /\(endsRun \|\| \(mine && !deleted/,
+      `${file} does not render the row for a mid-run message of your own`,
+    );
+  }
+});
+
+test("a mid-run message shows the ticks WITHOUT repeating the time", () => {
+  /* The grouping is the point of `endsRun` and is kept: the clock is still
+     gated on it, so the row that appears mid-run carries the status alone. */
+  const src = readFileSync("components/features/messages/MessagesArea.tsx", "utf8");
+  assert.match(src, /\{endsRun && clock\(m\.createdAt\)\}/);
+  const chat = readFileSync("components/features/tasks/ChatPanel.tsx", "utf8");
+  assert.match(chat, /endsRun\s*\?\s*formatClock\(m\.createdAt\)\s*:\s*""/);
+});
+
+test("somebody else's message still shows no ticks", () => {
+  /* Telling a reader whether THEY have read something is noise, and the new
+     condition must not have widened the audience. */
+  for (const file of [
+    "components/features/messages/MessagesArea.tsx",
+    "components/features/tasks/ChatPanel.tsx",
+  ]) {
+    const src = readFileSync(file, "utf8");
+    assert.match(
+      src,
+      /\{mine && !deleted && (!unsent && )?\(\s*<MessageTicks/,
+      `${file} renders ticks without checking the message is yours`,
+    );
+  }
+});

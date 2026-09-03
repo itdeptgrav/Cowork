@@ -159,3 +159,52 @@ test("a changed worker takes over instead of waiting for every tab to close", ()
   assert.match(code, /skipWaiting\(\)/, "the worker never calls skipWaiting, so changes to it do not take effect until every tab is closed");
   assert.match(code, /clients\.claim\(\)/, "the worker never claims open pages, so they stay on the previous version");
 });
+
+/* ── One notification must not replace another ─────────────────────────────── */
+
+test("the push tag identifies the event, not its category", () => {
+  /*
+   * **This is the "sometimes the notification arrives, sometimes it doesn't".**
+   *
+   * `showNotification` REPLACES anything already showing under the same tag.
+   * The tag was `cowork-<type>`, so every notification of a kind shared one
+   * slot: a second `task_assigned` overwrote the first in the tray before the
+   * person had read it. The push was delivered every time — the browser threw
+   * the earlier one away.
+   *
+   * So the tag has to carry something that identifies THIS event. It still
+   * collapses a duplicate delivery of the same event, which is what a tag is
+   * for, and no longer collapses unrelated ones.
+   */
+  const sw = readFileSync("public/firebase-messaging-sw.js", "utf8");
+  const at = sw.indexOf("showNotification(title");
+  assert.ok(at > 0, "the worker no longer shows a notification");
+  const block = sw.slice(at, at + 3000);
+
+  assert.doesNotMatch(
+    block.replace(/\/\*[\s\S]*?\*\//g, ""),
+    /tag:\s*'cowork-'\s*\+\s*\(data\.type \|\| 'notif'\),/,
+    "the tag is keyed on the type alone — notifications will replace each other",
+  );
+  assert.match(block, /data\.notificationId/, "the event id is not used in the tag");
+  assert.match(block, /data\.taskId/, "there is no fallback for payloads without an event id");
+});
+
+test("the engine sends an event id for the tag to key on", () => {
+  /* The worker's exact tag is only as good as the payload: without an id per
+     event it falls back to the entity, and two notifications about one task
+     would still collapse. Both engine notify helpers must send it. */
+  for (const f of [
+    "D:/GRAV_Project/grav-cms-backend/services/taskForward.service.js",
+    "D:/GRAV_Project/grav-cms-backend/routes/task_routes/taskForward.js",
+  ]) {
+    let src: string;
+    try {
+      src = readFileSync(f, "utf8");
+    } catch {
+      continue; /* The engine is a separate checkout; skip where it is absent. */
+    }
+    assert.match(src, /notificationId: eventId/, `${f} does not send an event id`);
+    assert.match(src, /const eventId =/, `${f} references an id it never declares`);
+  }
+});

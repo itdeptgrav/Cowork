@@ -19,6 +19,7 @@ import {
   FileUploader,
 } from "@/components/features/attachments/Attachments";
 import { SubmittedFiles } from "./SubmittedFiles";
+import { SubmissionPanel } from "./SubmissionPanel";
 import { ReworkQueuePicker } from "./ReworkQueuePicker";
 import type { AttachmentMeta } from "@/lib/legacy/attachments";
 import { useViewerId } from "@/lib/hooks/usePermissions";
@@ -176,63 +177,6 @@ export function ReviewPanel({
 
   return (
     <div className="flex flex-col gap-4">
-      {latest ? (
-        <Panel>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-medium text-ink">
-              {/* WHICH output, when it is one. A reviewer looking at a task
-                  with ten outputs otherwise sees only the task's title and has
-                  to guess which piece of it they are being asked to judge. */}
-              {latest.outputId
-                ? (view.task.outputs.find((o) => o.id === latest.outputId)
-                    ?.label ?? "Submitted output")
-                : "Submitted work"}
-            </h2>
-            <Chip>Attempt {latest.attempt}</Chip>
-            {latest.wasLate && <Chip tone="overdue">Late</Chip>}
-            <span className="ml-auto text-xs text-ink-faint">
-              {formatDateTime(latest.submittedAt)}
-            </span>
-          </div>
-          <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
-            {latest.message}
-          </p>
-          {/**
-           * **The work itself.**
-           *
-           * This panel showed the covering note and the review chain and
-           * nothing else, so somebody deciding whether to approve a document
-           * could not open the document.
-           *
-           * Both origins are rendered, because a submission can carry files in
-           * two places and neither alone is the answer. Cowork's own uploader
-           * puts them in the attachment service keyed to this submission —
-           * private, streamed, and what `EntityAttachments` fetches. The old
-           * application instead wrote URLs onto the task record itself, and
-           * work submitted there still has to be reviewable here.
-           */}
-          <EntityAttachments
-            entityType="submission"
-            entityId={latest.id}
-            title="Submitted work"
-          />
-          <SubmittedFiles files={latest.attachments} label="Also attached" />
-          {latest.reviewChain.length > 1 && (
-            <p className="mt-2 text-xs text-ink-faint">
-              Stage {latest.currentStage} of {latest.reviewChain.length} —
-              approving passes this to the next reviewer rather than completing
-              the task.
-            </p>
-          )}
-        </Panel>
-      ) : (
-        <Panel>
-          <p className="text-sm text-ink-muted">
-            Nothing has been submitted for review yet.
-          </p>
-        </Panel>
-      )}
-
       {latest && !canReview && (
         <Panel>
           {latest.submittedById === me ? (
@@ -596,10 +540,74 @@ export function ReviewPanel({
         </Panel>
       )}
 
+      {/* The submitted work sits BELOW the decision, by the owner's layout: the
+          reviewer's action leads, and the work being judged — with the earlier
+          attempts and past decisions under it in "Review history" — follows. */}
+      {latest ? (
+        <Panel>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium text-ink">
+              {/* WHICH output, when it is one. A reviewer looking at a task
+                  with ten outputs otherwise sees only the task's title and has
+                  to guess which piece of it they are being asked to judge. */}
+              {latest.outputId
+                ? (view.task.outputs.find((o) => o.id === latest.outputId)
+                    ?.label ?? "Submitted output")
+                : "Submitted work"}
+            </h2>
+            <Chip>Attempt {latest.attempt}</Chip>
+            {latest.wasLate && <Chip tone="overdue">Late</Chip>}
+            <span className="ml-auto text-xs text-ink-faint">
+              {formatDateTime(latest.submittedAt)}
+            </span>
+          </div>
+          <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
+            {latest.message}
+          </p>
+          {/**
+           * **The work itself.**
+           *
+           * This panel showed the covering note and the review chain and
+           * nothing else, so somebody deciding whether to approve a document
+           * could not open the document.
+           *
+           * Both origins are rendered, because a submission can carry files in
+           * two places and neither alone is the answer. Cowork's own uploader
+           * puts them in the attachment service keyed to this submission —
+           * private, streamed, and what `EntityAttachments` fetches. The old
+           * application instead wrote URLs onto the task record itself, and
+           * work submitted there still has to be reviewable here.
+           */}
+          <EntityAttachments
+            entityType="submission"
+            entityId={latest.id}
+            title="Submitted work"
+          />
+          <SubmittedFiles files={latest.attachments} label="Also attached" />
+          {latest.reviewChain.length > 1 && (
+            <p className="mt-2 text-xs text-ink-faint">
+              Stage {latest.currentStage} of {latest.reviewChain.length} —
+              approving passes this to the next reviewer rather than completing
+              the task.
+            </p>
+          )}
+        </Panel>
+      ) : (
+        <Panel>
+          <p className="text-sm text-ink-muted">
+            Nothing has been submitted for review yet.
+          </p>
+        </Panel>
+      )}
+
       <Panel padded={false}>
         <div className="border-b border-hairline px-5 py-3">
           <h2 className="text-sm font-medium text-ink">Review history</h2>
         </div>
+        {/* The earlier submission attempts live here, at the top of the history,
+            so "what was submitted before" and "what was decided before" read as
+            one section. Renders nothing until there is a previous attempt. */}
+        <SubmissionPanel view={view} onChange={onChange} historyOnly />
         {reviews.isLoading ? (
           <div className="px-5 py-3">
             <SkeletonRows rows={2} />

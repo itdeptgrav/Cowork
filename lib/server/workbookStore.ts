@@ -98,8 +98,10 @@ export interface WorkbookStore {
   rename(id: string, title: string): Promise<WorkbookRecord | null>;
   remove(id: string): Promise<boolean>;
   /** Everything a principal can reach — owned AND shared with them — each
-      summary stamped with how they reach it. */
-  listForPrincipal(principalId: string): Promise<WorkbookSummary[]>;
+      summary stamped with how they reach it. Accepts SEVERAL ids because a
+      caller reaches workbooks under two: the id that owns them and their
+      directory employee id, which is what a name-based share is granted by. */
+  listForPrincipal(principal: string | readonly string[]): Promise<WorkbookSummary[]>;
   /** Replace a workbook's share list. Owner-only; the route enforces that. */
   setShares(id: string, shares: ShareGrant[]): Promise<WorkbookRecord | null>;
 }
@@ -269,16 +271,21 @@ export class FileWorkbookStore implements WorkbookStore {
     });
   }
 
-  async listForPrincipal(principalId: string): Promise<WorkbookSummary[]> {
+  async listForPrincipal(
+    principal: string | readonly string[],
+  ): Promise<WorkbookSummary[]> {
+    const ids = typeof principal === "string" ? [principal] : principal;
     const s = await this.#read();
     const out: WorkbookSummary[] = [];
     for (const w of s.workbooks) {
       /* Stamp each summary with THIS caller's standing, so the same record
-         listed by two people describes each one's own access. */
+         listed by two people describes each one's own access. Owned by the
+         owner id; shared by any of the caller's ids (their employee id is how a
+         name-based share names them). */
       const access =
-        w.ownerId === principalId
+        ids.includes(w.ownerId)
           ? ("owner" as const)
-          : w.shares?.find((g) => g.principalId === principalId)?.role;
+          : w.shares?.find((g) => ids.includes(g.principalId))?.role;
       if (!access) continue;
       const summary = summaryOf(w);
       /* Only the owner learns who else it is shared with. */
