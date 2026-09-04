@@ -2,6 +2,7 @@ import type { EmployeeId } from "../../domain/identity.ts";
 import type { MessageAttachment, MessageReply } from "../../domain/work.ts";
 import type { TaskChatMessage, TaskId } from "../../domain/tasks.ts";
 import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
+import { readMessageCard } from "../../rules/messages/card.ts";
 /* One reader for reactions, shared with the message thread — the shape is
    identical and two copies of it is two places to drift. */
 import { readReactions } from "./messaging.ts";
@@ -121,6 +122,8 @@ export function readTaskChatMessage(
   const type = typeof m.messageType === "string" ? m.messageType : "text";
   const parsed = readTaskChatAttachments(m, type);
   const deleted = m.isDeleted === true;
+  /* A tombstone shows nothing, so its card is dropped like its text is. */
+  const card = deleted ? undefined : readMessageCard(m.card);
 
   return {
     id: str(m.messageId) ?? docId,
@@ -151,5 +154,7 @@ export function readTaskChatMessage(
     readBy: ids(m.readBy),
     reactions: deleted ? undefined : readReactions(m.reactions),
     starredBy: ids(m.starredBy),
+    ...(ids(m.mentionIds).length ? { mentionIds: ids(m.mentionIds) } : {}),
+    ...(card ? { card } : {}),
   };
 }

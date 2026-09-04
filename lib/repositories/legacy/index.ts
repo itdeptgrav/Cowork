@@ -1,4 +1,4 @@
-import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageCard, MessageReply, MessageSearchHit, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import {
@@ -222,6 +222,13 @@ import {
   readPinnedMessages,
   readReactions,
 } from "./messaging.ts";
+import {
+  cardPreview,
+  messageCardForWrite,
+  readMessageCard,
+  togglePollVote,
+} from "../../rules/messages/card.ts";
+import { matchesQuery } from "../../rules/messages/globalSearch.ts";
 import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
 import { readTaskChatMessage } from "./taskChat.ts";
 import { reactionChanges } from "../../rules/messages/reactions.ts";
@@ -230,6 +237,7 @@ import {
   recipientRefusal,
   redactBcc,
 } from "../../rules/mail/blindCopy.ts";
+import { MAIL_FLAG_FIELD } from "../../rules/mail/flags.ts";
 import {
   APPROVED_LEGACY_STATUSES,
   buildWorkloadFlow,
@@ -3171,6 +3179,8 @@ export class LegacyRepository {
     text: string,
     attachments: MessageAttachment[] = [],
     replyTo: MessageReply | null = null,
+    mentionIds?: EmployeeId[],
+    card?: MessageCard,
   ): Promise<ActionResult<never>> {
     if (thread === "draft") {
       return {
@@ -3203,6 +3213,10 @@ export class LegacyRepository {
           message: text,
           attachments: wire,
           replyTo,
+          /* Sent for the :5000 route to persist; the reader defaults it when the
+             route echoes it back. */
+          mentionIds: mentionIds ?? [],
+          card,
         }),
       () => id,
     );
@@ -3382,6 +3396,47 @@ export class LegacyRepository {
         code: "offline",
         message: "The reaction could not be saved.",
       };
+    }
+  }
+
+  /**
+   * Cast or change the viewer's vote on a task-chat poll.
+   *
+   * Writes straight to the same `cowork_tasks/{taskId}/chat` document the
+   * reaction and star toggles write to — no engine round-trip — so a task-chat
+   * poll is live without a new :5000 route. `togglePollVote` is the shared rule,
+   * so single- and multiple-choice behave identically here and in a DM.
+   */
+  async voteTaskChatPoll(
+    taskId: TaskId,
+    messageId: string,
+    optionId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { getDoc, setDoc } = await import("firebase/firestore");
+      const ref = await this.#taskChatRef(taskId, messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const card = readMessageCard((snap.data() as Record<string, unknown>).card);
+      if (!card || card.kind !== "poll")
+        return { ok: false, code: "invalid_state", message: "This is not a poll." };
+      if (!card.options.some((o) => o.id === optionId))
+        return { ok: false, code: "not_found", message: "That option is gone." };
+      const options = togglePollVote(card.options, optionId, me, card.multiple);
+      await setDoc(
+        ref,
+        { card: messageCardForWrite({ ...card, options }) },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listTaskChat");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[voteTaskChatPoll]", e);
+      return { ok: false, code: "offline", message: "Your vote could not be saved." };
     }
   }
 
@@ -14752,6 +14807,8 @@ export class LegacyRepository {
     folder: MailFolder;
     transport?: MailTransport;
     search?: string;
+    starred?: boolean;
+    important?: boolean;
   }): Promise<MailThread[]> {
     const me = String(this.#ctx.employeeId);
     const all = (await this.#myMailMessages()).filter((m) => mailVisible(m, me));
@@ -14759,17 +14816,46 @@ export class LegacyRepository {
        from every visible message in the thread, so a Sent row still previews
        the latest reply rather than only what I sent. */
     const byThread = new Map<string, MailMessage[]>();
+    const folderByThread = new Map<string, MailMessage[]>();
     for (const m of all) {
       const list = byThread.get(m.threadId) ?? [];
       list.push(m);
       byThread.set(m.threadId, list);
+      if (inFolder(m, me, q.folder)) {
+        const f = folderByThread.get(m.threadId) ?? [];
+        f.push(m);
+        folderByThread.set(m.threadId, f);
+      }
     }
-    const inFolderThreads = new Set(
-      all.filter((m) => inFolder(m, me, q.folder)).map((m) => m.threadId),
-    );
-    let threads = [...inFolderThreads].map((tid) =>
-      deriveThread(tid, byThread.get(tid) ?? [], LEGACY_ORGANISATION_ID),
-    );
+    let tids = [...folderByThread.keys()];
+    /* Starred is a cross-folder view over the folder's own messages: keep a
+       thread only when the viewer has starred one of ITS messages here. */
+    if (q.starred)
+      tids = tids.filter((tid) =>
+        (folderByThread.get(tid) ?? []).some((m) => m.starredBy.includes(me)),
+      );
+    if (q.important)
+      tids = tids.filter((tid) =>
+        (folderByThread.get(tid) ?? []).some((m) => m.importantBy.includes(me)),
+      );
+    let threads = tids.map((tid) => {
+      const t = deriveThread(tid, byThread.get(tid) ?? [], LEGACY_ORGANISATION_ID);
+      /* The same per-viewer row stamps the mock computes, so both backends draw
+         an identical list without a second read per row. Unread is an INBOX
+         signal, so a Sent row is never unread. */
+      const fmsgs = folderByThread.get(tid) ?? [];
+      return {
+        ...t,
+        unread: fmsgs.some(
+          (m) => m.from.employeeId !== me && !m.readBy.includes(me),
+        ),
+        hasAttachments: fmsgs.some(
+          (m) => m.attachmentIds.length > 0 || (m.attachments?.length ?? 0) > 0,
+        ),
+        starred: fmsgs.some((m) => m.starredBy.includes(me)),
+        important: fmsgs.some((m) => m.importantBy.includes(me)),
+      };
+    });
     if (q.transport) threads = threads.filter((t) => t.transport === q.transport);
     if (q.search?.trim()) {
       const needle = q.search.trim();
@@ -14854,21 +14940,17 @@ export class LegacyRepository {
 
   async setMailFlag(
     messageId: string,
-    flag: "starred" | "trashed",
+    flag: "starred" | "trashed" | "spam" | "important",
     on: boolean,
   ): Promise<ActionResult<void>> {
-    return this.#setMailArrayFlag(
-      messageId,
-      flag === "starred" ? "starredBy" : "trashedBy",
-      on,
-    );
+    return this.#setMailArrayFlag(messageId, MAIL_FLAG_FIELD[flag], on);
   }
 
   /** Toggle one per-person array flag on a message, after checking the reader is
    *  a party to it — the same permission the mock enforces. */
   async #setMailArrayFlag(
     messageId: string,
-    field: "readBy" | "starredBy" | "trashedBy",
+    field: "readBy" | "starredBy" | "trashedBy" | "spamBy" | "importantBy",
     on: boolean,
   ): Promise<ActionResult<void>> {
     const { arrayRemove, arrayUnion, doc, getDoc, updateDoc } = await import(
@@ -14909,7 +14991,9 @@ export class LegacyRepository {
     bcc?: MailParty[];
     subject: string;
     body: string;
+    bodyHtml?: string;
     attachmentIds?: string[];
+    attachments?: MessageAttachment[];
     threadId?: string | null;
     gmail?: { messageId: string; threadId: string } | null;
     deliveryError?: string | null;
@@ -14986,12 +15070,16 @@ export class LegacyRepository {
       bcc,
       subject: input.subject.trim(),
       body: input.body,
+      bodyHtml: input.bodyHtml,
       attachmentIds: input.attachmentIds ?? [],
+      attachments: input.attachments ?? [],
       /* The sender has read their own message. */
       readBy: [ctx.meEmp.id],
       starredBy: [],
       trashedBy: [],
       archivedBy: [],
+      spamBy: [],
+      importantBy: [],
       labels: [],
       /* A failed external send stays a draft (null `sentAt`) carrying its error. */
       sentAt: deliveryError ? null : now,
@@ -15075,6 +15163,190 @@ export class LegacyRepository {
     }
     if (added > 0) notifyRepositoryChanged();
     return { ok: true, data: { added } };
+  }
+
+  async saveMailDraft(input: {
+    draftId?: string | null;
+    to: MailParty[];
+    cc?: MailParty[];
+    bcc?: MailParty[];
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+    attachmentIds?: string[];
+    attachments?: MessageAttachment[];
+    threadId?: string | null;
+  }): Promise<ActionResult<MailMessage>> {
+    const { addDoc, collection, doc, getDoc, updateDoc } = await import(
+      "firebase/firestore"
+    );
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const ctx = await this.#mailContext();
+    if (!ctx.meEmp)
+      return { ok: false, code: "not_found", message: "Employee not found." };
+    const cc = input.cc ?? [];
+    const bcc = input.bcc ?? [];
+    const from: MailParty = {
+      kind: "employee",
+      employeeId: ctx.meEmp.id,
+      address: ctx.meEmp.email ?? `${ctx.meEmp.id}@cowork.local`,
+      displayName: ctx.meEmp.displayName,
+    };
+    const now = new Date().toISOString();
+    /* Derived for display only — a draft has not left, so the transport is not
+       yet acted on. */
+    const transport = transportForParties([...input.to, ...cc, ...bcc]);
+
+    /* Overwrite the draft being edited, so Save twice leaves one copy. */
+    if (input.draftId) {
+      const ref = doc(legacyDb(), MAIL_COLLECTION, input.draftId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "Draft not found." };
+      const existing = readMailMessage(
+        snap.id,
+        snap.data() as Record<string, unknown>,
+      );
+      if (existing.from.employeeId !== ctx.me || existing.sentAt !== null)
+        return {
+          ok: false,
+          code: "permission_denied",
+          message: "That is not your draft.",
+        };
+      const updated: Omit<MailMessage, "id"> = {
+        ...existing,
+        transport,
+        to: input.to,
+        cc,
+        bcc,
+        subject: input.subject.trim(),
+        body: input.body,
+        bodyHtml: input.bodyHtml ?? existing.bodyHtml,
+        attachmentIds: input.attachmentIds ?? existing.attachmentIds,
+        attachments: input.attachments ?? existing.attachments,
+      };
+      try {
+        await updateDoc(ref, mailMessageBody(updated, ctx.orgId));
+        notifyRepositoryChanged();
+        return { ok: true, data: { ...updated, id: input.draftId } };
+      } catch (e) {
+        console.error("[saveMailDraft:update]", e);
+        return {
+          ok: false,
+          code: "offline",
+          message: "The draft could not be saved.",
+        };
+      }
+    }
+
+    const message: Omit<MailMessage, "id"> = {
+      threadId:
+        input.threadId ??
+        `mth-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e9).toString(36)}`,
+      transport,
+      from,
+      to: input.to,
+      cc,
+      bcc,
+      subject: input.subject.trim(),
+      body: input.body,
+      bodyHtml: input.bodyHtml,
+      attachmentIds: input.attachmentIds ?? [],
+      attachments: input.attachments ?? [],
+      readBy: [ctx.meEmp.id],
+      starredBy: [],
+      trashedBy: [],
+      archivedBy: [],
+      spamBy: [],
+      importantBy: [],
+      labels: [],
+      sentAt: null,
+      createdAt: now,
+      gmailMessageId: null,
+      deliveryError: null,
+    };
+    try {
+      const ref = await addDoc(
+        collection(legacyDb(), MAIL_COLLECTION),
+        mailMessageBody(message, ctx.orgId),
+      );
+      notifyRepositoryChanged();
+      return { ok: true, data: { ...message, id: ref.id } };
+    } catch (e) {
+      console.error("[saveMailDraft]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The draft could not be saved.",
+      };
+    }
+  }
+
+  async discardMailDraft(messageId: string): Promise<ActionResult<void>> {
+    const { deleteDoc, doc, getDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const me = String(this.#ctx.employeeId);
+    const ref = doc(legacyDb(), MAIL_COLLECTION, messageId);
+    const snap = await getDoc(ref);
+    if (!snap.exists())
+      return { ok: false, code: "not_found", message: "Message not found." };
+    const m = readMailMessage(snap.id, snap.data() as Record<string, unknown>);
+    /* A hard delete, so it is fenced to the ONE case where that is safe: your
+       own message that never sent. A sent message is refused — Trash is its
+       soft, per-person delete. */
+    if (m.from.employeeId !== me || m.sentAt !== null)
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only your own unsent draft can be discarded.",
+      };
+    try {
+      await deleteDoc(ref);
+      notifyRepositoryChanged();
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[discardMailDraft]", e);
+      return {
+        ok: false,
+        code: "offline",
+        message: "The draft could not be discarded.",
+      };
+    }
+  }
+
+  /**
+   * Live mailbox updates over `onSnapshot`.
+   *
+   * The SAME `participantIds` array-contains query the reads use — no `orderBy`,
+   * so no composite index — listened rather than fetched. A message A sends with
+   * B among its `participantIds` lands in B's snapshot and fires `onChange`, so
+   * B's inbox updates without a poll. Returns synchronously; the Firestore
+   * import resolves in the background and the returned unsubscribe is safe to
+   * call before it does.
+   */
+  watchMail(onChange: () => void): () => void {
+    const me = String(this.#ctx.employeeId);
+    let unsub: (() => void) | null = null;
+    let cancelled = false;
+    void (async () => {
+      const { collection, onSnapshot, query, where } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      if (cancelled) return;
+      unsub = onSnapshot(
+        query(
+          collection(legacyDb(), MAIL_COLLECTION),
+          where("participantIds", "array-contains", me),
+        ),
+        () => onChange(),
+        (err) => console.error("[watchMail]", err),
+      );
+    })();
+    return () => {
+      cancelled = true;
+      if (unsub) unsub();
+    };
   }
 
   /* ── Collaboration: messages ─────────────────────────────────────────────
@@ -15194,6 +15466,68 @@ export class LegacyRepository {
       (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""),
     );
     return resolved;
+  }
+
+  /**
+   * Global message search across the viewer's conversations.
+   *
+   * Firestore has no full-text index, so this is a BOUNDED fan-out rather than a
+   * server query: the viewer's most recently active conversations are scanned,
+   * a window of recent messages read from each in parallel, and the text
+   * filtered client-side with the same `matchesQuery` rule the mock uses. The
+   * caps keep an on-demand search from turning into an unbounded read of every
+   * message ever sent — a deep archive search would need a search index on the
+   * backend, which this deliberately does not add. Newest matches first.
+   */
+  async searchMessages(
+    query: string,
+    limit = MESSAGE_PAGE_SIZE,
+  ): Promise<MessageSearchHit[]> {
+    const q = query.trim();
+    if (!q) return [];
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me) return [];
+
+    const MAX_CONVERSATIONS = 40;
+    const PER_CONVERSATION = 60;
+    const convos = (await this.listConversations())
+      .slice()
+      .sort((a, b) => (b.lastMessageAt ?? "").localeCompare(a.lastMessageAt ?? ""))
+      .slice(0, MAX_CONVERSATIONS);
+
+    const { collection, getDocs, limit: fsLimit, orderBy, query: fsQuery } =
+      await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+
+    const perConversation = await Promise.all(
+      convos.map(async (c) => {
+        const coll = c.kind === "group" ? GROUP_COLLECTION : DM_COLLECTION;
+        const snap = await getDocs(
+          fsQuery(
+            collection(legacyDb(), coll, c.id, "messages"),
+            orderBy("createdAt", "desc"),
+            fsLimit(PER_CONVERSATION),
+          ),
+        ).catch(() => null);
+        if (!snap) return [] as MessageSearchHit[];
+        return snap.docs
+          .map((d) => readMessageDoc(d.id, c.id, d.data() as Record<string, unknown>))
+          .filter((m) => !m.isDeleted && matchesQuery(m.text, q))
+          .map((m) => ({
+            conversationId: c.id,
+            messageId: m.id,
+            senderId: m.senderId,
+            senderName: m.senderName,
+            text: m.text,
+            createdAt: m.createdAt,
+          }));
+      }),
+    );
+
+    return perConversation
+      .flat()
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.max(1, limit));
   }
 
   async listMessages(
@@ -15349,6 +15683,8 @@ export class LegacyRepository {
     text: string,
     attachments?: MessageAttachment[],
     replyTo?: MessageReply | null,
+    mentionIds?: EmployeeId[],
+    card?: MessageCard,
   ): Promise<ActionResult<Message>> {
     const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
     if (!me)
@@ -15359,8 +15695,9 @@ export class LegacyRepository {
       };
     const body = text.trim();
     const media = attachments ?? [];
-    /* A message may be all caption, all media, or both — but not empty. */
-    if (!body && media.length === 0)
+    /* A message may be all caption, all media, a card, or a mix — but not
+       empty: a shared location/contact/poll stands in for the text. */
+    if (!body && media.length === 0 && !card)
       return {
         ok: false,
         code: "validation_failed",
@@ -15389,6 +15726,8 @@ export class LegacyRepository {
           threadType: coll === DM_COLLECTION ? "direct" : "group",
           attachments: media,
           replyTo: replyTo ?? null,
+          mentionIds: (mentionIds ?? []).filter((id) => id !== me),
+          card,
         }),
         createdAt: serverTimestamp(),
       });
@@ -15398,9 +15737,19 @@ export class LegacyRepository {
          direct thread has not written it yet, and never clobbers participants.
          With media and no caption the preview names the media, as the old app
          stored it. */
-      const previewType = media.length ? media[0].kind : "text";
+      const previewType = media.length
+        ? media[0].kind
+        : card
+          ? card.kind
+          : "text";
       const lastMessage = {
-        text: body || (media.length ? attachmentPreview(media[0].kind) : ""),
+        text:
+          body ||
+          (media.length
+            ? attachmentPreview(media[0].kind)
+            : card
+              ? cardPreview(card)
+              : ""),
         senderId: me,
         senderName,
         messageType: previewType,
@@ -15439,7 +15788,12 @@ export class LegacyRepository {
        * point; failing the send because a push did not go out would have
        * somebody re-send a message that already arrived. The engine likewise
        * answers 200 before it starts, for the same reason. */
-      void this.#announceMessage(conversationId, coll, body, media);
+      void this.#announceMessage(
+        conversationId,
+        coll,
+        body || (card ? cardPreview(card) : ""),
+        media,
+      );
 
       notifyRepositoryChanged("listConversations");
       return {
@@ -15730,6 +16084,49 @@ export class LegacyRepository {
         code: "offline",
         message: "The reaction could not be saved.",
       };
+    }
+  }
+
+  /**
+   * Cast or change the viewer's vote on a poll shared in a conversation.
+   *
+   * Mirrors the reaction path exactly — read the message, apply the shared
+   * `togglePollVote` rule, merge the fresh card back — so a poll's votes live on
+   * the message document beside its reactions and read back through the same
+   * `readMessageCard`.
+   */
+  async voteMessagePoll(
+    conversationId: string,
+    messageId: string,
+    optionId: string,
+  ): Promise<ActionResult<void>> {
+    const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
+    if (!me)
+      return { ok: false, code: "permission_denied", message: "Sign in first." };
+    try {
+      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const coll = await this.#conversationCollection(conversationId);
+      const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
+      const snap = await getDoc(ref);
+      if (!snap.exists())
+        return { ok: false, code: "not_found", message: "That message is gone." };
+      const card = readMessageCard((snap.data() as Record<string, unknown>).card);
+      if (!card || card.kind !== "poll")
+        return { ok: false, code: "invalid_state", message: "This is not a poll." };
+      if (!card.options.some((o) => o.id === optionId))
+        return { ok: false, code: "not_found", message: "That option is gone." };
+      const options = togglePollVote(card.options, optionId, me, card.multiple);
+      await setDoc(
+        ref,
+        { card: messageCardForWrite({ ...card, options }) },
+        { merge: true },
+      );
+      notifyRepositoryChanged("listConversations");
+      return { ok: true, data: undefined };
+    } catch (e) {
+      console.error("[voteMessagePoll]", e);
+      return { ok: false, code: "offline", message: "Your vote could not be saved." };
     }
   }
 

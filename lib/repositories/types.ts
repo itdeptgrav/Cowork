@@ -103,7 +103,9 @@ import type {
   MeetingRecording,
   Message,
   MessageAttachment,
+  MessageCard,
   MessageReply,
+  MessageSearchHit,
   MonitoringPerformance,
   MonitoringSubject,
   Notification,
@@ -1808,6 +1810,10 @@ export interface CoworkRepository {
     attachments: MessageAttachment[],
     /** The message this one answers, denormalised onto it as in a DM. */
     replyTo?: MessageReply | null,
+    /** Internal employees @-mentioned in the text. See rules/messages/mentions. */
+    mentionIds?: EmployeeId[],
+    /** A shared location, contact or poll. A card-only send needs no text. */
+    card?: MessageCard,
   ): Promise<ActionResult<TaskChatMessage>>;
 
   /* ── Task chat, beyond sending ──────────────────────────────────────────
@@ -1834,6 +1840,14 @@ export interface CoworkRepository {
   ): Promise<ActionResult<void>>;
   /** Bookmark a message for yourself alone. */
   toggleTaskChatStar?(taskId: TaskId, messageId: string): Promise<ActionResult<void>>;
+  /** Cast or change the viewer's vote on a task-chat poll option. Toggling the
+   *  same option clears it; on a single-choice poll a new pick replaces the old.
+   *  Optional — a surface hides voting where the repository omits it. */
+  voteTaskChatPoll?(
+    taskId: TaskId,
+    messageId: string,
+    optionId: string,
+  ): Promise<ActionResult<void>>;
   /**
    * Record that this viewer has read the thread.
    *
@@ -2266,6 +2280,15 @@ export interface CoworkRepository {
   /* Collaboration */
   listConversations(): Promise<(Conversation & { participants: Employee[] })[]>;
   /**
+   * Search message TEXT across every conversation the viewer is in — the global
+   * search behind the Messages search box. Returns the newest matches first,
+   * capped at `limit` (default a page's worth). Optional: a backend without it
+   * simply offers no cross-thread message search and the box still filters the
+   * conversation list by name. Matching is a case-insensitive substring; a blank
+   * query returns nothing (the caller shows the chat list instead).
+   */
+  searchMessages?(query: string, limit?: number): Promise<MessageSearchHit[]>;
+  /**
    * A page of one conversation's messages, newest end first in the window but
    * ASCENDING within it — the order `MessageList` renders in.
    *
@@ -2308,6 +2331,12 @@ export interface CoworkRepository {
     attachments?: MessageAttachment[],
     /** The message this one replies to, where it is a reply. */
     replyTo?: MessageReply | null,
+    /** Internal employees @-mentioned — resolved from the text's `@Name` tokens
+     *  by the composer, notified and highlighted. See rules/messages/mentions. */
+    mentionIds?: EmployeeId[],
+    /** A shared location, contact or poll carried by this message. A card-only
+     *  send is valid with empty text and no attachments. See `MessageCard`. */
+    card?: MessageCard,
   ): Promise<ActionResult<Message>>;
   /** Edit the text of your own message. Re-stamps it as edited. */
   editMessage(
@@ -2333,6 +2362,14 @@ export interface CoworkRepository {
     conversationId: string,
     messageId: string,
     emoji: string,
+  ): Promise<ActionResult<void>>;
+  /** Cast or change the viewer's vote on a poll shared in a conversation.
+   *  Toggling the same option clears it; on a single-choice poll a new pick
+   *  replaces the old. Optional, like the reaction toggle. */
+  voteMessagePoll?(
+    conversationId: string,
+    messageId: string,
+    optionId: string,
   ): Promise<ActionResult<void>>;
   /**
    * Star a message for YOURSELF — or unstar it. A star is a personal bookmark:
@@ -2488,6 +2525,13 @@ export interface CoworkRepository {
     folder: MailFolder;
     transport?: MailTransport;
     search?: string;
+    /** Cross-folder view: keep only threads the viewer has starred a message
+        in. `folder` still scopes which messages are considered (Starred reads
+        the inbox), so a starred sent draft does not surface under Starred. */
+    starred?: boolean;
+    /** Cross-folder view: keep only threads with a message the viewer flagged
+        Important. Same folder-scoping as `starred`. */
+    important?: boolean;
   }): Promise<MailThread[]>;
   listMailMessages(threadId: string): Promise<MailMessage[]>;
   listMailAttachments(ids: string[]): Promise<MailAttachment[]>;
@@ -2495,7 +2539,7 @@ export interface CoworkRepository {
   setMailRead(messageId: string, read: boolean): Promise<ActionResult<void>>;
   setMailFlag(
     messageId: string,
-    flag: "starred" | "trashed",
+    flag: "starred" | "trashed" | "spam" | "important",
     on: boolean,
   ): Promise<ActionResult<void>>;
   /**
@@ -2512,7 +2556,13 @@ export interface CoworkRepository {
     bcc?: MailParty[];
     subject: string;
     body: string;
+    /** The rich body as HTML, when the sender formatted it. `body` stays the
+        plain text; this rides alongside. */
+    bodyHtml?: string;
     attachmentIds?: string[];
+    /** Inline attachments (as returned by `uploadMessageAttachment`) — the file
+        is already on Drive; this rides the one send. */
+    attachments?: MessageAttachment[];
     threadId?: string | null;
     gmail?: { messageId: string; threadId: string } | null;
     deliveryError?: string | null;
@@ -2524,6 +2574,41 @@ export interface CoworkRepository {
     /** The connected mailbox address — decides which parties are this person. */
     mailboxAddress: string,
   ): Promise<ActionResult<{ added: number }>>;
+
+  /**
+   * Save an unfinished message as a DRAFT — a message with `sentAt` null, which
+   * is exactly what the Drafts folder already shows. Pass `draftId` to overwrite
+   * the draft being edited rather than leave a second copy behind. Never sends,
+   * never notifies, never decides a transport — a draft has not left.
+   */
+  saveMailDraft(input: {
+    draftId?: string | null;
+    to: MailParty[];
+    cc?: MailParty[];
+    bcc?: MailParty[];
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+    attachmentIds?: string[];
+    attachments?: MessageAttachment[];
+    threadId?: string | null;
+  }): Promise<ActionResult<MailMessage>>;
+
+  /** Discard a draft — a hard delete, permitted ONLY on the viewer's own unsent
+   *  message, because a draft is private and never delivered. A sent message is
+   *  refused (that is what Trash is for). */
+  discardMailDraft(messageId: string): Promise<ActionResult<void>>;
+
+  /**
+   * Live mailbox updates — fire `onChange` whenever a message this person is a
+   * party to changes, so a mail A sends reaches B's inbox WITHOUT a poll.
+   *
+   * Wraps the SAME `participantIds` array-contains query the reads use, in an
+   * `onSnapshot`. That query has no `orderBy`, so it rides Firestore's automatic
+   * single-field index and needs NO composite index deployed. Optional (the
+   * in-memory prototype has no live backend); returns an unsubscribe.
+   */
+  watchMail?(onChange: () => void): () => void;
 
   /* ── Documents ──────────────────────────────────────────────────────────
    *

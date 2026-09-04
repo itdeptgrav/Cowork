@@ -19,11 +19,13 @@ import type {
   Conversation,
   Message,
   MessageAttachment,
+  MessageCard,
   MessageReply,
   PinnedMessage,
 } from "../../domain/work.ts";
 import { driveFileIdFrom } from "../../rules/media/driveUrls.ts";
 import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
+import { readMessageCard, messageCardForWrite } from "../../rules/messages/card.ts";
 
 export const DM_COLLECTION = "cowork_direct_messages";
 export const GROUP_COLLECTION = "cowork_groups";
@@ -188,6 +190,8 @@ export function readMessageDoc(
             : "";
   }
   const reply = readReply(d.replyTo);
+  const mentions = strArray(d.mentionIds);
+  const card = readMessageCard(d.card);
   return {
     id: typeof d.messageId === "string" ? d.messageId : id,
     conversationId,
@@ -204,6 +208,8 @@ export function readMessageDoc(
     readBy: strArray(d.readBy),
     reactions: readReactions(d.reactions),
     starredBy: strArray(d.starredBy),
+    ...(mentions.length ? { mentionIds: mentions } : {}),
+    ...(card ? { card } : {}),
   };
 }
 
@@ -384,6 +390,11 @@ export function messageWriteBody(input: {
   threadType: "direct" | "group";
   attachments?: MessageAttachment[];
   replyTo?: MessageReply | null;
+  /** Ids of the internal people @-mentioned; written only when there are any,
+   *  so an unmentioned message carries nothing new. */
+  mentionIds?: string[];
+  /** A shared location, contact or poll, written only when present. */
+  card?: MessageCard;
 }): Record<string, unknown> {
   const attachments = input.attachments ?? [];
   const messageType = attachments.length ? attachments[0].kind : "text";
@@ -399,6 +410,12 @@ export function messageWriteBody(input: {
     type: messageType,
     readBy: [input.senderId],
   };
+  if (input.mentionIds && input.mentionIds.length) {
+    body.mentionIds = [...new Set(input.mentionIds)];
+  }
+  if (input.card) {
+    body.card = messageCardForWrite(input.card);
+  }
   if (input.replyTo) {
     /* The quote is denormalised and capped, exactly as the old app wrote it, so
        it stays readable without loading the original. */

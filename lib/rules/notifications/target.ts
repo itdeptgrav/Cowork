@@ -30,7 +30,8 @@ export type NotificationSourceType =
   | "conversation"
   | "document"
   | "emergency"
-  | "score";
+  | "score"
+  | "mail";
 
 export interface NotificationTarget {
   sourceType: NotificationSourceType;
@@ -70,6 +71,9 @@ const TYPE_TARGETS: Readonly<Record<string, NotificationSourceType>> = {
   sop_recheck_requested: "score",
   sop_recheck_confirmed: "score",
   sop_recheck_rejected: "score",
+  /* A new mail opens the mailbox — one surface, no per-thread route, so the
+     type alone is the whole answer. */
+  mail_received: "mail",
 };
 
 function readId(value: unknown): string | null {
@@ -134,5 +138,9 @@ export function notificationHref(
        way that sending them to a task is not. */
     case "score":
       return "/score/c3";
+    /* The mailbox is one surface with client-held state, so a mail notification
+       opens it and the thread is found there. */
+    case "mail":
+      return "/mail";
   }
 }

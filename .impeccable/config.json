@@ -44,6 +44,15 @@
         ],
         "createdAt": "2026-08-28T14:31:49.873Z",
         "reason": "Claude's call: the match is prose - the file explains image sizing and writes <img> inside comments (lines 10, 45, 64, 365). The only actual render is DriveImage, which does 'const src = sources[attempt]; if (!src) return null' - it never emits an empty src. Same shape as the existing DocumentEditor.tsx ignore."
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "app/globals.css"
+        ],
+        "createdAt": "2026-09-04T05:39:22.282Z",
+        "reason": "blockquote left-border is the universal typographic convention for quoted text (mirrors the pre-existing .prose-cowork blockquote at L1094); uses subtle --color-hairline/--doc-rule, not a bright card accent — not the AI-card tell the rule targets"
       }
     ]
   }

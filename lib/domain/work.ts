@@ -282,6 +282,64 @@ export interface MessageAttachment {
 }
 
 /**
+ * One message matched by a global search, denormalised so a result list renders
+ * without re-reading each thread: which conversation it is in, who sent it, the
+ * text, and when — enough to show a row and, on click, open that conversation
+ * at that message.
+ */
+export interface MessageSearchHit {
+  conversationId: string;
+  messageId: string;
+  senderId: EmployeeId;
+  senderName: string;
+  text: string;
+  createdAt: string;
+}
+
+/** One option on a poll, with the people who have voted for it so far. */
+export interface MessagePollOption {
+  /** Stable within the poll, so a vote survives options being reordered. */
+  id: string;
+  text: string;
+  /** Employee ids who picked this option. Empty until someone votes. */
+  votes: EmployeeId[];
+}
+
+/**
+ * A structured card carried by a message alongside (or instead of) its text —
+ * a shared location, a shared contact, or a poll. One optional field on the
+ * message rather than a new kind of `MessageAttachment`, because none of these
+ * is a file: an attachment is a URL with a size, and a location is a pair of
+ * coordinates. Additive and discriminated on `kind`, so a message written
+ * before cards existed simply has none and every reader falls through to text.
+ */
+export type MessageCard =
+  | {
+      kind: "location";
+      lat: number;
+      lng: number;
+      /** A place name or address where the sender added one; else null. */
+      label: string | null;
+    }
+  | {
+      kind: "contact";
+      /** The internal person shared, where the card names one — so the reader
+       *  can open a conversation with them. Null for a plain contact. */
+      employeeId: EmployeeId | null;
+      name: string;
+      role: string | null;
+      email: string | null;
+      phone: string | null;
+    }
+  | {
+      kind: "poll";
+      question: string;
+      options: MessagePollOption[];
+      /** Whether one person may pick more than one option. */
+      multiple: boolean;
+    };
+
+/**
  * The message a reply quotes, denormalised onto the reply itself.
  *
  * Carries the quoted sender and a snippet of text so the quote renders without a
@@ -358,6 +416,19 @@ export interface Message {
   /** True for a soft-deleted message — its slot and tombstone remain. */
   isDeleted?: boolean;
   readBy: EmployeeId[];
+  /**
+   * The internal employees @-mentioned in the text. Optional and additive, the
+   * same way `reactions` is — a message written before mentions existed has
+   * none. The `@DisplayName` tokens live in `text`; this is the resolved id
+   * list, used to notify the mentioned people and to highlight their names on
+   * read. See `lib/rules/messages/mentions.ts`.
+   */
+  mentionIds?: EmployeeId[];
+  /**
+   * A shared location, contact or poll carried by this message. Optional and
+   * additive — most messages have none. See `MessageCard`.
+   */
+  card?: MessageCard;
   /**
    * Emoji reactions: each emoji to the people who chose it. One reaction per
    * person per message — picking a second emoji replaces the first, the rule

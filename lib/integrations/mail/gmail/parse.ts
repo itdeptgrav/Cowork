@@ -98,6 +98,8 @@ export function parseGmailMessage(raw: GmailRawMessage): MailMessage {
     starredBy: [],
     trashedBy: [],
     archivedBy: [],
+    spamBy: [],
+    importantBy: [],
     labels: [],
     sentAt,
     createdAt: sentAt,

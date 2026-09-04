@@ -331,6 +331,7 @@ const TYPE_URLS = {
     sop_recheck_requested: '/score/c3',
     sop_recheck_confirmed: '/score/c3',
     sop_recheck_rejected: '/score/c3',
+    mail_received: '/mail',
 };
 
 // Id fields in the order a person would want them opened. `topTaskId` before

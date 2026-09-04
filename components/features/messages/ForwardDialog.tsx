@@ -31,9 +31,13 @@ export function ForwardDialog({
   onClose,
   onForwarded,
 }: {
-  message: Message;
+  /** Only the text and attachments are forwarded, so this takes any message-
+   *  shaped value — a conversation `Message` or a task-chat message alike. The
+   *  copy is sent as a fresh message from you, never labelled as forwarded. */
+  message: Pick<Message, "text" | "attachments">;
   /** Hidden from the list — forwarding to the thread it is already in is a
-   *  duplicate nobody means to send. */
+   *  duplicate nobody means to send. Pass "" from a surface that is not itself
+   *  a conversation (the task chat), which hides nothing. */
   fromConversationId: string;
   onClose: () => void;
   /** The forward landed. The id — not a title — because the caller opens that

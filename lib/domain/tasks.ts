@@ -8,7 +8,7 @@
  */
 
 import type { EmployeeId } from "./identity";
-import type { MessageAttachment, MessageReply } from "./work";
+import type { MessageAttachment, MessageCard, MessageReply } from "./work";
 import type { GoalBasedConfig } from "./projects";
 
 export type TaskId = string;
@@ -906,6 +906,13 @@ export interface TaskChatMessage {
   reactions?: Record<string, EmployeeId[]>;
   /** Personal bookmarks. Not shared: each person sees only their own. */
   starredBy?: EmployeeId[];
+  /** Internal employees @-mentioned in the text — resolved ids for notifying
+   *  and highlighting; the `@DisplayName` tokens live in `text`. Optional and
+   *  additive, like every field above. See `lib/rules/messages/mentions.ts`. */
+  mentionIds?: EmployeeId[];
+  /** A shared location, contact or poll on this message. Optional and additive,
+   *  the same shape the message thread uses. See `MessageCard`. */
+  card?: MessageCard;
 }
 
 /**

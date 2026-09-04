@@ -33,6 +33,7 @@ import {
   driveViewUrl,
 } from "@/lib/rules/media/driveUrls";
 import { dragCarriesFiles, dragDepth } from "@/lib/rules/messages/fileDrop";
+import { formatDuration } from "@/lib/rules/messages/voiceNote";
 import {
   uploadAriaLabel,
   uploadPercent,
@@ -548,15 +549,7 @@ export function MessageAttachments({
       {rest.map((a, i) => {
         const src = mediaUrl(a);
         if (a.kind === "voice")
-          return (
-            <audio
-              key={i}
-              src={src}
-              controls
-              preload="none"
-              className="w-full"
-            />
-          );
+          return <VoicePlayer key={i} src={src} durationSecs={a.durationSecs} />;
         if (a.kind === "video") {
           /* A card that OPENS a player, not a player.
 
@@ -728,5 +721,75 @@ export function UploadProgressRow({
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * Voice-note player.
+ *
+ * A recording from `MediaRecorder` (webm/opus) carries no duration in its
+ * header, so a native `<audio controls>` reports `duration` as `Infinity` and
+ * shows "0:00 / 0:00" until playback happens to reach the end and force the
+ * browser to measure it. The standard fix: once metadata has loaded, if the
+ * duration is not a real number, seek to the far end — which makes the browser
+ * resolve the true length — then snap straight back to the start. `duration`
+ * then reads correctly and the control shows it BEFORE the first play.
+ *
+ * `preload="metadata"` (not "none") is what makes this run on render rather than
+ * only after the reader presses play. `durationSecs` — the length measured while
+ * recording — seeds the control's label via `aria-label` so the length is at
+ * least announced even on a browser where the seek trick is refused.
+ */
+function VoicePlayer({
+  src,
+  durationSecs,
+}: {
+  src: string;
+  durationSecs: number | null;
+}) {
+  const ref = useRef<HTMLAudioElement>(null);
+  /* Guards the one-shot seek so a stray `timeupdate` cannot restart it. */
+  const measuring = useRef(false);
+
+  function resolveDuration() {
+    const el = ref.current;
+    if (!el || measuring.current) return;
+    if (el.duration !== Infinity && !Number.isNaN(el.duration)) return;
+    measuring.current = true;
+    const onProgress = () => {
+      if (el.duration === Infinity || Number.isNaN(el.duration)) return;
+      /* The real length is in now — undo the seek and stop listening. */
+      el.removeEventListener("timeupdate", onProgress);
+      el.removeEventListener("durationchange", onProgress);
+      try {
+        el.currentTime = 0;
+      } catch {
+        /* Seeking back is a nicety, not a requirement. */
+      }
+      measuring.current = false;
+    };
+    el.addEventListener("timeupdate", onProgress);
+    el.addEventListener("durationchange", onProgress);
+    try {
+      /* A finite time past any real end; the browser clamps it to the true end
+         and, in doing so, measures the duration. */
+      el.currentTime = 1e101;
+    } catch {
+      measuring.current = false;
+    }
+  }
+
+  return (
+    <audio
+      ref={ref}
+      src={src}
+      controls
+      preload="metadata"
+      onLoadedMetadata={resolveDuration}
+      aria-label={
+        durationSecs ? `Voice note, ${formatDuration(durationSecs)}` : "Voice note"
+      }
+      className="w-full"
+    />
   );
 }

@@ -1,5 +1,7 @@
 import type { LegacyResult } from "./envelope";
 import { legacyFetch } from "./http.ts";
+import type { MessageCard } from "../domain/work.ts";
+import { messageCardForWrite } from "../rules/messages/card.ts";
 
 /**
  * Task mutations, against the engine's own endpoints.
@@ -664,8 +666,17 @@ export async function sendTaskChat(input: {
   attachments?: unknown[];
   /** The message this one answers, quoted onto it. */
   replyTo?: { messageId: string; senderName: string; text: string } | null;
+  /** Internal employees @-mentioned. Sent for the engine to persist alongside
+   *  the message; a route that ignores unknown fields simply drops it, and the
+   *  reader defaults it, so this is additive either way. */
+  mentionIds?: string[];
+  /** A shared location, contact or poll. Same additive story as mentions: sent
+   *  normalised for the :5000 route to store, defaulted by the reader if the
+   *  route drops it. */
+  card?: MessageCard;
 }): Promise<LegacyResult<unknown>> {
   const hasAttachments = Array.isArray(input.attachments) && input.attachments.length > 0;
+  const hasMentions = Array.isArray(input.mentionIds) && input.mentionIds.length > 0;
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/chat`,
     method: "POST",
@@ -676,6 +687,8 @@ export async function sendTaskChat(input: {
       /* Omitted entirely when absent rather than sent as null, so a message
          with no reply gains no field — the engine writes what it is given. */
       ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+      ...(hasMentions ? { mentionIds: input.mentionIds } : {}),
+      ...(input.card ? { card: messageCardForWrite(input.card) } : {}),
     },
     token: input.token,
   });

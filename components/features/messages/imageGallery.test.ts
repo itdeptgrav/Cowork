@@ -156,11 +156,16 @@ test("Messages chat wires the full set including forward; reply closes the viewe
   assert.match(src, /onStar=\{\(m\) => void toggleStar\(m\)\}/);
 });
 
-test("Task Chat wires reply/react/star but NOT forward (no such concept there)", () => {
+test("Task Chat wires reply/react/star AND forward (to a conversation)", () => {
   const src = code(CHATPANEL);
   assert.match(src, /const galleryActions = galleryItems\.map\(/);
   assert.match(src, /onStar: \(\) => void toggleStar\(m\)/);
   assert.match(src, /react\(m, emoji\)/);
   assert.match(src, /actions=\{galleryActions\}/);
-  assert.doesNotMatch(src, /onForward/, "task chat has no forward");
+  /* Forward now exists here too — the same ForwardDialog Messages opens, sent
+     as a fresh message to a conversation. Reworded 2026-09-04 when task chat
+     gained forwarding; it used to assert `doesNotMatch(/onForward/)`. */
+  assert.match(src, /onForward: \(\) => \{/);
+  /* Forward closes the viewer so the conversation picker is seen. */
+  assert.match(src, /setForwarding\(m\);\s*setGalleryIndex\(null\)/);
 });

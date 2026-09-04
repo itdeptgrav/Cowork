@@ -1,4 +1,5 @@
 import type { EmployeeId } from "./identity";
+import type { MessageAttachment } from "./work";
 
 /**
  * One mailbox, two transports.
@@ -46,7 +47,7 @@ export interface MailParty {
   displayName: string;
 }
 
-export type MailFolder = "inbox" | "sent" | "drafts" | "trash";
+export type MailFolder = "inbox" | "sent" | "drafts" | "trash" | "spam";
 
 /**
  * A conversation, whatever it travelled over.
@@ -84,6 +85,22 @@ export interface MailThread {
   gmailThreadId: string | null;
   createdAt: string;
   updatedAt: string;
+
+  /**
+   * Per-VIEWER list conveniences — computed on every read, never stored, and
+   * optional so a legacy or partially-written thread without them simply reads
+   * as "not unread / no attachment". They belong here for the same reason
+   * `lastMessagePreview` does: the thread list must not fetch every message's
+   * state to draw a row. In SQL these become a computed column / a join count.
+   */
+  /** The thread holds a message in the viewer's inbox they have not read. */
+  unread?: boolean;
+  /** Some message in the thread carries an attachment — for the paperclip. */
+  hasAttachments?: boolean;
+  /** The viewer has starred some message in the thread. */
+  starred?: boolean;
+  /** The viewer has flagged some message in the thread Important. */
+  important?: boolean;
 }
 
 export interface MailMessage {
@@ -107,9 +124,38 @@ export interface MailMessage {
   bcc: MailParty[];
 
   subject: string;
-  /** Plain text in this prototype. HTML is a rendering decision, not a schema one. */
+  /**
+   * The message text, PLAIN. Always present, and the source of truth for search,
+   * the grammar check, the thread preview and any plain-text fallback — so none
+   * of those has to understand HTML. For a rich message this is the editor's
+   * text content; `bodyHtml` carries the formatting alongside it.
+   */
   body: string;
+  /**
+   * The rich body, as HTML, when the sender formatted it. Optional and defaulted
+   * away on read, so a plain message (and every legacy or Gmail one) simply has
+   * none and renders from `body`. Rendered ONLY through the mail schema's
+   * sanitiser (`MailRichText`), never raw — see the note there.
+   */
+  bodyHtml?: string;
+  /**
+   * File ids, for an attachment stored in the separate `cowork_mail_attachments`
+   * collection (the SQL-migration shape). Kept for Gmail-synced messages and the
+   * migration target.
+   */
   attachmentIds: string[];
+  /**
+   * Attachments carried INLINE on the message, exactly as a chat message carries
+   * them — the file goes to Drive first (public, resumable, no size cap) and its
+   * `MessageAttachment` rides the one send. Optional and defaulted to `[]` on
+   * read, so a stored doc written before this field never crashes; and written
+   * only with non-`undefined` values, because Firestore rejects `undefined`.
+   *
+   * Chosen over the separate-collection write because it reuses the chat upload
+   * and render path wholesale and touches only `cowork_mails`, whose write rules
+   * already permit an internal message.
+   */
+  attachments?: MessageAttachment[];
 
   /**
    * Per-recipient state.
@@ -124,6 +170,16 @@ export interface MailMessage {
   /** Soft, per-person. Trash is a view, never a delete. */
   trashedBy: EmployeeId[];
   archivedBy: EmployeeId[];
+  /**
+   * Per-person flags added on top of the originals, each a set of employee ids
+   * so they read exactly like `starredBy`/`trashedBy`. Optional-by-default at
+   * the read boundary (`readMailMessage` defaults them to `[]`) so a stored doc
+   * written before these fields existed is not garbled — it simply has neither.
+   */
+  /** Moved to Spam by this person — a per-person view, like Trash. */
+  spamBy: EmployeeId[];
+  /** Flagged Important by this person — a personal marker, like Star. */
+  importantBy: EmployeeId[];
   labels: string[];
 
   /** Null until sent. A draft is a message that has not left. */

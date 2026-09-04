@@ -117,3 +117,52 @@ test("every rung is reachable — no state is shadowed into being dead", () => {
   ]);
   assert.equal(reached.size, 8);
 });
+
+/* ── Rungs added for the composer features ──────────────────────────────── */
+
+test("the mention picker is backed out of before the reply it was opened inside", () => {
+  /**
+   * The picker is opened by typing `@` INSIDE an edit or a reply, so it is
+   * always the innermost thing on screen. A rung below them would close the
+   * reply while its own autocomplete was still showing.
+   */
+  assert.equal(
+    escapeAction({ ...IDLE, mentionPickerOpen: true, replying: true }),
+    "close-mention-picker",
+  );
+  assert.equal(
+    escapeAction({ ...IDLE, mentionPickerOpen: true, editing: true }),
+    "close-mention-picker",
+  );
+});
+
+test("a recording is cancelled before an edit or a reply is", () => {
+  /* An edit or a reply survives being backed out of — the text is still in the
+     composer and the draft keeps it. A recording that loses its rung keeps
+     running with no obvious way to stop it. */
+  assert.equal(
+    escapeAction({ ...IDLE, recording: true, editing: true, replying: true }),
+    "cancel-recording",
+  );
+});
+
+test("a recording still yields to anything modal", () => {
+  assert.equal(escapeAction({ ...IDLE, recording: true, modalOpen: true }), "none");
+});
+
+test("a recording is cancelled rather than the thread being left", () => {
+  /* The rung that matters most: without it, Escape during a recording would
+     drop the reader out of the conversation with the microphone still live. */
+  assert.equal(escapeAction({ ...IDLE, recording: true }), "cancel-recording");
+});
+
+test("the new rungs are absent-safe, so a surface that has neither is unchanged", () => {
+  /* Both are optional precisely so a caller that predates them — or a surface
+     with no composer at all — keeps its exact previous ladder. */
+  assert.equal(escapeAction(IDLE), "close-thread");
+  assert.equal(escapeAction({ ...IDLE, searchOpen: true }), "close-search");
+  assert.equal(
+    escapeAction({ ...IDLE, mentionPickerOpen: false, recording: false }),
+    "close-thread",
+  );
+});

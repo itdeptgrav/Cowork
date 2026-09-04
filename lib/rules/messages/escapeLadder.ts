@@ -24,8 +24,27 @@ export interface ThreadEscapeState {
    */
   modalOpen: boolean;
   menuOpen: boolean;
+  /**
+   * The @-mention autocomplete is open under the composer.
+   *
+   * OPTIONAL, like every rung added after the first: `ThreadEscapeState` is
+   * built as a full object literal at each call site and in this module's own
+   * test fixture, so a required field here would break all of them at once
+   * for a surface that has not adopted the feature yet.
+   */
+  mentionPickerOpen?: boolean;
   forwarding: boolean;
   groupSettingsOpen: boolean;
+  /**
+   * A voice note is being recorded right now.
+   *
+   * Above `editing` and `replying` because it is the only rung that is
+   * CAPTURING something: an edit or a reply survives being backed out of —
+   * the text is still in the composer, and the draft keeps it — while a
+   * recording that loses its rung is a recording that keeps running with no
+   * obvious way to stop it.
+   */
+  recording?: boolean;
   editing: boolean;
   replying: boolean;
   searchOpen: boolean;
@@ -43,8 +62,10 @@ export interface ThreadEscapeState {
 export type EscapeAction =
   | "none"
   | "close-menu"
+  | "close-mention-picker"
   | "close-forward"
   | "close-group-settings"
+  | "cancel-recording"
   | "cancel-edit"
   | "cancel-reply"
   | "close-search"
@@ -65,8 +86,14 @@ export function escapeAction(state: ThreadEscapeState): EscapeAction {
   if (state.modalOpen) return "none";
 
   if (state.menuOpen) return "close-menu";
+  /* Above the dialogs and above `editing`/`replying`, because the picker is
+     opened by typing INSIDE an edit or a reply — it is always the innermost
+     thing on screen when it is open, and a rung below them would back out of
+     the reply while its own autocomplete was still showing. */
+  if (state.mentionPickerOpen) return "close-mention-picker";
   if (state.forwarding) return "close-forward";
   if (state.groupSettingsOpen) return "close-group-settings";
+  if (state.recording) return "cancel-recording";
   if (state.editing) return "cancel-edit";
   if (state.replying) return "cancel-reply";
   /* After the transient things, because the search bar is a mode somebody

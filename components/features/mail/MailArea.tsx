@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import { WorkspaceHead } from "@/components/ui/Workspace";
@@ -45,20 +45,27 @@ import type {
  * same avatars as everywhere else — rather than anything resembling Gmail.
  */
 
-const FOLDERS: { id: MailFolder; label: string }[] = [
-  { id: "inbox", label: "Inbox" },
-  { id: "sent", label: "Sent" },
-  { id: "drafts", label: "Drafts" },
-  { id: "trash", label: "Trash" },
+const FOLDERS: { id: MailFolder; label: string; icon: keyof typeof Icon }[] = [
+  { id: "inbox", label: "Inbox", icon: "inbox" },
+  { id: "sent", label: "Sent", icon: "send" },
+  { id: "drafts", label: "Drafts", icon: "draft" },
+  { id: "spam", label: "Spam", icon: "blocked" },
+  { id: "trash", label: "Trash", icon: "trash" },
 ];
 
 export function MailArea() {
   const [folder, setFolder] = useState<MailFolder>("inbox");
   const [transport, setTransport] = useState<MailTransport | null>(null);
-  const [starredOnly, setStarredOnly] = useState(false);
+  /* Starred and Important are cross-folder VIEWS, mutually exclusive with each
+     other and turned off by picking a real folder. One piece of state, so they
+     can never both be on. */
+  const [flagView, setFlagView] = useState<null | "starred" | "important">(null);
   const [search, setSearch] = useState("");
   const [openThread, setOpenThread] = useState<string | null>(null);
   const [composing, setComposing] = useState(false);
+  /* A draft is opened INTO the composer to be finished, not into the read
+     view — so clicking a Drafts row loads the draft message and edits it. */
+  const [editingDraft, setEditingDraft] = useState<MailMessage | null>(null);
 
   const threads = useQuery(
     (r) =>
@@ -66,10 +73,73 @@ export function MailArea() {
         folder,
         ...(transport ? { transport } : {}),
         ...(search.trim() ? { search } : {}),
+        ...(flagView === "starred" ? { starred: true } : {}),
+        ...(flagView === "important" ? { important: true } : {}),
       }),
-    [folder, transport, search],
+    [folder, transport, search, flagView],
   );
+
+  /* Opening a row: a Draft goes to the composer to be finished; anything else
+     opens the conversation. Loads the draft's message so the composer prefills
+     from a fully-formed record rather than a second async round in the modal. */
+  async function openRow(t: MailThread) {
+    if (folder !== "drafts") {
+      setOpenThread(t.id);
+      return;
+    }
+    const msgs = await getRepository().listMailMessages(t.id);
+    const draft = msgs.find((m) => m.sentAt === null) ?? msgs[msgs.length - 1];
+    if (draft) setEditingDraft(draft);
+  }
   const unread = useQuery((r) => r.getMailUnreadCount(), [folder]);
+
+  /* Client-side windowing: draw the first page of rows and reveal more on
+     demand, so a large inbox never renders hundreds of rows at once. The window
+     resets whenever the folder, search or view changes — derived from a signature
+     so no effect is needed. (Full message bodies are already fetched only on
+     open, in `MailThreadView`.) */
+  const PAGE = 25;
+  const listSig = `${folder}|${transport ?? ""}|${search}|${flagView ?? ""}`;
+  const [page, setPage] = useState({ sig: listSig, shown: PAGE });
+  const shown = page.sig === listSig ? page.shown : PAGE;
+
+  /* Live updates: an onSnapshot on the mailbox refetches the list and the unread
+     count the moment a message someone sends reaches this person — no polling.
+     A ref holds the latest refetchers so the subscription is opened once. */
+  const refetchRef = useRef(() => {});
+  refetchRef.current = () => {
+    threads.refetch();
+    unread.refetch();
+  };
+  useEffect(() => {
+    const repo = getRepository();
+    if (!repo.watchMail) return;
+    return repo.watchMail(() => refetchRef.current());
+  }, []);
+
+  /* New-mail alert: when the unread count RISES, something arrived — fire the
+     app's own notification event, which the toast layer (and push, where the
+     user has enabled it) already listens for. Sets only a ref, so this is not a
+     state write in an effect. */
+  const prevUnreadRef = useRef<number | null>(null);
+  useEffect(() => {
+    const u = unread.data;
+    if (u === null || u === undefined) return;
+    const prev = prevUnreadRef.current;
+    prevUnreadRef.current = u;
+    if (prev !== null && u > prev && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("cowork:notification", {
+          detail: {
+            title: "New mail",
+            body: `You have ${u} unread ${u === 1 ? "message" : "messages"}.`,
+            type: "mail",
+            tag: "mail-unread",
+          },
+        }),
+      );
+    }
+  }, [unread.data]);
 
   /**
    * Pull Gmail in.
@@ -150,79 +220,98 @@ export function MailArea() {
             >
               {syncing ? "Syncing…" : "Sync Gmail"}
             </Button>
-          <Button tone="primary" size="sm" onClick={() => setComposing(true)}>
-            <span className="flex items-center gap-1.5">
-              <Icon.plus />
-              Compose
-            </span>
-          </Button>
           </span>
         }
       />
 
-      <div className="grid gap-4 deck:grid-cols-[190px_minmax(0,1fr)]">
-        {/* Sidebar. Folders are views; Internal/External are the only transport
-            filters, and they sit apart from the folders so they do not read as
-            two more mailboxes. */}
-        {/* On a PANEL, not bare on the field. The Field Is Not A Text Surface
-            Rule: the backdrop under any run changes as the page scrolls, and
-            under the cream and gold blobs `ink-muted` measures ~3.4:1 and
-            `ink-faint` ~3.0:1 — which is why these labels were unreadable.
-            `ink-faint` is a panel-only token, so the "Source" heading needs a
-            surface before it is allowed at all. Geometry, not colour. */}
+      <div className="grid gap-4 deck:grid-cols-[216px_minmax(0,1fr)]">
+        {/* Sidebar. Compose leads it — the one thing you come here to do that a
+            row cannot start. Folders are views; Internal/External are the only
+            transport filters, and they sit under a rule so they do not read as
+            two more mailboxes.
+            On a PANEL, not bare on the field: `ink-faint` is a panel-only token
+            (the backdrop under a bare run changes as the page scrolls), so the
+            "Source" heading needs a surface before it is allowed. */}
         <Panel padded={false}>
-          <nav
-            aria-label="Mail folders"
-            className="flex flex-col gap-1 px-2.5 py-2.5"
-          >
-          {FOLDERS.map((f) => (
-            <SideItem
-              key={f.id}
-              label={f.label}
-              active={folder === f.id && !starredOnly}
-              onClick={() => {
-                setFolder(f.id);
-                setStarredOnly(false);
-                setOpenThread(null);
-              }}
-            />
-          ))}
-          <SideItem
-            label="Starred"
-            active={starredOnly}
-            onClick={() => {
-              setStarredOnly(true);
-              setFolder("inbox");
-              setOpenThread(null);
-            }}
-          />
+          <div className="flex flex-col px-2.5 py-3">
+            <button
+              type="button"
+              onClick={() => setComposing(true)}
+              className="mb-3 flex items-center justify-center gap-2 rounded-full bg-ink px-4 py-2.5 text-[13px] font-medium text-[var(--body-bg)] shadow-[0_1px_3px_rgba(0,0,0,0.18)] transition-opacity hover:opacity-90"
+            >
+              <Icon.plus className="h-4 w-4" />
+              Compose
+            </button>
 
-            <p className="mt-3 px-2.5 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-              Source
-            </p>
-            {[
-              { id: null, label: "All" },
-              { id: "internal" as const, label: "Internal" },
-              { id: "gmail" as const, label: "External" },
-            ].map((t) => (
+            <nav aria-label="Mail folders" className="flex flex-col gap-0.5">
+              {FOLDERS.map((f) => (
+                <SideItem
+                  key={f.id}
+                  label={f.label}
+                  icon={f.icon}
+                  count={f.id === "inbox" ? (unread.data ?? undefined) : undefined}
+                  active={folder === f.id && !flagView}
+                  onClick={() => {
+                    setFolder(f.id);
+                    setFlagView(null);
+                    setOpenThread(null);
+                  }}
+                />
+              ))}
               <SideItem
-                key={t.label}
-                label={t.label}
-                active={transport === t.id}
+                label="Starred"
+                icon="star"
+                active={flagView === "starred"}
                 onClick={() => {
-                  setTransport(t.id);
+                  setFlagView("starred");
+                  setFolder("inbox");
                   setOpenThread(null);
                 }}
               />
-            ))}
-          </nav>
+              <SideItem
+                label="Important"
+                icon="flag"
+                active={flagView === "important"}
+                onClick={() => {
+                  setFlagView("important");
+                  setFolder("inbox");
+                  setOpenThread(null);
+                }}
+              />
+
+              <div className="my-2 h-px bg-[var(--color-hairline)]" />
+              <p className="px-3 pb-1 text-[10px] font-medium tracking-[0.08em] text-ink-faint uppercase">
+                Source
+              </p>
+              {[
+                { id: null, label: "All" },
+                { id: "internal" as const, label: "Internal" },
+                { id: "gmail" as const, label: "External" },
+              ].map((t) => (
+                <SideItem
+                  key={t.label}
+                  label={t.label}
+                  active={transport === t.id}
+                  onClick={() => {
+                    setTransport(t.id);
+                    setOpenThread(null);
+                  }}
+                />
+              ))}
+            </nav>
+          </div>
         </Panel>
 
         <div className="min-w-0">
           {openThread ? (
             <MailThreadView
               threadId={openThread}
+              folder={folder}
               onBack={() => setOpenThread(null)}
+              onChanged={() => {
+                threads.refetch();
+                unread.refetch();
+              }}
             />
           ) : (
             <>
@@ -256,14 +345,26 @@ export function MailArea() {
               ) : (
                 <Panel padded={false}>
                   <ul className="divide-y divide-hairline">
-                    {threads.data.map((t) => (
+                    {threads.data.slice(0, shown).map((t) => (
                       <ThreadRow
                         key={t.id}
                         thread={t}
-                        onOpen={() => setOpenThread(t.id)}
+                        onOpen={() => void openRow(t)}
                       />
                     ))}
                   </ul>
+                  {threads.data.length > shown && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setPage({ sig: listSig, shown: shown + PAGE })
+                      }
+                      className="w-full border-t border-hairline px-5 py-2.5 text-[12px] text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
+                    >
+                      Show {Math.min(PAGE, threads.data.length - shown)} more ·{" "}
+                      {threads.data.length - shown} not shown
+                    </button>
+                  )}
                 </Panel>
               )}
             </>
@@ -277,6 +378,29 @@ export function MailArea() {
           onSent={() => {
             setComposing(false);
             threads.refetch();
+            unread.refetch();
+          }}
+          onSaved={() => {
+            setComposing(false);
+            threads.refetch();
+          }}
+        />
+      )}
+
+      {/* Finishing a saved draft: the composer prefilled from it, overwriting
+          the same draft on Save and replacing it with a sent message on Send. */}
+      {editingDraft && (
+        <MailCompose
+          editingDraft={editingDraft}
+          onClose={() => setEditingDraft(null)}
+          onSent={() => {
+            setEditingDraft(null);
+            threads.refetch();
+            unread.refetch();
+          }}
+          onSaved={() => {
+            setEditingDraft(null);
+            threads.refetch();
           }}
         />
       )}
@@ -286,25 +410,43 @@ export function MailArea() {
 
 function SideItem({
   label,
+  icon,
+  count,
   active,
   onClick,
 }: {
   label: string;
+  icon?: keyof typeof Icon;
+  count?: number;
   active: boolean;
   onClick: () => void;
 }) {
+  const I = icon ? Icon[icon] : null;
   return (
     <button
       type="button"
       aria-current={active ? "page" : undefined}
       onClick={onClick}
-      className={`rounded-inset px-2.5 py-1.5 text-left text-sm transition-colors ${
+      className={`flex items-center gap-3 rounded-full px-3 py-1.5 text-left text-[13px] transition-colors ${
         active
-          ? "bg-[var(--control-active)] text-ink"
+          ? "bg-[var(--control-active)] font-medium text-ink"
           : "text-ink-muted hover:bg-[var(--control)] hover:text-ink"
       }`}
     >
-      {label}
+      {/* A fixed leading slot so iconned folders and the source filters align. */}
+      {I ? (
+        <I className="h-4 w-4 shrink-0" />
+      ) : (
+        <span aria-hidden className="w-4 shrink-0" />
+      )}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {count != null && count > 0 && (
+        <span
+          className={`shrink-0 text-[12px] tabular-nums ${active ? "text-ink" : "text-ink-faint"}`}
+        >
+          {count}
+        </span>
+      )}
     </button>
   );
 }
@@ -329,39 +471,63 @@ function ThreadRow({
       .join("")
       .toUpperCase() ?? "??";
 
+  /* Unread is the viewer's own state, stamped on the row by the repository so
+     no second read is needed — see `listMailThreads`. It drives the weight and a
+     lifted row; the design language stays quiet — no accent bars. */
+  const unread = thread.unread === true;
+
   return (
     <li>
       <button
         type="button"
         onClick={onOpen}
-        className="flex w-full flex-wrap items-center gap-3 px-5 py-3 text-left transition-colors hover:bg-[var(--control)]"
+        aria-label={`${unread ? "Unread. " : ""}${other?.displayName ?? "Conversation"}: ${thread.subject || "(no subject)"}`}
+        className={`flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors hover:bg-[var(--control)] ${
+          unread ? "bg-[var(--surface-raised)]" : ""
+        }`}
       >
+        {/* A star only when starred — a fixed slot keeps every row aligned. */}
+        <span aria-hidden className="grid w-4 shrink-0 place-items-center">
+          {thread.starred && (
+            <Icon.star className="h-4 w-4 fill-[var(--state-warning,#e0a11b)] text-[var(--state-warning,#e0a11b)]" />
+          )}
+        </span>
         <Avatar
           initials={initials}
           hue={2}
           name={other?.displayName ?? "Unknown"}
           size="sm"
         />
-        <span className="min-w-0 flex-1">
-          <span className="flex items-baseline gap-2">
-            <span className="truncate text-sm text-ink">
-              {other?.displayName ?? other?.address ?? "Unknown"}
-            </span>
-            {/* Quiet on purpose. Internal mail carries no badge at all —
-                marking the normal case is how a unified inbox stops feeling
-                unified. */}
-            {thread.transport === "gmail" && (
-              <Chip tone="neutral">Gmail</Chip>
-            )}
-          </span>
-          <span className="mt-0.5 block truncate text-sm text-ink-muted">
+        {/* Sender — a fixed column, so subjects line up down the list. */}
+        <span
+          className={`w-32 shrink-0 truncate text-[13px] sm:w-40 ${
+            unread ? "font-semibold text-ink" : "text-ink-muted"
+          }`}
+        >
+          {other?.displayName ?? other?.address ?? "Unknown"}
+        </span>
+        {/* Subject then a dimmed snippet, on one line — the Gmail read. */}
+        <span className="min-w-0 flex-1 truncate text-[13px]">
+          <span className={unread ? "font-semibold text-ink" : "text-ink"}>
             {thread.subject || "(no subject)"}
           </span>
-          <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
-            {thread.lastMessagePreview}
-          </span>
+          {thread.lastMessagePreview && (
+            <span className="text-ink-faint"> — {thread.lastMessagePreview}</span>
+          )}
         </span>
-        <span className="shrink-0 text-[11px] text-ink-faint">
+        {thread.important && (
+          <Icon.flag className="h-3.5 w-3.5 shrink-0 fill-[var(--state-overdue,#d1495b)] text-[var(--state-overdue,#d1495b)]" />
+        )}
+        {/* Quiet on purpose: internal mail carries no badge at all. */}
+        {thread.transport === "gmail" && <Chip tone="neutral">Gmail</Chip>}
+        {thread.hasAttachments && (
+          <Icon.attach className="h-3.5 w-3.5 shrink-0 text-ink-faint" />
+        )}
+        <span
+          className={`w-14 shrink-0 text-right text-[11px] tabular-nums sm:w-16 ${
+            unread ? "font-medium text-ink" : "text-ink-faint"
+          }`}
+        >
           {now && formatRelative(thread.lastMessageAt, now)}
         </span>
       </button>

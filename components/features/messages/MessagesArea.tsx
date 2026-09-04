@@ -23,6 +23,12 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
 import { NewChatDialog } from "./NewChatDialog";
 import { GroupSettings } from "./GroupSettings";
 import { ForwardDialog } from "./ForwardDialog";
+import { VoiceRecorder } from "./VoiceRecorder";
+import { CardComposer } from "./CardComposer";
+import { MessageCardView } from "./MessageCardView";
+import { useMentions } from "./MentionInput";
+import { mentionTokensFor } from "./MessageText";
+import { mentionSegments } from "@/lib/rules/messages/mentions";
 import {
   MessageContextMenu,
   type MessageMenuItem,
@@ -64,6 +70,7 @@ import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { isPinned } from "@/lib/rules/messages/pins";
 import { escapeAction } from "@/lib/rules/messages/escapeLadder";
 import { searchThread } from "@/lib/rules/messages/threadSearch";
+import { snippetAround, searchSegments } from "@/lib/rules/messages/globalSearch";
 import { clearDraft, readDraft, saveDraft } from "./draftStorage";
 import {
   mergeMessagePages,
@@ -76,7 +83,9 @@ import type {
   Employee,
   Message,
   MessageAttachment,
+  MessageCard,
   MessageReply,
+  MessageSearchHit,
 } from "@/lib/domain";
 
 /**
@@ -109,6 +118,7 @@ type ConversationView = Conversation & { participants: Employee[] };
 export function MessagesPage({
   conversationId,
   closed = false,
+  jumpToMessageId,
 }: {
   conversationId?: string;
   /**
@@ -130,6 +140,13 @@ export function MessagesPage({
    * conversation navigates to `/messages/[id]` and drops the flag naturally.
    */
   closed?: boolean;
+  /**
+   * A message id from `?m=` — set when a global-search result is opened — that
+   * the thread should scroll to once it loads. Read on the SERVER and passed in
+   * as a prop, exactly like `closed`, so this stays free of `useSearchParams`
+   * and the Suspense boundary a client search-params hook would force here.
+   */
+  jumpToMessageId?: string;
 }) {
   const router = useRouter();
   const viewerId = useViewerId();
@@ -158,6 +175,34 @@ export function MessagesPage({
       ].some((v) => v.toLowerCase().includes(q)),
     );
   }, [all, search, viewerId]);
+
+  /* Global message search. Besides filtering the chat list by name above,
+     typing here searches message TEXT across every conversation the viewer is
+     in — the "Messages" section under the list. Debounced so the fan-out fires
+     on a pause, not on every keystroke. */
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(search.trim()), 220);
+    return () => clearTimeout(t);
+  }, [search]);
+  const messageHits = useQuery(
+    (r) =>
+      r.searchMessages && debouncedQuery
+        ? r.searchMessages(debouncedQuery, 30)
+        : Promise.resolve<MessageSearchHit[]>([]),
+    [debouncedQuery],
+  );
+  const enrichedHits = useMemo(
+    () =>
+      (messageHits.data ?? []).map((h) => {
+        const conv = all.find((c) => c.id === h.conversationId);
+        return {
+          ...h,
+          chatTitle: conv ? conversationTitle(conv, viewerId) : "Conversation",
+        };
+      }),
+    [messageHits.data, all, viewerId],
+  );
 
   /* The route is the source of truth for what is open; the first conversation
      is only a default, and only until the reader has said otherwise — see
@@ -305,6 +350,10 @@ export function MessagesPage({
               search={search}
               onSearch={setSearch}
               onNew={() => setNewChat("direct")}
+              messageHits={enrichedHits}
+              searching={debouncedQuery.length > 0}
+              messageSearchSupported={typeof repo.searchMessages === "function"}
+              searchLoading={messageHits.isLoading}
             />
           </div>
 
@@ -317,6 +366,7 @@ export function MessagesPage({
                 conversation={activeConversation}
                 viewerId={viewerId}
                 opened={openedDeliberately}
+                jumpTo={jumpToMessageId}
                 onRead={() => conversations.refetch()}
                 onSent={() => conversations.refetch()}
                 /* `?closed=1` carries the intent across the segment change.
@@ -370,6 +420,10 @@ function ConversationList({
   search,
   onSearch,
   onNew,
+  messageHits,
+  searching,
+  messageSearchSupported,
+  searchLoading,
 }: {
   conversations: ConversationView[];
   total: number;
@@ -384,6 +438,14 @@ function ConversationList({
   search: string;
   onSearch: (v: string) => void;
   onNew: () => void;
+  /** Messages matching the search, across every conversation, each carrying the
+   *  title of the chat it belongs to. */
+  messageHits: (MessageSearchHit & { chatTitle: string })[];
+  /** Whether a (debounced) search term is currently in effect. */
+  searching: boolean;
+  /** Whether the backend offers cross-thread message search at all. */
+  messageSearchSupported: boolean;
+  searchLoading: boolean;
 }) {
   return (
     <Panel padded={false} label="Conversations" className="flex h-full flex-col">
@@ -396,8 +458,8 @@ function ConversationList({
             type="search"
             value={search}
             onChange={(e) => onSearch(e.target.value)}
-            placeholder="Search conversations"
-            aria-label="Search conversations"
+            placeholder="Search chats and messages"
+            aria-label="Search chats and messages"
             className="h-9 w-full rounded-full bg-[var(--surface-sunken)] pr-3 pl-9 text-sm text-ink placeholder:text-ink-faint focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
           />
         </div>
@@ -438,24 +500,90 @@ function ConversationList({
           <div className="px-3 py-2">
             <SkeletonRows rows={5} />
           </div>
-        ) : conversations.length === 0 ? (
-          <p className="px-3 py-8 text-center text-xs leading-relaxed text-ink-faint">
-            {total === 0
-              ? "Nothing here yet. Start a conversation and it will appear in this list."
-              : `No conversation matches “${search}”.`}
-          </p>
         ) : (
-          <ul>
-            {conversations.map((c) => (
-              <li key={c.id}>
-                <ConversationRow
-                  conversation={c}
-                  viewerId={viewerId}
-                  active={c.id === activeId}
-                />
-              </li>
-            ))}
-          </ul>
+          <>
+            {/* Chats — matched by name. While searching this is one of two
+                sections, so it takes a heading; the default list needs none. */}
+            {searching && conversations.length > 0 && (
+              <p className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+                Chats
+              </p>
+            )}
+            {conversations.length > 0 && (
+              <ul>
+                {conversations.map((c) => (
+                  <li key={c.id}>
+                    <ConversationRow
+                      conversation={c}
+                      viewerId={viewerId}
+                      active={c.id === activeId}
+                    />
+                  </li>
+                ))}
+              </ul>
+            )}
+            {conversations.length === 0 && !searching && (
+              <p className="px-3 py-8 text-center text-xs leading-relaxed text-ink-faint">
+                {total === 0
+                  ? "Nothing here yet. Start a conversation and it will appear in this list."
+                  : `No conversation matches “${search}”.`}
+              </p>
+            )}
+            {conversations.length === 0 && searching && (
+              <p className="px-3 pt-2 pb-1 text-xs text-ink-faint">
+                No chats match “{search}”.
+              </p>
+            )}
+
+            {/* Messages — matched by their TEXT, across every conversation. The
+                whole point of a global search: find the line, not just the
+                chat. A hit opens its conversation at that message (`?m=`). */}
+            {searching && messageSearchSupported && (
+              <div className="mt-1 border-t border-hairline pt-2">
+                <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+                  Messages
+                </p>
+                {searchLoading && messageHits.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-ink-faint">Searching…</p>
+                ) : messageHits.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-ink-faint">
+                    No messages match “{search}”.
+                  </p>
+                ) : (
+                  <ul>
+                    {messageHits.map((h) => (
+                      <li key={`${h.conversationId}:${h.messageId}`}>
+                        <Link
+                          href={`/messages/${h.conversationId}?m=${h.messageId}`}
+                          className="block rounded-inset px-3 py-2 transition-colors hover:bg-[var(--control)]"
+                        >
+                          <span className="block truncate text-[13px] font-medium text-ink">
+                            {h.chatTitle}
+                          </span>
+                          <span className="mt-0.5 block truncate text-xs text-ink-muted">
+                            <span className="text-ink-faint">{h.senderName}: </span>
+                            {searchSegments(snippetAround(h.text, search), search).map(
+                              (seg, i) =>
+                                seg.match ? (
+                                  <mark
+                                    key={i}
+                                    className="rounded-[2px] bg-[color-mix(in_srgb,var(--accent,#1a73e8)_24%,transparent)] text-ink"
+                                  >
+                                    {seg.text}
+                                  </mark>
+                                ) : (
+                                  <span key={i}>{seg.text}</span>
+                                ),
+                            )}
+                          </span>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
     </Panel>
@@ -725,6 +853,7 @@ function Thread({
   conversation: c,
   viewerId,
   opened,
+  jumpTo,
   onRead,
   onSent,
   onClose,
@@ -737,6 +866,10 @@ function Thread({
    * Only a deliberate open marks the conversation read. See the effect below.
    */
   opened: boolean;
+  /** A message id from `?m=` — a global-search result the thread should scroll
+   *  to once it has loaded. Paged in from history if it is older than the first
+   *  window. Null when the thread was opened normally. */
+  jumpTo?: string | null;
   onRead: () => void;
   onSent: () => void;
   /**
@@ -866,6 +999,36 @@ function Thread({
      and the clear after send resize it too, not only keystrokes. */
   const composerRef = useRef<HTMLTextAreaElement>(null);
   useAutoGrowTextarea(composerRef, text, 128);
+  /* The whole directory. Two uses: the contact-share picker (a contact is most
+     often someone NOT already in this thread), and finding the viewer's OWN
+     record below so a duplicate of them is kept out of the @-mention list.
+     Cheap and cached; the mention list itself stays scoped to this thread. */
+  const directory = useQuery((r) => r.listEmployees(), []);
+  /* @-mention autocomplete over the people on THIS conversation, minus me.
+     "Minus me" is by employee id AND by the login/email my own record carries:
+     a DUPLICATE employee record of the viewer (the same person under a second
+     id — or a shared account whose person appears again under their own id)
+     would otherwise pass the id check and show up as a mentionable "other",
+     which reads as "@ is offering me my own name". A real colleague never
+     shares the viewer's `userId` (auth uid) or work email, so this only ever
+     removes the viewer themselves. */
+  const mentionPeople = useMemo(() => {
+    const me = (directory.data ?? []).find((e) => e.id === viewerId) ?? null;
+    const isSelf = (p: Employee) =>
+      p.id === viewerId ||
+      (!!me &&
+        ((!!me.userId && p.userId === me.userId) ||
+          (!!me.email && p.email === me.email)));
+    return c.participants
+      .filter((p) => !isSelf(p))
+      .map((p) => ({ id: p.id, displayName: p.displayName }));
+  }, [c.participants, directory.data, viewerId]);
+  const mentions = useMentions({
+    people: mentionPeople,
+    text,
+    setText,
+    textareaRef: composerRef,
+  });
   /* The attach control only appears where the backend actually accepts uploads;
      the in-memory prototype omits `uploadMessageAttachment`, so it stays off
      rather than failing silently. */
@@ -904,7 +1067,13 @@ function Thread({
   const [exhausted, setExhausted] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [send, state] = useAction((r) =>
-    r.sendMessage(c.id, text, pending.length ? pending : undefined, replyingTo),
+    r.sendMessage(
+      c.id,
+      text,
+      pending.length ? pending : undefined,
+      replyingTo,
+      mentions.mentionIds(),
+    ),
   );
   const [saveEdit, editState] = useAction((r) =>
     r.editMessage(c.id, editingId ?? "", text),
@@ -1319,6 +1488,7 @@ function Thread({
       setPending([]);
       setReplyingTo(null);
       setUploadError(null);
+      mentions.reset();
       /* The message has gone. Files that never uploaded were never part of it,
          so holding a retry offer for them beside an empty composer would invite
          somebody to attach them to nothing. */
@@ -1443,6 +1613,17 @@ function Thread({
       );
   }
 
+  /* Arrived from a global-search result (`?m=`): once the first page is in,
+     scroll to that message — paging history in if it is older — exactly once
+     per target, so a re-render does not yank the reader back to it. */
+  const jumpedToRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!jumpTo || jumpedToRef.current === jumpTo || !messages.data) return;
+    jumpedToRef.current = jumpTo;
+    void jumpToMessage(jumpTo);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTo, messages.data]);
+
   /** Go to match `i`, counted from the NEWEST. Wraps at either end. */
   function jumpToMatch(i: number) {
     if (matches.length === 0) return;
@@ -1533,6 +1714,22 @@ function Thread({
     const r = await repo.toggleMessageReaction(c.id, m.id, emoji);
     if (r.ok) messages.refetch();
     else setMessageNotice(r.message ?? "The reaction could not be saved.");
+  }
+
+  /** Send a shared location, contact or poll — the card is the message, so it
+   *  goes with no text and no attachments through the ordinary send path. */
+  async function sendCard(card: MessageCard) {
+    const r = await repo.sendMessage(c.id, "", undefined, null, [], card);
+    if (r.ok) messages.refetch();
+    else setMessageNotice(r.message ?? "That could not be sent.");
+  }
+
+  /** Toggle the viewer's vote on a poll shared in this conversation. */
+  async function votePoll(messageId: string, optionId: string) {
+    if (!repo.voteMessagePoll) return;
+    const r = await repo.voteMessagePoll(c.id, messageId, optionId);
+    if (r.ok) messages.refetch();
+    else setMessageNotice(r.message ?? "Your vote could not be saved.");
   }
 
   async function toggleStar(m: Message) {
@@ -2090,7 +2287,9 @@ function Thread({
               onJumpTo={(id) => void jumpToMessage(id)}
               onReact={(m, emoji) => void react(m, emoji)}
               onStar={(m) => void toggleStar(m)}
+              onVote={(messageId, optionId) => void votePoll(messageId, optionId)}
               canReact={typeof repo.toggleMessageReaction === "function"}
+              canVote={typeof repo.voteMessagePoll === "function"}
             />
           </div>
         )}
@@ -2272,7 +2471,9 @@ function Thread({
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2">
+        <div className="relative flex items-end gap-2">
+          {/* @-mention autocomplete floats above the composer row. */}
+          {mentions.menu}
           <input
             ref={fileRef}
             type="file"
@@ -2296,6 +2497,16 @@ function Thread({
               if (list.length) void handleFiles(list);
             }}
           />
+          {/* The "+" share sheet — Poll, Location, Contact (and Photos & files
+              where uploads are supported). Available even where attachments are
+              not, because a card is a message, not an upload. */}
+          <CardComposer
+            people={directory.data ?? []}
+            onCard={(card) => void sendCard(card)}
+            onPickFiles={() => fileRef.current?.click()}
+            canPickFiles={canUpload}
+            disabled={uploading || state.isPending || editing}
+          />
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
@@ -2310,13 +2521,30 @@ function Thread({
           >
             <Icon.attach className="h-4 w-4" />
           </button>
+          {/* Record a voice note — staged through the SAME upload path a picked
+              file takes, so it sends and plays like any audio attachment. */}
+          {canUpload && (
+            <VoiceRecorder
+              onRecorded={(f) => void handleFiles([f])}
+              disabled={uploading || state.isPending || editing}
+            />
+          )}
 
           <Textarea
             ref={composerRef}
             rows={1}
             value={text}
-            onChange={(e) => onType(e.target.value)}
+            onChange={(e) => {
+              onType(e.target.value);
+              mentions.sync();
+            }}
+            onKeyUp={() => mentions.sync()}
+            onClick={() => mentions.sync()}
+            onSelect={() => mentions.sync()}
             onKeyDown={(e) => {
+              /* The mention popup gets first refusal on arrows/Enter/Tab/Esc
+                 while open, so picking a name never sends. */
+              if (mentions.onKeyDown(e)) return;
               /* Enter sends, Shift+Enter breaks the line — the convention every
                  messaging product shares, and the reason the field is one row
                  tall rather than a form control. */
@@ -2488,7 +2716,9 @@ function MessageList({
   onJumpTo,
   onReact,
   onStar,
+  onVote,
   canReact,
+  canVote,
 }: {
   messages: Message[];
   participants: Employee[];
@@ -2509,9 +2739,14 @@ function MessageList({
   onReact: (m: Message, emoji: string) => void;
   /** Toggle a personal star on one message — for the image viewer's toolbar. */
   onStar: (m: Message) => void;
+  /** Toggle the viewer's vote on a poll option. */
+  onVote: (messageId: string, optionId: string) => void;
   /** Whether the backend supports reactions at all. Chips still RENDER without
    *  it (the data may exist), they just stop being buttons that lie. */
   canReact: boolean;
+  /** Whether the backend can persist a poll vote. A poll still renders without
+   *  it — read-only, showing results — rather than offering a dead button. */
+  canVote: boolean;
 }) {
   /* Everyone a message of mine is FOR — the participants without me. Computed
      once for the list rather than per bubble: it is the same set for every
@@ -2835,6 +3070,18 @@ function MessageList({
                       onOpenImage={(li) => openImage(m.id, li)}
                     />
                   )}
+                  {!deleted && m.card && (
+                    <MessageCardView
+                      card={m.card}
+                      mine={mine}
+                      viewerId={viewerId ?? undefined}
+                      onVote={
+                        m.card.kind === "poll" && canVote
+                          ? (optionId) => onVote(m.id, optionId)
+                          : undefined
+                      }
+                    />
+                  )}
                   {m.text && (
                     <span
                       /**
@@ -2862,16 +3109,36 @@ function MessageList({
                     >
                       {deleted
                         ? m.text
-                        : linkifyMessage(
+                        : /* Split the text into @-mention runs and the rest, so
+                             mentions HIGHLIGHT and everything else still linkifies
+                             its URLs. A link needs its own shade on each bubble
+                             colour (deep ink for mine, raised surface for theirs)
+                             so it never washes out. */
+                          mentionSegments(
                             m.text,
-                            /* A link needs to read as a link on both bubble
-                               colours — the deep ink fill of your own message
-                               and the raised surface of everyone else's — so
-                               it gets its own shade on each rather than one
-                               colour that would wash out against one of them. */
-                            mine
-                              ? "text-[#8ab4ff] underline decoration-[#8ab4ff]/40 underline-offset-2 hover:decoration-[#8ab4ff]"
-                              : "text-[#2563eb] underline decoration-[#2563eb]/40 underline-offset-2 hover:decoration-[#2563eb]",
+                            mentionTokensFor(
+                              m.mentionIds,
+                              (id) =>
+                                participants.find((p) => p.id === id)?.displayName,
+                            ),
+                          ).map((seg, i) =>
+                            seg.mention ? (
+                              <span
+                                key={i}
+                                className="rounded-[3px] bg-[color-mix(in_srgb,var(--accent,#1a73e8)_16%,transparent)] px-0.5 font-medium"
+                              >
+                                {seg.text}
+                              </span>
+                            ) : (
+                              <span key={i}>
+                                {linkifyMessage(
+                                  seg.text,
+                                  mine
+                                    ? "text-[#8ab4ff] underline decoration-[#8ab4ff]/40 underline-offset-2 hover:decoration-[#8ab4ff]"
+                                    : "text-[#2563eb] underline decoration-[#2563eb]/40 underline-offset-2 hover:decoration-[#2563eb]",
+                                )}
+                              </span>
+                            ),
                           )}
                     </span>
                   )}

@@ -331,6 +331,58 @@ export const Icon = {
       <path d="M8 2.6l1.7 3.5 3.9.5-2.8 2.7.7 3.8L8 11.3l-3.5 1.8.7-3.8-2.8-2.7 3.9-.5L8 2.6Z" />
     </S>
   ),
+  /** TRASH — a waste bin; move-to-trash is a soft, per-person delete. */
+  trash: (p: P) => (
+    <S {...p}>
+      <path d="M3.5 4.5h9" />
+      <path d="M5.6 4.5V3.3a.8.8 0 0 1 .8-.8h3.2a.8.8 0 0 1 .8.8v1.2" />
+      <path d="M4.6 4.5l.5 8.2a.8.8 0 0 0 .8.8h4.2a.8.8 0 0 0 .8-.8l.5-8.2" />
+    </S>
+  ),
+  /** INBOX — a tray; where mail addressed to you lands. */
+  inbox: (p: P) => (
+    <S {...p}>
+      <path d="M2.5 9.5v2.6a.8.8 0 0 0 .8.8h9.4a.8.8 0 0 0 .8-.8V9.5" />
+      <path d="M2.5 9.5 4 3.9a.8.8 0 0 1 .77-.6h6.46a.8.8 0 0 1 .77.6l1.5 5.6" />
+      <path d="M2.5 9.5h3l1 1.6h3l1-1.6h3" />
+    </S>
+  ),
+  /** DRAFT — an unfinished page; a message written but not sent. */
+  draft: (p: P) => (
+    <S {...p}>
+      <path d="M4 2.6h4.4l3 3v7.8a.8.8 0 0 1-.8.8H4a.8.8 0 0 1-.8-.8V3.4a.8.8 0 0 1 .8-.8Z" />
+      <path d="M8.3 2.6v3h3" />
+      <path d="M5.6 8.2h4M5.6 10.4h2.6" />
+    </S>
+  ),
+  /** MIC — a microphone; recording a voice note. */
+  mic: (p: P) => (
+    <S {...p}>
+      <path d="M8 2.2a1.8 1.8 0 0 0-1.8 1.8v3.3a1.8 1.8 0 0 0 3.6 0V4A1.8 1.8 0 0 0 8 2.2Z" />
+      <path d="M4.4 7.1a3.6 3.6 0 0 0 7.2 0" />
+      <path d="M8 10.8v2.6M6 13.4h4" />
+    </S>
+  ),
+  /** POLL — stacked bars; a question everyone votes on. */
+  poll: (p: P) => (
+    <S {...p}>
+      <path d="M4 12.5V8M8 12.5V3.5M12 12.5V6" />
+    </S>
+  ),
+  /** LOCATION — a map pin. */
+  location: (p: P) => (
+    <S {...p}>
+      <path d="M8 13.6s4-3.9 4-6.9a4 4 0 0 0-8 0c0 3 4 6.9 4 6.9Z" />
+      <circle cx="8" cy="6.6" r="1.5" />
+    </S>
+  ),
+  /** CONTACT — a person on a card. */
+  contact: (p: P) => (
+    <S {...p}>
+      <circle cx="8" cy="6" r="2.1" />
+      <path d="M4.4 12.4a3.7 3.7 0 0 1 7.2 0" />
+    </S>
+  ),
   /** PINNED — a drawing pin; the conversation's shared bookmark, where the
    *  star is a personal one. */
   pin: (p: P) => (

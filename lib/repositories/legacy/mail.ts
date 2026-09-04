@@ -24,6 +24,7 @@ import type {
   MailThread,
   MailTransport,
 } from "../../domain/mail.ts";
+import type { MessageAttachment } from "../../domain/work.ts";
 import type { Employee } from "../../domain/identity.ts";
 import { mailVisibleTo } from "../../rules/mail/blindCopy.ts";
 
@@ -37,6 +38,25 @@ function readParty(p: unknown): MailParty {
     employeeId: typeof o.employeeId === "string" ? o.employeeId : null,
     address: typeof o.address === "string" ? o.address : "",
     displayName: typeof o.displayName === "string" ? o.displayName : "",
+  };
+}
+
+const ATTACHMENT_KINDS = ["image", "pdf", "voice", "video", "file"] as const;
+
+/** One inline attachment, defaulted — a stored doc predating a field must not
+ *  throw, and every value is a string/number/null (never undefined). */
+function readAttachment(a: unknown): MessageAttachment {
+  const o = (a ?? {}) as Record<string, unknown>;
+  const kind = ATTACHMENT_KINDS.includes(o.kind as (typeof ATTACHMENT_KINDS)[number])
+    ? (o.kind as MessageAttachment["kind"])
+    : "file";
+  return {
+    url: typeof o.url === "string" ? o.url : "",
+    kind,
+    name: typeof o.name === "string" ? o.name : null,
+    sizeBytes: typeof o.sizeBytes === "number" ? o.sizeBytes : null,
+    durationSecs: typeof o.durationSecs === "number" ? o.durationSecs : null,
+    fileId: typeof o.fileId === "string" ? o.fileId : null,
   };
 }
 
@@ -60,11 +80,19 @@ export function readMailMessage(
     bcc: parties(d.bcc),
     subject: typeof d.subject === "string" ? d.subject : "",
     body: typeof d.body === "string" ? d.body : "",
+    bodyHtml:
+      typeof d.bodyHtml === "string" && d.bodyHtml ? d.bodyHtml : undefined,
     attachmentIds: ids(d.attachmentIds),
+    attachments: Array.isArray(d.attachments)
+      ? d.attachments.map(readAttachment)
+      : [],
     readBy: ids(d.readBy),
     starredBy: ids(d.starredBy),
     trashedBy: ids(d.trashedBy),
     archivedBy: ids(d.archivedBy),
+    /* Defaulted so a doc written before these fields never crashes a read. */
+    spamBy: ids(d.spamBy),
+    importantBy: ids(d.importantBy),
     labels: ids(d.labels),
     sentAt: typeof d.sentAt === "string" ? d.sentAt : null,
     createdAt:
@@ -89,8 +117,14 @@ export function mailVisible(m: MailMessage, me: string): boolean {
 /** Which folder a message sits in FOR YOU. Trash and drafts are per-person. */
 export function inFolder(m: MailMessage, me: string, folder: MailFolder): boolean {
   const trashed = m.trashedBy.includes(me);
+  const spammed = m.spamBy.includes(me);
+  /* Trash and Spam are exclusive views, like every mail client: a message the
+     viewer put there shows ONLY there and is pulled from every other folder.
+     Trash outranks Spam — deleting a spam message is still deleting it. */
   if (folder === "trash") return trashed;
   if (trashed) return false;
+  if (folder === "spam") return spammed;
+  if (spammed) return false;
   if (folder === "drafts") return m.sentAt === null && m.from.employeeId === me;
   if (m.sentAt === null) return false;
   if (folder === "sent") return m.from.employeeId === me;
@@ -224,11 +258,26 @@ export function mailMessageBody(
     bcc: m.bcc,
     subject: m.subject,
     body: m.body,
+    /* Null, not undefined (Firestore rejects undefined); read back as "no rich
+       body" by `readMailMessage`. */
+    bodyHtml: m.bodyHtml ?? null,
     attachmentIds: m.attachmentIds,
+    /* Inline attachments, sanitised so no field is `undefined` (Firestore
+       rejects it) — every value is a string, number or null. */
+    attachments: (m.attachments ?? []).map((a) => ({
+      url: a.url ?? "",
+      kind: a.kind,
+      name: a.name ?? null,
+      sizeBytes: a.sizeBytes ?? null,
+      durationSecs: a.durationSecs ?? null,
+      fileId: a.fileId ?? null,
+    })),
     readBy: m.readBy,
     starredBy: m.starredBy,
     trashedBy: m.trashedBy,
     archivedBy: m.archivedBy,
+    spamBy: m.spamBy,
+    importantBy: m.importantBy,
     labels: m.labels,
     sentAt: m.sentAt,
     createdAt: m.createdAt,

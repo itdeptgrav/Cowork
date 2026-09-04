@@ -113,7 +113,9 @@ import type {
   MeetingRecording,
   Message,
   MessageAttachment,
+  MessageCard,
   MessageReply,
+  MessageSearchHit,
   Notification,
   PriorityAcknowledgement,
   PriorityCascade,
@@ -241,6 +243,8 @@ import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey, MESSAGE_PAGE_SIZE } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
 import { toggleReaction } from "@/lib/rules/messages/reactions";
+import { togglePollVote } from "@/lib/rules/messages/card";
+import { matchesQuery } from "@/lib/rules/messages/globalSearch";
 import { withPin, withoutPin } from "@/lib/rules/messages/pins";
 import {
   istDayKey,
@@ -347,6 +351,7 @@ import {
   redactBcc,
   threadParticipants,
 } from "@/lib/rules/mail/blindCopy";
+import { MAIL_FLAG_FIELD } from "@/lib/rules/mail/flags";
 import {
   assigneeCountRefusal,
   selfAssignmentRefusal,
@@ -6396,14 +6401,18 @@ export class MockRepository implements CoworkRepository {
     text: string,
     attachments: MessageAttachment[],
     replyTo: MessageReply | null = null,
+    mentionIds?: EmployeeId[],
+    card?: MessageCard,
   ): Promise<ActionResult<TaskChatMessage>> {
     const g = guard();
     if (g) return g;
-    if (!text.trim() && !attachments.length)
+    /* A card (location, contact, poll) stands on its own, like a file does. */
+    if (!text.trim() && !attachments.length && !card)
       return fail("validation_failed", "Write a message.", "text");
     tick();
     const s = getStore();
     const me = s.employees.find((e) => e.id === actingId())!;
+    const mentions = [...new Set(mentionIds ?? [])].filter((id) => id !== actingId());
     const m: TaskChatMessage = {
       id: nextId("ch"),
       taskId,
@@ -6417,6 +6426,8 @@ export class MockRepository implements CoworkRepository {
       createdAt: nowIso(),
       replyToId: replyTo?.messageId ?? null,
       replyTo,
+      ...(mentions.length ? { mentionIds: mentions } : {}),
+      ...(card ? { card } : {}),
     };
     s.chat.push(m);
     return delay(ok(m));
@@ -6498,6 +6509,23 @@ export class MockRepository implements CoworkRepository {
     m.starredBy = held.includes(me)
       ? held.filter((id) => id !== me)
       : [...held, me];
+    return delay(ok(undefined));
+  }
+
+  async voteTaskChatPoll(taskId: TaskId, messageId: string, optionId: string) {
+    const g = guard();
+    if (g) return g;
+    const m = getStore().chat.find((c) => c.taskId === taskId && c.id === messageId);
+    if (!m) return fail("not_found", "That message is gone.");
+    if (!m.card || m.card.kind !== "poll")
+      return fail("invalid_state", "This is not a poll.");
+    if (!m.card.options.some((o) => o.id === optionId))
+      return fail("not_found", "That option is gone.");
+    tick();
+    m.card = {
+      ...m.card,
+      options: togglePollVote(m.card.options, optionId, actingId(), m.card.multiple),
+    };
     return delay(ok(undefined));
   }
 
@@ -7980,6 +8008,35 @@ export class MockRepository implements CoworkRepository {
     );
   }
 
+  async searchMessages(
+    query: string,
+    limit = MESSAGE_PAGE_SIZE,
+  ): Promise<MessageSearchHit[]> {
+    const q = query.trim();
+    if (!q) return delay([]);
+    const s = getStore();
+    const mine = new Set(
+      s.conversations
+        .filter((c) => c.participantIds.includes(actingId()))
+        .map((c) => c.id),
+    );
+    const hits = s.messages
+      .filter(
+        (m) => mine.has(m.conversationId) && !m.isDeleted && matchesQuery(m.text, q),
+      )
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.max(1, limit))
+      .map((m) => ({
+        conversationId: m.conversationId,
+        messageId: m.id,
+        senderId: m.senderId,
+        senderName: m.senderName,
+        text: m.text,
+        createdAt: m.createdAt,
+      }));
+    return delay(hits);
+  }
+
   async listMessages(
     conversationId: string,
     opts?: { limit?: number; before?: string },
@@ -8007,15 +8064,20 @@ export class MockRepository implements CoworkRepository {
     text: string,
     attachments?: MessageAttachment[],
     replyTo?: MessageReply | null,
+    mentionIds?: EmployeeId[],
+    card?: MessageCard,
   ): Promise<ActionResult<Message>> {
     const g = guard();
     if (g) return g;
     const media = attachments ?? [];
-    if (!text.trim() && media.length === 0)
+    /* A location, contact or poll card is a message in its own right, so a
+       card-only send (no words, no file) is allowed. */
+    if (!text.trim() && media.length === 0 && !card)
       return fail("validation_failed", "Write a message.", "text");
     tick();
     const s = getStore();
     const me = s.employees.find((e) => e.id === actingId())!;
+    const mentions = [...new Set(mentionIds ?? [])].filter((id) => id !== actingId());
     const m: Message = {
       id: nextId("mg"),
       conversationId,
@@ -8028,6 +8090,8 @@ export class MockRepository implements CoworkRepository {
       replyTo: replyTo ?? null,
       createdAt: nowIso(),
       readBy: [actingId()],
+      ...(mentions.length ? { mentionIds: mentions } : {}),
+      ...(card ? { card } : {}),
     };
     s.messages.push(m);
     const c = s.conversations.find((x) => x.id === conversationId);
@@ -8121,6 +8185,30 @@ export class MockRepository implements CoworkRepository {
       return fail("invalid_state", "A deleted message cannot be reacted to.");
     tick();
     m.reactions = toggleReaction(m.reactions, emoji, actingId());
+    invalidateQueries("listConversations");
+    return delay(ok(undefined));
+  }
+
+  async voteMessagePoll(
+    conversationId: string,
+    messageId: string,
+    optionId: string,
+  ): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const m = getStore().messages.find(
+      (x) => x.id === messageId && x.conversationId === conversationId,
+    );
+    if (!m) return fail("not_found", "That message is gone.");
+    if (!m.card || m.card.kind !== "poll")
+      return fail("invalid_state", "This is not a poll.");
+    if (!m.card.options.some((o) => o.id === optionId))
+      return fail("not_found", "That option is gone.");
+    tick();
+    m.card = {
+      ...m.card,
+      options: togglePollVote(m.card.options, optionId, actingId(), m.card.multiple),
+    };
     invalidateQueries("listConversations");
     return delay(ok(undefined));
   }
@@ -9102,6 +9190,8 @@ export class MockRepository implements CoworkRepository {
     folder: MailFolder;
     transport?: MailTransport;
     search?: string;
+    starred?: boolean;
+    important?: boolean;
   }): Promise<MailThread[]> {
     const s = getStore();
     const me = actingId();
@@ -9118,6 +9208,14 @@ export class MockRepository implements CoworkRepository {
     let threads = s.mailThreads.filter((t) => byThread.has(t.id));
     if (query.transport)
       threads = threads.filter((t) => t.transport === query.transport);
+    if (query.starred)
+      threads = threads.filter((t) =>
+        (byThread.get(t.id) ?? []).some((m) => m.starredBy.includes(me)),
+      );
+    if (query.important)
+      threads = threads.filter((t) =>
+        (byThread.get(t.id) ?? []).some((m) => m.importantBy.includes(me)),
+      );
     if (query.search?.trim()) {
       const needle = query.search.trim().toLowerCase();
       threads = threads.filter((t) => {
@@ -9131,8 +9229,28 @@ export class MockRepository implements CoworkRepository {
         );
       });
     }
+    /* Stamp each row with the viewer's own read/attachment/star state, from the
+       messages already in hand, so the list draws without a second read per
+       row. Unread is an INBOX signal — a message from someone else I have not
+       opened — so my own Sent rows never read as unread. */
+    const decorated = threads.map((t) => {
+      const msgs = byThread.get(t.id) ?? [];
+      return {
+        ...t,
+        unread: msgs.some(
+          (m) => m.from.employeeId !== me && !m.readBy.includes(me),
+        ),
+        hasAttachments: msgs.some(
+          (m) => m.attachmentIds.length > 0 || (m.attachments?.length ?? 0) > 0,
+        ),
+        starred: msgs.some((m) => m.starredBy.includes(me)),
+        important: msgs.some((m) => m.importantBy.includes(me)),
+      };
+    });
     return delay(
-      [...threads].sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt)),
+      [...decorated].sort((a, b) =>
+        b.lastMessageAt.localeCompare(a.lastMessageAt),
+      ),
     );
   }
 
@@ -9143,8 +9261,13 @@ export class MockRepository implements CoworkRepository {
 
   #inFolder(m: MailMessage, me: EmployeeId, folder: MailFolder): boolean {
     const trashed = m.trashedBy.includes(me);
+    const spammed = m.spamBy.includes(me);
+    /* Trash and Spam are exclusive views: a message put there shows only there.
+       Trash outranks Spam. Mirrors legacy `inFolder` exactly. */
     if (folder === "trash") return trashed;
     if (trashed) return false;
+    if (folder === "spam") return spammed;
+    if (spammed) return false;
     if (folder === "drafts") return m.sentAt === null && m.from.employeeId === me;
     if (m.sentAt === null) return false;
     if (folder === "sent") return m.from.employeeId === me;
@@ -9203,7 +9326,7 @@ export class MockRepository implements CoworkRepository {
 
   async setMailFlag(
     messageId: string,
-    flag: "starred" | "trashed",
+    flag: "starred" | "trashed" | "spam" | "important",
     on: boolean,
   ): Promise<ActionResult<void>> {
     const g = guard();
@@ -9213,7 +9336,7 @@ export class MockRepository implements CoworkRepository {
     if (!m) return fail("not_found", "Message not found.");
     if (!this.#mailVisible(m, actingId()))
       return fail("permission_denied", "That message is not yours.");
-    const key = flag === "starred" ? "starredBy" : "trashedBy";
+    const key = MAIL_FLAG_FIELD[flag];
     m[key] = on
       ? [...new Set([...m[key], actingId()])]
       : m[key].filter((id) => id !== actingId());
@@ -9237,7 +9360,9 @@ export class MockRepository implements CoworkRepository {
     bcc?: MailParty[];
     subject: string;
     body: string;
+    bodyHtml?: string;
     attachmentIds?: string[];
+    attachments?: MessageAttachment[];
     threadId?: string | null;
     /** Set by the Gmail route after a successful external send. */
     gmail?: { messageId: string; threadId: string } | null;
@@ -9313,11 +9438,15 @@ export class MockRepository implements CoworkRepository {
       bcc,
       subject: input.subject.trim(),
       body: input.body,
+      bodyHtml: input.bodyHtml,
       attachmentIds: input.attachmentIds ?? [],
+      attachments: input.attachments ?? [],
       readBy: [meEmp.id],
       starredBy: [],
       trashedBy: [],
       archivedBy: [],
+      spamBy: [],
+      importantBy: [],
       labels: [],
       sentAt: input.deliveryError ? null : now,
       createdAt: now,
@@ -9469,6 +9598,144 @@ export class MockRepository implements CoworkRepository {
 
     if (added > 0) persistStore();
     return delay(ok({ added }));
+  }
+
+  async saveMailDraft(input: {
+    draftId?: string | null;
+    to: MailParty[];
+    cc?: MailParty[];
+    bcc?: MailParty[];
+    subject: string;
+    body: string;
+    bodyHtml?: string;
+    attachmentIds?: string[];
+    attachments?: MessageAttachment[];
+    threadId?: string | null;
+  }): Promise<ActionResult<MailMessage>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const meEmp = s.employees.find((e) => e.id === actingId());
+    if (!meEmp) return fail("not_found", "Employee not found.");
+    const cc = input.cc ?? [];
+    const bcc = input.bcc ?? [];
+    const from: MailParty = {
+      kind: "employee",
+      employeeId: meEmp.id,
+      address: meEmp.email ?? `${meEmp.id}@cowork.local`,
+      displayName: meEmp.displayName,
+    };
+    const now = nowIso();
+    const preview = input.body.slice(0, 140);
+
+    /* Overwrite the draft being edited, in place, so Save twice does not leave
+       two copies. Only your OWN unsent message qualifies. */
+    if (input.draftId) {
+      const m = s.mailMessages.find((x) => x.id === input.draftId);
+      if (!m) return fail("not_found", "Draft not found.");
+      if (m.from.employeeId !== meEmp.id || m.sentAt !== null)
+        return fail("permission_denied", "That is not your draft.");
+      m.to = input.to;
+      m.cc = cc;
+      m.bcc = bcc;
+      m.subject = input.subject.trim();
+      m.body = input.body;
+      m.bodyHtml = input.bodyHtml;
+      if (input.attachmentIds) m.attachmentIds = input.attachmentIds;
+      if (input.attachments) m.attachments = input.attachments;
+      const th = s.mailThreads.find((t) => t.id === m.threadId);
+      if (th) {
+        th.subject = input.subject.trim();
+        th.lastMessagePreview = preview;
+        th.lastMessageAt = now;
+        th.updatedAt = now;
+        th.participants = threadParticipants(from, input.to, cc);
+      }
+      persistStore();
+      return delay(ok(m));
+    }
+
+    /* A new draft — attached to an existing thread when replying, else its own.
+       Transport is derived for display only; a draft never leaves. */
+    const transport = transportFor([...input.to, ...cc, ...bcc]);
+    let thread = input.threadId
+      ? (s.mailThreads.find((t) => t.id === input.threadId) ?? null)
+      : null;
+    if (!thread) {
+      thread = {
+        organisationId: actingOrganisationId(),
+        id: nextId("mth"),
+        subject: input.subject.trim(),
+        participants: threadParticipants(from, input.to, cc),
+        lastMessageAt: now,
+        lastMessagePreview: preview,
+        messageCount: 0,
+        transport,
+        gmailThreadId: null,
+        createdAt: now,
+        updatedAt: now,
+      };
+      s.mailThreads.push(thread);
+    }
+    const message: MailMessage = {
+      id: nextId("mmsg"),
+      threadId: thread.id,
+      transport,
+      from,
+      to: input.to,
+      cc,
+      bcc,
+      subject: input.subject.trim(),
+      body: input.body,
+      bodyHtml: input.bodyHtml,
+      attachmentIds: input.attachmentIds ?? [],
+      attachments: input.attachments ?? [],
+      readBy: [meEmp.id],
+      starredBy: [],
+      trashedBy: [],
+      archivedBy: [],
+      spamBy: [],
+      importantBy: [],
+      labels: [],
+      sentAt: null,
+      createdAt: now,
+      gmailMessageId: null,
+      deliveryError: null,
+    };
+    s.mailMessages.push(message);
+    thread.messageCount += 1;
+    thread.lastMessageAt = now;
+    thread.lastMessagePreview = preview;
+    thread.updatedAt = now;
+    persistStore();
+    return delay(ok(message));
+  }
+
+  async discardMailDraft(messageId: string): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const me = actingId();
+    const m = s.mailMessages.find((x) => x.id === messageId);
+    if (!m) return fail("not_found", "Message not found.");
+    if (m.from.employeeId !== me || m.sentAt !== null)
+      return fail(
+        "permission_denied",
+        "Only your own unsent draft can be discarded.",
+      );
+    s.mailMessages = s.mailMessages.filter((x) => x.id !== messageId);
+    /* Drop the thread if that draft was its only message. */
+    if (!s.mailMessages.some((x) => x.threadId === m.threadId))
+      s.mailThreads = s.mailThreads.filter((t) => t.id !== m.threadId);
+    persistStore();
+    return delay(ok(undefined));
+  }
+
+  /* The in-memory prototype has no live source — one process, one store — so a
+     watcher has nothing to fire. Honest noop: the reads already reflect every
+     mutation in the same session. The real-time path is the legacy onSnapshot. */
+  watchMail(): () => void {
+    return () => {};
   }
 
   /* ── Meeting lifecycle ──────────────────────────────────────────────────── */

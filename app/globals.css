@@ -424,6 +424,55 @@
     color: #fff;
   }
 
+  /* Mail rich text — the composer's editable area AND the rendered message body
+     share this class, so what you format is what you read. Tailwind's preflight
+     strips list markers and heading sizes; the few block styles rich mail needs
+     are restored here, scoped so nothing else on the page is touched. */
+  .mail-rich :is(ul, ol) {
+    padding-inline-start: 1.5rem;
+    margin: 0.3rem 0;
+  }
+  .mail-rich ul {
+    list-style: disc;
+  }
+  .mail-rich ol {
+    list-style: decimal;
+  }
+  .mail-rich li {
+    margin: 0.1rem 0;
+  }
+  .mail-rich p {
+    margin: 0.2rem 0;
+  }
+  .mail-rich h1 {
+    font-size: 1.4em;
+    font-weight: 600;
+    margin: 0.45rem 0;
+  }
+  .mail-rich h2 {
+    font-size: 1.2em;
+    font-weight: 600;
+    margin: 0.4rem 0;
+  }
+  .mail-rich h3 {
+    font-size: 1.05em;
+    font-weight: 600;
+    margin: 0.35rem 0;
+  }
+  .mail-rich :is(strong, b) {
+    font-weight: 600;
+  }
+  .mail-rich a {
+    color: #1a73e8;
+    text-decoration: underline;
+  }
+  .mail-rich blockquote {
+    border-inline-start: 3px solid var(--color-hairline);
+    padding-inline-start: 0.75rem;
+    margin: 0.4rem 0;
+    color: var(--ink-muted);
+  }
+
   /* Firefox has no backdrop-filter parity in every config; keep frost opaque
      enough that text contrast never depends on the blur landing. */
   @supports not (backdrop-filter: blur(1px)) {

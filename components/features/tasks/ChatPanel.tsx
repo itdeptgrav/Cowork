@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   MessageAttachment,
+  MessageCard,
   MessageReply,
   TaskChatMessage,
   TaskId,
@@ -27,6 +28,7 @@ import {
   type MessageMenuItem,
 } from "@/components/features/messages/MessageContextMenu";
 import { MessageTicks } from "@/components/features/messages/MessageTicks";
+import { ForwardDialog } from "@/components/features/messages/ForwardDialog";
 import { ChangeEventCard } from "./ChangeEventCard";
 import { ReworkEventCard } from "./ReworkEventCard";
 import { SubmissionEventCard } from "./SubmissionEventCard";
@@ -56,6 +58,14 @@ import {
   mediaProxyUrl,
 } from "@/components/features/messages/MessageAttachments";
 import { GalleryLightbox } from "@/components/ui/GalleryLightbox";
+import { VoiceRecorder } from "@/components/features/messages/VoiceRecorder";
+import { CardComposer } from "@/components/features/messages/CardComposer";
+import { MessageCardView } from "@/components/features/messages/MessageCardView";
+import { useMentions } from "@/components/features/messages/MentionInput";
+import {
+  MessageText,
+  mentionTokensFor,
+} from "@/components/features/messages/MessageText";
 import {
   collectConversationImages,
   galleryIndexOf,
@@ -197,6 +207,8 @@ export function ChatPanel({
   const [replyingTo, setReplyingTo] = useState<MessageReply | null>(
     restored?.replyTo ?? null,
   );
+  /** The message being forwarded on to a conversation, if the dialog is open. */
+  const [forwarding, setForwarding] = useState<TaskChatMessage | null>(null);
   /**
    * Messages drawn from what was typed, before the engine has confirmed them.
    * See the note in `submit` — the task path is two hops, not one.
@@ -219,6 +231,20 @@ export function ChatPanel({
   );
   const { data: people } = useQuery((r) => r.listEmployees(), []);
   const me = people?.find((p) => p.id === viewerId);
+  /* @-mention autocomplete over the directory, minus me. */
+  const mentionPeople = useMemo(
+    () =>
+      (people ?? [])
+        .filter((p) => p.id !== viewerId)
+        .map((p) => ({ id: p.id, displayName: p.displayName })),
+    [people, viewerId],
+  );
+  const mentions = useMentions({
+    people: mentionPeople,
+    text,
+    setText,
+    textareaRef: composerRef,
+  });
   /**
    * What the thread draws: what the engine has, plus what is still on its way.
    *
@@ -287,7 +313,7 @@ export function ChatPanel({
     assigneeIds: (taskView?.assignees ?? []).map((a) => a.id),
   });
   const [send, state] = useAction((r) =>
-    r.sendTaskChat(taskId, thread, text, pending, replyingTo),
+    r.sendTaskChat(taskId, thread, text, pending, replyingTo, mentions.mentionIds()),
   );
 
   /**
@@ -480,6 +506,22 @@ export function ChatPanel({
     else setNotice(r.message);
   }
 
+  /** Post a shared location, contact or poll — a card carries the message, so
+   *  it sends with no text and no attachments, on the live chat thread. */
+  async function sendCard(card: MessageCard) {
+    const r = await repo.sendTaskChat(taskId as TaskId, thread, "", [], null, [], card);
+    if (r.ok) refetch();
+    else setNotice(r.message);
+  }
+
+  /** Toggle the viewer's vote on a poll shared in this task's chat. */
+  async function votePoll(messageId: string, optionId: string) {
+    if (!repo.voteTaskChatPoll) return;
+    const r = await repo.voteTaskChatPoll(taskId as TaskId, messageId, optionId);
+    if (r.ok) refetch();
+    else setNotice(r.message);
+  }
+
   async function removeMessage(m: TaskChatMessage) {
     setMenu(null);
     if (!repo.deleteTaskChat) return;
@@ -501,6 +543,20 @@ export function ChatPanel({
         disabled: deleted,
         reason: deleted ? gone : undefined,
         run: () => startReply(m),
+      },
+      /* Forward passes the line on to a conversation — the same dialog and the
+         same "sent as a fresh message from you" behaviour as Messages. A task
+         has no conversation of its own to forward INTO, so there is still no
+         Pin here; there is nothing to pin to. */
+      {
+        id: "forward",
+        label: "Forward",
+        disabled: deleted,
+        reason: deleted ? gone : undefined,
+        run: () => {
+          setMenu(null);
+          setForwarding(m);
+        },
       },
       /* Label, availability and reason all come from the one rule, so a message
          carrying a screenshot and no caption offers "Copy image" here and in
@@ -613,6 +669,9 @@ export function ChatPanel({
     setUploadError(null);
 
     const r = await send();
+    /* After the send has read the mentions, clear the picks — the cleared text
+       already makes them inert, this just frees the list. */
+    mentions.reset();
 
     /* Dropped either way: on success the refetch below brings the real one, and
        on failure there is nothing to show. Keeping it would leave a message on
@@ -639,15 +698,20 @@ export function ChatPanel({
   const canDrop = canUpload && !composerReadOnly;
 
   /* The viewer's per-image actions, bound to each image's message. Task chat
-     offers reply, react and star — the same actions its message menu does; it
-     has no Forward and no Pin (pins are a Conversation feature, and a task has
-     no conversation). Reply closes the viewer so the composer is seen. */
+     offers reply, forward, react and star — the same actions its message menu
+     does; it still has no Pin (pins are a Conversation feature, and a task has
+     no conversation to pin to). Reply and forward close the viewer so the
+     composer / picker is seen. */
   const galleryActions = galleryItems.map((it) => {
     const m = shown.find((x) => x.id === it.messageId);
     if (!m) return {};
     return {
       onReply: () => {
         startReply(m);
+        setGalleryIndex(null);
+      },
+      onForward: () => {
+        setForwarding(m);
         setGalleryIndex(null);
       },
       onStar: () => void toggleStar(m),
@@ -951,6 +1015,19 @@ export function ChatPanel({
                             />
                           )}
 
+                          {!deleted && m.card && (
+                            <MessageCardView
+                              card={m.card}
+                              mine={mine}
+                              viewerId={viewerId ?? undefined}
+                              onVote={
+                                m.card.kind === "poll" && repo.voteTaskChatPoll
+                                  ? (optionId) => void votePoll(m.id, optionId)
+                                  : undefined
+                              }
+                            />
+                          )}
+
                           {(m.text || deleted) && (
                             <span
                               /* `anywhere`, not `break-word`: a pasted token or
@@ -962,7 +1039,19 @@ export function ChatPanel({
                                 deleted ? "italic opacity-60" : ""
                               }`}
                             >
-                              {deleted ? "This message was deleted." : m.text}
+                              {deleted ? (
+                                "This message was deleted."
+                              ) : (
+                                <MessageText
+                                  text={m.text}
+                                  mentionTokens={mentionTokensFor(
+                                    m.mentionIds,
+                                    (id) =>
+                                      people?.find((p) => p.id === id)
+                                        ?.displayName,
+                                  )}
+                                />
+                              )}
                             </span>
                           )}
                         </span>
@@ -1220,7 +1309,9 @@ export function ChatPanel({
             </div>
           )}
 
-          <div className="flex items-end gap-2">
+          <div className="relative flex items-end gap-2">
+            {/* @-mention autocomplete floats above the composer row. */}
+            {mentions.menu}
             {canUpload && (
               <>
                 <input
@@ -1247,6 +1338,14 @@ export function ChatPanel({
                     if (list.length) void handleFiles(list);
                   }}
                 />
+                {/* The "+" share sheet — Photos & files, Poll, Location,
+                    Contact — the same one the message thread carries. */}
+                <CardComposer
+                  people={people ?? []}
+                  onCard={(card) => void sendCard(card)}
+                  onPickFiles={() => fileRef.current?.click()}
+                  disabled={uploading || state.isPending}
+                />
                 <button
                   type="button"
                   onClick={() => fileRef.current?.click()}
@@ -1257,13 +1356,25 @@ export function ChatPanel({
                 >
                   <Icon.attach className="h-4 w-4" />
                 </button>
+                {/* Record a voice note — staged through the SAME upload path a
+                    picked file takes, so it sends and plays like any audio. */}
+                <VoiceRecorder
+                  onRecorded={(f) => void handleFiles([f])}
+                  disabled={uploading || state.isPending}
+                />
               </>
             )}
             <Textarea
               ref={composerRef}
               rows={1}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={(e) => {
+                setText(e.target.value);
+                mentions.sync();
+              }}
+              onKeyUp={() => mentions.sync()}
+              onClick={() => mentions.sync()}
+              onSelect={() => mentions.sync()}
               /* Grows with the text up to 128px, then scrolls — the same
                  behaviour and helper as the message thread's composer, so the
                  two feel identical. `resize-none` because the drag handle and
@@ -1271,6 +1382,9 @@ export function ChatPanel({
               style={{ resize: "none" }}
               className="max-h-32 min-h-[38px] py-2"
               onKeyDown={(e) => {
+                /* The mention popup gets first refusal on arrows/Enter/Tab/Esc
+                   while it is open, so picking a name never sends. */
+                if (mentions.onKeyDown(e)) return;
                 /* Enter sends, Shift+Enter breaks the line — the convention
                    every messaging product shares. */
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -1334,6 +1448,17 @@ export function ChatPanel({
           apiBase={MEDIA_BASE}
           actions={galleryActions}
           onClose={() => setGalleryIndex(null)}
+        />
+      )}
+
+      {/* Forwarding a task-chat line on to a conversation. The task is not
+          itself a conversation, so nothing is hidden from the picker (""). */}
+      {forwarding && (
+        <ForwardDialog
+          message={forwarding}
+          fromConversationId=""
+          onClose={() => setForwarding(null)}
+          onForwarded={() => setNotice("Message forwarded.")}
         />
       )}
     </Panel>
