@@ -243,7 +243,7 @@ import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey, MESSAGE_PAGE_SIZE } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
 import { toggleReaction } from "@/lib/rules/messages/reactions";
-import { togglePollVote } from "@/lib/rules/messages/card";
+import { cardPreview, togglePollVote } from "@/lib/rules/messages/card";
 import { matchesQuery } from "@/lib/rules/messages/globalSearch";
 import { withPin, withoutPin } from "@/lib/rules/messages/pins";
 import {
@@ -8164,6 +8164,28 @@ export class MockRepository implements CoworkRepository {
     m.isDeleted = true;
     m.text = "";
     m.attachments = [];
+    /* Refresh the conversation-list preview. If the deleted message was the
+       newest, the list must read the tombstone rather than the words that are
+       now gone — the same line the bubble shows. Deleting an older message
+       leaves the (still-current) newest one as the preview. */
+    const conv = s.conversations.find((x) => x.id === conversationId);
+    if (conv) {
+      const msgs = s.messages
+        .filter((x) => x.conversationId === conversationId)
+        .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      const newest = msgs[msgs.length - 1];
+      if (newest) {
+        conv.lastMessageAt = newest.createdAt;
+        conv.lastMessagePreview = newest.isDeleted
+          ? "This message was deleted."
+          : newest.text ||
+            (newest.card
+              ? cardPreview(newest.card)
+              : newest.attachments?.length
+                ? "📎 Attachment"
+                : "");
+      }
+    }
     invalidateQueries("listConversations");
     return delay(ok(undefined));
   }

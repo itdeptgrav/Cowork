@@ -109,6 +109,13 @@ async function resolveLocation(): Promise<LocateResult> {
     typeof window === "undefined" || window.isSecureContext !== false;
   const hasGeo =
     typeof navigator !== "undefined" && "geolocation" in navigator;
+  const isDenied = (e: unknown) =>
+    (e as GeolocationPositionError | undefined)?.code === 1;
+  /* A precise fix was refused (site blocked in the browser, or the user tapped
+     Block). We stop asking the device — but still fall through to an APPROXIMATE
+     network fix below, so "Share location" never dead-ends on a blocked site.
+     The reason is only surfaced if that approximate lookup ALSO fails. */
+  let denied = false;
 
   if (secure && hasGeo) {
     /* Rung 1 — fast, coarse, a recent cached fix accepted: the attempt most
@@ -121,37 +128,42 @@ async function resolveLocation(): Promise<LocateResult> {
       });
       return { ok: true, lat: p.coords.latitude, lng: p.coords.longitude, approximate: false };
     } catch (e) {
-      if ((e as GeolocationPositionError).code === 1) return { ok: false, reason: "denied" };
+      if (isDenied(e)) denied = true;
     }
     /* Rung 2 — a FRESH high-accuracy fix: a different provider path (GPS), and
        the retry that absorbs Chromium's "first call after load fails" race. */
-    try {
-      const p = await getPos({
-        enableHighAccuracy: true,
-        timeout: 12000,
-        maximumAge: 0,
-      });
-      return { ok: true, lat: p.coords.latitude, lng: p.coords.longitude, approximate: false };
-    } catch (e) {
-      if ((e as GeolocationPositionError).code === 1) return { ok: false, reason: "denied" };
+    if (!denied) {
+      try {
+        const p = await getPos({
+          enableHighAccuracy: true,
+          timeout: 12000,
+          maximumAge: 0,
+        });
+        return { ok: true, lat: p.coords.latitude, lng: p.coords.longitude, approximate: false };
+      } catch (e) {
+        if (isDenied(e)) denied = true;
+      }
     }
     /* Rung 3 — watch for the first fix, for a provider still warming up. */
-    try {
-      const p = await firstWatchFix({ enableHighAccuracy: true, maximumAge: 0 }, 9000);
-      return { ok: true, lat: p.coords.latitude, lng: p.coords.longitude, approximate: false };
-    } catch (e) {
-      if ((e as GeolocationPositionError | undefined)?.code === 1)
-        return { ok: false, reason: "denied" };
+    if (!denied) {
+      try {
+        const p = await firstWatchFix({ enableHighAccuracy: true, maximumAge: 0 }, 9000);
+        return { ok: true, lat: p.coords.latitude, lng: p.coords.longitude, approximate: false };
+      } catch (e) {
+        if (isDenied(e)) denied = true;
+      }
     }
   }
 
   /* Rung 4 — approximate location from the network. Reached when the device has
-     no fix at all (OS location off, no Wi-Fi, blocked provider) and for an
-     insecure origin where the Geolocation API is unavailable. */
+     no precise fix — the OS location gate is off, there is no Wi-Fi, the browser
+     blocked the site, or the origin is insecure — so the share still produces a
+     (clearly-labelled approximate) location rather than an error. */
   const ip = await ipApproxLocation();
   if (ip) return { ok: true, lat: ip.lat, lng: ip.lng, approximate: true };
 
-  return { ok: false, reason: "unavailable" };
+  /* Only here — every device rung AND the network fix failed — is it an error. */
+  return { ok: false, reason: denied ? "denied" : "unavailable" };
 }
 
 /**

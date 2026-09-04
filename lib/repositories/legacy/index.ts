@@ -1,4 +1,4 @@
-import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageCard, MessageReply, MessageSearchHit, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import type { MindMapExtras } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
@@ -16042,9 +16042,18 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { doc, getDoc, serverTimestamp, updateDoc } = await import(
-        "firebase/firestore"
-      );
+      const {
+        collection,
+        doc,
+        getDoc,
+        getDocs,
+        limit: fsLimit,
+        orderBy,
+        query,
+        serverTimestamp,
+        setDoc,
+        updateDoc,
+      } = await import("firebase/firestore");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
@@ -16065,6 +16074,44 @@ export class LegacyRepository {
         text: "",
         attachments: [],
       });
+
+      /* Refresh the conversation-list preview so a deleted LAST message reads as
+         the tombstone rather than the words that are now gone. Re-read the
+         newest message (it may be the one just deleted) and rewrite the parent's
+         `lastMessage.text`; `merge` leaves `sentAt`/`updatedAt` untouched, so the
+         thread does not jump in the list — only its preview changes. Deleting an
+         older message finds an unchanged newest and is a harmless no-op. */
+      const newestSnap = await getDocs(
+        query(
+          collection(legacyDb(), coll, conversationId, "messages"),
+          orderBy("createdAt", "desc"),
+          fsLimit(1),
+        ),
+      ).catch(() => null);
+      if (newestSnap && !newestSnap.empty) {
+        const nd = newestSnap.docs[0];
+        const msg = readMessageDoc(nd.id, conversationId, nd.data() as Record<string, unknown>);
+        /* `readMessageDoc` already resolves a deleted message's text to the
+           tombstone; fall back to a media/card label where there is no caption. */
+        const previewText =
+          msg.text ||
+          (msg.attachments?.length
+            ? attachmentPreview(msg.attachments[0].kind)
+            : msg.card
+              ? cardPreview(msg.card)
+              : "");
+        const previewType = msg.isDeleted
+          ? "text"
+          : msg.attachments?.length
+            ? msg.attachments[0].kind
+            : "text";
+        await setDoc(
+          doc(legacyDb(), coll, conversationId),
+          { lastMessage: { text: previewText, messageType: previewType } },
+          { merge: true },
+        ).catch(() => {});
+      }
+
       notifyRepositoryChanged("listConversations");
       return { ok: true, data: undefined };
     } catch (e) {
