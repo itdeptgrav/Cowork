@@ -214,21 +214,78 @@ export function dataRegion(active: CellPos, filled: FilledFn, b: Bounds): Rect {
 }
 
 /**
- * What Ctrl/Cmd+A selects, given where it currently is: the data region first,
- * then — pressed again, once the region is already selected — the whole sheet.
- * Once the whole sheet is selected, further presses keep it selected (Excel and
- * Sheets do not cycle back down to the data region).
+ * What Ctrl/Cmd+A selects, given where it currently is.
+ *
+ * A **cycle**, not a ladder: the data region, then the whole sheet, then the
+ * data region again. Excel and Sheets stop at the whole sheet, and stopping is
+ * what made this worth changing — overshooting is the common mistake, and with
+ * no way back the only remedy was to click a cell and start over, which also
+ * threw away where you were. Pressing the same key again is what a person
+ * already does when a toggle went one step too far.
+ *
+ * A single-cell region is the exception, and it has to be: on an empty sheet,
+ * or a cell standing on its own, "the data region" is one cell. Cycling into a
+ * selection of one cell would present an empty selection as a step, so those
+ * sheets simply hold the whole sheet.
+ *
+ * `dataRegion` is grown from the ACTIVE cell, so which region you get depends
+ * on where you are — which is why the active cell is preserved across every
+ * step rather than being reset to A1.
  */
 export function selectAllStep(sel: Selection, filled: FilledFn, b: Bounds): Selection {
   const region = dataRegion(sel.active, filled, b);
   const everything = selectAllRect(b);
   const sameRect = (a: Rect, c: Rect) =>
     a.top === c.top && a.left === c.left && a.bottom === c.bottom && a.right === c.right;
-  const next =
-    sameRect(sel.range, everything) || sameRect(sel.range, region) || isSingleCell(region)
+
+  /* Nothing to cycle through — see above. */
+  if (isSingleCell(region)) {
+    return { anchor: sel.active, active: sel.active, range: everything };
+  }
+  /* The whole sheet is selected, so this press is the third: back to the data
+     region. Tested BEFORE the region case, because on a sheet whose data fills
+     every cell the two rects are equal and the sheet must not latch. */
+  const next = sameRect(sel.range, everything)
+    ? region
+    : sameRect(sel.range, region)
       ? everything
       : region;
   return { anchor: sel.active, active: sel.active, range: next };
+}
+
+/**
+ * What is selected, in words, for the status bar.
+ *
+ * ## Why this exists at all
+ *
+ * Ctrl+A now cycles, and a cycle you cannot see the position of is a trap: the
+ * difference between "the data region is selected" and "every cell on the sheet
+ * is selected" is invisible once the selection runs past the bottom of the
+ * window, and the next thing pressed — Delete, a fill colour, a format — lands
+ * on whichever one it happens to be. So the sheet says which.
+ *
+ * ## Why it is measured from the rectangle, not from the data
+ *
+ * Naming the data region would mean recomputing `dataRegion` on every render to
+ * find out whether the current rectangle equals it, and that scans the sheet.
+ * The size answers the question that actually matters — a reader who sees
+ * "Whole sheet" knows not to press Delete, and one who sees "24R × 5C" can tell
+ * at a glance whether that is their table.
+ *
+ * Null for a single cell: the name box already shows its address, and a second
+ * label restating it in another form is noise on the one selection people spend
+ * almost all their time in.
+ */
+export function selectionLabel(range: Rect, b: Bounds): string | null {
+  const rows = range.bottom - range.top + 1;
+  const cols = range.right - range.left + 1;
+  if (rows === 1 && cols === 1) return null;
+  if (rows >= b.rows && cols >= b.cols) return "Whole sheet";
+  /* Whole columns and whole rows are worth naming — "1000R × 2C" is a fact
+     about the sheet's size rather than about what somebody selected. */
+  if (rows >= b.rows) return cols === 1 ? "1 column" : `${cols} columns`;
+  if (cols >= b.cols) return rows === 1 ? "1 row" : `${rows} rows`;
+  return `${rows}R × ${cols}C`;
 }
 
 /** The rightmost filled column in a row, or 0 when the row is empty. */

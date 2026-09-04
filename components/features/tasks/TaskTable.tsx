@@ -12,6 +12,13 @@ import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import { reorderableAssignees } from "@/lib/rules/tasks/priorityAffordance";
 import { buildTaskTree } from "@/lib/rules/tasks/tree";
 import { buildPeopleRollup } from "@/lib/rules/tasks/peopleRollup";
+import {
+  ALL_MEMBERS,
+  buildPersonFilter,
+  findPerson,
+  personIdsIn,
+} from "@/lib/rules/tasks/peopleFilter";
+import { PersonFilter } from "./PersonFilter";
 import { useMemo, useState, type ReactNode } from "react";
 import { statusMeta, nextAction, ALL_STATUSES } from "./statusMeta";
 import { PriorityDialog } from "./PriorityDialog";
@@ -111,24 +118,18 @@ const FILTERS: { id: FilterId; label: string; hint: string }[] = [
 ];
 
 /**
- * Task-wise or Person-wise — how the same list is shown.
+ * **The Task-wise / Person-wise switch is gone.**
  *
- * Task-wise is the ordinary table, unchanged. Person-wise turns the row of
- * controls into a person PICKER: choose someone who has a task here and the
- * table shows just their tasks, grouped under their name — the same view the
- * team list gives, narrowed to one person. It narrows what is shown; it
- * reorders and refetches nothing. The picker's list comes from
- * `buildPeopleRollup`.
+ * It offered two "views" of one list, and Person-wise did exactly one thing:
+ * it revealed a dropdown. So the switch was a step whose only purpose was to
+ * uncover a control — you had to know that before you could reach the thing
+ * you wanted, and the product carried a mode to remember afterwards.
+ *
+ * The dropdown is now simply present, resting on **All members**, and choosing
+ * somebody narrows the list to them. What it offers depends on who is asking —
+ * see `buildPersonFilter`. It still narrows only what is SHOWN; it reorders
+ * and refetches nothing, exactly as the old Person-wise did.
  */
-type ViewMode = "task" | "person";
-const VIEW_MODES: { id: ViewMode; label: string; hint: string }[] = [
-  { id: "task", label: "Task-wise", hint: "One row per task, in priority order" },
-  {
-    id: "person",
-    label: "Person-wise",
-    hint: "Pick a person to see just their tasks",
-  },
-];
 
 /**
  * Eleven columns. The brief names task, status, priority, assignee, owner,
@@ -259,16 +260,10 @@ export function TaskTable({
   scopeControl?: ReactNode;
 }) {
   const [search, setSearch] = useState("");
-  /* Task-wise (the whole list) or Person-wise (one selected person's tasks).
-     Presentational only — it narrows what is shown, never what is fetched. */
-  const [viewMode, setViewMode] = useState<ViewMode>("task");
-  /* Which person Person-wise is showing. "" means "not chosen yet"; the render
-     falls back to the first person so the view is never blank. */
-  const [personId, setPersonId] = useState<string>("");
-  /* Whether the person picker's list is open. A custom dropdown rather than a
-     native <select>, so the open list is themed — the OS default paints a light
-     popup with a hard blue highlight that ignores the dark UI. */
-  const [pickerOpen, setPickerOpen] = useState(false);
+  /* Whose tasks are shown. `ALL_MEMBERS` ("") is the resting state and the one
+     the list opens on — nobody chosen, nothing narrowed. Presentational only:
+     it narrows what is shown, never what is fetched. */
+  const [personId, setPersonId] = useState<string>(ALL_MEMBERS);
   const [statuses, setStatuses] = useState<TaskStatus[]>([]);
   const [sort, setSort] = useState<Sort>("rank");
   /* **Ungrouped, and no longer switchable.**
@@ -544,49 +539,91 @@ export function TaskTable({
    */
   const separateBy: Grouping = scope === "team" ? "assignee" : grouping;
 
-  /* **Person-wise is a person picker.** The dropdown lists everyone who has a
-     task in the current list — built from the same `data`, so it already
-     respects the scope and Open/Closed filter. Only real people; unassigned
-     work is not a person to pick. Sorted by name so the list is findable. */
+  /* Counts for the picker, and the tasks it narrows to — one roll-up of the
+     list already fetched, so it respects the scope and the Open/Closed filter
+     without asking for anything more. */
   const peopleBuckets = useMemo(() => buildPeopleRollup(data ?? []), [data]);
-  const personOptions = useMemo(
+  /**
+   * The reporting tree, for the shape of the picker.
+   *
+   * Read for everybody rather than gated on the scope, because the gate IS the
+   * scope and `buildPersonFilter` applies it — a `self` viewer never walks the
+   * tree, so the read costs them a cache entry and nothing else. Keyed on
+   * nothing: an organisation chart does not change while somebody reads a task
+   * list, and re-reading it on every version bump would cost a full directory
+   * walk per keystroke in the search box.
+   */
+  const { data: reportingLines } = useQuery((r) => r.listReportingLines(), []);
+  const { data: allEmployees } = useQuery((r) => r.listEmployees(), []);
+  const personNodes = useMemo(
     () =>
-      peopleBuckets
-        .filter((b) => b.id !== "")
-        .sort((a, b) => a.name.localeCompare(b.name)),
-    [peopleBuckets],
+      buildPersonFilter({
+        scope: tablePerms.scopeFor("task.view"),
+        viewerId: tableViewerId,
+        reporting: reportingLines ?? [],
+        employees: allEmployees ?? [],
+        buckets: peopleBuckets,
+      }),
+    [tablePerms, tableViewerId, reportingLines, allEmployees, peopleBuckets],
   );
-  /* The chosen person, defaulting to the first when none is picked yet or the
-     pick has dropped out of the list (scope/filter changed under it), so the
-     Person-wise view is never blank when there is somebody to show. */
+  /**
+   * **Not on My tasks.** That scope is already one person's queue — your own —
+   * so a control asking whose tasks to show has a single answer and nothing to
+   * decide. It appears on My team, and on the other scopes that gather more
+   * than one person's work.
+   */
+  const personFilterOffered = scope !== "mine" && personNodes.length > 0;
+  /**
+   * A selection the picker no longer offers falls back to All members rather
+   * than to whoever happens to be first: the scope or the filter changed under
+   * it, and silently showing a DIFFERENT person's queue is worse than widening.
+   *
+   * `personFilterOffered` is part of the test, and load-bearing rather than
+   * tidy: switching to My tasks with somebody selected would otherwise leave
+   * the list filtered by a person while the control that filtered it is off
+   * screen — a narrowed list with no visible cause and no way back.
+   */
   const activePersonId =
-    personId && personOptions.some((b) => b.id === personId)
+    personFilterOffered && personId && personIdsIn(personNodes).includes(personId)
       ? personId
-      : (personOptions[0]?.id ?? "");
-  const activeBucket = personOptions.find((b) => b.id === activePersonId) ?? null;
+      : ALL_MEMBERS;
+  /* Their tasks in the current list. Absent from the roll-up means they have
+     none here — an empty queue, which is a real answer for an audit, not a
+     reason to fall back to somebody else. */
+  const activeBucket =
+    activePersonId
+      ? (peopleBuckets.find((b) => b.id === activePersonId) ?? null)
+      : null;
+  /* Their name comes from the TREE, not the roll-up: somebody carrying nothing
+     in this list is absent from the roll-up, and they are exactly the person
+     the empty state below has to be able to name. */
+  const activePerson = activePersonId
+    ? findPerson(personNodes, activePersonId)
+    : null;
 
   const groups = useMemo(() => {
-    /* Person-wise: one group — the selected person's tasks under their name,
-       exactly the assignee grouping the team list uses. `ownerId` set makes the
-       render treat it as that person's queue (numbered P1..N, drag in rank
-       order), which is what reproduces the team-list look for one person. */
-    if (viewMode === "person") {
-      if (!activeBucket) return [];
-      /* No group header — the picker in the toolbar already names the person,
-         so a "PRANAYA SAMAL 3" bar over their own tasks would say it twice.
-         `ownerId` still set, so the rows keep the numbered queue (P1..N) and
-         drag-to-reorder that the team list gives a person's section. */
+    /* Somebody chosen: one group — their tasks, exactly the assignee grouping
+       the team list uses. `ownerId` set makes the render treat it as that
+       person's queue (numbered P1..N, drag in rank order), which is what
+       reproduces the team-list look for one person.
+
+       No group header — the picker in the toolbar already names the person, so
+       a "PRANAYA SAMAL 3" bar over their own tasks would say it twice. */
+    if (activePersonId) {
       return [
         {
-          key: activeBucket.id,
+          key: activePersonId,
           label: null,
-          items: activeBucket.tasks,
-          ownerId: activeBucket.id || null,
+          /* Empty when they carry nothing in this list. The empty state below
+             then says so against their name, rather than the table quietly
+             showing somebody else's work. */
+          items: activeBucket?.tasks ?? [],
+          ownerId: activePersonId,
         },
       ];
     }
     return groupTasks(data ?? [], separateBy, tableViewerId ?? "");
-  }, [viewMode, activeBucket, data, separateBy, tableViewerId]);
+  }, [activePersonId, activeBucket, data, separateBy, tableViewerId]);
 
   function toggle(id: string) {
     setSelected((s) => {
@@ -596,10 +633,11 @@ export function TaskTable({
       return next;
     });
   }
-  /* Select-all and the count follow what is actually shown — the selected
-     person's tasks in Person-wise, the whole list otherwise. */
-  const visibleTasks =
-    viewMode === "person" ? (activeBucket?.tasks ?? []) : (data ?? []);
+  /* Select-all and the count follow what is actually shown — the chosen
+     person's tasks, or the whole list under All members. */
+  const visibleTasks = activePersonId
+    ? (activeBucket?.tasks ?? [])
+    : (data ?? []);
   const allIds = visibleTasks.map((v) => v.task.id);
   const allSelected =
     allIds.length > 0 && allIds.every((id) => selected.has(id));
@@ -627,89 +665,18 @@ export function TaskTable({
           options={FILTERS}
         />
 
-        {/* Task-wise / Person-wise. Task-wise is the whole list; Person-wise
-            reveals a person picker beside it and shows just that person's tasks.
-            Same control as the filters beside it, so the questions this row asks
-            read alike. */}
-        <Segmented
-          label="View"
-          size="sm"
-          value={viewMode}
-          onChange={setViewMode}
-          options={VIEW_MODES}
-        />
-
-        {/* The person picker — only in Person-wise, only listing people who
-            actually have a task in this list. Selecting one shows their tasks
-            below. A compact pill matching the SearchBox rather than the full-
-            width form Select, so it reads as one control in this toolbar. */}
-        {viewMode === "person" && personOptions.length > 0 && (
-          <div className="relative">
-            <button
-              type="button"
-              aria-label="Show tasks for"
-              aria-haspopup="listbox"
-              aria-expanded={pickerOpen}
-              onClick={() => setPickerOpen((o) => !o)}
-              className="flex h-8 max-w-[220px] items-center gap-1.5 rounded-full bg-[var(--surface-sunken)] pr-2.5 pl-3.5 text-sm text-ink transition-colors hover:bg-[var(--control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
-            >
-              <span className="truncate">
-                {activeBucket?.name ?? "Select a person"}
-                {activeBucket ? ` (${activeBucket.tasks.length})` : ""}
-              </span>
-              <span className="shrink-0 text-ink-faint">
-                <Icon.chevronDown />
-              </span>
-            </button>
-
-            {pickerOpen && (
-              <>
-                {/* Catches an outside click to close, the way the app's other
-                    menus do. */}
-                <button
-                  type="button"
-                  aria-hidden
-                  tabIndex={-1}
-                  onClick={() => setPickerOpen(false)}
-                  className="fixed inset-0 z-40 cursor-default"
-                />
-                {/* Themed list — dark panel, the app's own subtle highlight on
-                    the current person, no OS blue. */}
-                <ul
-                  role="listbox"
-                  className="absolute left-0 z-50 mt-1 max-h-[320px] w-[240px] overflow-auto rounded-xl border border-hairline bg-[var(--surface-raised)] p-1 shadow-lg"
-                >
-                  {personOptions.map((b) => {
-                    const selected = b.id === activePersonId;
-                    return (
-                      <li key={b.id} role="option" aria-selected={selected}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setPersonId(b.id);
-                            setPickerOpen(false);
-                          }}
-                          className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors ${
-                            selected
-                              ? "bg-[var(--control)] text-ink"
-                              : "text-ink-muted hover:bg-[var(--control)] hover:text-ink"
-                          }`}
-                        >
-                          <span className="truncate">{b.name}</span>
-                          <span
-                            data-figure
-                            className="shrink-0 text-xs text-ink-faint"
-                          >
-                            {b.tasks.length}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </>
-            )}
-          </div>
+        {/* Whose tasks. Present at rest on All members rather than hidden
+            behind a mode — see `buildPersonFilter` for what it offers whom.
+            Absent entirely for somebody with nobody to compare: an ordinary
+            employee looking at their own queue sees the toolbar exactly as it
+            was before this existed. */}
+        {personFilterOffered && (
+          <PersonFilter
+            nodes={personNodes}
+            value={activePersonId}
+            onChange={setPersonId}
+            totalCount={data?.length ?? 0}
+          />
         )}
 
         {/* The scope switch takes the right end on its own now. The row count
@@ -816,15 +783,19 @@ export function TaskTable({
             }
           />
         </div>
-      ) : viewMode === "person" && personOptions.length === 0 ? (
-        /* Person-wise, but nobody in this list has a task to show — every task
-           here is unassigned. Point back at Task-wise rather than a blank grid. */
+      ) : activePersonId && visibleTasks.length === 0 ? (
+        /* Somebody is chosen and carries nothing here. That is an ANSWER, not
+           an error — "nobody has given this person anything in this view" is
+           the finding an audit is looking for — so it names them rather than
+           showing a blank grid, and offers the way back out. */
         <div className="frost-panel rounded-panel">
           <EmptyState
-            title="No one to show"
-            body="No people have tasks in this view. Switch to Task-wise, or widen the scope."
+            title={`Nothing for ${activePerson?.name ?? "this person"} here`}
+            body="They carry no tasks in this view. Widen the scope or the filter, or go back to everyone."
             action={
-              <Button onClick={() => setViewMode("task")}>Task-wise</Button>
+              <Button onClick={() => setPersonId(ALL_MEMBERS)}>
+                All members
+              </Button>
             }
           />
         </div>
@@ -1187,12 +1158,16 @@ function SearchBox({
         type="search"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        placeholder="Search tasks or people"
-        aria-label="Search tasks or people"
-        /* Wide enough at rest to show the whole placeholder — "Search tasks or
-           people" clipped to "…or pe" at the old 176px. Still grows a little on
-           focus. */
-        className="h-8 w-[240px] rounded-full bg-[var(--surface-sunken)] pr-3 pl-8 text-sm text-ink transition-[width] duration-[180ms] placeholder:text-ink-faint focus:w-[288px] focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
+        placeholder="Search tasks"
+        aria-label="Search tasks"
+        /* **Tasks only.** It used to match a person's name as well, which put
+           two ways of asking "whose work" on one toolbar — and the typed one
+           was the worse of them: it answered with a flat list rather than a
+           person's queue, it matched anybody whose name contained the letters,
+           and it could not tell you that somebody had nothing. The picker
+           beside it answers that question properly, so this one is left to do
+           the thing a search box is for. */
+        className="h-8 w-[200px] rounded-full bg-[var(--surface-sunken)] pr-3 pl-8 text-sm text-ink transition-[width] duration-[180ms] placeholder:text-ink-faint focus:w-[248px] focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
       />
     </div>
   );

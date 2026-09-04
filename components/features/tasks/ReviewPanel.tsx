@@ -28,7 +28,7 @@ import { REWORK_DEDUCTION } from "@/lib/rules/scoring/engine";
 import { mayReview as mayReviewOutput } from "@/lib/rules/tasks/outputs";
 import { PROVISIONAL_RULES } from "@/lib/config/provisional";
 import type { TaskView } from "@/lib/repositories";
-import type { ReviewDecision } from "@/lib/domain";
+import type { ReviewDecision, TaskSubmission } from "@/lib/domain";
 
 /**
  * **Rejection is not offered — OWNER DECISION, 16 Aug 2026.**
@@ -69,33 +69,6 @@ export function ReviewPanel({
   onChange: () => void;
 }) {
   const taskId = view.task.id;
-  const [decision, setDecision] = useState<ReviewDecision>("approved");
-  const [reason, setReason] = useState("");
-  const [waive, setWaive] = useState(false);
-  /* The acceptance criteria this reviewer says have NOT been met. Held as text
-     rather than ids because that is what the engine records and what the
-     assignee reads — an id would be meaningless in the history. */
-  const [failed, setFailed] = useState<string[]>([]);
-  /* Optional, and deliberately separate from the required review note: that
-     one says why the work came back, this one says what to do about it. */
-  const [correction, setCorrection] = useState("");
-  /* Uploaded already — the reviewer sends IDs, never bytes.
-     `entityType: "rework"` keeps correction files OUT of the task's own
-     reference list; attaching them as `task` (which this did) mixed a
-     reviewer's screenshots into the files the creator supplied, and the two
-     mean different things to whoever opens the task.
-     `entityId` is still the task id, because the rework record has no id until
-     this form is submitted — and the engine resolves every entity type back to
-     its task for the permission check, so the gate is unchanged. */
-  const [files, setFiles] = useState<AttachmentMeta[]>([]);
-
-  /* The task's own requirements, from the completion state the rest of the
-     product already uses. Not a second checklist. */
-  const requirements = view.completion.requirements;
-
-  /* Where the returned work lands in the assignee's queue. Null means the
-     reviewer did not choose, which leaves the rank exactly as it was. */
-  const [reworkRank, setReworkRank] = useState<number | null>(null);
 
   const me = useViewerId();
   const submissions = useQuery(
@@ -109,47 +82,6 @@ export function ReviewPanel({
 
   const latest = submissions.data?.find((s) => !s.supersededById);
 
-  /**
-   * One press, two routes.
-   *
-   * An OUTPUT submission is decided by `reviewOutput`, which the engine keys by
-   * output id — `reviewSubmission` would look for a task-level submission that
-   * does not exist and refuse. The rework extras are dropped on that path
-   * because legacy records a return on an output as a note, not as a rework
-   * request against the whole task.
-   */
-  const [review, state] = useAction((r, sid: string) =>
-    latest?.outputId
-      ? /* Both branches must resolve to the same shape for `useAction`. The
-           caller only reads `ok`, so the output route's Task is discarded
-           rather than reported as a review record it never created. */
-        r
-          .reviewOutput({
-            taskId,
-            outputId: latest.outputId,
-            approved: decision === "approved",
-            note: reason || correction,
-          })
-          .then((res) =>
-            res.ok
-              ? ({ ok: true, data: undefined } as unknown as Awaited<
-                  ReturnType<typeof r.reviewSubmission>
-                >)
-              : (res as unknown as Awaited<
-                  ReturnType<typeof r.reviewSubmission>
-                >),
-          )
-      : r.reviewSubmission({
-      submissionId: sid,
-      decision,
-      reason,
-      reworkRequirements: decision === "rework" ? failed : [],
-      reworkNote: decision === "rework" ? correction : "",
-      reworkAttachmentIds: decision === "rework" ? files.map((f) => f.id) : [],
-      reworkPriority: decision === "rework" ? reworkRank : null,
-      waiveDeduction: waive,
-    }),
-  );
   /* One predicate, shared with the repository's own resolution. It gates on
      the stage that is OPEN rather than on membership anywhere in the chain: on
      a two-stage flow the second reviewer is in the chain from the start, and
@@ -172,8 +104,6 @@ export function ReviewPanel({
       viewerId: me ?? null,
       submittedById: latest.submittedById,
     });
-
-  const rejectionRule = PROVISIONAL_RULES.rejectionDeduction;
 
   return (
     <div className="flex flex-col gap-4">
@@ -209,8 +139,273 @@ export function ReviewPanel({
         </Panel>
       )}
 
-      {canReview && (
+      {canReview && latest && (
+        <ReviewDecisionBox
+          view={view}
+          submission={latest}
+          onChange={onChange}
+        />
+      )}
+
+      {/* The submitted work sits BELOW the decision, by the owner's layout: the
+          reviewer's action leads, and the work being judged — with the earlier
+          attempts and past decisions under it in "Review history" — follows. */}
+      {latest ? (
         <Panel>
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 className="text-sm font-medium text-ink">
+              {/* WHICH output, when it is one. A reviewer looking at a task
+                  with ten outputs otherwise sees only the task's title and has
+                  to guess which piece of it they are being asked to judge. */}
+              {latest.outputId
+                ? (view.task.outputs.find((o) => o.id === latest.outputId)
+                    ?.label ?? "Submitted output")
+                : "Submitted work"}
+            </h2>
+            <Chip>Attempt {latest.attempt}</Chip>
+            {latest.wasLate && <Chip tone="overdue">Late</Chip>}
+            <span className="ml-auto text-xs text-ink-faint">
+              {formatDateTime(latest.submittedAt)}
+            </span>
+          </div>
+          <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
+            {latest.message}
+          </p>
+          {/**
+           * **The work itself.**
+           *
+           * This panel showed the covering note and the review chain and
+           * nothing else, so somebody deciding whether to approve a document
+           * could not open the document.
+           *
+           * Both origins are rendered, because a submission can carry files in
+           * two places and neither alone is the answer. Cowork's own uploader
+           * puts them in the attachment service keyed to this submission —
+           * private, streamed, and what `EntityAttachments` fetches. The old
+           * application instead wrote URLs onto the task record itself, and
+           * work submitted there still has to be reviewable here.
+           */}
+          <EntityAttachments
+            entityType="submission"
+            entityId={latest.id}
+            title="Submitted work"
+          />
+          <SubmittedFiles files={latest.attachments} label="Also attached" />
+          {latest.reviewChain.length > 1 && (
+            <p className="mt-2 text-xs text-ink-faint">
+              Stage {latest.currentStage} of {latest.reviewChain.length} —
+              approving passes this to the next reviewer rather than completing
+              the task.
+            </p>
+          )}
+        </Panel>
+      ) : (
+        <Panel>
+          <p className="text-sm text-ink-muted">
+            Nothing has been submitted for review yet.
+          </p>
+        </Panel>
+      )}
+
+      <Panel padded={false}>
+        <div className="border-b border-hairline px-5 py-3">
+          <h2 className="text-sm font-medium text-ink">Review history</h2>
+        </div>
+        {/* The earlier submission attempts live here, at the top of the history,
+            so "what was submitted before" and "what was decided before" read as
+            one section. Renders nothing until there is a previous attempt. */}
+        <SubmissionPanel view={view} onChange={onChange} historyOnly />
+        {reviews.isLoading ? (
+          <div className="px-5 py-3">
+            <SkeletonRows rows={2} />
+          </div>
+        ) : !reviews.data?.length ? (
+          <p className="px-5 py-4 text-sm text-ink-faint">No reviews yet.</p>
+        ) : (
+          <div className="divide-y divide-hairline">
+            {reviews.data.map((rv) => (
+              <div key={rv.id} className="px-5 py-2.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Chip
+                    tone={
+                      rv.decision === "approved"
+                        ? "positive"
+                        : rv.decision === "rework"
+                          ? "rework"
+                          : "overdue"
+                    }
+                  >
+                    {rv.decision}
+                  </Chip>
+                  <span className="text-xs text-ink-faint">
+                    Stage {rv.stage}
+                  </span>
+                  <span className="ml-auto text-xs text-ink-faint">
+                    {formatDateTime(rv.reviewedAt)}
+                  </span>
+                </div>
+                {rv.reason && (
+                  <p className="mt-1 text-sm text-ink-muted">{rv.reason}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+function Choice({
+  active,
+  onClick,
+  title,
+  body,
+  impact,
+  tone,
+  confirmed = false,
+}: {
+  id: string;
+  active: boolean;
+  onClick: () => void;
+  title: string;
+  body: string;
+  impact: string;
+  tone: "positive" | "rework" | "overdue";
+  confirmed?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
+        active
+          ? "bg-[var(--control-active)] shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
+          : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
+      }`}
+    >
+      <span className="flex items-center gap-1.5">
+        <span className="text-sm font-medium text-ink">{title}</span>
+      </span>
+      <span className="mt-1 block text-[11px] text-ink-faint">{body}</span>
+      <span className="mt-2 flex items-center gap-1">
+        <Chip tone={tone}>{impact}</Chip>
+        {confirmed && (
+          <span className="text-[11px] text-ink-faint">confirmed</span>
+        )}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The decision itself: Approve or Rework, its consequences, and the note.
+ *
+ * **Extracted so the task thread can host the real thing.** The submitted-work
+ * card in a task chat offers the same decision, and the alternative was a pair
+ * of buttons there that opened this panel in a dialog — a second screen for a
+ * choice that is two options and a sentence. What it must NOT become is a
+ * second implementation: a decision can waive a deduction, name the
+ * requirements that were not met, carry correction files and re-rank the
+ * returned work, and a chat-sized copy would look finished while skipping all
+ * of it.
+ *
+ * It stays in this file deliberately rather than moving to one of its own.
+ * Fourteen assertions across eight test files read `ReviewPanel.tsx` for the
+ * rules that live in this block — the rework requirement gate, the rejection
+ * that is hidden and not removed, the correction uploader's entity type. Moving
+ * the code would have moved all of them for no gain: it is one implementation
+ * either way, and this way the tests still point at where the rule lives.
+ *
+ * `compact` drops the panel frame for the thread, where the card around it is
+ * already the surface — a panel inside a card is the box-inside-a-box the
+ * design system rules out.
+ */
+export function ReviewDecisionBox({
+  view,
+  submission,
+  onChange,
+  compact = false,
+}: {
+  view: TaskView;
+  submission: TaskSubmission;
+  onChange: () => void;
+  compact?: boolean;
+}) {
+  const taskId = view.task.id;
+  const [decision, setDecision] = useState<ReviewDecision>("approved");
+  const [reason, setReason] = useState("");
+  const [waive, setWaive] = useState(false);
+  /* The acceptance criteria this reviewer says have NOT been met. Held as text
+     rather than ids because that is what the engine records and what the
+     assignee reads — an id would be meaningless in the history. */
+  const [failed, setFailed] = useState<string[]>([]);
+  /* Optional, and deliberately separate from the required review note: that
+     one says why the work came back, this one says what to do about it. */
+  const [correction, setCorrection] = useState("");
+  /* Uploaded already — the reviewer sends IDs, never bytes.
+     `entityType: "rework"` keeps correction files OUT of the task's own
+     reference list; attaching them as `task` (which this did) mixed a
+     reviewer's screenshots into the files the creator supplied, and the two
+     mean different things to whoever opens the task.
+     `entityId` is still the task id, because the rework record has no id until
+     this form is submitted — and the engine resolves every entity type back to
+     its task for the permission check, so the gate is unchanged. */
+  const [files, setFiles] = useState<AttachmentMeta[]>([]);
+
+  /* The task's own requirements, from the completion state the rest of the
+     product already uses. Not a second checklist. */
+  const requirements = view.completion.requirements;
+
+  /* Where the returned work lands in the assignee's queue. Null means the
+     reviewer did not choose, which leaves the rank exactly as it was. */
+  const [reworkRank, setReworkRank] = useState<number | null>(null);
+  /**
+   * One press, two routes.
+   *
+   * An OUTPUT submission is decided by `reviewOutput`, which the engine keys by
+   * output id — `reviewSubmission` would look for a task-level submission that
+   * does not exist and refuse. The rework extras are dropped on that path
+   * because legacy records a return on an output as a note, not as a rework
+   * request against the whole task.
+   */
+  const [review, state] = useAction((r, sid: string) =>
+    submission.outputId
+      ? /* Both branches must resolve to the same shape for `useAction`. The
+           caller only reads `ok`, so the output route's Task is discarded
+           rather than reported as a review record it never created. */
+        r
+          .reviewOutput({
+            taskId,
+            outputId: submission.outputId,
+            approved: decision === "approved",
+            note: reason || correction,
+          })
+          .then((res) =>
+            res.ok
+              ? ({ ok: true, data: undefined } as unknown as Awaited<
+                  ReturnType<typeof r.reviewSubmission>
+                >)
+              : (res as unknown as Awaited<
+                  ReturnType<typeof r.reviewSubmission>
+                >),
+          )
+      : r.reviewSubmission({
+      submissionId: sid,
+      decision,
+      reason,
+      reworkRequirements: decision === "rework" ? failed : [],
+      reworkNote: decision === "rework" ? correction : "",
+      reworkAttachmentIds: decision === "rework" ? files.map((f) => f.id) : [],
+      reworkPriority: decision === "rework" ? reworkRank : null,
+      waiveDeduction: waive,
+    }),
+  );
+  const rejectionRule = PROVISIONAL_RULES.rejectionDeduction;
+
+  const body = (
+    <>
           <h2 className="text-sm font-medium text-ink">Your decision</h2>
 
           {/**
@@ -518,7 +713,7 @@ export function ReviewPanel({
                   failed.length === 0)
               }
               onClick={async () => {
-                const r = await review(latest.id);
+                const r = await review(submission.id);
                 if (r.ok) {
                   setReason("");
                   setFailed([]);
@@ -537,157 +732,8 @@ export function ReviewPanel({
                     : "Reject"}
             </Button>
           </div>
-        </Panel>
-      )}
-
-      {/* The submitted work sits BELOW the decision, by the owner's layout: the
-          reviewer's action leads, and the work being judged — with the earlier
-          attempts and past decisions under it in "Review history" — follows. */}
-      {latest ? (
-        <Panel>
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-medium text-ink">
-              {/* WHICH output, when it is one. A reviewer looking at a task
-                  with ten outputs otherwise sees only the task's title and has
-                  to guess which piece of it they are being asked to judge. */}
-              {latest.outputId
-                ? (view.task.outputs.find((o) => o.id === latest.outputId)
-                    ?.label ?? "Submitted output")
-                : "Submitted work"}
-            </h2>
-            <Chip>Attempt {latest.attempt}</Chip>
-            {latest.wasLate && <Chip tone="overdue">Late</Chip>}
-            <span className="ml-auto text-xs text-ink-faint">
-              {formatDateTime(latest.submittedAt)}
-            </span>
-          </div>
-          <p className="mt-2 max-w-[68ch] text-sm text-ink-muted">
-            {latest.message}
-          </p>
-          {/**
-           * **The work itself.**
-           *
-           * This panel showed the covering note and the review chain and
-           * nothing else, so somebody deciding whether to approve a document
-           * could not open the document.
-           *
-           * Both origins are rendered, because a submission can carry files in
-           * two places and neither alone is the answer. Cowork's own uploader
-           * puts them in the attachment service keyed to this submission —
-           * private, streamed, and what `EntityAttachments` fetches. The old
-           * application instead wrote URLs onto the task record itself, and
-           * work submitted there still has to be reviewable here.
-           */}
-          <EntityAttachments
-            entityType="submission"
-            entityId={latest.id}
-            title="Submitted work"
-          />
-          <SubmittedFiles files={latest.attachments} label="Also attached" />
-          {latest.reviewChain.length > 1 && (
-            <p className="mt-2 text-xs text-ink-faint">
-              Stage {latest.currentStage} of {latest.reviewChain.length} —
-              approving passes this to the next reviewer rather than completing
-              the task.
-            </p>
-          )}
-        </Panel>
-      ) : (
-        <Panel>
-          <p className="text-sm text-ink-muted">
-            Nothing has been submitted for review yet.
-          </p>
-        </Panel>
-      )}
-
-      <Panel padded={false}>
-        <div className="border-b border-hairline px-5 py-3">
-          <h2 className="text-sm font-medium text-ink">Review history</h2>
-        </div>
-        {/* The earlier submission attempts live here, at the top of the history,
-            so "what was submitted before" and "what was decided before" read as
-            one section. Renders nothing until there is a previous attempt. */}
-        <SubmissionPanel view={view} onChange={onChange} historyOnly />
-        {reviews.isLoading ? (
-          <div className="px-5 py-3">
-            <SkeletonRows rows={2} />
-          </div>
-        ) : !reviews.data?.length ? (
-          <p className="px-5 py-4 text-sm text-ink-faint">No reviews yet.</p>
-        ) : (
-          <div className="divide-y divide-hairline">
-            {reviews.data.map((rv) => (
-              <div key={rv.id} className="px-5 py-2.5">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Chip
-                    tone={
-                      rv.decision === "approved"
-                        ? "positive"
-                        : rv.decision === "rework"
-                          ? "rework"
-                          : "overdue"
-                    }
-                  >
-                    {rv.decision}
-                  </Chip>
-                  <span className="text-xs text-ink-faint">
-                    Stage {rv.stage}
-                  </span>
-                  <span className="ml-auto text-xs text-ink-faint">
-                    {formatDateTime(rv.reviewedAt)}
-                  </span>
-                </div>
-                {rv.reason && (
-                  <p className="mt-1 text-sm text-ink-muted">{rv.reason}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-      </Panel>
-    </div>
+    </>
   );
-}
 
-function Choice({
-  active,
-  onClick,
-  title,
-  body,
-  impact,
-  tone,
-  confirmed = false,
-}: {
-  id: string;
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  body: string;
-  impact: string;
-  tone: "positive" | "rework" | "overdue";
-  confirmed?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
-        active
-          ? "bg-[var(--control-active)] shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
-          : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
-      }`}
-    >
-      <span className="flex items-center gap-1.5">
-        <span className="text-sm font-medium text-ink">{title}</span>
-      </span>
-      <span className="mt-1 block text-[11px] text-ink-faint">{body}</span>
-      <span className="mt-2 flex items-center gap-1">
-        <Chip tone={tone}>{impact}</Chip>
-        {confirmed && (
-          <span className="text-[11px] text-ink-faint">confirmed</span>
-        )}
-      </span>
-    </button>
-  );
+  return compact ? <div>{body}</div> : <Panel>{body}</Panel>;
 }

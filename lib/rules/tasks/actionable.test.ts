@@ -306,3 +306,38 @@ test("windowOnOffer still refuses a rejected window", () => {
     false,
   );
 });
+
+/* ── A list read carries no submission ────────────────────────────────────── */
+
+test("an in-review task with no submission attached is not actionable, and does not throw", () => {
+  /*
+   * **The shape the legacy backend actually produces.** `toTaskView` sets
+   * `latestSubmission: null` on every task it maps, because the review chain is
+   * resolved by role and needs directory reads a pure mapper cannot do. So a
+   * submitted task arrives here with the field empty and the branch must decline
+   * rather than dereference it — the repository hydrates it before asking.
+   */
+  assert.equal(actionableFor(view({ status: "in_review" }), ME), null);
+});
+
+test("an absent submission is treated as no submission, not as one", () => {
+  /* A narrowed fixture omits the field entirely. `undefined !== null` would
+     pass a bare null-check and then read `.reviewChain` off nothing. */
+  const v = view({ status: "in_review" }) as Record<string, unknown>;
+  delete v.latestSubmission;
+  assert.equal(
+    actionableFor(v as unknown as Parameters<typeof actionableFor>[0], ME),
+    null,
+  );
+});
+
+test("once the submission IS attached, the review is mine to do", () => {
+  /* The other half of the same fix: hydration is what makes this fire. */
+  const verdict = actionableFor(
+    view({ status: "in_review", reviewChain: [ME], currentStage: 1 }),
+    ME,
+  );
+  assert.equal(verdict?.reason, "review");
+  assert.equal(verdict?.label, "Review submission");
+  assert.match(verdict?.href ?? "", /\/review$/);
+});

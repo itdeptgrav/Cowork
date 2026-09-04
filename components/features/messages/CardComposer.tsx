@@ -155,12 +155,24 @@ async function resolveLocation(): Promise<LocateResult> {
 }
 
 /**
- * The "+" share menu at the head of a message composer — a WhatsApp-style sheet
+ * The attach menu at the head of a message composer — a WhatsApp-style sheet
  * offering Photos & files, Poll, Location and Contact. Files delegate to the
  * host's existing picker (`onPickFiles`); the other three produce a
  * `MessageCard` the host sends through the same path a text message takes
  * (`onCard`). Shared by the conversation thread and the task chat so the two
  * cannot drift.
+ *
+ * ## One control, not two
+ *
+ * This used to be a `+` sitting beside a paperclip, and the paperclip opened
+ * the file picker — which is the first row of this very menu. Two buttons, a
+ * pixel apart, one of them a shortcut into the other: the reader had to learn
+ * which was which before they could attach anything, and there was no rule to
+ * learn, because there was no real difference.
+ *
+ * So there is one button now, and it wears the PAPERCLIP. Attaching is what
+ * people come to this control for; `+` says "more" and made the common case the
+ * unlabelled one.
  */
 export function CardComposer({
   people,
@@ -168,6 +180,7 @@ export function CardComposer({
   onPickFiles,
   canPickFiles = true,
   disabled,
+  submission,
 }: {
   /** The directory the contact picker searches. */
   people: Employee[];
@@ -178,6 +191,19 @@ export function CardComposer({
    *  "Photos & files" row hides where uploads are not supported. */
   canPickFiles?: boolean;
   disabled?: boolean;
+  /**
+   * Handing work over for review, where the surface offers it.
+   *
+   * **Task chat only, and only for somebody who could actually submit.** The
+   * same PDF can be a reference to look at or the work itself, and only the
+   * sender knows which — so it is asked rather than guessed from the file.
+   * Absent everywhere else: a direct message has no submission to make.
+   *
+   * A named prop rather than a generic slot, because this is the one extra
+   * item that exists and a menu anybody can inject into is a menu nobody can
+   * reason about.
+   */
+  submission?: { label: string; hint: string; onPick: () => void };
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialog, setDialog] = useState<null | "poll" | "contact">(null);
@@ -236,9 +262,33 @@ export function CardComposer({
     });
   }
 
-  const items = [
+  /* The hint only appears where there are TWO kinds of attachment to tell
+     apart. On a direct message "Photos & files" is unambiguous, and explaining
+     it there would be words for their own sake. */
+  const items: {
+    id: string;
+    label: string;
+    hint?: string;
+    icon: (p: { className?: string }) => React.ReactNode;
+    run: () => void;
+  }[] = [
     ...(canPickFiles
-      ? [{ id: "files", label: "Photos & files", icon: Icon.attach, run: () => { setMenuOpen(false); onPickFiles(); } }]
+      ? [{
+          id: "files",
+          label: "Photos & files",
+          hint: submission ? "Sent with your message. Nothing is reviewed." : undefined,
+          icon: Icon.attach,
+          run: () => { setMenuOpen(false); onPickFiles(); },
+        }]
+      : []),
+    ...(submission
+      ? [{
+          id: "submission",
+          label: submission.label,
+          hint: submission.hint,
+          icon: Icon.check,
+          run: () => { setMenuOpen(false); submission.onPick(); },
+        }]
       : []),
     { id: "poll", label: "Poll", icon: Icon.poll, run: () => { setMenuOpen(false); setDialog("poll"); } },
     { id: "location", label: "Location", icon: Icon.location, run: shareLocation },
@@ -251,15 +301,22 @@ export function CardComposer({
         type="button"
         disabled={disabled || locating}
         onClick={() => setMenuOpen((o) => !o)}
-        aria-label="Share a poll, location or contact"
+        aria-label="Attach"
+        aria-haspopup="menu"
         aria-expanded={menuOpen}
-        title="Share more"
+        title={
+          submission
+            ? "Attach a file, hand work over, or share a poll, location or contact"
+            : "Attach a file, or share a poll, location or contact"
+        }
         className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
       >
         {locating ? (
           <Icon.sync className="h-4 w-4 animate-spin" />
         ) : (
-          <Icon.plus className="h-4 w-4" />
+          /* The paperclip, not a `+`. Attaching is what this is opened for;
+             `+` said "more" and left the common case unlabelled. */
+          <Icon.attach className="h-4 w-4" />
         )}
       </button>
 
@@ -277,12 +334,19 @@ export function CardComposer({
                  own outside-mousedown handler does not race the action. */
               onMouseDown={(e) => e.preventDefault()}
               onClick={it.run}
-              className="flex w-full items-center gap-3 rounded-inset px-2 py-2 text-left text-sm text-ink transition-colors hover:bg-[var(--control)]"
+              className="flex w-full items-start gap-3 rounded-inset px-2 py-2 text-left text-sm text-ink transition-colors hover:bg-[var(--control)]"
             >
               <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-[var(--control)] text-ink-muted">
                 <it.icon className="h-4 w-4" />
               </span>
-              {it.label}
+              <span className="min-w-0 flex-1 self-center">
+                <span className="block">{it.label}</span>
+                {it.hint && (
+                  <span className="mt-0.5 block text-[11px] leading-snug text-ink-muted">
+                    {it.hint}
+                  </span>
+                )}
+              </span>
             </button>
           ))}
         </div>

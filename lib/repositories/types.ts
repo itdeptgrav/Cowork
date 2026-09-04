@@ -24,6 +24,7 @@ import type {
   HelpSearchResult,
 } from "@/lib/help/types";
 import type { ActionableReason } from "@/lib/rules/tasks/actionable";
+import type { SubmissionTiming } from "@/lib/rules/tasks/submissionTiming";
 import type { CompletionState } from "@/lib/rules/tasks/completion";
 import type { DutyMode, DutyHistoryEntry, DutySnapshot } from "@/lib/rules/presence/duty";
 import type { DutyFacts } from "@/lib/rules/presence/roster";
@@ -3385,6 +3386,19 @@ export interface ActionableItem {
   subtitle: string;
   /** Which workflow decision, for `reason: "approval"` only. */
   approvalKind: ApprovalKind | null;
+  /**
+   * How far ahead of its deadline, or behind it, the work arrived.
+   *
+   * Structured rather than folded into `subtitle`, because it is the one part
+   * of a review row that carries a tone: late and early are not the same news,
+   * and a string cannot say so. Null where there is nothing to measure — no
+   * deadline was set, or nothing has been submitted — and the row then shows
+   * no chip at all rather than claiming the work was on time.
+   *
+   * Set for `reason: "review"`. Every other kind of row is about a decision
+   * that has not been made yet, so there is no submission to time.
+   */
+  timing: SubmissionTiming | null;
 }
 
 export interface CreateMeetingInput {

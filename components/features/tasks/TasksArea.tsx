@@ -16,12 +16,14 @@ import { Icon } from "@/components/ui/Icons";
 import { IconTabs, ToolButton, WorkspaceHead } from "@/components/ui/Workspace";
 import {
   Button,
+  Chip,
   EmptyState,
   Panel,
   Segmented,
   SkeletonRows,
   QueryError,
 } from "@/components/ui/Primitives";
+import type { SubmissionTiming } from "@/lib/rules/tasks/submissionTiming";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { usePermissions } from "@/lib/hooks/usePermissions";
 import type { TaskScope } from "@/lib/repositories";
@@ -57,7 +59,19 @@ export function TasksArea() {
      in the action inbox, and showing the same rows in both places taught people
      to check one and distrust the other. Tasks answers "what is the state of
      the work"; the inbox answers "what is waiting on me". */
-  const [scope, setScope] = useState<TaskScope>("mine");
+  /**
+   * The scope the reader CHOSE, or null while they have not chosen.
+   *
+   * Held as a choice rather than as the scope itself so the default can depend
+   * on something that is not known on the first render: whether this person
+   * has a team at all. `task.view` arrives with the permission read, so a
+   * plain `useState("team")` would show a My team tab to an individual
+   * contributor for a beat, and `useState("mine")` could never correct itself
+   * without an effect racing the reader's own first click. Null means "not
+   * chosen", the effective scope is derived below, and the moment somebody
+   * picks anything this stops deriving and holds what they picked.
+   */
+  const [scopeChoice, setScopeChoice] = useState<TaskScope | null>(null);
   const [layout, setLayout] = useState<"list" | "board">("list");
 
   const mine = useQuery(
@@ -174,6 +188,21 @@ export function TasksArea() {
     viewScope === "hierarchy" ||
     viewScope === "organisation";
 
+  /**
+   * **My team is where a manager's page opens.**
+   *
+   * Their own queue is the smaller question — a manager wants to see what the
+   * team is carrying, and had to press My team to get there every time. Anyone
+   * without a team has no My team tab to open on, so they still land on My
+   * tasks; the default follows the tabs that exist rather than naming a scope
+   * that would resolve to nothing.
+   *
+   * Derived, never written into state: `hasTeam` is false until the permission
+   * read lands, so writing it would either flash the wrong tab or need an
+   * effect that fights the reader's first click.
+   */
+  const scope: TaskScope = scopeChoice ?? (hasTeam ? "team" : "mine");
+
   const scopeOptions = [
     { id: "mine" as const, label: "My tasks", count: mine.data ?? undefined },
     ...(hasTeam
@@ -237,7 +266,7 @@ export function TasksArea() {
         label="Task scope"
         size="sm"
         value={scope}
-        onChange={setScope}
+        onChange={setScopeChoice}
         /* Scopes appear only where the viewer's `task.view` actually reaches.
            An individual contributor sees "Mine" and "Assigned out"; a manager
            gains "My team"; only organisation scope gains "Everyone". Offering a
@@ -450,6 +479,7 @@ function Approvals() {
         {reviews.map((i) => (
           <InboxRow
             key={i.view.task.id}
+            timing={i.timing}
             view={i.view}
             cta={i.label}
             subtitle={i.subtitle}
@@ -509,11 +539,22 @@ function InboxRow({
   cta,
   subtitle,
   href,
+  timing,
 }: {
   view: TaskView;
   cta: string;
   subtitle: string;
   href?: string;
+  /**
+   * How far ahead of the deadline, or behind it, submitted work arrived.
+   *
+   * Its own chip rather than more words in the subtitle, because late and
+   * early are not the same news and a line of muted grey cannot say which this
+   * is. Null on every row that is not a review, and on a review of a task with
+   * no deadline — nothing is drawn then, rather than a claim that it was on
+   * time.
+   */
+  timing?: SubmissionTiming | null;
 }) {
   const target = href ?? `/tasks/${view.task.id}`;
   return (
@@ -526,6 +567,22 @@ function InboxRow({
           {subtitle}
         </span>
       </Link>
+      {timing && (
+        /* On time is not news, so it is stated plainly. Late and early are, and
+           they take the same two state colours the rest of the product uses for
+           exactly this — never a third hue invented here. */
+        <Chip
+          tone={
+            timing.kind === "late"
+              ? "overdue"
+              : timing.kind === "early"
+                ? "positive"
+                : undefined
+          }
+        >
+          {timing.label}
+        </Chip>
+      )}
       <Button size="sm">
         <Link href={target}>{cta}</Link>
       </Button>

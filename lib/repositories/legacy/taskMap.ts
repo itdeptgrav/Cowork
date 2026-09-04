@@ -752,8 +752,11 @@ export function toTaskView(input: {
      * branch can never fire for one, and leaving this empty meant a submitted
      * output sat in Firestore reaching nobody at all.
      *
-     * The task-level submission is not duplicated here: `latestSubmission`
-     * already carries it and the branch above already finds it.
+     * The task-level submission is not duplicated here — it is a different
+     * record with a different reviewer. Note that `latestSubmission` below is
+     * NOT populated by this mapper, so nothing that reads a mapped view finds
+     * it; `LegacyRepository.listActionable` hydrates it for the tasks whose
+     * review is actually outstanding.
      *
      * The chain is the assigner of record, one deep, because that is this
      * engine's rule — their approval is final (owner decision, 16 Aug 2026).
@@ -983,6 +986,24 @@ export function toTaskView(input: {
     myStoredRank: holds(input.viewerId)
       ? resolveTaskPriority(legacy, input.viewerId)
       : null,
+    /**
+     * **Not read here, and that is a limit rather than a decision.**
+     *
+     * The submission record itself sits on the task document, but the field
+     * that matters — `reviewChain` — is resolved by ROLE (creator, assignee's
+     * manager), which needs directory reads this mapper cannot do: it is
+     * synchronous and pure, and every caller depends on that.
+     *
+     * So it stays null and whoever needs it hydrates it from
+     * `listSubmissions`, which is the path the review screen already reads —
+     * see `LegacyRepository.listActionable`. Deriving a cheaper chain here
+     * would be worse than leaving it absent: two screens would then disagree
+     * about who may decide a submission.
+     *
+     * Still absent for `nextAction`'s review branch, the "attempt N" badge on
+     * the task table, and the dashboard's review signal, all of which read
+     * this field and quietly show nothing on legacy data.
+     */
     latestSubmission: null,
     /*
      * The proposal waiting on the assignor.

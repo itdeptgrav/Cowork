@@ -48,6 +48,7 @@ import {
   scaleMetrics,
 } from "@/lib/spreadsheet/metrics";
 import { getCellStyleId, metricsOf } from "@/lib/spreadsheet/model";
+import { autoWrapHeights } from "./autoWrapHeights";
 import { formatValue } from "@/lib/spreadsheet/format";
 import { columnValues } from "@/lib/spreadsheet/filter";
 import { GridBody } from "./GridBody";
@@ -112,8 +113,40 @@ export function SpreadsheetGrid({
   const { worksheet, selection, editing } = controller;
   /* The geometry hides both manually-hidden rows and rows a filter hides. */
   const zoom = controller.zoom;
+  /**
+   * Rows grown to fit their wrapped text.
+   *
+   * Computed on the UNSCALED metrics and merged before `scaleMetrics`, so zoom
+   * multiplies an auto height exactly as it multiplies a manual one — computing
+   * after the scale would apply the zoom twice to the text and once to the box.
+   *
+   * Only cells carrying a wrap style are looked at, which is what keeps this
+   * off the hot path: `cellStyles` is sparse, so a sheet with no wrapping does
+   * a single `Object.keys` and stops. A row whose height was set BY HAND is
+   * left alone — auto-fit answers "how much room does this need", and somebody
+   * who dragged a row to a size has already answered it.
+   */
+  const autoHeights = useMemo(
+    () => autoWrapHeights(worksheet, controller.effectiveStyle, (r, c) =>
+      controller.engine.display(controller.activeSheetId, r, c).text,
+    ),
+    /* `effectiveStyle` and `engine` are deliberately not dependencies. Neither
+       is memoised in the controller, so both take a new identity on every
+       render — including every scroll frame — and listing them would run a
+       canvas measurement of every wrapped cell sixty times a second while
+       somebody scrolls. Everything that can CHANGE the answer (the styles, the
+       values, the column widths, the defaults) lives on `worksheet`, and the
+       closure re-created with it is the current one. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [worksheet, controller.activeSheetId],
+  );
   const metrics = useMemo(() => {
-    const base = scaleMetrics(metricsOf(worksheet), zoom);
+    const withAuto =
+      Object.keys(autoHeights).length === 0
+        ? worksheet
+        : /* Manual heights win: spread the stored map LAST. */
+          { ...worksheet, rowHeights: { ...autoHeights, ...worksheet.rowHeights } };
+    const base = scaleMetrics(metricsOf(withAuto), zoom);
     /* Three things can hide a row: hiding it by hand, a filter, and a collapsed
        outline band. They all land in one map, so the geometry has a single
        notion of "hidden" rather than three. */
@@ -126,7 +159,7 @@ export function SpreadsheetGrid({
       hiddenRows: { ...base.hiddenRows, ...filtered, ...collapsed },
       hiddenCols: { ...base.hiddenCols, ...collapsedC },
     };
-  }, [worksheet, zoom, controller.filterHiddenRows, controller.collapsedRowsMap, controller.collapsedColsMap]);
+  }, [worksheet, zoom, autoHeights, controller.filterHiddenRows, controller.collapsedRowsMap, controller.collapsedColsMap]);
   const frozenRows = worksheet.frozenRows;
   const frozenCols = worksheet.frozenCols;
   const frozenH = rowY(metrics, frozenRows);

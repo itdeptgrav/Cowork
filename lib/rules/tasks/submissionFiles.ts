@@ -102,3 +102,32 @@ export function readSubmissionAttachments(
   pdfs.forEach((raw, i) => push(raw, "pdf", i));
   return out;
 }
+
+/**
+ * Which attempt the task-level submission is on.
+ *
+ * **Split out of `listSubmissions` so it can be tested**, in the style of
+ * `readTaskChatMessage`: the one line with a decision in it was buried inside
+ * an async method that needs Firestore to reach, which is why it went wrong
+ * quietly and stayed wrong.
+ *
+ * It was hardcoded to `1`, under a note reading "one record, so one attempt;
+ * counting resubmissions would need a history legacy does not keep". The first
+ * half is true — the engine overwrites `completionSubmission` in place, so
+ * there is only ever one document. The second half is false: the history is
+ * kept on the TASK, as `reworkHistory`, which `reworkCount` is already the
+ * length of. So work returned twice and sent back a third time still read as a
+ * first try, on the one screen whose job is judging it.
+ *
+ * The arithmetic is exact rather than a guess. A submission can only be sent
+ * again after it has been RETURNED, so the number of returns is precisely the
+ * number of previous attempts, and the current one is the next after them.
+ *
+ * Per-OUTPUT attempts are not this: the engine numbers those per (task,
+ * output) and stores the number on the submission itself, so they are read
+ * rather than derived.
+ */
+export function submissionAttempt(task: { reworkHistory?: unknown }): number {
+  const history = task?.reworkHistory;
+  return (Array.isArray(history) ? history.length : 0) + 1;
+}

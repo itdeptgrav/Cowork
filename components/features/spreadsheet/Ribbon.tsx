@@ -20,6 +20,7 @@
  */
 
 import { useState } from "react";
+import type { LocalFileBinding } from "./useLocalFileBinding";
 import { FileMenu } from "./FileMenu";
 import { SheetIcon } from "./SheetIcons";
 import { HomeTab } from "./HomeTab";
@@ -56,11 +57,14 @@ function Group({ label, children }: { label: string; children: React.ReactNode }
 export function Ribbon({
   controller,
   persistence,
+  local,
   onNewSheet,
   onSearchOpen,
 }: {
   controller: SpreadsheetController;
   persistence: WorkbookPersistence;
+  /** The file on disk this sheet is bound to, passed through to the File menu. */
+  local?: LocalFileBinding;
   onNewSheet?: () => void;
   /** Opens the find/replace bar the grid renders. */
   onSearchOpen?: (v: "find" | "replace") => void;
@@ -71,11 +75,17 @@ export function Ribbon({
   const frozen = controller.worksheet.frozenRows > 0 || controller.worksheet.frozenCols > 0;
 
   return (
-    <div className="shrink-0 rounded-card border border-hairline bg-[var(--surface-raised)]">
+    /* `select-none`: the ribbon is chrome, and dragging across it was selecting
+       its labels — "Font", "Alignment", "Merge" — as text, which highlighted
+       half the toolbar and left a selection the next Ctrl+C would copy instead
+       of the cells. Nothing here is text anybody needs to take. The grid has
+       carried this for the same reason since it was built; the toolbar was
+       simply missed. */
+    <div className="shrink-0 rounded-card border border-hairline bg-[var(--surface-raised)] select-none">
       {/* The tab strip. File sits apart from the tabs because it opens a menu
           rather than swapping the strip. */}
       <div role="tablist" aria-label="Ribbon" className="flex items-center gap-1 border-b border-hairline px-2 pt-1">
-        <FileMenu controller={controller} persistence={persistence} onNewSheet={onNewSheet} variant="ribbon" />
+        <FileMenu controller={controller} persistence={persistence} local={local} onNewSheet={onNewSheet} variant="ribbon" />
         <span aria-hidden className="mx-1 h-4 w-px bg-[var(--color-hairline)]" />
         {TABS.map((t) => (
           <button

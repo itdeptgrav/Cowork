@@ -242,6 +242,10 @@ import { searchHelp } from "@/lib/help/search";
 import type { HelpCategory } from "@/lib/help/types";
 import { directConversationKey, MESSAGE_PAGE_SIZE } from "@/lib/domain";
 import { actionableFor } from "@/lib/rules/tasks/actionable";
+import {
+  submissionTiming,
+  type SubmissionTiming,
+} from "@/lib/rules/tasks/submissionTiming";
 import { toggleReaction } from "@/lib/rules/messages/reactions";
 import { togglePollVote } from "@/lib/rules/messages/card";
 import { matchesQuery } from "@/lib/rules/messages/globalSearch";
@@ -931,22 +935,16 @@ export class MockRepository implements CoworkRepository {
       list = list.filter((t) => (t.parentTaskId ?? null) === q.parentTaskId);
     if (q.search) {
       const needle = q.search.toLowerCase();
-      /* Task-name/reference search UNCHANGED. Person-name search ADDED on top:
-         resolve the term to the ids of people whose name matches, then a task
-         also matches when it is assigned to any of them — so typing a person's
-         name returns everything they are on. */
-      const peopleMatchIds = new Set(
-        s.employees
-          .filter((e) => e.displayName.toLowerCase().includes(needle))
-          .map((e) => e.id),
-      );
+      /* **The task's own title and reference, and nothing else.**
+         Person-name matching was removed here for the same reason it was
+         removed from the legacy repository: the person PICKER answers "whose
+         work" properly, and a name typed into a task search answered it badly.
+         The two must agree, or the same search returns different rows against
+         the two backends. */
       list = list.filter(
         (t) =>
           t.title.toLowerCase().includes(needle) ||
-          t.reference.toLowerCase().includes(needle) ||
-          s.assignments.some(
-            (a) => a.taskId === t.id && peopleMatchIds.has(a.employeeId),
-          ),
+          t.reference.toLowerCase().includes(needle),
       );
     }
 
@@ -6250,6 +6248,11 @@ export class MockRepository implements CoworkRepository {
       if (!verdict) continue;
 
       let subtitle: string;
+      /* How far ahead of the deadline, or behind it, the work arrived. Set on
+         review rows only — every other kind is a decision not yet made, so
+         there is no submission to time. Kept in step with the legacy
+         repository, or the same inbox reads differently on two backends. */
+      let timing: SubmissionTiming | null = null;
       if (verdict.reason === "review") {
         const sub = s.submissions
           .filter((x) => x.taskId === view.task.id)
@@ -6257,11 +6260,24 @@ export class MockRepository implements CoworkRepository {
         const plan = this.#reviewPlanFor(view.task);
         const stageIndex = sub ? sub.currentStage - 1 : 0;
         const submitter = s.employees.find((e) => e.id === sub?.submittedById);
-        subtitle = `${plan.stages[stageIndex]?.name ?? "Review"} · stage ${
-          stageIndex + 1
-        } of ${sub?.reviewChain.length ?? plan.chain.length}${
-          submitter ? ` · submitted by ${submitter.displayName}` : ""
-        }`;
+        /* **The submitter leads.** A reviewer scanning nine rows needs to know
+           who is waiting on them; the stage is context for the one they open.
+           The legacy repository names the submitter alone, so this keeps that
+           first and adds what it can. */
+        subtitle = [
+          submitter?.displayName,
+          `${plan.stages[stageIndex]?.name ?? "Review"} · stage ${
+            stageIndex + 1
+          } of ${sub?.reviewChain.length ?? plan.chain.length}`,
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        timing = sub
+          ? submissionTiming({
+              submittedAt: sub.submittedAt,
+              dueAt: view.task.deadline.dueAt,
+            })
+          : null;
       } else if (verdict.reason === "approval") {
         const to =
           (view.assignees.length ? view.assignees : view.pendingAssignees)
@@ -6278,6 +6294,7 @@ export class MockRepository implements CoworkRepository {
         label: verdict.label,
         href: verdict.href,
         subtitle,
+        timing,
         approvalKind:
           verdict.reason === "approval"
             ? (view.pendingApprovals.find((a) => a.approverId === meId)?.kind ??
@@ -6337,6 +6354,8 @@ export class MockRepository implements CoworkRepository {
         href: `/tasks/${w.taskId}/reports`,
         subtitle: `${mins}m logged today — no report filed yet`,
         approvalKind: null,
+        /* Nothing has been submitted, so there is nothing to time. */
+        timing: null,
       });
     }
     return out;

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { readSubmissionAttachments, typeOf, nameFromUrl } from "./submissionFiles.ts";
+import {
+  readSubmissionAttachments,
+  submissionAttempt,
+  typeOf,
+  nameFromUrl,
+} from "./submissionFiles.ts";
 
 /**
  * A submitted document has to reach the person deciding whether to accept it.
@@ -88,7 +93,7 @@ test("type survives a query string on the URL", () => {
   assert.equal(nameFromUrl("https://x/dir/b.pdf?t=1", "fallback"), "b.pdf");
 });
 
-/* ── The four surfaces ────────────────────────────────────────────────────── */
+/* ── The five surfaces ────────────────────────────────────────────────────── */
 
 const read = (p: string) => readFileSync(p, "utf8");
 
@@ -168,4 +173,64 @@ test("submitted files are labelled by the access they actually have", () => {
   const src = read("lib/rules/tasks/taskFiles.ts");
   const fn = src.slice(src.indexOf("export function fromSubmissionRecord("));
   assert.match(fn.slice(0, 1400), /access: "link" as const/);
+});
+
+/* ── Which attempt this is ────────────────────────────────────────────────── */
+
+/**
+ * THE REPORTED BUG. Work was submitted, returned, and submitted again — and
+ * the card still read "Attempt 1". `listSubmissions` hardcoded it, under a
+ * note claiming legacy kept no history of resubmissions. It keeps one: the
+ * task's `reworkHistory`, which `reworkCount` on the view is already the
+ * length of.
+ */
+test("a first submission is attempt 1", () => {
+  assert.equal(submissionAttempt({}), 1);
+  assert.equal(submissionAttempt({ reworkHistory: [] }), 1);
+});
+
+test("each return makes the next send a further attempt", () => {
+  /* A submission can only be sent again after it has been RETURNED, so the
+     number of returns is exactly the number of previous attempts. */
+  assert.equal(submissionAttempt({ reworkHistory: [{}] }), 2);
+  assert.equal(submissionAttempt({ reworkHistory: [{}, {}] }), 3);
+});
+
+test("a malformed or absent history reads as a first attempt, never as zero", () => {
+  /* Attempt 0 is not a thing anybody can be on, and a task written before this
+     field existed must not report one. */
+  for (const bad of [undefined, null, "2", 7, {}]) {
+    assert.equal(
+      submissionAttempt({ reworkHistory: bad } as { reworkHistory?: unknown }),
+      1,
+      `reworkHistory ${JSON.stringify(bad)} should fall back to attempt 1`,
+    );
+  }
+});
+
+test("the repository derives the attempt rather than stating one", () => {
+  /* The regression guard: the value was a literal for the life of the feature,
+     and a literal reads as deliberate. */
+  const src = readFileSync("lib/repositories/legacy/index.ts", "utf8");
+  assert.match(src, /attempt: submissionAttempt\(doc\)/);
+  assert.equal(
+    /attempt: 1,/.test(src),
+    false,
+    "a submission attempt is hardcoded again",
+  );
+});
+
+test("the TASK THREAD shows the same two origins as the reviewer", () => {
+  /**
+   * The decision now happens on the submitted-work card in a task chat, so
+   * that card is a fifth surface the work has to reach. It shipped rendering
+   * `submission.attachments` alone — the task record's URLs — which meant
+   * anything uploaded through Cowork's own uploader was invisible to the
+   * person deciding on it: the same fault this file was written about,
+   * reappearing on a new screen because only half of ReviewPanel's answer was
+   * carried across.
+   */
+  const src = read("components/features/tasks/TaskChatSubmission.tsx");
+  assert.match(src, /entityType="submission"\s*\n\s*entityId=\{submission\.id\}/);
+  assert.match(src, /<SubmittedFiles files=\{submission\.attachments\}/);
 });

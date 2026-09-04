@@ -17,6 +17,12 @@ import { formatClock, formatDate } from "@/lib/utils/format";
  * `deductionWaived` is null when no record could be matched (an old line, a
  * number that did not line up): the card still shows the reason and who sent it
  * back, and simply omits the score line rather than guessing at it.
+ *
+ * **It sits on the reviewer's side, not in the middle.** A rework is one person
+ * answering another, so it takes the side their messages take. The engine posts
+ * this line as `system`, so the reviewer is named in the sentence rather than
+ * carried as a sender id — `eventByViewer` is what resolves that name back to a
+ * person, and it answers "not yours" rather than guessing when it cannot.
  */
 export function ReworkEventCard({
   byName,
@@ -26,6 +32,7 @@ export function ReworkEventCard({
   deductionWaived,
   deductionPoints,
   waiverReason,
+  mine = false,
 }: {
   byName: string;
   occurrence: number;
@@ -36,12 +43,21 @@ export function ReworkEventCard({
   /** Points a rework costs when it is not waived. */
   deductionPoints: number;
   waiverReason?: string | null;
+  /** The viewer sent this back. Puts the card on the trailing edge, and the
+   *  accent on the outer edge so it mirrors rather than pointing inward. */
+  mine?: boolean;
 }) {
   return (
-    <div className="my-3 flex justify-center">
+    <div className={`my-3 flex ${mine ? "justify-end" : "justify-start"}`}>
       <div
-        className="w-full max-w-[460px] rounded-panel border-l-2 bg-[var(--surface-raised)] px-4 py-3 shadow-[inset_0_0_0_1px_var(--color-hairline)]"
-        style={{ borderLeftColor: "var(--state-rework-ink)" }}
+        className={`w-full max-w-[460px] rounded-panel bg-[var(--event-card)] px-4 py-3 shadow-[inset_0_0_0_1px_var(--color-hairline)] ${
+          mine ? "border-e-2" : "border-s-2"
+        }`}
+        style={
+          mine
+            ? { borderInlineEndColor: "var(--state-rework-ink)" }
+            : { borderInlineStartColor: "var(--state-rework-ink)" }
+        }
       >
         <div className="flex items-start gap-2.5">
           <span

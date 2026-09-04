@@ -2,7 +2,13 @@ import type { TaskView } from "@/lib/repositories/types";
 import type { Employee } from "@/lib/domain/identity";
 
 /**
- * The "Person-wise" view: one row per person, each carrying their tasks.
+ * One bucket per person, each carrying their tasks.
+ *
+ * Feeds two things: the tasks shown when somebody is chosen in the Tasks
+ * toolbar's person dropdown, and the count beside each name in it. It used to
+ * back a "Person-wise" view — a mode that has since been replaced by the
+ * dropdown itself, which is always present. See `buildPersonFilter`, which
+ * decides WHO that dropdown offers; this decides what each of them is carrying.
  *
  * This is a roll-up of the SAME task list the table already fetched — it moves
  * nothing and refetches nothing. A task shared by two people counts under both,

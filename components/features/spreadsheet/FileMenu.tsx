@@ -24,6 +24,9 @@ import {
 } from "@/lib/spreadsheet/workbookClient";
 import type { SpreadsheetController } from "./useSpreadsheet";
 import type { WorkbookPersistence } from "./useWorkbookPersistence";
+import type { LocalFileBinding } from "./useLocalFileBinding";
+import { pickFileToOpen } from "@/lib/spreadsheet/localFile";
+import { loadFileIntoWorkbook } from "./openSheetFile";
 
 const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
@@ -39,9 +42,6 @@ const quiet = "h-7 rounded-md px-2 text-[12px] text-ink-muted transition-colors 
 
 function safeName(title: string): string {
   return title.replace(/[\\/:*?"<>|]/g, " ").replace(/\s+/g, " ").trim() || "workbook";
-}
-function baseName(filename: string): string {
-  return filename.replace(/\.[^.]+$/, "");
 }
 function download(filename: string, parts: BlobPart[], mime: string): void {
   const url = URL.createObjectURL(new Blob(parts, { type: mime }));
@@ -241,11 +241,14 @@ function ShareDialog({
 export function FileMenu({
   controller,
   persistence,
+  local,
   onNewSheet,
   variant = "bar",
 }: {
   controller: SpreadsheetController;
   persistence: WorkbookPersistence;
+  /** The file on this computer this sheet is bound to, if any. */
+  local?: LocalFileBinding;
   /** `"ribbon"` renders just the File button, with the ribbon supplying the card. */
   variant?: "bar" | "ribbon";
   /** Leave this workbook and start another — the browser owns that. */
@@ -257,6 +260,37 @@ export function FileMenu({
   const [saveAsTitle, setSaveAsTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  /**
+   * Pick a file and keep it in step.
+   *
+   * The read and the bind are one action deliberately: the picker IS the
+   * permission gesture, so binding here needs no second prompt. Split across
+   * two menu items — "open" then "link" — the second one would raise a prompt
+   * with no gesture behind it and be refused.
+   */
+  async function openFromComputer() {
+    if (!local?.supported) return;
+    const handle = await pickFileToOpen();
+    if (!handle) return; /* Cancelled. */
+    try {
+      const file = await handle.getFile();
+      const result = await loadFileIntoWorkbook(controller, file);
+      if (!result.ok) {
+        setStatus(result.message);
+        return;
+      }
+      persistence.rename(result.title);
+      const bound = await local.bind(handle, result.title);
+      setStatus(
+        bound
+          ? `Opened “${file.name}”. Changes save straight back to it.`
+          : `Opened “${file.name}”, but Cowork wasn’t given permission to write to it.`,
+      );
+    } catch {
+      setStatus("That file couldn’t be read.");
+    }
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -290,23 +324,10 @@ export function FileMenu({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    const lower = file.name.toLowerCase();
-    try {
-      if (lower.endsWith(".csv")) {
-        controller.importCsv(baseName(file.name), await file.text());
-        setStatus(`Imported “${file.name}” as a new sheet.`);
-      } else if (lower.endsWith(".json")) {
-        const r = controller.importJson(await file.text());
-        setStatus(r.ok ? `Imported “${file.name}”.` : (r.error ?? "Import failed."));
-      } else if (lower.endsWith(".xlsx") || lower.endsWith(".xlsm")) {
-        const r = await controller.importXlsx(await file.arrayBuffer());
-        setStatus(r.ok ? `Imported “${file.name}”.` : (r.error ?? "Import failed."));
-      } else {
-        setStatus("Unsupported file. Choose a .csv, .json or .xlsx file.");
-      }
-    } catch {
-      setStatus("That file couldn’t be read.");
-    }
+    /* The same path a drop takes — see `loadFileIntoWorkbook`. Import reads
+       the file and forgets it; only "Open from this computer" binds. */
+    const result = await loadFileIntoWorkbook(controller, file);
+    setStatus(result.message);
   }
 
   async function saveAsCopy() {
@@ -361,6 +382,85 @@ export function FileMenu({
             >
               Import…
             </button>
+            {/**
+              * Opening a file on this computer, and keeping it current.
+              *
+              * Distinct from Import, which reads a file once and forgets where
+              * it came from. This binds: the sheet keeps writing back to that
+              * exact file, the way a desktop spreadsheet does. Shown only where
+              * the browser can actually do it — Chrome and Edge — because an
+              * item that silently degrades to Import is worse than no item.
+              */}
+            {local?.supported && (
+              <>
+                <div className="my-1 h-px bg-[var(--color-hairline)]" />
+                <button
+                  type="button"
+                  className={item}
+                  onClick={() => {
+                    setOpen(false);
+                    void openFromComputer();
+                  }}
+                >
+                  Open from this computer…
+                  <span className="text-ink-faint">keeps it in step</span>
+                </button>
+                {local.state === "none" ? (
+                  <button
+                    type="button"
+                    className={item}
+                    onClick={() => {
+                      setOpen(false);
+                      void local
+                        .saveToComputer(`${safeName(persistence.title)}.xlsx`)
+                        .then((ok) => ok && setStatus("Saving to this computer from now on."));
+                    }}
+                  >
+                    Save to this computer…
+                    <span className="text-ink-faint">.xlsx</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className={item}
+                    onClick={choose(() => {
+                      local.unbind({ forget: true });
+                      setStatus("Stopped saving to that file. The file is unchanged.");
+                    })}
+                  >
+                    Stop saving to the file
+                    <span className="max-w-[130px] truncate text-ink-faint">
+                      {local.fileName}
+                    </span>
+                  </button>
+                )}
+              </>
+            )}
+            <div className="my-1 h-px bg-[var(--color-hairline)]" />
+            {/**
+              * Make it permanent — a copy in Cowork.
+              *
+              * A file on one person's computer is not backed up, not shared and
+              * not there from another machine. This copies the sheet into
+              * Cowork, where the rest of the workspace's records live; the file
+              * keeps being written too, so nothing about the local copy
+              * changes. Offered only while the sheet has no record yet — once
+              * it has one, "Save" already writes there and a second button
+              * claiming to make it permanent would be a second name for it.
+              */}
+            {!persistence.workbookId && (
+              <button
+                type="button"
+                className={item}
+                onClick={choose(() => {
+                  persistence.saveNow();
+                  setStatus("Keeping a copy in Cowork…");
+                })}
+              >
+                Keep a copy in Cowork
+                <span className="text-ink-faint">permanent</span>
+              </button>
+            )}
             <div className="my-1 h-px bg-[var(--color-hairline)]" />
             {/* "Saving…", not "Saved." — the write has been ASKED for here, not
                 finished. Announcing the finish on the click was how a save that

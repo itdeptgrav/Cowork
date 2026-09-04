@@ -23,6 +23,14 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
 import { NewChatDialog } from "./NewChatDialog";
 import { GroupSettings } from "./GroupSettings";
 import { ForwardDialog } from "./ForwardDialog";
+import { ChatPanel } from "@/components/features/tasks/ChatPanel";
+import {
+  pairedTaskChats,
+  taskChatLabel,
+  type PairedTaskChat,
+} from "@/lib/rules/messages/taskChats";
+import { TaskChatPicker } from "./TaskChatPicker";
+import { TaskChatBrief } from "./TaskChatBrief";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { CardComposer } from "./CardComposer";
 import { MessageCardView } from "./MessageCardView";
@@ -274,6 +282,29 @@ export function MessagesPage({
     router.push(`/messages/${id}`);
   }
 
+  /**
+   * A message was forwarded somewhere: open that conversation.
+   *
+   * **Half of this fix went missing.** `ForwardDialog` hands back the
+   * destination's ID — its own comment says so, and it calls
+   * `notifyRepositoryChanged()` before doing it — but the only caller was
+   * feeding that id straight into a toast reading "Forwarded to
+   * dm_GR0045_GR0108.", and going nowhere. So the reported defect stood: you
+   * forward a message and are left in the thread you forwarded FROM, with no
+   * way to see whether it landed.
+   *
+   * The same invalidate-then-navigate as `openCreated`, and for the same
+   * reason: `listConversations` carries a 30s `staleTime` whose cache is keyed
+   * without the repository version, so the send that just happened does not
+   * clear it. Without the invalidate the destination opens showing the preview
+   * it had BEFORE the forwarded message arrived.
+   */
+  function openForwarded(id: string) {
+    invalidateQuery("listConversations");
+    conversations.refetch();
+    router.push(`/messages/${id}`);
+  }
+
   return (
     /*
      * No page header.
@@ -369,6 +400,7 @@ export function MessagesPage({
                 jumpTo={jumpToMessageId}
                 onRead={() => conversations.refetch()}
                 onSent={() => conversations.refetch()}
+                onForwarded={openForwarded}
                 /* `?closed=1` carries the intent across the segment change.
                    Without it the wide layout re-defaults straight back into
                    this very thread; on a narrow screen the navigation alone is
@@ -856,6 +888,7 @@ function Thread({
   jumpTo,
   onRead,
   onSent,
+  onForwarded,
   onClose,
 }: {
   conversation: ConversationView;
@@ -872,6 +905,9 @@ function Thread({
   jumpTo?: string | null;
   onRead: () => void;
   onSent: () => void;
+  /** A message was forwarded to this conversation id — open it, so the sender
+   *  sees the copy arrive rather than being left where they forwarded FROM. */
+  onForwarded: (conversationId: string) => void;
   /**
    * Leave the conversation — the last rung of the Escape ladder.
    *
@@ -967,6 +1003,82 @@ function Thread({
   /* Which pinned message the banner shows — clicking the banner jumps to it
      and cycles to the next, the way every chat with multiple pins works. */
   const [pinAt, setPinAt] = useState(0);
+
+  /**
+   * ## The task discussions this conversation carries
+   *
+   * A task is a thing one person handed another, so its thread belongs in the
+   * DM between those two — see `pairedTaskChats`. The pairing is decided from
+   * a task list the viewer can already read; no new repository method, and no
+   * second source of truth about who is on what.
+   *
+   * `scope: "all"` rather than two reads of `mine` and `assigned_out`. It is
+   * the UNFILTERED set of what the role-scoped queries already returned, which
+   * is exactly the superset both directions of the pairing are drawn from —
+   * so one read answers a question that would otherwise cost two.
+   *
+   * Only for a direct message. A group has no assigner/assignee pair, so there
+   * is nothing to pair a task thread TO.
+   */
+  /* Read off the participants rather than the `others` list below, which is
+     declared further down the component — reaching forward to it would be a
+     temporal dead zone, and moving that declaration up to suit this would put
+     it away from everything else that uses it. */
+  const other =
+    c.kind === "direct"
+      ? (c.participants.find((p) => p.id !== viewerId) ?? null)
+      : null;
+  /**
+   * **A TTL, because this thread bumps the repository constantly.**
+   *
+   * `listTasks` is deliberately absent from `METHOD_STALE_DEFAULTS`, so it
+   * carries `staleTime: 0` and re-runs on every version bump — which is the
+   * right default on a task page, and wrong here. Every message sent, received
+   * or marked read in ANY conversation bumps the version, so without this the
+   * cost of sitting in a thread is a full task-list read per message.
+   *
+   * 30s is safe for what this answers. The picker's membership changes only
+   * when work is assigned, reassigned or closed — none of which is something
+   * the person reading a message thread is doing — and the worst case is a
+   * task appearing in the list up to half a minute late.
+   */
+  const tasks = useQuery(
+    (r) => r.listTasks({ scope: "all" }).then((p) => p.items),
+    [],
+    { staleTime: 30_000 },
+  );
+  const taskChats = useMemo(
+    () =>
+      other
+        ? pairedTaskChats({
+            tasks: tasks.data ?? [],
+            viewerId,
+            otherId: other.id,
+          })
+        : [],
+    [tasks.data, viewerId, other],
+  );
+
+  /**
+   * Which of the two conversations is on screen, and which task.
+   *
+   * The task id is held rather than an index: the list re-sorts when a rank
+   * changes, and an index would silently point at a different task after a
+   * reorder — the reader would be typing into a thread they did not choose.
+   */
+  const [pane, setPane] = useState<"normal" | "task">("normal");
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  /* P1 first, so the picker opens on the work that matters most — and falls
+     back to the head of the list whenever the held id is no longer offered
+     (the task closed, the rank moved it, the pairing changed). */
+  const openTask: PairedTaskChat | null =
+    taskChats.find((t) => t.taskId === openTaskId) ?? taskChats[0] ?? null;
+  /* Nothing shared means no tabs at all: a DM with somebody you have never
+     assigned work to looks exactly as it did before this existed, rather than
+     carrying a dead control. Falling back to the normal thread here is what
+     stops the pane going blank if the last shared task closes while open. */
+  const hasTaskChats = taskChats.length > 0;
+  const showingTask = pane === "task" && hasTaskChats && openTask !== null;
 
   /**
    * **Persist the draft on every change, with no debounce.**
@@ -2076,6 +2188,182 @@ function Thread({
         />
       )}
 
+      {/**
+        * The two conversations this pane can hold.
+        *
+        * Rendered only where there is a second one to switch to — a DM with
+        * somebody you have never exchanged work with looks exactly as it did
+        * before this existed, rather than carrying a control that leads
+        * nowhere.
+        *
+        * A tab bar rather than a segmented control: these are two threads, not
+        * two views of one, and the pane below changes entirely.
+        */}
+      {/**
+        * A full-width segmented control, on the design system's own tokens.
+        *
+        * **The Capsule Is The Control Rule** (`.impeccable/surfaces` §Radius):
+        * if a person can click it, it is fully rounded. An earlier pass drew
+        * these as browser tabs with square top corners, which read well on its
+        * own and was the one shape this system does not have.
+        *
+        * So the treatment is the `Segmented` primitive's, to the token: a
+        * `--surface-sunken` track — the brief names that colour "segmented
+        * track" — holding a `3px` gutter, with the selected option raised on
+        * `bg-ink` and the unselected one carrying no fill at all. That is what
+        * makes a track-and-pill legible without a hue: the whole product says
+        * "selected" this way, and per The Four Channels Rule a saturated colour
+        * here would claim to be a score component.
+        *
+        * **Hand-rolled rather than `<Segmented>`, for one structural reason.**
+        * The task picker is a `<select>` and it has to be a SIBLING of the
+        * option's button — a `<select>` nested inside a `<button>` is invalid
+        * HTML and browsers do not open it. `Segmented` takes options as
+        * strings, so expressing this through it would mean teaching a shared
+        * primitive about trailing interactive content for one caller. The
+        * classes below are copied from it deliberately; `segmentedParity`
+        * in the test beside this file is what keeps them honest.
+        */}
+      {hasTaskChats && (
+        <div className="border-b border-hairline px-2.5 py-2 sm:px-4">
+        <div
+          role="radiogroup"
+          aria-label="Conversations with this person"
+          onKeyDown={(e) => {
+            /* The same roving arrow keys the primitive gives its options, so
+               this control is not the one segmented thing in the product that
+               a keyboard cannot move through. */
+            if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+            e.preventDefault();
+            setPane(showingTask ? "normal" : "task");
+          }}
+          className="flex w-full gap-0.5 rounded-full bg-[var(--surface-sunken)] p-[3px]"
+        >
+          {/* Wrapped in a div it does not strictly need, so that the two
+              segments are STRUCTURALLY identical.
+
+              They are both `flex-1 basis-0 min-w-0` and should therefore split
+              the track evenly whatever they contain — and they did not: a bare
+              `<button>` beside a `<div>` wrapper measured 268 / 244, a 24px
+              lean, because the two resolve their flex base size differently.
+              Making both a wrapper holding a button measures 256 / 256. The
+              chevron was never the cause; it lives inside the second wrapper
+              and takes its room from that segment's own label. */}
+          <div
+            className={`relative flex min-w-0 flex-1 items-center rounded-full transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
+              !showingTask
+                ? "bg-ink text-[var(--body-bg)]"
+                : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={!showingTask}
+              tabIndex={!showingTask ? 0 : -1}
+              onClick={() => setPane("normal")}
+              className="min-w-0 flex-1 truncate rounded-full px-3 py-1.5 text-sm font-medium tracking-[-0.012em]"
+            >
+              Normal chat
+            </button>
+          </div>
+
+          {/* The tab and its task picker are ONE control: choosing a task is
+              choosing which task chat to be in, so a separate dropdown beside
+              the tab would be two controls for one decision. Selecting from it
+              switches to this tab, which is what somebody means by picking a
+              task while reading the normal thread. */}
+          <div
+            className={`relative flex min-w-0 flex-1 items-center rounded-full transition-[color,background-color] duration-[180ms] ease-[var(--ease-deck)] ${
+              showingTask
+                ? "bg-ink text-[var(--body-bg)]"
+                : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            <button
+              type="button"
+              role="radio"
+              aria-checked={showingTask}
+              tabIndex={showingTask ? 0 : -1}
+              onClick={() => setPane("task")}
+              /**
+               * **The task's own name, not the word "Task chat".**
+               *
+               * The segment used to say what KIND of thread it was, which the
+               * reader learns once and then never needs again — and the thing
+               * they do need, which task, was spent on a row underneath. So the
+               * rank and the subject take the label: `P1 · Redesign the deck`.
+               * `taskChatLabel` builds it, the same function the picker uses, so
+               * the tab and the menu row for one task can never read differently.
+               *
+               * The accessible name keeps "Task chat" in front, because out of
+               * context "P1 · Redesign the deck" does not say it is a
+               * conversation, and this is a radio in a pair.
+               */
+              aria-label={
+                openTask
+                  ? `Task chat — ${taskChatLabel(openTask)}`
+                  : "Task chat"
+              }
+              className={`min-w-0 flex-1 truncate rounded-full py-1.5 text-sm font-medium tracking-[-0.012em] ${
+                taskChats.length > 1 ? "ps-3 pe-1" : "px-3"
+              }`}
+            >
+              {openTask ? taskChatLabel(openTask) : "Task chat"}
+            </button>
+
+            {/**
+              * A SPLIT control, and the split is load-bearing: the picker owns
+              * the chevron alone, never the label, so clicking the segment
+              * still switches to it while the chevron opens the list.
+              *
+              * Absent entirely on a single shared task — a menu whose only
+              * option is what is already open is a control with nothing to
+              * decide, and the label takes its padding back.
+              */}
+            {taskChats.length > 1 && (
+              <TaskChatPicker
+                chats={taskChats}
+                openTaskId={openTask?.taskId ?? null}
+                onPick={(id) => {
+                  setOpenTaskId(id);
+                  setPane("task");
+                }}
+              />
+            )}
+          </div>
+
+        </div>
+
+          {/* What the task actually asks for.
+
+              This row used to repeat the rank and the title, which the segment
+              above now carries itself — so it holds the thing that was missing
+              instead: the brief and the deliverables, behind a disclosure.
+              Only while the task pane is open, because it describes that task
+              and would be noise over the direct conversation. */}
+          {showingTask && openTask && <TaskChatBrief chat={openTask} />}
+        </div>
+      )}
+
+      {/**
+        * The task discussion, in place of the direct one.
+        *
+        * `key` on the task id so switching tasks remounts rather than
+        * reconciling: the panel holds a draft, a reply quote and a staged
+        * upload batch per task, and carrying any of those across a switch
+        * would put one task's half-written message in another task's composer.
+        */}
+      {showingTask && openTask ? (
+        <ChatPanel
+          key={openTask.taskId}
+          taskId={openTask.taskId}
+          status={openTask.status}
+          embedded
+        />
+      ) : (
+        <>
+
       {/* In-conversation search. It reads what is LOADED — the live page plus
           fetched history — and says so: "Search earlier" pulls another page in
           rather than the bar pretending to have read the whole archive. */}
@@ -2507,20 +2795,11 @@ function Thread({
             canPickFiles={canUpload}
             disabled={uploading || state.isPending || editing}
           />
-          <button
-            type="button"
-            onClick={() => fileRef.current?.click()}
-            disabled={!canUpload || uploading || state.isPending || editing}
-            aria-label="Attach a file"
-            title={
-              canUpload
-                ? "Attach a file — any type, any size"
-                : "Attachments are not available here"
-            }
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
-          >
-            <Icon.attach className="h-4 w-4" />
-          </button>
+          {/* **The separate paperclip is gone.** It opened the file picker,
+              which is the first row of the menu beside it — two buttons a pixel
+              apart, one a shortcut into the other, and no rule to tell them
+              apart because there was not one. `CardComposer` now wears the
+              paperclip itself and is the single way in. */}
           {/* Record a voice note — staged through the SAME upload path a picked
               file takes, so it sends and plays like any audio attachment. */}
           {canUpload && (
@@ -2602,6 +2881,8 @@ function Thread({
           </button>
         </div>
       </div>
+        </>
+      )}
 
       {/* The right-click menu, the forward destination picker, and the one line
           of feedback for actions that leave the thread looking unchanged. All
@@ -2632,7 +2913,7 @@ function Thread({
           message={forwarding}
           fromConversationId={c.id}
           onClose={() => setForwarding(null)}
-          onForwarded={(where) => setMessageNotice(`Forwarded to ${where}.`)}
+          onForwarded={onForwarded}
         />
       )}
 

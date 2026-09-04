@@ -121,6 +121,23 @@
   --control-hover: rgba(10, 10, 10, 0.1);
   --control-active: rgba(10, 10, 10, 0.14);
 
+  /**
+   * The submission and rework cards in a task thread.
+   *
+   * Its own token rather than `--surface-raised`, which is what these used and
+   * what made them the brightest thing in the thread: a raised film lifts a
+   * card ABOVE the conversation, and these two are the conversation — they sit
+   * on a side, beside the messages, and reading down a task they were louder
+   * than the work being discussed.
+   *
+   * Dark is a flat, slightly cool near-black rather than a translucent film.
+   * Owner-specified, so it is stated once here as the value it is: a film
+   * would land wherever whatever is behind it happened to put it, which is not
+   * a colour anybody can ask for. Light keeps the recessed step the rest of
+   * the system uses, since the ask was to darken against a dark thread.
+   */
+  --event-card: rgba(10, 10, 10, 0.04);
+
   --c1: #00b26b;
   --c2: #c3d02e;
   --c3: #c22a9e;
@@ -290,6 +307,9 @@
   --control: rgba(255, 255, 255, 0.08);
   --control-hover: rgba(255, 255, 255, 0.13);
   --control-active: rgba(255, 255, 255, 0.18);
+  /* See `--event-card` at `:root`. Solid, not a film — this is the colour the
+     owner named, and it has to land there whatever sits behind it. */
+  --event-card: #1a1b21;
 
   --c1: #10c47c;
   --c2: #cfdc3c;
@@ -1409,6 +1429,7 @@
   --hairline: rgba(10, 10, 10, 0.14);
   --surface-raised: #ffffff;
   --surface-sunken: rgba(10, 10, 10, 0.04);
+  --event-card: rgba(10, 10, 10, 0.04);
   --control: rgba(10, 10, 10, 0.06);
   --control-hover: rgba(10, 10, 10, 0.1);
   --control-active: rgba(10, 10, 10, 0.14);
@@ -1462,6 +1483,7 @@
   --hairline: rgba(10, 10, 10, 0.14);
   --surface-raised: #ffffff;
   --surface-sunken: rgba(10, 10, 10, 0.04);
+  --event-card: rgba(10, 10, 10, 0.04);
   --control: rgba(10, 10, 10, 0.06);
   --control-hover: rgba(10, 10, 10, 0.1);
   --control-active: rgba(10, 10, 10, 0.14);

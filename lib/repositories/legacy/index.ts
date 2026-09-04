@@ -89,6 +89,7 @@ import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepositor
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
+import { submissionTiming } from "../../rules/tasks/submissionTiming.ts";
 import { validateProposedDeadline } from "../../rules/tasks/preAssignDeadline.ts";
 import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
@@ -185,7 +186,10 @@ import {
   resolveTaskPriority,
 } from "../../rules/tasks/resolveTaskPriority.ts";
 import { resolveTimeBudget } from "../../rules/tasks/resolveTimeBudget.ts";
-import { readSubmissionAttachments } from "../../rules/tasks/submissionFiles.ts";
+import {
+  readSubmissionAttachments,
+  submissionAttempt,
+} from "../../rules/tasks/submissionFiles.ts";
 import { extensionFromAddition } from "../../rules/tasks/deadlineExtension.ts";
 import type { RoleArchetype } from "../../domain/identity.ts";
 import type {
@@ -1831,17 +1835,16 @@ export class LegacyRepository {
     if (q.overdueOnly) views = views.filter((v) => v.isOverdue);
     if (q.search) {
       const needle = q.search.toLowerCase();
-      /* Task-name search UNCHANGED — a title substring still matches exactly as
-         before. Person-name search is ADDED on top: type a person's name and
-         every task they are on comes back too. "On" means the people the task
-         is for — its accepted assignees and anyone still held behind a
-         cross-department gate — the same set the People column shows. */
-      views = views.filter((v) => {
-        if (v.task.title.toLowerCase().includes(needle)) return true;
-        return [...v.assignees, ...v.pendingAssignees].some((p) =>
-          p.displayName.toLowerCase().includes(needle),
-        );
-      });
+      /* **A title substring, and nothing else.**
+         It also matched a person's name for a while, which put two ways of
+         asking "whose work" on one toolbar. The typed one was the worse of the
+         two: it answered with a flat list rather than that person's queue, it
+         matched anybody whose name merely contained the letters, and it could
+         not say that somebody had nothing. The person PICKER answers that
+         question — see `buildPersonFilter` — so this is a task search again. */
+      views = views.filter((v) =>
+        v.task.title.toLowerCase().includes(needle),
+      );
     }
 
     /* **Surface the extension decisions the viewer owns.**
@@ -8086,10 +8089,10 @@ export class LegacyRepository {
       {
         id: compositeId(id, "submission"),
         taskId: id as TaskId,
-        /* One record, so one attempt. Counting resubmissions would need a
-           history legacy does not keep. */
         outputId: null,
-      attempt: 1,
+        /* Derived from `reworkHistory`, not hardcoded to 1 — see
+           `submissionAttempt`, which owns the reasoning and is tested. */
+        attempt: submissionAttempt(doc),
         submittedById: (typeof sub.submittedBy === "string" ? sub.submittedBy : "") as EmployeeId,
         submittedAt: submittedAtMs ? new Date(submittedAtMs).toISOString() : "",
         message: typeof sub.message === "string" ? sub.message : "",
@@ -8445,9 +8448,22 @@ export class LegacyRepository {
     const viewerId = String(this.#ctx.employeeId);
     const page = await this.listTasks({ scope: "all", limit: 200 });
     const out: ActionableItem[] = [];
-    for (const view of page.items) {
+    for (const raw of page.items) {
+      const view = await this.#withLatestSubmission(raw);
       const verdict = actionableFor(view, viewerId);
       if (!verdict) continue;
+      /**
+       * **On a review row the other party is the SUBMITTER, not the owner.**
+       *
+       * `view.owner` is whoever created the task — which on almost every task
+       * awaiting review is the reviewer themselves. So a queue of nine
+       * submissions listed the reader's own name nine times, and the one fact
+       * they needed to triage it — who is waiting on me — was nowhere.
+       */
+      const submission = this.#reviewSubject(view, viewerId);
+      const submitter = submission
+        ? this.#personOn(view, submission.submittedById)
+        : null;
       out.push({
         view,
         reason: verdict.reason,
@@ -8456,14 +8472,99 @@ export class LegacyRepository {
         /* The second line names the other party, which is the fact a reader
            needs to act. Empty rather than invented when the task has no
            counterpart resolved. */
-        subtitle: view.owner?.displayName ?? "",
+        subtitle:
+          verdict.reason === "review"
+            ? (submitter ?? view.owner?.displayName ?? "")
+            : (view.owner?.displayName ?? ""),
         approvalKind:
           view.pendingApprovals.find((a) => a.approverId === viewerId)?.kind ??
           null,
+        timing:
+          verdict.reason === "review" && submission
+            ? submissionTiming({
+                submittedAt: submission.submittedAt,
+                dueAt: view.task.deadline.dueAt,
+              })
+            : null,
       });
     }
     out.push(...(await this.#dailyReportActionable(viewerId, out)));
     return out;
+  }
+
+  /**
+   * Which submission a review row is actually about.
+   *
+   * The task-level one where there is one, otherwise the open OUTPUT
+   * submission this viewer may decide — the two are separate branches in
+   * `actionableFor` and a row can come from either. Preferring the task-level
+   * one matches the order those branches run in, so the name and the timing on
+   * a row always describe the submission whose button it carries.
+   */
+  #reviewSubject(view: TaskView, viewerId: string): TaskSubmission | null {
+    if (view.latestSubmission) return view.latestSubmission;
+    return (
+      (view.openSubmissions ?? []).find(
+        (s) => s.outputId !== null && s.submittedById !== viewerId,
+      ) ?? null
+    );
+  }
+
+  /**
+   * A name for somebody already resolved on this view.
+   *
+   * Deliberately no directory read: the submitter is an assignee of the task
+   * in every case that reaches here, so the people are already in hand. A
+   * lookup per inbox row would be a request each to print a name the page
+   * already had, and a miss returns null so the caller can fall back rather
+   * than print an id at somebody.
+   */
+  #personOn(view: TaskView, id: string): string | null {
+    const people = [
+      ...view.assignees,
+      ...view.pendingAssignees,
+      ...(view.owner ? [view.owner] : []),
+      ...(view.assigner ? [view.assigner] : []),
+    ];
+    return people.find((p) => p.id === id)?.displayName ?? null;
+  }
+
+  /**
+   * The task-level submission, for a task that is awaiting a decision.
+   *
+   * **This is the whole of "submitted work never reached its reviewer's
+   * inbox".** `toTaskView` sets `latestSubmission: null` on every task it maps
+   * — a list read has no submission on it — so `actionableFor`'s review branch,
+   * which is gated on that field, could never fire on production data. Somebody
+   * submitted, the task moved to `in_review`, and Actionable stayed silent. The
+   * per-OUTPUT branch was unaffected, because `openSubmissions` IS mapped, and
+   * that is why the gap read as "only some reviews appear" rather than as a
+   * dead feature.
+   *
+   * Hydrated HERE rather than in the mapper for one reason: the review chain.
+   * It is resolved by role — creator, assignee's manager — which needs
+   * directory reads that a synchronous, pure mapper cannot do. Deriving a
+   * cheaper chain here would be worse than the bug: the inbox would offer a
+   * review the review screen then refused, or hide one it would have allowed.
+   * `listSubmissions` is the same path the review screen reads, so the two
+   * cannot disagree about who may decide.
+   *
+   * Only for a task actually `in_review`, so the cost is one read per task
+   * awaiting a decision rather than per task in the list. Best-effort: a
+   * submission that cannot be read leaves the task as it was, which loses a
+   * row rather than the whole inbox.
+   */
+  async #withLatestSubmission(view: TaskView): Promise<TaskView> {
+    if (view.task.status !== "in_review" || view.latestSubmission) return view;
+    try {
+      const subs = await this.listSubmissions(view.task.id);
+      /* The task-level one. An output submission is a different record with a
+         different reviewer, and `openSubmissions` already carries those. */
+      const latest = subs.find((s) => s.outputId === null) ?? null;
+      return latest ? { ...view, latestSubmission: latest } : view;
+    } catch {
+      return view;
+    }
   }
 
   /**
@@ -8524,6 +8625,8 @@ export class LegacyRepository {
           href: `/tasks/${w.taskId}/reports`,
           subtitle: `${mins}m logged today — no report filed yet`,
           approvalKind: null,
+          /* Nothing has been submitted, so there is nothing to time. */
+          timing: null,
         });
       }
       return out;
