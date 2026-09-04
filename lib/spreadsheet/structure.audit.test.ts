@@ -242,27 +242,30 @@ test("AUDIT: resize/hide/freeze API edges — default drops override, clamps app
 
 /* ── The documented reference-tracking gaps ───────────────────────────────── */
 
-test("AUDIT: merges are NOT shifted by structural edits (documented divergence)", () => {
-  /* merge.ts: "Merges are NOT rewritten by row/column insert or delete — that
-     reference tracking is out of this phase's scope". Excel would move the
-     merge with its rows. Asserted as documented so a change is visible. */
-  const ws = applyMerge(sheet({ A3: "m" }), rect(2, 0, 3, 1), "all");
-  const next = deleteRows(ws, 0, 1);
-  assert.deepEqual(next.merges, [rect(2, 0, 3, 1)],
-    "the merge rectangle stays put while its content moved up");
-  assert.equal(getCellValue(next, 1, 0), "m", "the anchored value DID move");
+test("merges move with the rows they cover through a structural edit", () => {
+  /* Once a documented divergence: the merge stayed put while its content moved.
+     Now the rectangle follows the cells, and a merge cut down to one cell goes. */
+  const ws = { ...createWorksheet("s", "S"), merges: [{ top: 2, left: 0, bottom: 3, right: 1 }] };
+  const up = deleteRows(ws, 0, 1);
+  assert.deepEqual(up.merges, [{ top: 1, left: 0, bottom: 2, right: 1 }], "the merge rectangle moves up with its content");
+  const down = insertRows(ws, 0, 2);
+  assert.deepEqual(down.merges, [{ top: 4, left: 0, bottom: 5, right: 1 }]);
+  const gone = deleteRows(ws, 2, 2);
+  assert.equal(gone.merges, undefined, "a merge whose rows are all deleted is gone");
 });
 
-test("AUDIT: links and comments stay keyed to their old refs (documented divergence)", () => {
-  /* structure.ts shiftCells doc: merges, validations, conditional formats,
-     comments and links are not reference-tracked, "exactly as they are not
-     through structuralOp". */
-  let ws = sheet({ A1: "site" });
-  ws = { ...ws, links: { A1: "https://example.test" } };
-  const next = insertRows(ws, 0, 1);
-  assert.equal(getCellValue(next, 1, 0), "site", "the value moved to A2");
-  assert.deepEqual(next.links, { A1: "https://example.test" },
-    "the link is still keyed at A1 — a caller must re-key it for now");
+test("links, comments and notes are re-keyed to where their cells moved", () => {
+  const ws = {
+    ...createWorksheet("s", "S"),
+    links: { A1: "https://example.test" },
+    notes: { B3: "check this" },
+  };
+  const down = insertRows(ws, 0, 1);
+  assert.deepEqual(down.links, { A2: "https://example.test" }, "the link follows the cell down a row");
+  assert.deepEqual(down.notes, { B4: "check this" });
+  const gone = deleteRows(ws, 0, 1);
+  assert.equal(gone.links, undefined, "a deleted cell's link is gone");
+  assert.deepEqual(gone.notes, { B2: "check this" });
 });
 
 /* ── Cell-block shifts (Insert ▸ Cells) ───────────────────────────────────── */

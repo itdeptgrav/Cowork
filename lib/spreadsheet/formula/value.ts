@@ -42,7 +42,27 @@ export class ArrayValue {
   }
 }
 
-export type ScalarValue = number | string | boolean | FormulaError | Blank | ArrayValue;
+/**
+ * A picture in a cell — what SPARKLINE and IMAGE return. The grid draws it;
+ * every other reader sees an empty cell: it has no number, and its text is "".
+ */
+export type RichPayload =
+  | { type: "sparkline"; chart: "line" | "bar" | "column" | "winloss"; values: number[]; color?: string; min?: number; max?: number }
+  | { type: "image"; url: string; mode: 1 | 2 | 3 };
+
+export class RichValue {
+  readonly kind = "rich" as const;
+  readonly rich: RichPayload;
+  constructor(rich: RichPayload) {
+    this.rich = rich;
+  }
+}
+
+export function isRich(value: unknown): value is RichValue {
+  return value instanceof RichValue;
+}
+
+export type ScalarValue = number | string | boolean | FormulaError | Blank | ArrayValue | RichValue;
 
 export function isBlank(value: ScalarValue): value is Blank {
   return value instanceof Blank;
@@ -61,6 +81,7 @@ const NUMERIC = /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
     top-left element. */
 export function toNumber(value: ScalarValue): number | FormulaError {
   if (isError(value)) return value;
+  if (isRich(value)) return VALUE;
   if (isArray(value)) return toNumber(value.first);
   if (typeof value === "number") return value;
   if (typeof value === "boolean") return value ? 1 : 0;
@@ -72,6 +93,7 @@ export function toNumber(value: ScalarValue): number | FormulaError {
 /** Coerce to text. Errors pass through; an array uses its top-left element. */
 export function toText(value: ScalarValue): string | FormulaError {
   if (isError(value)) return value;
+  if (isRich(value)) return "";
   if (isArray(value)) return toText(value.first);
   if (typeof value === "string") return value;
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
@@ -82,6 +104,7 @@ export function toText(value: ScalarValue): string | FormulaError {
 /** Coerce to a boolean, or #VALUE! for text that is not TRUE/FALSE. */
 export function toBoolean(value: ScalarValue): boolean | FormulaError {
   if (isError(value)) return value;
+  if (isRich(value)) return VALUE;
   if (isArray(value)) return toBoolean(value.first);
   if (typeof value === "boolean") return value;
   if (typeof value === "number") return value !== 0;

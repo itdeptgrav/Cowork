@@ -9,6 +9,7 @@
  * tested; this is only the form that builds one.
  */
 
+import { COLOR_SCALE_PRESETS, DATA_BAR_COLORS } from "@/lib/spreadsheet/conditionalVisual";
 import { useState } from "react";
 import type { CompareOp, TextMatch, ValidationRule } from "@/lib/spreadsheet/validation";
 import type { CondCondition } from "@/lib/spreadsheet/conditional";
@@ -157,48 +158,81 @@ export function ConditionalFormatForm({
   const [text, setText] = useState("");
   const [formula, setFormula] = useState("=A1>0");
   const [bg, setBg] = useState("#fde68a");
+  const [scale, setScale] = useState(0);
+  const [bar, setBar] = useState(0);
 
   function apply() {
     let condition: CondCondition;
+    const num = () => Number(a);
+    const numOrText = () => (/^-?\d/.test(a.trim()) ? Number(a) : a);
     switch (type) {
       case "greaterThan":
-        condition = { type, value: Number(a) };
-        break;
       case "lessThan":
-        condition = { type, value: Number(a) };
+      case "greaterOrEqual":
+      case "lessOrEqual":
+        condition = { type, value: num() };
         break;
       case "equalTo":
-        condition = { type, value: /^-?\d/.test(a.trim()) ? Number(a) : a };
+      case "notEqualTo":
+        condition = { type, value: numOrText() };
         break;
       case "between":
         condition = { type, a: Number(a), b: Number(b) };
         break;
       case "textContains":
+      case "textStartsWith":
+      case "textEndsWith":
         condition = { type, value: text };
         break;
       case "duplicateValues":
+      case "isEmpty":
+      case "isNotEmpty":
         condition = { type };
         break;
       case "customFormula":
         condition = { type, formula };
         break;
+      case "colorScale": {
+        const preset = COLOR_SCALE_PRESETS[scale] ?? COLOR_SCALE_PRESETS[0];
+        condition = { type, min: preset.min, max: preset.max, ...(preset.mid ? { mid: preset.mid } : {}) };
+        break;
+      }
+      case "dataBar":
+        condition = { type, color: (DATA_BAR_COLORS[bar] ?? DATA_BAR_COLORS[0]).color };
+        break;
     }
-    const styleId = controller.styleRegistry.intern({ background: bg });
+    const visual = type === "colorScale" || type === "dataBar";
+    const styleId = visual ? 0 : controller.styleRegistry.intern({ background: bg });
     controller.addConditionalFormat(condition, styleId);
     onDone();
   }
 
-  const needsNumber = type === "greaterThan" || type === "lessThan" || type === "between" || type === "equalTo";
+  const needsNumber = ["greaterThan", "lessThan", "greaterOrEqual", "lessOrEqual", "between", "equalTo", "notEqualTo"].includes(type);
+  const needsText = type === "textContains" || type === "textStartsWith" || type === "textEndsWith";
+  const visual = type === "colorScale" || type === "dataBar";
   return (
     <>
       <select className={field} value={type} onChange={(e) => setType(e.target.value as CondCondition["type"])}>
-        <option value="greaterThan">Greater than</option>
-        <option value="lessThan">Less than</option>
-        <option value="equalTo">Equal to</option>
-        <option value="between">Between</option>
-        <option value="textContains">Text contains</option>
-        <option value="duplicateValues">Duplicate values</option>
-        <option value="customFormula">Custom formula</option>
+        <optgroup label="Single colour">
+          <option value="greaterThan">Greater than</option>
+          <option value="greaterOrEqual">Greater than or equal to</option>
+          <option value="lessThan">Less than</option>
+          <option value="lessOrEqual">Less than or equal to</option>
+          <option value="equalTo">Equal to</option>
+          <option value="notEqualTo">Not equal to</option>
+          <option value="between">Between</option>
+          <option value="textContains">Text contains</option>
+          <option value="textStartsWith">Text starts with</option>
+          <option value="textEndsWith">Text ends with</option>
+          <option value="isEmpty">Is empty</option>
+          <option value="isNotEmpty">Is not empty</option>
+          <option value="duplicateValues">Duplicate values</option>
+          <option value="customFormula">Custom formula</option>
+        </optgroup>
+        <optgroup label="From the numbers">
+          <option value="colorScale">Colour scale</option>
+          <option value="dataBar">Data bars</option>
+        </optgroup>
       </select>
       {needsNumber && (
         <div className="flex items-center gap-1">
@@ -206,21 +240,59 @@ export function ConditionalFormatForm({
           {type === "between" && <input className={`${field} w-20`} value={b} onChange={(e) => setB(e.target.value)} />}
         </div>
       )}
-      {type === "textContains" && (
+      {needsText && (
         <input className={field} value={text} onChange={(e) => setText(e.target.value)} placeholder="text" />
       )}
       {type === "customFormula" && (
         <input className={field} value={formula} onChange={(e) => setFormula(e.target.value)} placeholder="=A1>0" />
       )}
-      <label className="flex items-center gap-2 text-[12px] text-ink-muted">
-        Fill
-        <input
-          type="color"
-          value={bg}
-          onChange={(e) => setBg(e.target.value)}
-          className="h-6 w-8 cursor-pointer rounded border border-hairline bg-transparent"
-        />
-      </label>
+      {type === "colorScale" && (
+        <div className="flex flex-col gap-1">
+          {COLOR_SCALE_PRESETS.map((p, i) => (
+            <button
+              key={p.label}
+              type="button"
+              aria-pressed={i === scale}
+              onClick={() => setScale(i)}
+              className={`flex items-center gap-2 rounded-inset px-1.5 py-1 text-left text-[12px] ${i === scale ? "bg-[var(--control-active)] text-ink" : "text-ink-muted hover:bg-[var(--control)]"}`}
+            >
+              <span
+                aria-hidden
+                className="h-3 w-12 rounded-[2px] border border-hairline"
+                style={{ background: `linear-gradient(90deg, ${p.min}, ${p.mid ? `${p.mid}, ` : ""}${p.max})` }}
+              />
+              {p.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {type === "dataBar" && (
+        <div className="flex items-center gap-1">
+          {DATA_BAR_COLORS.map((c, i) => (
+            <button
+              key={c.label}
+              type="button"
+              title={c.label}
+              aria-label={`${c.label} bars`}
+              aria-pressed={i === bar}
+              onClick={() => setBar(i)}
+              className={`h-6 w-6 rounded-[3px] border ${i === bar ? "border-ink ring-1 ring-ink" : "border-hairline"}`}
+              style={{ background: `${c.color}99` }}
+            />
+          ))}
+        </div>
+      )}
+      {!visual && (
+        <label className="flex items-center gap-2 text-[12px] text-ink-muted">
+          Fill
+          <input
+            type="color"
+            value={bg}
+            onChange={(e) => setBg(e.target.value)}
+            className="h-6 w-8 cursor-pointer rounded border border-hairline bg-transparent"
+          />
+        </label>
+      )}
       <div className="flex items-center justify-between">
         <button
           type="button"

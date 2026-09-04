@@ -1,15 +1,17 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
-  ControlBar,
   RoomAudioRenderer,
   useLocalParticipant,
 } from "@livekit/components-react";
 import { BREAKPOINT, useMediaQuery } from "@/lib/hooks/useMediaQuery";
 import { BackupRecorder } from "./BackupRecorder";
 import { DeviceIntentSync } from "./DeviceIntentSync";
+import { MeetingControlBar } from "./MeetingControlBar";
+import { RoomOverlays, RoomSidePanel, useRoomExtras } from "./RoomExtras";
+import { RoomSignalsProvider } from "./RoomSignals";
 import { RoomStage } from "./RoomStage";
 
 /**
@@ -48,6 +50,7 @@ export function RoomInterior({
   onMuteChange,
   aside,
   footer,
+  captions,
 }: {
   /**
    * What the recording is filed under.
@@ -75,38 +78,121 @@ export function RoomInterior({
   aside?: ReactNode;
   /** Anything below the control bar, such as an error line. */
   footer?: ReactNode;
+  /**
+   * The CC button, for a room that HAS captions to show.
+   *
+   * Only the scheduled room passes this — it owns the transcript panel that
+   * `aside` renders, so it owns the state that opens it. A task room and a
+   * guest room have no transcript, and a CC button there would be a control
+   * that does nothing.
+   */
+  captions?: { on: boolean; toggle: () => void };
 }) {
   /* Whether the control bar has room for words beside its icons. */
   const wideEnoughForLabels = useMediaQuery(BREAKPOINT.sm);
+
+  return (
+    <RoomSignalsProvider>
+      <RoomInteriorBody
+        meetId={meetId}
+        isHost={isHost}
+        recordingActive={recordingActive}
+        compact={compact}
+        wideEnoughForLabels={wideEnoughForLabels}
+        onDeviceIntent={onDeviceIntent}
+        onMuteChange={onMuteChange}
+        aside={aside}
+        footer={footer}
+        captions={captions}
+      />
+    </RoomSignalsProvider>
+  );
+}
+
+/**
+ * Split from `RoomInterior` only so the body can USE the signals context that
+ * `RoomInterior` provides — a component cannot consume a provider it renders.
+ */
+function RoomInteriorBody({
+  meetId,
+  isHost,
+  recordingActive,
+  compact,
+  wideEnoughForLabels,
+  onDeviceIntent,
+  onMuteChange,
+  aside,
+  footer,
+  captions,
+}: {
+  meetId: string;
+  isHost: boolean;
+  recordingActive: boolean;
+  compact: boolean;
+  wideEnoughForLabels: boolean;
+  onDeviceIntent: (state: { mic: boolean; cam: boolean }) => void;
+  onMuteChange: (muted: boolean) => void;
+  aside?: ReactNode;
+  footer?: ReactNode;
+  captions?: { on: boolean; toggle: () => void };
+}) {
+  /**
+   * Which side panel is open, and why only one at a time.
+   *
+   * The floating window is 340px wide and a phone is not much more. Two panels
+   * would leave the stage — the meeting itself — with nothing. One panel, and
+   * the button that opened it closes it.
+   */
+  const { panel, setPanel, unreadChat } = useRoomExtras();
+
+  /**
+   * Whether this browser can route audio to a chosen speaker at all.
+   *
+   * Chromium implements `setSinkId`; Safari does not, and Firefox needs a flag.
+   * Offering the menu where it cannot work produces a control that changes a
+   * dropdown and nothing else, which is worse than not offering it.
+   */
+  const canSelectSpeaker =
+    typeof window !== "undefined" &&
+    typeof HTMLMediaElement !== "undefined" &&
+    "setSinkId" in HTMLMediaElement.prototype;
 
   return (
     <>
       <MuteBridge onMuteChange={onMuteChange} />
 
       <div className="flex min-h-0 flex-1 flex-col">
-        <RoomStage />
+        {/* `relative` so the banner, the reaction overlay and the shortcut
+            toast position against the stage rather than the page. */}
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <RoomStage />
+          <RoomOverlays />
+        </div>
 
-        {/* LiveKit's own control bar: camera, microphone, screen share and
-            leave, with the device pickers behind each.
-
-            **It is the same bar when floating**, only narrower — `minimal`
-            drops the text labels and the device chevrons, which do not fit in
-            a 340px window, and keeps microphone, camera, screen share and
-            leave. Building a second set of buttons here would be a second
-            implementation of muting, and the two would disagree the first time
-            one of them was changed. */}
+        {/**
+         * **One bar, not two rows.**
+         *
+         * There used to be two: LiveKit's `ControlBar` with wide labelled
+         * pills, and above it a second row of our own. Two shapes, two visual
+         * languages, one set of actions — and the meeting lost the height of
+         * both. `MeetingControlBar` is a single row of equal circular buttons
+         * that still drives LiveKit's own `TrackToggle` and `MediaDeviceMenu`,
+         * so nothing about muting was reimplemented; only its appearance moved.
+         *
+         * The old `variation` prop is gone with it. It existed to drop text
+         * labels below 640px so a phone did not overflow — icons need no such
+         * rule, and `compact` now moves the less-used controls into the
+         * overflow menu rather than shrinking everything until nothing can be
+         * hit.
+         */}
         <div className="shrink-0 border-t border-white/10">
-          {/**
-           * **A phone is a small window too.**
-           *
-           * `compact` means the 340px floating window, and it was the only
-           * thing that dropped the labels. A 375px phone got `verbose` — the
-           * full "Microphone ⌄ Camera ⌄ Share screen Leave" — because the page
-           * presentation is not the floating one. The row overflowed, and
-           * `variation` is a prop, so no stylesheet could rescue it.
-           */}
-          <ControlBar
-            variation={compact || !wideEnoughForLabels ? "minimal" : "verbose"}
+          <MeetingControlBar
+            panel={panel}
+            onPanelChange={setPanel}
+            unreadChat={unreadChat}
+            compact={compact || !wideEnoughForLabels}
+            canSelectSpeaker={canSelectSpeaker}
+            captions={captions}
           />
         </div>
 
@@ -131,6 +217,26 @@ export function RoomInterior({
 
         {footer}
       </div>
+
+      {/**
+       * The side panel, and the room's own `aside` beside it.
+       *
+       * They are separate slots on purpose: `aside` is the scheduled room's
+       * transcript, which its owner decides to show, while this one is opened
+       * by whoever is in the room. Putting chat inside `aside` would mean the
+       * task and guest rooms — which pass no `aside` — could never have it,
+       * which is exactly the split that left live captions in one room type
+       * out of three.
+       */}
+      <RoomSidePanel
+        panel={panel}
+        onClose={() => setPanel(null)}
+        isHost={isHost}
+        /* A signed-in reader may have the directory, so people appear under
+           their workspace names and photographs rather than their LiveKit
+           identity. */
+        withDirectory
+      />
 
       {aside}
     </>

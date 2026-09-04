@@ -204,3 +204,31 @@ export function visibleRows(
   const end = Math.min(m.rows - 1, rowAtY(m, scrollTop + viewportHeight) + buffer);
   return { start, end };
 }
+
+/** The zoom levels the View tab offers, as factors. */
+export const ZOOM_LEVELS = [0.5, 0.75, 0.9, 1, 1.25, 1.5, 2] as const;
+
+export function clampZoom(z: number): number {
+  return Math.min(2, Math.max(0.5, Math.round(z * 100) / 100));
+}
+
+/**
+ * The same geometry at a zoom: every height and width multiplied, so the
+ * virtualisation, hit-testing and scrolling all keep working in pixels. A
+ * zoom of 1 returns the metrics untouched.
+ */
+export function scaleMetrics(m: GridMetrics, zoom: number): GridMetrics {
+  if (zoom === 1) return m;
+  const scaleMap = (map: Record<number, number>): Record<number, number> => {
+    const out: Record<number, number> = {};
+    for (const [k, v] of Object.entries(map)) out[Number(k)] = Math.max(1, Math.round(v * zoom));
+    return out;
+  };
+  return {
+    ...m,
+    defaultRowHeight: Math.max(1, Math.round(m.defaultRowHeight * zoom)),
+    defaultColWidth: Math.max(1, Math.round(m.defaultColWidth * zoom)),
+    rowHeights: scaleMap(m.rowHeights),
+    colWidths: scaleMap(m.colWidths),
+  };
+}

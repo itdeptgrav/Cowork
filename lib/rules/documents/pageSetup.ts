@@ -38,6 +38,9 @@ export const PAPER: Record<
 /** The order the picker offers them in — most used first, not alphabetical. */
 export const PAPER_ORDER: PaperSize[] = ["letter", "a4", "legal", "tabloid", "a5"];
 
+/** A watermark is a word or two, set large and faint; more would not fit the page. */
+export const MAX_WATERMARK_CHARS = 40;
+
 export const DEFAULT_PAGE_SETUP: DocumentPageSetup = {
   paper: "letter",
   orientation: "portrait",
@@ -156,6 +159,9 @@ export function readPageSetup(raw: unknown): DocumentPageSetup {
     header: readHeaderFooterText(r.header),
     footer: readHeaderFooterText(r.footer),
     pageNumbers: r.pageNumbers === true,
+    ...(typeof r.watermark === "string" && r.watermark.trim() ? { watermark: r.watermark.trim().slice(0, MAX_WATERMARK_CHARS) } : {}),
+    ...(typeof r.pageColor === "string" && /^#[0-9a-f]{6}$/i.test(r.pageColor) ? { pageColor: r.pageColor.toLowerCase() } : {}),
+    ...(r.lineNumbers === true ? { lineNumbers: true } : {}),
   };
   /* A stored combination that leaves no measure is treated as unusable rather
      than rendered. It can only come from a write that predates the refusal. */

@@ -31,6 +31,12 @@ import { join } from "node:path";
 
 const CANDIDATES = [
   process.env.COWORK_BACKEND,
+  /* The standard workspace layout: `GRAV_PROJECT/{Cowork,grav-backend}`, with
+     the engine a sibling of this repo. Relative rather than absolute so it
+     resolves on ANY checkout that follows the layout — which is the only
+     candidate here that is not somebody's particular laptop. Listed first
+     among the guesses for that reason. */
+  "../grav-backend",
   "D:/GRAV_Project/grav-cms-backend",
   "/Users/risheeray/Documents/cowork-old-backend",
   "/Users/risheeray/grav-cms-backend",

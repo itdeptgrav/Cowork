@@ -24,6 +24,12 @@
  */
 
 import { createWorksheet, type Workbook, type Worksheet } from "./model";
+import { readNames, type NamedRange } from "./names";
+import { readCharts, type ChartSpec } from "./charts";
+import { readProtection, type SheetProtection } from "./protection";
+import { readBands, type Banding } from "./banding";
+import { readPivots, type PivotDefinition } from "./pivot";
+import { readPageSetup, type PageSetup } from "./printHtml";
 import { StyleRegistry, type CellStyle } from "./style";
 import type { Rect } from "./coordinates";
 import type { SheetFilter } from "./filter";
@@ -67,6 +73,12 @@ export interface SerializedSheet {
   merges?: Rect[];
   links?: Record<string, string>;
   comments?: CommentMap;
+  charts?: ChartSpec[];
+  protection?: SheetProtection;
+  pageSetup?: PageSetup;
+  banding?: Banding[];
+  colGroups?: RowGroup[];
+  notes?: Record<string, string>;
   rowGroups?: RowGroup[];
 }
 
@@ -78,6 +90,9 @@ export interface SerializedWorkbook {
   /** The shared style table — index is the style id cells reference. */
   styles: CellStyle[];
   sheets: SerializedSheet[];
+  /** Named ranges — present only when the workbook has some. */
+  names?: NamedRange[];
+  pivots?: PivotDefinition[];
 }
 
 function indicesOf(map: Record<number, unknown>): number[] {
@@ -125,6 +140,12 @@ function serializeSheet(ws: Worksheet): SerializedSheet {
     ...(ws.links && Object.keys(ws.links).length ? { links: ws.links } : {}),
     ...(ws.comments && Object.keys(ws.comments).length ? { comments: ws.comments } : {}),
     ...(ws.rowGroups && ws.rowGroups.length ? { rowGroups: ws.rowGroups } : {}),
+    ...(ws.colGroups && ws.colGroups.length ? { colGroups: ws.colGroups } : {}),
+    ...(ws.notes && Object.keys(ws.notes).length ? { notes: ws.notes } : {}),
+    ...(ws.charts && ws.charts.length ? { charts: ws.charts } : {}),
+    ...(ws.protection ? { protection: ws.protection } : {}),
+    ...(ws.pageSetup ? { pageSetup: ws.pageSetup } : {}),
+    ...(ws.banding && ws.banding.length ? { banding: ws.banding } : {}),
   };
 }
 
@@ -135,6 +156,8 @@ export function serializeWorkbook(wb: Workbook, styles: StyleRegistry): Serializ
     activeSheetId: wb.activeSheetId,
     styles: JSON.parse(styles.serialize()) as CellStyle[],
     sheets: wb.worksheets.map(serializeSheet),
+    ...(wb.names && wb.names.length > 0 ? { names: wb.names } : {}),
+    ...(wb.pivots && wb.pivots.length > 0 ? { pivots: wb.pivots } : {}),
   };
 }
 
@@ -171,6 +194,12 @@ function deserializeSheet(s: SerializedSheet): Worksheet {
     ...(s.links ? { links: s.links } : {}),
     ...(s.comments ? { comments: s.comments } : {}),
     ...(s.rowGroups ? { rowGroups: s.rowGroups } : {}),
+    ...(s.colGroups ? { colGroups: s.colGroups } : {}),
+    ...(s.notes && typeof s.notes === "object" ? { notes: s.notes } : {}),
+    ...(readCharts(s.charts) ? { charts: readCharts(s.charts) } : {}),
+    ...(readProtection(s.protection) ? { protection: readProtection(s.protection) } : {}),
+    ...(readPageSetup(s.pageSetup) ? { pageSetup: readPageSetup(s.pageSetup) } : {}),
+    ...(readBands(s.banding).length ? { banding: readBands(s.banding) } : {}),
   };
 }
 
@@ -186,5 +215,12 @@ export function deserializeWorkbook(data: SerializedWorkbook): {
   const worksheets = data.sheets.map(deserializeSheet);
   const activeSheetId =
     worksheets.find((s) => s.id === data.activeSheetId)?.id ?? worksheets[0]?.id ?? "";
-  return { workbook: { worksheets, activeSheetId }, styleRegistry };
+  const names = readNames(data.names).filter((n) => worksheets.some((s) => s.id === n.sheetId));
+  const pivots = (readPivots(data.pivots) ?? []).filter(
+    (p) => worksheets.some((s) => s.id === p.source.sheetId) && worksheets.some((s) => s.id === p.target.sheetId),
+  );
+  return {
+    workbook: { worksheets, activeSheetId, ...(names.length ? { names } : {}), ...(pivots.length ? { pivots } : {}) },
+    styleRegistry,
+  };
 }

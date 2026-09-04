@@ -59,7 +59,8 @@ export function mindmapTreeRefusal(nodes: MindNode[] | undefined): string | null
     }
   }
 
-  const roots = nodes.filter((n) => n.parentId === null);
+  /* Floating topics are parentless too, by design; only the root proper counts. */
+  const roots = nodes.filter((n) => n.parentId === null && !n.floating);
   if (roots.length === 0)
     return "This map has no root card, so there is nothing to draw it from.";
   if (roots.length > 1)

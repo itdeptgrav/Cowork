@@ -30,7 +30,20 @@ type Frame = { name: string | null; argIndex: number };
  * Analyse `text` up to `caret`. `text` includes the leading `=` of a formula;
  * a value that is not a formula yields no assistance.
  */
-export function formulaAssist(text: string, caret: number): FormulaAssist {
+/** A named range as a suggestion entry — the shape the helper already draws. */
+function nameEntry(name: string): FunctionHelp {
+  return {
+    name,
+    category: "Lookup",
+    args: [],
+    summary: "A named range in this workbook.",
+    example: `SUM(${name})`,
+    signature: name,
+    named: true,
+  };
+}
+
+export function formulaAssist(text: string, caret: number, names: readonly string[] = []): FormulaAssist {
   if (!text.startsWith("=")) return null;
   const head = text.slice(0, Math.max(0, caret));
 
@@ -96,7 +109,12 @@ export function formulaAssist(text: string, caret: number): FormulaAssist {
 
   /* A name being typed at the caret → suggest matching functions. */
   if (ident !== "" && identStart >= 0) {
-    const matches = matchFunctions(ident);
+    const upper = ident.toUpperCase();
+    const named = names
+      .filter((n) => n.toUpperCase().startsWith(upper))
+      .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+      .map(nameEntry);
+    const matches = [...matchFunctions(ident), ...named].slice(0, 12);
     if (matches.length > 0) {
       return { kind: "list", token: ident, tokenStart: identStart, matches };
     }

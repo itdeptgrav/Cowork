@@ -79,6 +79,7 @@ test("ranges and nested calls parse into a tree", () => {
   }
 });
 
-test("a bare unknown name is a parse error", () => {
-  assert.throws(() => parse("FOO"), ParseError);
+test("a bare word is a named range, resolved later by the engine", () => {
+  assert.deepEqual(parse("FOO"), { type: "name", name: "FOO" });
+  assert.deepEqual(parse("sum(Sales)"), { type: "call", name: "SUM", args: [{ type: "name", name: "SALES" }] });
 });

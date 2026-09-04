@@ -201,3 +201,28 @@ test("clearing a cell recalculates its dependents", () => {
   s.set("A1", "");
   assert.equal(s.show("B1"), "0", "A1 blank counts as 0");
 });
+
+test("named ranges: a formula reads through a name, and follows it when it moves", () => {
+  const engine = new FormulaEngine();
+  engine.syncSheets([{ id: "s1", name: "Sheet1" }]);
+  engine.setCell("s1", 0, 0, "10");
+  engine.setCell("s1", 1, 0, "20");
+  engine.setCell("s1", 2, 0, "30");
+  engine.setCell("s1", 0, 2, "=SUM(Sales)");
+  assert.equal(engine.display("s1", 0, 2).text, "#NAME?", "undefined until the name exists");
+
+  engine.setNamedRanges([{ name: "Sales", sheetId: "s1", top: 0, left: 0, bottom: 1, right: 0 }]);
+  assert.equal(engine.display("s1", 0, 2).text, "30", "defined: the formula recomputes untouched");
+
+  engine.setCell("s1", 1, 0, "25");
+  assert.equal(engine.display("s1", 0, 2).text, "35", "a cell inside the name is a precedent");
+
+  engine.setNamedRanges([{ name: "sales", sheetId: "s1", top: 0, left: 0, bottom: 2, right: 0 }]);
+  assert.equal(engine.display("s1", 0, 2).text, "65", "redefined, case-insensitively");
+
+  engine.setCell("s1", 0, 3, "=Sales");
+  assert.equal(engine.display("s1", 0, 3).text, "#VALUE!", "a range where a value is wanted");
+
+  engine.setNamedRanges([]);
+  assert.equal(engine.display("s1", 0, 2).text, "#NAME?", "removed: back to unknown");
+});

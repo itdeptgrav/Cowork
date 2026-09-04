@@ -1,13 +1,11 @@
 "use client";
 
+import { markdownTitle, markdownToHtml } from "@/lib/documents/markdown";
 import { useMemo, useState } from "react";
-import { Icon } from "@/components/ui/Icons";
 import {
   Button,
   EmptyState,
   ErrorState,
-  Input,
-  Panel,
   SkeletonRows,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
@@ -19,6 +17,9 @@ import {
   type PaletteCommand,
 } from "./CommandPalette";
 import { DocumentEditor } from "./DocumentEditor";
+import { Popover } from "@/components/ui/Workspace";
+import { DOCUMENT_TEMPLATES } from "@/lib/documents/templates";
+import { docxTitle, docxToHtml } from "@/lib/documents/docxImport";
 import { SheetGrid } from "./SheetGrid";
 import { WorkspaceStage } from "./WorkspaceStage";
 import type { DocumentKind, DocumentSummary } from "@/lib/domain";
@@ -76,13 +77,61 @@ export function DocumentsArea({
      returns the whole record, so the editor is opened from that and the refetch
      only has to catch the list up afterwards. */
   const [justCreated, setJustCreated] = useState<DocumentSummary | null>(null);
+  /* A document with a body from the start — a template, or a Word file. Two
+     writes, because a body is saved against an existing record; a refusal of
+     the second leaves an empty document rather than nothing, which the list
+     shows and the person can delete. */
+  const [createWithBody, createWithBodyState] = useAction(
+    async (r, input: { title: string; html: string }) => {
+      const made = await r.createDocument({ title: input.title, kind });
+      if (!made.ok) return made;
+      const body = await r.saveDocumentBody(made.data.id, { html: input.html });
+      if (!body.ok) return body;
+      return made;
+    },
+  );
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const openFromBody = async (title: string, html: string) => {
+    const r = await createWithBody({ title, html });
+    if (!r.ok) return;
+    setCreatedIds((prev) => new Set(prev).add(r.data.id));
+    setJustCreated({ ...r.data, preview: "" });
+    setOpenId(r.data.id);
+    docs.refetch();
+  };
+  /** A file in — Word, Markdown or plain text, told apart by name. */
+  const importFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (/\.(md|markdown|txt)$/i.test(file.name)) {
+      setImportNotice(null);
+      try {
+        const text = await file.text();
+        const base = file.name.replace(/\.[^.]+$/, "");
+        await openFromBody(markdownTitle(text, base), markdownToHtml(text));
+      } catch {
+        setImportNotice("That file could not be read as text.");
+      }
+      return;
+    }
+    await importDocx(file);
+  };
+
+  const importDocx = async (file: File | undefined) => {
+    if (!file) return;
+    setImportNotice(null);
+    try {
+      const { html, warnings } = await docxToHtml(file);
+      await openFromBody(docxTitle(file), html);
+      if (warnings.length) setImportNotice(`Imported with notes: ${warnings.join(" · ")}`);
+    } catch {
+      setImportNotice("That file could not be read as a Word document.");
+    }
+  };
   /* The ids created in THIS session. A document opened straight from "New" and
      closed while still blank is an abandoned draft the editor deletes on close;
      one opened from the list never is. State rather than a ref because it is
      read while rendering, to hand the flag to the editor. */
   const [createdIds, setCreatedIds] = useState<Set<string>>(() => new Set());
-  const [renaming, setRenaming] = useState<string | null>(null);
-  const [draftTitle, setDraftTitle] = useState("");
 
   const [create, createState] = useAction((r) =>
     r.createDocument({ title: `Untitled ${noun}`, kind }),
@@ -188,116 +237,6 @@ export function DocumentsArea({
 
   /* ── Choosing one ───────────────────────────────────────────────────────── */
 
-  /* A plain function rather than a nested component, so the autofocused rename
-     field is never remounted mid-edit. */
-  const row = (d: DocumentSummary) => {
-    if (renaming === d.id) {
-      return (
-        <li key={d.id}>
-          <div className="px-4 py-2">
-            <Input
-              autoFocus
-              value={draftTitle}
-              onChange={(e) => setDraftTitle(e.target.value)}
-              onKeyDown={async (e) => {
-                if (e.key === "Escape") setRenaming(null);
-                if (e.key === "Enter") {
-                  const r = await rename(d.id, draftTitle);
-                  if (r.ok) {
-                    setRenaming(null);
-                    docs.refetch();
-                  }
-                }
-              }}
-              /* Committed on blur too — a renamed title left uncommitted
-                 because nobody pressed Enter is the commonest way this field
-                 loses an edit. */
-              onBlur={async () => {
-                const r = await rename(d.id, draftTitle);
-                setRenaming(null);
-                if (r.ok) docs.refetch();
-              }}
-            />
-          </div>
-        </li>
-      );
-    }
-
-    return (
-      <li key={d.id}>
-        <div className="group flex items-center gap-4 px-4 transition-colors hover:bg-[var(--row-hover)]">
-          <button
-            type="button"
-            onClick={() => setOpenId(d.id)}
-            className="flex min-w-0 flex-1 items-center gap-4 py-3 text-left"
-          >
-            <span className="grid h-7 w-7 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted">
-              {kind === "sheet" ? (
-                <Icon.board className="h-3.5 w-3.5" />
-              ) : (
-                <Icon.list className="h-3.5 w-3.5" />
-              )}
-            </span>
-            <span className="w-[30%] shrink-0 truncate text-[14px] text-ink">
-              {d.title}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[12.5px] text-ink-faint">
-              {d.preview || "Empty"}
-            </span>
-            <span
-              data-figure
-              className="hidden w-[96px] shrink-0 text-right text-[11px] text-ink-faint tabular-nums sm:block"
-            >
-              {formatStamp(d.updatedAt)}
-            </span>
-          </button>
-
-          {/* Quiet until the row is the one being acted on, and reachable by
-              Tab because `group-focus-within` reveals them too. */}
-          <span className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
-            <RowAction
-              label={`Rename ${d.title}`}
-              onClick={() => {
-                setRenaming(d.id);
-                setDraftTitle(d.title);
-              }}
-            >
-              <Icon.settings className="h-3.5 w-3.5" />
-            </RowAction>
-            <RowAction
-              label={`Delete ${d.title}`}
-              onClick={async () => {
-                /* Asked first, the way deleting a sheet TAB already is: this
-                   takes the whole document and every tab inside it, and the row
-                   sits one icon away from Rename. A misclick should not be how
-                   a spreadsheet goes away. */
-                if (
-                  typeof window !== "undefined" &&
-                  !window.confirm(
-                    `Delete "${d.title}"? This removes the whole ${noun} and can't be undone.`,
-                  )
-                )
-                  return;
-                const r = await remove(d.id);
-                /* A refused delete used to fall through this `if` in silence,
-                   leaving the row on screen with no hint why. `removeState.error`
-                   is rendered in the banner above. */
-                if (r.ok) {
-                  if (openId === d.id) setOpenId(null);
-                  /* Drop the local stand-in too, or a just-created document
-                     deleted before the list caught up would keep resolving. */
-                  setJustCreated((j) => (j && j.id === d.id ? null : j));
-                  docs.refetch();
-                }
-              }}
-            >
-              <Icon.close className="h-3.5 w-3.5" />
-            </RowAction>
-          </span>
-        </div>
-      </li>
-    );
-  };
 
   const body = () => {
     if (docs.isLoading)
@@ -390,6 +329,54 @@ export function DocumentsArea({
         )}
         <span className="flex-1" />
         <CommandPalette commands={commands} surface="Workspace" />
+        {kind === "doc" && (
+          <>
+            {/* A file in: Word, Markdown or plain text. Word is converted;
+                Markdown and text are read as the document's own markup. */}
+            <label className="inline-flex cursor-pointer items-center rounded-full bg-transparent px-3 py-1.5 text-sm text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink">
+              {createWithBodyState.isPending ? "Importing…" : "Import…"}
+              <input
+                type="file"
+                accept=".docx,.md,.markdown,.txt,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/markdown,text/plain"
+                className="sr-only"
+                disabled={createWithBodyState.isPending}
+                onChange={(e) => {
+                  void importFile(e.target.files?.[0]);
+                  e.target.value = "";
+                }}
+              />
+            </label>
+            <Popover
+              label="New from template"
+              align="right"
+              trigger={({ toggle }) => (
+                <Button size="sm" tone="ghost" onClick={toggle} disabled={createWithBodyState.isPending}>
+                  Templates
+                </Button>
+              )}
+            >
+              {(close) => (
+                <div className="w-[260px] p-1.5">
+                  <p className="px-2 pb-1 text-[11px] font-medium text-ink">Start from</p>
+                  {DOCUMENT_TEMPLATES.map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => {
+                        close();
+                        void openFromBody(t.label, t.html);
+                      }}
+                      className="block w-full rounded-inset px-2 py-1.5 text-left hover:bg-[var(--control)]"
+                    >
+                      <span className="block text-[12.5px] text-ink">{t.label}</span>
+                      <span className="block text-[10.5px] text-ink-faint">{t.hint}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </Popover>
+          </>
+        )}
         <Button loading={createState.isPending}
           size="sm"
           disabled={createState.isPending}
@@ -398,6 +385,9 @@ export function DocumentsArea({
           {createState.isPending ? "…" : `New ${noun}`}
         </Button>
       </div>
+      {importNotice && (
+        <p className="text-[12px] text-ink-muted">{importNotice}</p>
+      )}
 
       {/* `createAndOpen` bails on `!r.ok`, and until this banner existed it did so
           in complete silence: the button flickered, no document appeared, and the
@@ -424,27 +414,6 @@ export function DocumentsArea({
   );
 }
 
-function RowAction({
-  label,
-  onClick,
-  children,
-}: {
-  label: string;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      className="grid h-7 w-7 place-items-center rounded-inset text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink"
-    >
-      {children}
-    </button>
-  );
-}
 
 /**
  * A stored document as the shared workspace table wants it.

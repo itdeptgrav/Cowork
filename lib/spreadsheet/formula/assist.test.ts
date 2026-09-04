@@ -84,3 +84,18 @@ test("active argument clamps onto a repeatable tail", () => {
   const abs = FUNCTION_HELP.ABS;
   assert.equal(activeArgIndex(abs, 3), -1); // fixed arity → nothing to highlight
 });
+
+test("named ranges are offered beside functions, and inserted bare", () => {
+  const a = formulaAssist("=1+Sum", 6, ["Sumy", "Sumx", "Costs"]);
+  assert.ok(a && a.kind === "list");
+  if (a && a.kind === "list") {
+    assert.equal(a.matches[0].name, "SUM", "functions first, exact first");
+    const names = a.matches.filter((m) => m.named).map((m) => m.name);
+    assert.deepEqual(names, ["Sumx", "Sumy"], "then the names, in order");
+  }
+  const onlyName = formulaAssist("=Cos", 4, ["Costs"]);
+  assert.ok(onlyName && onlyName.kind === "list");
+  if (onlyName && onlyName.kind === "list") {
+    assert.deepEqual(onlyName.matches.map((m) => m.name), ["COS", "COSH", "Costs"]);
+  }
+});

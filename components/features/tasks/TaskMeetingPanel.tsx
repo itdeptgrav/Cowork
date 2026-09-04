@@ -335,10 +335,45 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
    * both drawn from the same room. The panel is only mounted while somebody is
    * looking at a meeting, so the cost is bounded by the meeting itself.
    */
+  /**
+   * ...and NOT while the tab is in the background.
+   *
+   * Nobody is reading the attendance figure on a hidden tab, but the interval
+   * kept firing a full session-history read every five seconds for as long as
+   * the page stayed open behind something else — which, during a meeting, is
+   * most of the time, because the room itself floats over whatever the person
+   * navigated to. The refresh resumes on return, and refetches immediately so
+   * the first thing they see is current rather than however stale it went.
+   */
   useEffect(() => {
     if (!watching) return;
-    const id = setInterval(() => refetchSessions(), 5_000);
-    return () => clearInterval(id);
+    let id: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
+      if (id === null) id = setInterval(() => refetchSessions(), 5_000);
+    };
+    const stop = () => {
+      if (id !== null) {
+        clearInterval(id);
+        id = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        refetchSessions();
+        start();
+      }
+    };
+
+    if (!document.hidden) start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [watching, refetchSessions]);
 
   const viewerId = useViewerId() ?? "";

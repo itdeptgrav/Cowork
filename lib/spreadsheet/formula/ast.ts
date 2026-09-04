@@ -54,6 +54,9 @@ export type Node =
   | { type: "error"; code: ErrorCode }
   | RefNode
   | RangeNode
+  /** A bare word that is not a function call — a NAMED RANGE, resolved by the
+      engine at evaluation time. Unknown names evaluate to #NAME?. */
+  | { type: "name"; name: string }
   | { type: "unary"; op: "-" | "+"; operand: Node }
   | { type: "percent"; operand: Node }
   | { type: "binary"; op: BinaryOp; left: Node; right: Node }

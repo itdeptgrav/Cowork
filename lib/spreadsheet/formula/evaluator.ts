@@ -12,7 +12,7 @@
  * and Excel define them.
  */
 
-import type { BinaryOp, Node } from "./ast";
+import type { BinaryOp, Node, RangeNode, RefNode } from "./ast";
 import { DIV0, FormulaError, NAME, NUM, VALUE, isError } from "./errors";
 import type { ErrorCode } from "./errors";
 import { BLANK, isArray, isBlank, toNumber, toText, type ScalarValue } from "./value";
@@ -22,6 +22,12 @@ import { FUNCTIONS } from "./functions/index";
     `sheet` is undefined) the formula's own sheet. */
 export interface EvalContext {
   resolveCell(sheet: string | undefined, row: number, col: number): ScalarValue;
+  /** A named range's target — a ref or range node — or null when no such
+      name is defined. Absent contexts have no names at all. */
+  resolveRangeName?(name: string): RefNode | RangeNode | null;
+  /** The cell whose formula is being evaluated — for ROW(), COLUMN() and the
+      like. Absent for an ad-hoc rule evaluation. */
+  cell?: { sheet: string; row: number; col: number };
 }
 
 /** What a function receives — the ability to evaluate its argument nodes, and to
@@ -35,6 +41,8 @@ export interface FnContext {
       grid; any other node → a 1×1 grid. Lookup and array functions need the
       shape, not just a flat list. */
   matrix(node: Node): ScalarValue[][];
+  /** The cell being evaluated, when there is one (see `EvalContext.cell`). */
+  cell?: { sheet: string; row: number; col: number };
 }
 
 /** A finite number passes; overflow to ±Infinity (or NaN) is #NUM!. */
@@ -61,6 +69,10 @@ export function evaluate(node: Node, ctx: EvalContext): ScalarValue {
     case "range":
       /* A range only means something as a function argument. */
       return VALUE;
+    case "name": {
+      const target = deref(node, ctx);
+      return target.type === "name" ? NAME : evaluate(target, ctx);
+    }
     case "unary": {
       const v = evaluate(node.operand, ctx);
       if (isError(v)) return v;
@@ -81,9 +93,18 @@ export function evaluate(node: Node, ctx: EvalContext): ScalarValue {
     case "call": {
       const fn = FUNCTIONS[node.name];
       if (!fn) return NAME;
-      return fn(node.args, fnContext(ctx));
+      /* A named range is handed to the function as the range it names, so
+         every function that inspects its argument's shape sees a range. */
+      return fn(node.args.map((a) => deref(a, ctx)), fnContext(ctx));
     }
   }
+}
+
+/** A name node replaced by what it names; any other node as it is. A name
+    that resolves to nothing stays a name node, which evaluates to #NAME?. */
+function deref(node: Node, ctx: EvalContext): Node {
+  if (node.type !== "name") return node;
+  return ctx.resolveRangeName?.(node.name) ?? node;
 }
 
 function rangeMatrix(node: Node & { type: "range" }, ctx: EvalContext): ScalarValue[][] {
@@ -104,16 +125,19 @@ function rangeMatrix(node: Node & { type: "range" }, ctx: EvalContext): ScalarVa
 function fnContext(ctx: EvalContext): FnContext {
   return {
     eval: (node) => evaluate(node, ctx),
-    collect: (node) => {
+    collect: (raw) => {
+      const node = deref(raw, ctx);
       if (node.type === "range") return rangeMatrix(node, ctx).flat();
       const v = evaluate(node, ctx);
       return isArray(v) ? v.flat() : [v];
     },
-    matrix: (node) => {
+    matrix: (raw) => {
+      const node = deref(raw, ctx);
       if (node.type === "range") return rangeMatrix(node, ctx);
       const v = evaluate(node, ctx);
       return isArray(v) ? v.rows : [[v]];
     },
+    cell: ctx.cell,
   };
 }
 

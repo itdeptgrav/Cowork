@@ -79,7 +79,10 @@ test("a map with nothing collapsed is unchanged", () => {
 test("every connector is drawn, including into a folded branch", () => {
   /* The connectors were skipped by the same `collapsed` test, so a branch could
      have appeared with nothing joining it to its parent. */
-  const svg = mindmapToSvg(map);
+  /* The arrowhead marker in `<defs>` is a path too, and not a connector — so
+     the definitions block is set aside before counting. Relationships,
+     boundaries and summaries also draw paths, but this fixture has none. */
+  const svg = mindmapToSvg(map).replace(/<defs>[\s\S]*?<\/defs>/, "");
   const paths = svg.match(/<path /g) ?? [];
   assert.equal(
     paths.length,
@@ -103,9 +106,11 @@ test("PNG and PDF measure the SAME map they draw", () => {
   assert.ok(from > 0, "the rasterizer was renamed");
   const body = src.slice(from, src.indexOf("\nexport async function", from));
 
+  /* `layoutMapAs(fullyExpanded(map), kind)` since the map gained layouts —
+     the rule is the same: whatever lays it out is handed the EXPANDED map. */
   assert.match(
     body,
-    /layoutMap\(fullyExpanded\(map\)\)/,
+    /layoutMap(?:As)?\(fullyExpanded\(map\)/,
     "the canvas is measured from the collapsed map while the drawing is " +
       "expanded, so every export is scaled into the wrong frame",
   );

@@ -32,7 +32,13 @@ const provider = readFileSync(
   "components/features/auth/SessionProvider.tsx",
   "utf8",
 );
-const shell = readFileSync("components/layout/shell/ShellFrame.tsx", "utf8");
+/* The shell is TWO modules since the workspace tree was split out of
+   `ShellFrame.tsx` into `WorkspaceShell.tsx` — a bundle split, so that
+   /signin stops downloading LiveKit. "Mounted in the shell" is still one
+   claim, so both files are read as one text. */
+const shell =
+  readFileSync("components/layout/shell/ShellFrame.tsx", "utf8") +
+  readFileSync("components/layout/shell/WorkspaceShell.tsx", "utf8");
 const firebase = readFileSync("lib/legacy/firebase.ts", "utf8");
 
 /* ── The token refresh ────────────────────────────────────────────────────── */

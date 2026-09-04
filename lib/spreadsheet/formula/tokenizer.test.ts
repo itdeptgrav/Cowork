@@ -43,3 +43,11 @@ test("normalizes != to <> and reads the comparison operators", () => {
   assert.deepEqual(kinds("A1!=B1"), ["ref:A1", "op:<>", "ref:B1"]);
   assert.deepEqual(kinds(">= <= <>"), ["op:>=", "op:<=", "op:<>"]);
 });
+
+test("a function whose name looks like a cell is a name when a bracket follows", () => {
+  assert.deepEqual(
+    tokenize("LOG10(1000)+ATAN2(1,1)").map((t) => t.type),
+    ["name", "lparen", "number", "rparen", "op", "name", "lparen", "number", "comma", "number", "rparen"],
+  );
+  assert.deepEqual(tokenize("LOG10").map((t) => t.type), ["ref"], "on its own it is still the cell LOG10");
+});

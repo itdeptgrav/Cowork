@@ -78,24 +78,59 @@ test("the room's height is a ladder, not one desk measurement", () => {
   );
 });
 
-test("the control bar drops its labels on a narrow screen, not only in the corner window", () => {
-  /* `compact` is the 340px floating window. A 375px phone is not compact, so
-     it got the full "Microphone ⌄ Camera ⌄ Share screen Leave" and overflowed. */
-  /* It lives in `RoomInterior` now, shared with a task's meeting — so a phone
-     gets the same treatment in both rooms rather than only in this one. */
+test("a narrow screen gets the compact control bar, not only the corner window", () => {
+  /**
+   * **The rule, restated for a bar that has no labels to drop.**
+   *
+   * This used to assert `variation="minimal"` — LiveKit's `ControlBar` carried
+   * text ("Microphone ⌄ Camera ⌄ Share screen Leave") and dropped it below
+   * 640px so a 375px phone did not overflow. `compact` was the 340px floating
+   * window, and a phone is not compact, so a phone got the verbose row and it
+   * overflowed. That is what this test was guarding.
+   *
+   * The bar is icons at every width now, so there is nothing to drop. The same
+   * requirement survives as: a narrow screen is still told it is narrow, and
+   * `MeetingControlBar` answers by moving the less-used controls into the
+   * overflow menu rather than letting the row grow past the screen.
+   */
   const src = code("components/features/meetings/RoomInterior.tsx");
-  assert.match(src, /compact \|\| !wideEnoughForLabels \? "minimal" : "verbose"/);
+  assert.match(src, /<MeetingControlBar/);
+  assert.match(src, /compact=\{compact \|\| !wideEnoughForLabels\}/);
 });
 
 test("guests get the same treatment", () => {
   /* A guest is the likeliest person to be on a phone: they were sent a link,
      and a link opens wherever the reader happens to be. */
   const src = code(GUEST);
-  assert.match(src, /wideEnoughForLabels \? "verbose" : "minimal"/);
+  assert.match(src, /<GuestExtras compact=\{!wideEnoughForLabels\} \/>/);
+  assert.match(
+    src,
+    /<MeetingControlBar[\s\S]{0,220}compact=\{compact\}/,
+    "the guest bar no longer follows the screen width",
+  );
   assert.doesNotMatch(
     src,
     /<ControlBar variation="verbose"/,
     "the guest bar is hardcoded verbose again",
+  );
+});
+
+test("the bar never grows a second row", () => {
+  /**
+   * Two rows was the state this replaced: LiveKit's labelled pills, and a
+   * second row of our own above it. On a phone that is a third of the viewport
+   * spent on controls, and it is the reason the room had no height left.
+   */
+  const bar = code("components/features/meetings/MeetingControlBar.tsx");
+  /* Scoped to the ROW's own container. `flex-wrap` elsewhere in the file is
+     the reaction grid inside the overflow menu, which should wrap. */
+  const row = bar.slice(bar.indexOf('<div className="relative flex shrink-0'));
+  const rowClass = row.slice(0, row.indexOf(">"));
+  assert.ok(rowClass.length > 0, "the control row's container moved");
+  assert.doesNotMatch(
+    rowClass,
+    /flex-wrap/,
+    "the control row can wrap again, which is how the second row comes back",
   );
 });
 

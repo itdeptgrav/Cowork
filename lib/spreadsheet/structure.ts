@@ -20,6 +20,11 @@
  */
 
 import { cellRef, parseCellRef } from "./coordinates";
+import { shiftNames } from "./names";
+import { shiftCharts } from "./charts";
+import { shiftProtection } from "./protection";
+import { shiftBanding } from "./banding";
+import { shiftBands, shiftRanged, shiftRect, shiftRects, shiftRefMap } from "./structureExtras";
 import {
   transformRegionShift,
   transformStructural,
@@ -110,6 +115,19 @@ export function structuralOp(ws: Worksheet, op: StructuralOp): Worksheet {
     ...ws,
     cells,
     cellStyles,
+    ...(ws.charts ? { charts: shiftCharts(ws.charts, op) } : {}),
+    ...(ws.protection ? { protection: shiftProtection(ws.protection, op) } : {}),
+    ...(ws.banding ? { banding: shiftBanding(ws.banding, op) } : {}),
+    /* Everything else that names cells or rectangles moves with them. */
+    merges: shiftRects(ws.merges, op),
+    validations: shiftRanged(ws.validations, op),
+    conditionalFormats: shiftRanged(ws.conditionalFormats, op),
+    filter: ws.filter ? (() => { const range = shiftRect(ws.filter.range, op); return range ? { ...ws.filter, range } : undefined; })() : undefined,
+    links: shiftRefMap(ws.links, op),
+    comments: shiftRefMap(ws.comments, op),
+    notes: shiftRefMap(ws.notes, op),
+    rowGroups: shiftBands(ws.rowGroups, op, "row"),
+    colGroups: shiftBands(ws.colGroups, op, "col"),
     rowHeights: rowAxis ? shiftIndexMap(ws.rowHeights, op, ws.rowCount) : ws.rowHeights,
     colWidths: rowAxis ? ws.colWidths : shiftIndexMap(ws.colWidths, op, ws.colCount),
     hiddenRows: rowAxis ? shiftIndexMap(ws.hiddenRows, op, ws.rowCount) : ws.hiddenRows,
@@ -178,7 +196,8 @@ export function structuralOpWorkbook(wb: Workbook, sheetId: string, op: Structur
       ? structuralOp(ws, op)
       : rewriteOtherSheet(ws, edited.name, (raw, ctx) => transformStructural(raw, op, ctx)),
   );
-  return { ...wb, worksheets };
+  const names = wb.names ? shiftNames(wb.names, sheetId, op) : undefined;
+  return { ...wb, worksheets, ...(names ? { names } : {}) };
 }
 
 export function insertRowsWorkbook(wb: Workbook, sheetId: string, at: number, count = 1): Workbook {
@@ -220,8 +239,8 @@ const SHIFTS: Record<ShiftDirection, { axis: "row" | "col"; mode: "insert" | "de
  * insert pushes cells off the band's far end, a delete opens blank ones at it.
  *
  * **Merges, validations, conditional formats, comments and links are not
- * reference-tracked through this**, exactly as they are not through
- * `structuralOp`. Same known gap, deliberately not widened here.
+ * reference-tracked through this** (a block shift, unlike a whole-line edit
+ * in `structuralOp`, which now moves them all).
  */
 export function shiftCells(
   ws: Worksheet,

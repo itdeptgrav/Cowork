@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { useEditorState, type Editor } from "@tiptap/react";
 import {
+  isFragmentHref,
   LINK_WINDOW_FEATURES,
   isSafeHref,
   linkLabel,
@@ -91,6 +92,13 @@ export function DocsLinkBubble({ editor }: { editor: Editor | null }) {
 
   const open = () => {
     if (!safe) return;
+    if (isFragmentHref(href)) {
+      /* A bookmark in this document: go there, rather than opening a
+         window on a page that is already open. */
+      const target = editor.view.dom.querySelector<HTMLElement>(`[data-bookmark][id="${CSS.escape(href.slice(1))}"]`);
+      target?.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
     window.open(href, "_blank", LINK_WINDOW_FEATURES);
   };
 

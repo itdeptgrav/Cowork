@@ -89,7 +89,8 @@ export function deleteSheet(wb: Workbook, id: string): Workbook {
     const neighbour = worksheets[Math.min(idx, worksheets.length - 1)];
     activeSheetId = neighbour.id;
   }
-  return { ...wb, worksheets, activeSheetId };
+  const names = wb.names?.filter((n) => n.sheetId !== id);
+  return { ...wb, worksheets, activeSheetId, ...(names ? { names } : {}) };
 }
 
 /** Rewrite every formula on a sheet that names `oldName` to name `newName`. */

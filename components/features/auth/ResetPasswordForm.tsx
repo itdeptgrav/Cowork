@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { AuthFrame, AuthSwitch } from "./AuthFrame";
 import { Button, Field, InlineError, Input } from "@/components/ui/Primitives";
+import { PasswordInput } from "@/components/ui/PasswordInput";
 import { PASSWORD_MIN_LENGTH } from "@/lib/auth/passwordRule";
 
 /**
@@ -145,8 +146,7 @@ export function ResetPasswordForm() {
           required
           hint={`At least ${PASSWORD_MIN_LENGTH} characters. Length matters more than symbols.`}
         >
-          <Input
-            type="password"
+          <PasswordInput
             autoComplete="new-password"
             autoFocus
             value={password}
@@ -158,8 +158,7 @@ export function ResetPasswordForm() {
           required
           error={mismatch ? "The two passwords do not match." : undefined}
         >
-          <Input
-            type="password"
+          <PasswordInput
             autoComplete="new-password"
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}

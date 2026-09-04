@@ -315,7 +315,9 @@ test("nothing is rendered for the person sharing", () => {
       `${path} renders a frame for the sharer again`,
     );
   }
-  const shell = code("components/layout/shell/ShellFrame.tsx");
+  const shell =
+    code("components/layout/shell/ShellFrame.tsx") +
+    code("components/layout/shell/WorkspaceShell.tsx");
   assert.ok(
     !/PresenceRoom|GravStreamEmbed/.test(shell),
     "a presence room is mounted beside the shell again",

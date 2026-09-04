@@ -68,7 +68,11 @@ test("the shared stage carries pinning, the tile menu and the avatars", () => {
 
 test("the shared interior carries the control bar and the reconnect fix", () => {
   const src = code(INTERIOR);
-  assert.match(src, /compact \|\| !wideEnoughForLabels \? "minimal" : "verbose"/);
+  /* One bar for every room. It was `<ControlBar variation=...>`; the variation
+     existed to drop text labels on a narrow screen, and the bar has no labels
+     to drop now — `compact` moves controls into the overflow instead. */
+  assert.match(src, /<MeetingControlBar/);
+  assert.match(src, /compact=\{compact \|\| !wideEnoughForLabels\}/);
   assert.match(src, /<DeviceIntentSync/);
   assert.match(src, /<BackupRecorder/);
   assert.match(src, /<MuteBridge/);
@@ -170,7 +174,9 @@ test("the credited-session lifecycle is untouched", () => {
 
 test("the beat is mounted in the shell, not on the task page", () => {
   /* Where it is mounted IS the fix. On a page it dies with the page. */
-  const shell = code("components/layout/shell/ShellFrame.tsx");
+  const shell =
+    code("components/layout/shell/ShellFrame.tsx") +
+    code("components/layout/shell/WorkspaceShell.tsx");
   assert.match(shell, /<TaskMeetingLifecycle \/>/);
   assert.doesNotMatch(
     code(TASK),

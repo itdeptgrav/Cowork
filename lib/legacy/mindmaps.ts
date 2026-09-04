@@ -1,9 +1,18 @@
-import type {
-  MindImage,
-  MindLink,
-  MindMapMember,
-  MindMapRecord,
-  MindNode,
+import {
+  DEFAULT_MINDMAP_SETTINGS,
+  emptyExtras,
+  type MindBoundary,
+  type MindImage,
+  type MindLayoutKind,
+  type MindLink,
+  type MindMapExtras,
+  type MindMapMember,
+  type MindMapRecord,
+  type MindNode,
+  type MindNodeStyle,
+  type MindRelation,
+  type MindSummary,
+  type MindThemeKind,
 } from "../domain/mindmap.ts";
 
 /**
@@ -103,12 +112,51 @@ function readImage(raw: unknown): MindImage | null {
   };
 }
 
+const SHAPES = new Set(["rounded", "rect", "pill", "underline", "ellipse"]);
+const SIZES = new Set(["s", "m", "l", "xl"]);
+const LINES = new Set(["curve", "straight", "elbow"]);
+const LAYOUTS = new Set<string>(["right", "left", "both", "org", "tree", "radial", "timeline", "fishbone"]);
+const THEMES = new Set<string>(["field", "mono", "vivid", "warm", "cool", "night"]);
+
+/** A colour the canvas will paint: a palette name or a CSS colour token. */
+function colour(v: unknown): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.trim();
+  /* Letters, digits, `#`, `(`, `)`, `,`, `.`, `%`, space and `-` — enough for a
+     swatch name, a hex, or an rgb()/hsl(). Anything else (a `url(` or a
+     semicolon) cannot be a colour and could be a style injection. */
+  return /^[a-zA-Z0-9#(),.% -]{1,40}$/.test(t) ? t : undefined;
+}
+
+/**
+ * A card's style, with every field checked. Returns undefined when nothing
+ * survives, so an unstyled card stays exactly that rather than carrying an
+ * empty object that would read as "styled, to nothing".
+ */
+function readStyle(raw: unknown): MindNodeStyle | undefined {
+  if (!raw || typeof raw !== "object") return undefined;
+  const s = raw as Record<string, unknown>;
+  const out: MindNodeStyle = {};
+  const fill = colour(s.fill);
+  const text = colour(s.text);
+  if (fill) out.fill = fill;
+  if (text) out.text = text;
+  if (typeof s.shape === "string" && SHAPES.has(s.shape)) out.shape = s.shape as MindNodeStyle["shape"];
+  if (typeof s.size === "string" && SIZES.has(s.size)) out.size = s.size as MindNodeStyle["size"];
+  if (s.bold === true) out.bold = true;
+  if (s.underline === true) out.underline = true;
+  if (s.strike === true) out.strike = true;
+  if (s.italic === true) out.italic = true;
+  if (typeof s.line === "string" && LINES.has(s.line)) out.line = s.line as MindNodeStyle["line"];
+  return Object.keys(out).length ? out : undefined;
+}
+
 export function readMindNode(raw: unknown): MindNode | null {
   if (!raw || typeof raw !== "object") return null;
   const n = raw as Record<string, unknown>;
   const id = str(n.id);
   if (!id) return null;
-  return {
+  const node: MindNode = {
     id,
     parentId: typeof n.parentId === "string" && n.parentId ? n.parentId : null,
     title: str(n.title),
@@ -121,6 +169,106 @@ export function readMindNode(raw: unknown): MindNode | null {
       : [],
     collapsed: n.collapsed === true,
   };
+
+  /* The optional fields are ADDED only when present and valid, so a card
+     that never had them round-trips byte-for-byte — which is what keeps the
+     CRDT's change detection and the undo stack's folding honest. */
+  const style = readStyle(n.style);
+  if (style) node.style = style;
+  if (typeof n.icon === "string" && n.icon.trim()) node.icon = n.icon.trim().slice(0, 8);
+  if ([1, 2, 3, 4, 5].includes(n.priority as number)) node.priority = n.priority as MindNode["priority"];
+  if ([0, 25, 50, 75, 100].includes(n.progress as number)) node.progress = n.progress as MindNode["progress"];
+  if (Array.isArray(n.tags)) {
+    const tags = n.tags
+      .filter((t): t is string => typeof t === "string")
+      .map((t) => t.trim().slice(0, 40))
+      .filter(Boolean)
+      .slice(0, 20);
+    if (tags.length) node.tags = tags;
+  }
+  if (typeof n.taskId === "string" && n.taskId) node.taskId = n.taskId;
+  const f = n.floating as Record<string, unknown> | undefined;
+  if (f && typeof f === "object" && typeof f.x === "number" && typeof f.y === "number" && Number.isFinite(f.x) && Number.isFinite(f.y) && node.parentId === null) {
+    node.floating = { x: Math.round(f.x), y: Math.round(f.y) };
+  }
+  return node;
+}
+
+/* ── Map-level extras ──────────────────────────────────────────────────── */
+
+function readRelation(raw: unknown): MindRelation | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const id = str(r.id);
+  const from = str(r.from);
+  const to = str(r.to);
+  if (!id || !from || !to || from === to) return null;
+  const out: MindRelation = { id, from, to, label: str(r.label).slice(0, 200) };
+  if (r.line === "straight" || r.line === "curve") out.line = r.line;
+  const c = colour(r.color);
+  if (c) out.color = c;
+  return out;
+}
+
+function readBoundary(raw: unknown): MindBoundary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const b = raw as Record<string, unknown>;
+  const id = str(b.id);
+  const nodeId = str(b.nodeId);
+  if (!id || !nodeId) return null;
+  const out: MindBoundary = { id, nodeId, label: str(b.label).slice(0, 200) };
+  const c = colour(b.color);
+  if (c) out.color = c;
+  return out;
+}
+
+function readSummary(raw: unknown): MindSummary | null {
+  if (!raw || typeof raw !== "object") return null;
+  const s = raw as Record<string, unknown>;
+  const id = str(s.id);
+  const nodeId = str(s.nodeId);
+  if (!id || !nodeId) return null;
+  return { id, nodeId, text: str(s.text).slice(0, 500) };
+}
+
+/**
+ * The map-level extras, defaulted. Never null: a map from before extras
+ * existed simply has the default layout and theme and nothing drawn across it.
+ *
+ * Relations, boundaries and summaries that name a card not in `nodeIds` are
+ * dropped here rather than drawn to nowhere — a dangling line is the visual
+ * form of `undefined.x`.
+ */
+export function readMindMapExtras(raw: unknown, nodeIds: ReadonlySet<string>): MindMapExtras {
+  const out = emptyExtras();
+  if (!raw || typeof raw !== "object") return out;
+  const e = raw as Record<string, unknown>;
+
+  const settings = e.settings && typeof e.settings === "object" ? (e.settings as Record<string, unknown>) : {};
+  out.settings = {
+    layout:
+      typeof settings.layout === "string" && LAYOUTS.has(settings.layout)
+        ? (settings.layout as MindLayoutKind)
+        : DEFAULT_MINDMAP_SETTINGS.layout,
+    theme:
+      typeof settings.theme === "string" && THEMES.has(settings.theme)
+        ? (settings.theme as MindThemeKind)
+        : DEFAULT_MINDMAP_SETTINGS.theme,
+    ...(settings.numbering === true ? { numbering: true } : {}),
+  };
+  if (Array.isArray(e.relations))
+    out.relations = e.relations
+      .map(readRelation)
+      .filter((r): r is MindRelation => r !== null && nodeIds.has(r.from) && nodeIds.has(r.to));
+  if (Array.isArray(e.boundaries))
+    out.boundaries = e.boundaries
+      .map(readBoundary)
+      .filter((b): b is MindBoundary => b !== null && nodeIds.has(b.nodeId));
+  if (Array.isArray(e.summaries))
+    out.summaries = e.summaries
+      .map(readSummary)
+      .filter((s): s is MindSummary => s !== null && nodeIds.has(s.nodeId));
+  return out;
 }
 
 /**

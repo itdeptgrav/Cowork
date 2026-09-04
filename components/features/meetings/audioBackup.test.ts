@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * Losing somebody's voice because they never came back.
@@ -29,12 +30,24 @@ function code(path: string): string {
 }
 
 const DRAIN = "components/features/meetings/PendingAudioDrain.tsx";
+/* The shell is TWO modules since the workspace tree was split out of
+   `ShellFrame.tsx` into `WorkspaceShell.tsx` — a bundle split, so that
+   /signin stops downloading LiveKit. "Mounted in the shell" is still one
+   claim, so both files are read as one text. */
 const SHELL = "components/layout/shell/ShellFrame.tsx";
+const WORKSPACE_SHELL = "components/layout/shell/WorkspaceShell.tsx";
 const HOOK = "lib/legacy-ui/useMeetingRecording.ts";
 const BACKUP = "lib/legacy-ui/useBackupRecording.ts";
 const PANEL = "components/features/meetings/RecordingsPanel.tsx";
-const ROUTES =
-  "D:/GRAV_Project/grav-cms-backend/routes/task_routes/audioRecording.routes.js";
+/* Resolved per-machine, and with CRLF normalised, by `backendSource`. This was
+   a hardcoded `D:/GRAV_Project/...` absolute path, so on every other checkout
+   the six engine assertions below threw ENOENT and read as broken tests rather
+   than as a missing engine — which is how the atomic-claim and stale-claim
+   guarantees came to be unchecked here. */
+const ROUTES = "routes/task_routes/audioRecording.routes.js";
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
 
 /* ------------------------------------------------ 1. the retry, everywhere */
 
@@ -44,7 +57,7 @@ test("the drain is module-level, not trapped inside the room's hook", () => {
 });
 
 test("the drain runs from the shell, on every page", () => {
-  const src = code(SHELL);
+  const src = code(SHELL) + code(WORKSPACE_SHELL);
   assert.match(src, /<PendingAudioDrain \/>/);
 });
 
@@ -80,31 +93,31 @@ test("nothing is uploaded until the server says the original is missing", () => 
   assert.match(src, /if \(!claim\.needed \|\| !claim\.claimed\) continue;/);
 });
 
-test("the claim is atomic, so five holders cannot all upload", () => {
-  const src = readFileSync(ROUTES, "utf8");
+test("the claim is atomic, so five holders cannot all upload", { skip: SKIP_ENGINE }, () => {
+  const src = backendSource(ROUTES);
   assert.match(src, /runTransaction/);
   assert.match(src, /meeting_audio_backup_claims/);
   assert.match(src, /claimedBy !== claimedBy|d\.claimedBy !== claimedBy/);
 });
 
-test("a stale claim expires, so a closed laptop cannot lock it forever", () => {
-  const src = readFileSync(ROUTES, "utf8");
+test("a stale claim expires, so a closed laptop cannot lock it forever", { skip: SKIP_ENGINE }, () => {
+  const src = backendSource(ROUTES);
   assert.match(src, /STALE_MS/);
 });
 
-test("the server checks AGAIN before writing", () => {
+test("the server checks AGAIN before writing", { skip: SKIP_ENGINE }, () => {
   /* The claim is taken when the meeting ends; their own upload may finish in
      the minutes after — a slow connection, or the drain on another page. */
-  const src = readFileSync(ROUTES, "utf8");
+  const src = backendSource(ROUTES);
   const finalize = src.slice(src.indexOf('"/audio/backup-finalize"'));
   assert.match(finalize, /realRecordingExists/, "finalize trusts the old claim");
   assert.match(finalize, /backup discarded/);
 });
 
-test("a backup row never counts as the real recording", () => {
+test("a backup row never counts as the real recording", { skip: SKIP_ENGINE }, () => {
   /* Otherwise a backup would satisfy the check that decides whether a backup
      is needed, and the second one would never be rescued. */
-  const src = readFileSync(ROUTES, "utf8");
+  const src = backendSource(ROUTES);
   assert.match(src, /d\.data\(\)\.isBackup !== true/);
 });
 
@@ -135,13 +148,13 @@ test("a backup is labelled wherever it is read", () => {
   assert.match(code("lib/domain/work.ts"), /recordedByName: string;/);
 });
 
-test("the Drive file is named as a backup too", () => {
+test("the Drive file is named as a backup too", { skip: SKIP_ENGINE }, () => {
   /* Somebody opening the folder directly never sees the panel's label. */
-  assert.match(readFileSync(ROUTES, "utf8"), /_backup\.\$\{ext\}/);
+  assert.match(backendSource(ROUTES), /_backup\.\$\{ext\}/);
 });
 
-test("the backup carries who captured it", () => {
-  const src = readFileSync(ROUTES, "utf8");
+test("the backup carries who captured it", { skip: SKIP_ENGINE }, () => {
+  const src = backendSource(ROUTES);
   assert.match(src, /isBackup: true/);
   assert.match(src, /recordedBy,/);
 });

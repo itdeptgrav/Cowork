@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  ConnectionQualityIndicator,
   ParticipantName,
   TrackMutedIndicator,
   VideoTrack,
@@ -9,6 +10,7 @@ import {
 import { Track } from "livekit-client";
 import { Avatar } from "@/components/ui/Avatar";
 import { useQuery } from "@/lib/hooks/useRepository";
+import { useMaybeRoomSignals } from "./RoomSignals";
 
 /**
  * What a tile shows when there is no camera: the person, not a grey outline.
@@ -40,6 +42,9 @@ export function TileContent() {
   /* One read for the whole room, served from the query cache — every tile asks
      the same question and `useQuery` dedupes it to a single fetch. */
   const people = useQuery((r) => r.listEmployees(), []);
+  /* Optional: a tile can be rendered outside the signals provider (the lobby
+     preview), and a missing hand is not a reason to fail to draw a person. */
+  const signals = useMaybeRoomSignals();
 
   if (!trackRef) return null;
 
@@ -72,6 +77,21 @@ export function TileContent() {
         </div>
       )}
 
+      {/**
+       * A raised hand, on the tile.
+       *
+       * The roster is where hands are managed, but somebody watching the grid
+       * should not have to open a panel to notice that a person on screen is
+       * waiting to speak — which is the entire purpose of raising one.
+       */}
+      {signals?.hands.has(participant.identity) && (
+        <div className="pointer-events-none absolute left-1.5 top-1.5 z-10 rounded-full bg-amber-400/95 px-1.5 py-0.5 text-[13px] leading-none shadow">
+          <span role="img" aria-label={`${participant.name ?? participant.identity} has a hand up`}>
+            ✋
+          </span>
+        </div>
+      )}
+
       {/* The furniture the default tile draws, kept: replacing the content
           means replacing all of it, and a tile with no name is worse than a
           grey outline with one. */}
@@ -86,6 +106,16 @@ export function TileContent() {
             />
           )}
           <ParticipantName />
+          {/**
+           * Connection quality, restored.
+           *
+           * The default `ParticipantTile` draws this, and supplying children
+           * REPLACES the default content rather than layering over it — so
+           * taking over the tile to show a photograph silently dropped the one
+           * signal that explains why somebody sounds like a robot. Without it
+           * a bad line is indistinguishable from a person mumbling.
+           */}
+          <ConnectionQualityIndicator participant={participant} />
         </div>
       </div>
     </>

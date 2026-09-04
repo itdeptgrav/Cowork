@@ -75,6 +75,12 @@ export interface DocumentPageSetup {
   header: string;
   footer: string;
   pageNumbers: boolean;
+  /** Faint diagonal text behind every page ("DRAFT"); empty for none. */
+  watermark?: string;
+  /** The paper colour, a hex string; unset for the theme's page white. */
+  pageColor?: string;
+  /** Number each block down the left margin, as legal drafts do. */
+  lineNumbers?: boolean;
 }
 
 export interface CoworkDocument {

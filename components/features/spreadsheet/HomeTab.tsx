@@ -13,10 +13,12 @@
  * control is absent rather than present-and-dead — see the note at the end.
  */
 
+import { BAND_PRESETS } from "@/lib/spreadsheet/banding";
 import { useState } from "react";
 import { columnLabel } from "@/lib/spreadsheet/coordinates";
 import type { BorderLineStyle, BorderPreset, CellStyle, NumberFormatKind } from "@/lib/spreadsheet/style";
 import { Dropdown } from "./Dropdown";
+import { PATTERN_EXAMPLES, formatWithPattern, patternProblem } from "@/lib/spreadsheet/numberPattern";
 import { SheetIcon } from "./SheetIcons";
 import { ConditionalFormatForm } from "./DataControls";
 import type { SpreadsheetController } from "./useSpreadsheet";
@@ -76,6 +78,16 @@ const NUMBER_FORMATS: { label: string; value: NumberFormatKind }[] = [
   { label: "Time", value: "time" },
   { label: "Date time", value: "datetime" },
   { label: "Text", value: "text" },
+  { label: "Custom", value: "custom" },
+];
+
+const ROTATIONS: { label: string; patch: Partial<CellStyle> }[] = [
+  { label: "Horizontal", patch: { rotation: undefined, stackText: false } },
+  { label: "Angle up (45°)", patch: { rotation: 45, stackText: false } },
+  { label: "Angle down (-45°)", patch: { rotation: -45, stackText: false } },
+  { label: "Vertical text", patch: { rotation: undefined, stackText: true } },
+  { label: "Rotate up (90°)", patch: { rotation: 90, stackText: false } },
+  { label: "Rotate down (-90°)", patch: { rotation: -90, stackText: false } },
 ];
 const FONTS = [
   { label: "Default", value: "" },
@@ -200,6 +212,7 @@ export function HomeTab({
               <button type="button" className={menuItem} title="Pastes what was copied, including its formatting and formulas." onClick={() => { close(); controller.paste(); }}>Paste</button>
               <button type="button" className={menuItem} title="Pastes the values only — the destination keeps its own formatting." onClick={() => { close(); controller.pasteSpecial("values"); }}>Values only</button>
               <button type="button" className={menuItem} title="Pastes the formatting only — the destination keeps its own values." onClick={() => { close(); controller.pasteSpecial("formats"); }}>Formatting only</button>
+              <button type="button" className={menuItem} title="Pastes the block turned on its side — rows become columns. Formulas are pasted as they are." onClick={() => { close(); controller.pasteSpecial("transpose"); }}>Transposed</button>
             </>
           )}
         </Dropdown>
@@ -277,6 +290,18 @@ export function HomeTab({
         <button type="button" title="Align centre" aria-pressed={s.align === "center"} className={`${cell} ${s.align === "center" ? on : ""}`} onMouseDown={keep} onClick={() => set({ align: s.align === "center" ? undefined : "center" })}><SheetIcon.alignCenter /></button>
         <button type="button" title="Align right" aria-pressed={s.align === "right"} className={`${cell} ${s.align === "right" ? on : ""}`} onMouseDown={keep} onClick={() => set({ align: s.align === "right" ? undefined : "right" })}><SheetIcon.alignRight /></button>
         <button type="button" title="Wrap text" aria-pressed={s.wrap} className={`${cell} ${s.wrap ? on : ""}`} onMouseDown={keep} onClick={() => set({ wrap: !s.wrap })}><SheetIcon.wrap /></button>
+        <Dropdown label={<>Rotate ▾</>} triggerClassName={cell} title="Turn the text in the selected cells"
+          panelClassName="absolute left-0 top-8 z-40 flex w-44 flex-col overflow-hidden rounded-card border border-hairline bg-[var(--surface-raised)] py-1 shadow-lg">
+          {(close) => (
+            <>
+              {ROTATIONS.map((r) => (
+                <button key={r.label} type="button" className={menuItem} onClick={() => { close(); set(r.patch); }}>
+                  {r.label}
+                </button>
+              ))}
+            </>
+          )}
+        </Dropdown>
         <Dropdown label={<><SheetIcon.merge /> Merge ▾</>} triggerClassName={cell}
           panelClassName="absolute left-0 top-8 z-40 flex w-48 flex-col overflow-hidden rounded-card border border-hairline bg-[var(--surface-raised)] py-1 shadow-lg">
           {(close) => (
@@ -307,10 +332,18 @@ export function HomeTab({
         <select aria-label="Number format" className={`${sel} w-24`} value={numberKind}
           onChange={(e) => {
             const k = e.target.value as NumberFormatKind;
+            if (k === "custom") {
+              set({ numberFormat: { kind: "custom", pattern: s.numberFormat?.pattern ?? "#,##0.00" } });
+              return;
+            }
             set({ numberFormat: k === "automatic" ? undefined : { kind: k, decimals, currency: s.numberFormat?.currency } });
           }}>
           {NUMBER_FORMATS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
+        <Dropdown label="Custom…" triggerClassName={cell} title="A number format of your own: #,##0.00, dd mmm yyyy, 0.0%"
+          panelClassName="absolute left-0 top-8 z-40 w-72 rounded-card border border-hairline bg-[var(--surface-raised)] p-2.5 shadow-lg">
+          {(close) => <CustomFormatPanel controller={controller} onDone={close} />}
+        </Dropdown>
         <button type="button" title="Currency" className={cell} onMouseDown={keep} onClick={() => set({ numberFormat: { kind: "currency", decimals: decimals ?? 2, currency: s.numberFormat?.currency ?? "$" } })}>$</button>
         <button type="button" title="Percent" className={cell} onMouseDown={keep} onClick={() => set({ numberFormat: { kind: "percent", decimals: decimals ?? 0 } })}>%</button>
         <button type="button" title="Thousands separator" className={cell} onMouseDown={keep} onClick={() => set({ numberFormat: { kind: "number", decimals: decimals ?? 2 } })}>,</button>
@@ -369,6 +402,15 @@ export function HomeTab({
               <button type="button" className={menuItem} title="Set an exact height, in pixels, for every selected row." onClick={() => { close(); const v = globalThis.prompt?.("Row height in pixels", "24"); const n = Number(v); if (Number.isFinite(n) && n > 0) { const r = controller.selection.range; controller.resizeRows(r.top, r.bottom, n); } }}>Row height…</button>
               <button type="button" className={menuItem} title="Set an exact width, in pixels, for every selected column." onClick={() => { close(); const v = globalThis.prompt?.("Column width in pixels", "100"); const n = Number(v); if (Number.isFinite(n) && n > 0) { const r = controller.selection.range; controller.resizeCols(r.left, r.right, n); } }}>Column width…</button>
               <button type="button" className={menuItem} title="Resets the active row to the default height." onClick={() => { close(); controller.autoFitRow(controller.selection.active.row); }}>Auto-fit row height</button>
+              <div className="my-1 h-px bg-[var(--color-hairline)]" />
+              <span className="px-2 py-1 text-[11px] text-ink-faint">Alternating colours</span>
+              {BAND_PRESETS.map((preset) => (
+                <button key={preset.label} type="button" className={`${menuItem} flex items-center gap-2`} title={`Band the selected rows in ${preset.label.toLowerCase()}, with a darker header row.`} onClick={() => { close(); controller.addBanding(preset); }}>
+                  <span aria-hidden className="inline-flex h-3 w-6 overflow-hidden rounded-[2px] border border-hairline"><span className="flex-1" style={{ background: preset.header }} /><span className="flex-1" style={{ background: preset.even }} /></span>
+                  {preset.label} bands
+                </button>
+              ))}
+              <button type="button" className={menuItem} title="Removes every band touching the selection." onClick={() => { close(); controller.removeBanding(); }}>Remove alternating colours</button>
             </>
           )}
         </Dropdown>
@@ -426,3 +468,66 @@ export function HomeTab({
  *  · **Find & Select** — the search bar is state the grid owns, so the ribbon
  *    cannot open it yet. Ctrl+F and Ctrl+H still do.
  */
+
+/**
+ * A format pattern of the person's own, with a live preview against the
+ * active cell's value (or a sample when it is not a number) and a list of
+ * starting points to click into the box.
+ */
+function CustomFormatPanel({ controller, onDone }: { controller: SpreadsheetController; onDone: () => void }) {
+  const current = controller.activeStyle.numberFormat;
+  const [pattern, setPattern] = useState(current?.kind === "custom" && current.pattern ? current.pattern : "#,##0.00");
+  const { active } = controller.selection;
+  const live = controller.engine.getValue(controller.activeSheetId, active.row, active.col);
+  const sample = typeof live === "number" ? live : 1234.5678;
+  const problem = patternProblem(pattern);
+  return (
+    <div className="flex flex-col gap-2" onPointerDown={(e) => e.stopPropagation()}>
+      <label className="text-[11px] font-medium text-ink">
+        Format
+        <input
+          value={pattern}
+          onChange={(e) => setPattern(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !problem) {
+              e.preventDefault();
+              controller.applyFormat({ numberFormat: { kind: "custom", pattern } });
+              onDone();
+            }
+          }}
+          spellCheck={false}
+          className="mt-1 h-8 w-full rounded-md border border-hairline bg-transparent px-2 font-mono text-[12px] text-ink outline-none focus:border-ink"
+          aria-label="Custom number format"
+        />
+      </label>
+      <p className="text-[11px] text-ink-muted">
+        {problem ? problem : <>Preview: <span className="font-mono text-ink">{formatWithPattern(sample, pattern)}</span></>}
+      </p>
+      <ul className="max-h-40 overflow-y-auto rounded-md border border-hairline">
+        {PATTERN_EXAMPLES.map((ex) => (
+          <li key={ex.pattern}>
+            <button
+              type="button"
+              onClick={() => setPattern(ex.pattern)}
+              className="flex w-full items-center justify-between gap-2 px-2 py-1 text-left text-[11.5px] text-ink hover:bg-[color-mix(in_srgb,var(--ink)_8%,transparent)]"
+            >
+              <span>{ex.label}</span>
+              <span className="font-mono text-ink-faint">{ex.pattern}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <button
+        type="button"
+        disabled={!!problem}
+        onClick={() => {
+          controller.applyFormat({ numberFormat: { kind: "custom", pattern } });
+          onDone();
+        }}
+        className="h-8 rounded-md bg-ink px-3 text-[12px] text-[var(--body-bg)] disabled:opacity-40"
+      >
+        Apply
+      </button>
+    </div>
+  );
+}

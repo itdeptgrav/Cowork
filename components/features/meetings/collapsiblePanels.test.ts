@@ -21,7 +21,15 @@ import { readFileSync } from "node:fs";
  */
 
 function code(path: string): string {
+  /* CRLF → LF FIRST, before anything searches this text.
+     Every source file in this repo is stored with CRLF endings, and the
+     assertions below look for multi-line shapes written with "\n" — so
+     `indexOf` returned -1 on text that was present, and two tests failed
+     claiming "the chevron lost aria-hidden" and "the two logs are not
+     adjacent" when both were correct in the source all along. A test that
+     reports a fault which is not there is worse than having no test. */
   return readFileSync(path, "utf8")
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 }

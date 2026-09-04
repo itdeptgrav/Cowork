@@ -27,11 +27,12 @@
  * unprefixed room as a document for the same reason.
  */
 
-export type CollabKind = "document" | "mindmap";
+export type CollabKind = "document" | "mindmap" | "workbook";
 
 /** The prefix for each kind that carries one. Documents deliberately have none. */
 const PREFIX: Record<Exclude<CollabKind, "document">, string> = {
   mindmap: "mindmap:",
+  workbook: "workbook:",
 };
 
 /** The room for a document. The id itself — see the note above. */
@@ -42,6 +43,11 @@ export function documentRoom(documentId: string): string {
 /** The room for a mindmap. */
 export function mindmapRoom(mindmapId: string): string {
   return `${PREFIX.mindmap}${mindmapId}`;
+}
+
+/** The room for a spreadsheet workbook. */
+export function workbookRoom(workbookId: string): string {
+  return `${PREFIX.workbook}${workbookId}`;
 }
 
 /**
@@ -56,6 +62,10 @@ export function parseRoom(room: string): { kind: CollabKind; id: string } | null
   if (name.startsWith(PREFIX.mindmap)) {
     const id = name.slice(PREFIX.mindmap.length);
     return id ? { kind: "mindmap", id } : null;
+  }
+  if (name.startsWith(PREFIX.workbook)) {
+    const id = name.slice(PREFIX.workbook.length);
+    return id ? { kind: "workbook", id } : null;
   }
   return name ? { kind: "document", id: name } : null;
 }

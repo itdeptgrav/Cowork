@@ -14,8 +14,10 @@
  * this build genuinely lacks, it is absent rather than dead (see the end).
  */
 
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Dropdown } from "./Dropdown";
+import { rangeLabel } from "@/lib/spreadsheet/coordinates";
+import { PIVOT_AGGS, type PivotAgg } from "@/lib/spreadsheet/pivot";
 import { SheetIcon } from "./SheetIcons";
 import { ValidationForm } from "./ValidationForm";
 import type { SpreadsheetController } from "./useSpreadsheet";
@@ -157,6 +159,34 @@ export function DataTab({ controller }: { controller: SpreadsheetController }) {
         >
           Remove duplicates
         </button>
+        <button
+          type="button"
+          className={cmd}
+          title="Trims the ends and collapses runs of spaces in every selected text cell. Numbers and formulas are left alone."
+          onMouseDown={keep}
+          onClick={() => controller.trimWhitespace()}
+        >
+          Trim whitespace
+        </button>
+      </Group>
+
+      <Group label="Summarise">
+        <PivotMenu controller={controller} />
+        {controller.pivots.length > 0 && (
+          <button
+            type="button"
+            className={cmd}
+            onMouseDown={keep}
+            title="Rebuild every pivot table from its source's current values"
+            onClick={() => controller.refreshPivots()}
+          >
+            Refresh pivots ({controller.pivots.length})
+          </button>
+        )}
+      </Group>
+
+      <Group label="Protection">
+        <ProtectMenu controller={controller} />
       </Group>
 
       <Group label="Outline">
@@ -167,7 +197,176 @@ export function DataTab({ controller }: { controller: SpreadsheetController }) {
         <span aria-hidden className="mx-0.5 h-5 w-px bg-[var(--color-hairline)]" />
         <button type="button" className={cmd} onMouseDown={keep} title="Writes a SUM under each run of equal values in the selection's first column, totalling its second. Sort by that column first — a group is a run of equal values, not every row sharing one." onClick={() => { const r = controller.selection.range; controller.insertSubtotals(r.left, Math.min(r.left + 1, r.right)); }}>Subtotal</button>
       </Group>
+
+      <Group label="Column outline">
+        <button type="button" className={cmd} onMouseDown={keep} title="Outlines the selected columns so they can be collapsed and expanded together. Needs two or more columns." onClick={() => controller.groupCols()}>Group</button>
+        <button type="button" className={cmd} onMouseDown={keep} title="Removes the outline from the selected columns." onClick={() => controller.ungroupCols()}>Ungroup</button>
+        <button type="button" className={cmd} onMouseDown={keep} title="Hides the outlined columns, leaving the first as the handle to expand from." onClick={() => controller.setColsCollapsed(true)}>Collapse</button>
+        <button type="button" className={cmd} onMouseDown={keep} title="Shows the columns a collapsed outline was hiding." onClick={() => controller.setColsCollapsed(false)}>Expand</button>
+      </Group>
     </>
+  );
+}
+
+/**
+ * A pivot table of the selection — its first row is the headers, and the
+ * three menus choose which header goes down the side, which (if any) across
+ * the top, and which is summed, counted or averaged. The table lands on a
+ * new sheet, and Refresh rebuilds it later.
+ */
+function PivotMenu({ controller }: { controller: SpreadsheetController }) {
+  const [rowField, setRowField] = useState(0);
+  const [colField, setColField] = useState(-1);
+  const [valueField, setValueField] = useState(1);
+  const [agg, setAgg] = useState<PivotAgg>("sum");
+  const [problem, setProblem] = useState<string | null>(null);
+  const tooSmall = controller.selection.range.bottom - controller.selection.range.top < 1;
+  const select = "h-8 w-full rounded-md border border-hairline bg-transparent px-2 text-[12px] text-ink outline-none focus:border-ink";
+  return (
+    <Dropdown
+      label="Pivot table ▾"
+      triggerClassName={`${cmd} cursor-pointer`}
+      title="Summarise the selected records on a new sheet"
+      panelClassName="absolute left-0 top-8 z-40 w-72 rounded-card border border-hairline bg-[var(--surface-raised)] p-2.5 shadow-lg"
+    >
+      {(close) => {
+        const fields = tooSmall ? [] : controller.pivotFieldsOfSelection();
+        return (
+          <div className="flex flex-col gap-2" onPointerDown={(e) => e.stopPropagation()}>
+            {tooSmall ? (
+              <p className="text-[11.5px] text-ink-muted">Select the records first, with their header row on top.</p>
+            ) : (
+              <>
+                <label className="text-[11px] text-ink-muted">
+                  Rows
+                  <select className={select} value={rowField} onChange={(e) => setRowField(Number(e.target.value))}>
+                    {fields.map((f, i) => <option key={i} value={i}>{f}</option>)}
+                  </select>
+                </label>
+                <label className="text-[11px] text-ink-muted">
+                  Columns
+                  <select className={select} value={colField} onChange={(e) => setColField(Number(e.target.value))}>
+                    <option value={-1}>None</option>
+                    {fields.map((f, i) => <option key={i} value={i}>{f}</option>)}
+                  </select>
+                </label>
+                <label className="text-[11px] text-ink-muted">
+                  Values
+                  <select className={select} value={valueField} onChange={(e) => setValueField(Number(e.target.value))}>
+                    {fields.map((f, i) => <option key={i} value={i}>{f}</option>)}
+                  </select>
+                </label>
+                <label className="text-[11px] text-ink-muted">
+                  Summarise by
+                  <select className={select} value={agg} onChange={(e) => setAgg(e.target.value as PivotAgg)}>
+                    {PIVOT_AGGS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+                  </select>
+                </label>
+                {problem && <p className="text-[11.5px] text-[var(--state-overdue-ink,#b42318)]">{problem}</p>}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const p = controller.insertPivot({ rowField, valueField, agg, ...(colField >= 0 ? { colField } : {}) });
+                    setProblem(p);
+                    if (!p) close();
+                  }}
+                  className="h-8 rounded-md bg-ink px-3 text-[12px] text-[var(--body-bg)]"
+                >
+                  Create on a new sheet
+                </button>
+              </>
+            )}
+            {controller.pivots.length > 0 && (
+              <ul className="mt-1 max-h-32 overflow-y-auto rounded-md border border-hairline text-[11.5px]">
+                {controller.pivots.map((p, i) => {
+                  const target = controller.workbook.worksheets.find((ws) => ws.id === p.target.sheetId);
+                  return (
+                    <li key={p.id} className="flex items-center gap-2 px-2 py-1">
+                      <button type="button" className="min-w-0 flex-1 text-left text-ink" onClick={() => { controller.switchSheet(p.target.sheetId); close(); }}>
+                        Pivot {i + 1} <span className="text-ink-faint">· {target?.name ?? "missing sheet"}</span>
+                      </button>
+                      <button type="button" className="shrink-0 text-ink-muted hover:text-ink" title="Forget this pivot's definition; the sheet and its cells stay" onClick={() => controller.removePivot(p.id)}>
+                        Remove
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        );
+      }}
+    </Dropdown>
+  );
+}
+
+/**
+ * Protect the selection or the whole sheet against everyone but the owner.
+ * Only the owner sees live controls; an editor sees why they are disabled,
+ * which is better than a menu that silently does nothing.
+ */
+function ProtectMenu({ controller }: { controller: SpreadsheetController }) {
+  const [note, setNote] = useState("");
+  const owner = controller.access === "owner";
+  const p = controller.protection;
+  const sheetName = (id: string) => controller.workbook.worksheets.find((s) => s.id === id)?.name ?? id;
+  void sheetName;
+  return (
+    <Dropdown
+      label={<>Protect{p ? (p.sheet ? " (sheet)" : p.ranges?.length ? ` (${p.ranges.length})` : "") : ""} ▾</>}
+      triggerClassName={`${cmd} cursor-pointer`}
+      title={owner ? "Lock the selection, or the whole sheet, so only you can change it" : "Only the owner can protect cells"}
+      panelClassName="absolute left-0 top-8 z-40 flex w-72 flex-col gap-2 rounded-card border border-hairline bg-[var(--surface-raised)] p-2.5 shadow-lg"
+    >
+      {(close) => (
+        <div className="flex flex-col gap-2" onPointerDown={(e) => e.stopPropagation()}>
+          {!owner && <p className="text-[11.5px] text-ink-muted">Only the owner of this workbook can protect cells or lift a protection.</p>}
+          <div className="flex items-center gap-1.5">
+            <input
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Note, e.g. quarterly totals"
+              aria-label="Note for the protected range"
+              disabled={!owner}
+              className="h-8 min-w-0 flex-1 rounded-md border border-hairline bg-transparent px-2 text-[12px] text-ink outline-none focus:border-ink disabled:opacity-50"
+            />
+            <button
+              type="button"
+              disabled={!owner}
+              onClick={() => { controller.protectRange(note); setNote(""); close(); }}
+              className="h-8 shrink-0 rounded-md bg-ink px-3 text-[12px] text-[var(--body-bg)] disabled:opacity-40"
+              title="Locks the selected cells"
+            >
+              Protect selection
+            </button>
+          </div>
+          <button
+            type="button"
+            disabled={!owner}
+            onClick={() => { controller.protectSheet(!p?.sheet); close(); }}
+            className={`${menuItem} rounded-md border border-hairline disabled:opacity-40`}
+          >
+            {p?.sheet ? "Unprotect the whole sheet" : "Protect the whole sheet"}
+          </button>
+          {p?.ranges && p.ranges.length > 0 && (
+            <ul className="max-h-40 overflow-y-auto rounded-md border border-hairline">
+              {p.ranges.map((r) => (
+                <li key={r.id} className="flex items-center gap-2 px-2 py-1 text-[11.5px]">
+                  <button type="button" className="min-w-0 flex-1 text-left text-ink" onClick={() => { controller.selectRect(r.rect); close(); }}>
+                    <span className="font-mono">{rangeLabel(r.rect)}</span>
+                    {r.note && <span className="text-ink-muted"> · {r.note}</span>}
+                  </button>
+                  <button type="button" disabled={!owner} onClick={() => controller.unprotectRange(r.id)} className="shrink-0 text-ink-muted hover:text-ink disabled:opacity-40">
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {!p && owner && <p className="text-[11px] text-ink-faint">Nothing is protected on this sheet. Protected cells can still be read and copied by everyone.</p>}
+        </div>
+      )}
+    </Dropdown>
   );
 }
 

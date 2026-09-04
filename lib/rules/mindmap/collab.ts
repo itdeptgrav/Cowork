@@ -1,5 +1,5 @@
 import * as Y from "yjs";
-import type { MindNode, MindNodeId } from "../../domain/mindmap.ts";
+import { emptyExtras, type MindMapExtras, type MindNode, type MindNodeId } from "../../domain/mindmap.ts";
 
 /**
  * The mindmap as a CRDT: how a card tree lives in a Yjs document.
@@ -38,22 +38,49 @@ import type { MindNode, MindNodeId } from "../../domain/mindmap.ts";
 
 export const NODES_KEY = "nodes";
 export const ORDER_KEY = "order";
+/**
+ * The map-level extras — layout, theme, relationships, boundaries, summaries —
+ * as ONE value under one key. Last writer wins, whole, which is the right
+ * granularity: two people changing the layout at once is a coin toss either
+ * way, and a relationship is added or removed as a unit. Splitting these into
+ * per-item CRDT entries would buy nothing for how rarely they change and would
+ * put four more structures in every seed and every reconcile.
+ */
+export const EXTRAS_KEY = "extras";
 
 export interface MindMapCrdt {
   nodes: Y.Map<MindNode>;
   order: Y.Array<MindNodeId>;
+  extras: Y.Map<MindMapExtras>;
 }
 
 export function crdtOf(doc: Y.Doc): MindMapCrdt {
   return {
     nodes: doc.getMap<MindNode>(NODES_KEY),
     order: doc.getArray<MindNodeId>(ORDER_KEY),
+    extras: doc.getMap<MindMapExtras>(EXTRAS_KEY),
   };
 }
 
 /** Whether anything has been written yet — the test for "should I seed?". */
 export function isEmpty(crdt: MindMapCrdt): boolean {
   return crdt.nodes.size === 0 && crdt.order.length === 0;
+}
+
+/** The room's extras, or the defaults when nobody has written any. */
+export function readExtras(crdt: MindMapCrdt): MindMapExtras {
+  const v = crdt.extras.get("value");
+  return v ? v : emptyExtras();
+}
+
+/** Put extras in the room — only when they actually differ. */
+export function writeExtras(crdt: MindMapCrdt, next: MindMapExtras): void {
+  const current = crdt.extras.get("value");
+  if (current && JSON.stringify(current) === JSON.stringify(next)) return;
+  const doc = crdt.extras.doc;
+  const apply = () => crdt.extras.set("value", next);
+  if (doc) doc.transact(apply);
+  else apply();
 }
 
 /**
@@ -86,7 +113,13 @@ export function readNodes(crdt: MindMapCrdt): MindNode[] {
   return out;
 }
 
-/** Whether two cards differ. Shallow by value — a card is a small flat record. */
+/**
+ * Whether two cards differ. Shallow by value — a card is a small flat record.
+ *
+ * The optional fields are compared through JSON, which treats "absent" and
+ * "undefined" alike — so a card that gained an empty `tags` from a reader and
+ * one that never had it are the same card, and neither triggers a write.
+ */
 function differs(a: MindNode | undefined, b: MindNode): boolean {
   if (!a) return true;
   return (
@@ -94,6 +127,13 @@ function differs(a: MindNode | undefined, b: MindNode): boolean {
     a.title !== b.title ||
     a.description !== b.description ||
     a.collapsed !== b.collapsed ||
+    (a.icon ?? "") !== (b.icon ?? "") ||
+    (a.priority ?? null) !== (b.priority ?? null) ||
+    (a.progress ?? null) !== (b.progress ?? null) ||
+    (a.taskId ?? null) !== (b.taskId ?? null) ||
+    JSON.stringify(a.floating ?? null) !== JSON.stringify(b.floating ?? null) ||
+    JSON.stringify(a.style ?? null) !== JSON.stringify(b.style ?? null) ||
+    JSON.stringify(a.tags ?? []) !== JSON.stringify(b.tags ?? []) ||
     JSON.stringify(a.links) !== JSON.stringify(b.links) ||
     JSON.stringify(a.images) !== JSON.stringify(b.images)
   );

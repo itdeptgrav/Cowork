@@ -27,7 +27,19 @@ import { decode, checkClaims, verifyIdToken } from "@/lib/auth/firebaseToken";
  * only checking a signature, would be trusted for more than it can carry.
  */
 
-const PUBLIC_PATHS = new Set(["/signin", "/signup", "/reset-password", "/sso"]);
+const PUBLIC_PATHS = new Set([
+  "/signin",
+  "/signup",
+  "/reset-password",
+  /* Somebody who has forgotten their password has, by definition, no session.
+     Gating this would redirect them to the sign-in form they cannot get past,
+     which is a loop with no exit. Must stay in step with `AUTH_ROUTES` in
+     `components/layout/shell/ShellFrame.tsx` — a path listed here but not there
+     renders fine past this proxy and is then bounced client-side a moment
+     later, which looks like "the page redirects for no reason". */
+  "/forgot-password",
+  "/sso",
+]);
 
 /**
  * The legacy-migration operator surfaces, open in development only.

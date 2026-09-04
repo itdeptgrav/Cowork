@@ -63,6 +63,31 @@ export interface MindImage {
 
 export type MindNodeId = string;
 
+/**
+ * How a card looks. Every field optional, and absent means "the theme's
+ * default for this depth" — so a map made before styling existed reads back
+ * exactly as it did, and a card that has never been styled carries nothing.
+ */
+export interface MindNodeStyle {
+  /** A named swatch from the map's palette, or a CSS colour. */
+  fill?: string;
+  /** Text colour. Defaults to whatever reads on `fill`. */
+  text?: string;
+  shape?: "rounded" | "rect" | "pill" | "underline" | "ellipse";
+  /** Title size. `m` is the default. */
+  size?: "s" | "m" | "l" | "xl";
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strike?: boolean;
+  /** Connector line to the parent. */
+  line?: "curve" | "straight" | "elbow";
+}
+
+/** The importance markers XMind-style tools carry on a card. */
+export type MindPriority = 1 | 2 | 3 | 4 | 5;
+export type MindProgress = 0 | 25 | 50 | 75 | 100;
+
 export interface MindNode {
   id: MindNodeId;
   /** Null for the root. Every other card has exactly one parent. */
@@ -73,6 +98,91 @@ export interface MindNode {
   images: MindImage[];
   /** Children hidden. The card itself stays visible, carrying a count. */
   collapsed: boolean;
+  /* ── Optional from here: absent on every card written before these existed. */
+  style?: MindNodeStyle;
+  /** One emoji, drawn before the title. */
+  icon?: string;
+  priority?: MindPriority | null;
+  progress?: MindProgress | null;
+  /** Short labels, drawn as chips under the title. */
+  tags?: string[];
+  /**
+   * A floating topic: a card with no parent that is not the root, placed
+   * where it was dropped (canvas coordinates) with its own branch beneath it.
+   */
+  floating?: { x: number; y: number };
+  /**
+   * A Cowork task this card stands for. The one thing a mindmap here can do
+   * that a standalone tool cannot: a branch of ideas becomes the work, and the
+   * card reads the task's state back.
+   */
+  taskId?: string | null;
+}
+
+/* ── Map-level extras ──────────────────────────────────────────────────────
+ *
+ * Things that belong to the MAP rather than to one card: how it is laid out,
+ * what palette it uses, and the lines and groupings drawn across the tree.
+ * Stored beside the cards in the body, never on the record, because the list
+ * has no use for them and the body is what a save replaces whole.
+ */
+
+export type MindLayoutKind =
+  | "right"
+  | "left"
+  | "both"
+  | "org"
+  | "tree"
+  | "radial"
+  | "timeline"
+  | "fishbone";
+
+export type MindThemeKind = "field" | "mono" | "vivid" | "warm" | "cool" | "night";
+
+export interface MindMapSettings {
+  layout: MindLayoutKind;
+  theme: MindThemeKind;
+  /** Draw "1.2.3" before each card's title, by position in the tree. */
+  numbering?: boolean;
+}
+
+/** A line between two cards that are not parent and child. */
+export interface MindRelation {
+  id: string;
+  from: MindNodeId;
+  to: MindNodeId;
+  label: string;
+  /** Curved by default; straight reads better for short hops. */
+  line?: "curve" | "straight";
+  color?: string;
+}
+
+/** A shaded region around a card and its whole branch. */
+export interface MindBoundary {
+  id: string;
+  nodeId: MindNodeId;
+  label: string;
+  color?: string;
+}
+
+/** A bracket across a card's children, with a sentence about them together. */
+export interface MindSummary {
+  id: string;
+  nodeId: MindNodeId;
+  text: string;
+}
+
+export interface MindMapExtras {
+  settings: MindMapSettings;
+  relations: MindRelation[];
+  boundaries: MindBoundary[];
+  summaries: MindSummary[];
+}
+
+export const DEFAULT_MINDMAP_SETTINGS: MindMapSettings = { layout: "right", theme: "field" };
+
+export function emptyExtras(): MindMapExtras {
+  return { settings: { ...DEFAULT_MINDMAP_SETTINGS }, relations: [], boundaries: [], summaries: [] };
 }
 
 /**
@@ -141,4 +251,6 @@ export type MindMapSummary = MindMapRecord;
 export interface MindMapDetail {
   mindmap: MindMapRecord;
   nodes: MindNode[];
+  /** Layout, theme, relationships and groupings. Defaults on a map that has none. */
+  extras: MindMapExtras;
 }

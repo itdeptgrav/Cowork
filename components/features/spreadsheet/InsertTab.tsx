@@ -17,12 +17,15 @@
  * button that is here does something.
  */
 
-import { useState } from "react";
-import { cellRef } from "@/lib/spreadsheet/coordinates";
+import { useState, useRef } from "react";
+import { cellRef, isSingleCell, rangeLabel } from "@/lib/spreadsheet/coordinates";
 import { FUNCTION_HELP, type FnCategory } from "@/lib/spreadsheet/formula/catalog";
 import { normalizeUrl } from "@/lib/spreadsheet/hyperlink";
 import { BODY_ROWS, TABLE_TEMPLATES } from "@/lib/spreadsheet/templates";
 import { Dropdown } from "./Dropdown";
+import { useRepo } from "@/lib/hooks/useRepository";
+import { driveImageSrc } from "@/lib/rules/media/driveUrls";
+import { CHART_TYPES } from "@/lib/spreadsheet/charts";
 import type { SpreadsheetController } from "./useSpreadsheet";
 
 /* ── Icons, same conventions as SheetIcons (16px box, 1.5 stroke) ─────────── */
@@ -96,7 +99,7 @@ const EMOJI: { group: string; chars: string[] }[] = [
   { group: "People", chars: ["👍", "👎", "🙌", "👀", "🙋", "💬", "🎉", "🔥", "💡", "🤝"] },
 ];
 
-const CATEGORIES: FnCategory[] = ["Math", "Statistical", "Logical", "Text", "Date", "Lookup", "Array"];
+const CATEGORIES: FnCategory[] = ["Math", "Statistical", "Logical", "Text", "Date", "Lookup", "Array", "Financial", "Info", "Engineering", "Visual"];
 
 export function InsertTab({ controller }: { controller: SpreadsheetController }) {
   /* Commands act on the selection, so a click must not take focus off it. */
@@ -213,6 +216,11 @@ export function InsertTab({ controller }: { controller: SpreadsheetController })
         <TableMenu controller={controller} />
       </Group>
 
+      {/* ── Charts: a floating picture of the selected range ────────────── */}
+      <Group label="Charts">
+        <ChartMenu controller={controller} />
+      </Group>
+
       {/* ── Sheet ────────────────────────────────────────────────────────── */}
       <Group label="Sheet">
         <button type="button" className={cmd} onMouseDown={keepFocus}
@@ -251,6 +259,11 @@ export function InsertTab({ controller }: { controller: SpreadsheetController })
       {/* ── Comment ──────────────────────────────────────────────────────── */}
       <Group label="Notes">
         <CommentMenu controller={controller} row={active.row} col={active.col} />
+        <NoteMenu controller={controller} row={active.row} col={active.col} />
+      </Group>
+
+      <Group label="Pictures">
+        <ImageUpload controller={controller} />
       </Group>
     </>
   );
@@ -581,6 +594,46 @@ function DropdownMenu({ controller }: { controller: SpreadsheetController }) {
   );
 }
 
+/* ── Chart ────────────────────────────────────────────────────────────────── */
+
+/**
+ * Insert a chart of the selection. Needs at least two cells — one cell has
+ * nothing to plot — and lands as a floating object the person then drags,
+ * resizes and retypes from the bar that appears over it.
+ */
+function ChartMenu({ controller }: { controller: SpreadsheetController }) {
+  const single = isSingleCell(controller.selection.range);
+  return (
+    <Dropdown
+      title={single ? "Select at least two cells to chart" : "Insert a chart of the selection"}
+      triggerClassName={`${cmd} ${single ? "opacity-40" : ""}`}
+      panelClassName={panelForm}
+      label={<>Chart</>}
+    >
+      {(close) => (
+        <div className="w-[200px] p-1.5">
+          <p className={menuLabel}>{single ? "Select a range first" : `Chart of ${rangeLabel(controller.selection.range)}`}</p>
+          {CHART_TYPES.map((t) => (
+            <button
+              key={t.type}
+              type="button"
+              disabled={single}
+              className="flex w-full items-center px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-[color-mix(in_srgb,var(--ink)_8%,transparent)] disabled:opacity-40"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => {
+                controller.insertChart(t.type);
+                close();
+              }}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </Dropdown>
+  );
+}
+
 /* ── Emoji ────────────────────────────────────────────────────────────────── */
 
 function EmojiMenu({ controller }: { controller: SpreadsheetController }) {
@@ -623,6 +676,102 @@ function EmojiMenu({ controller }: { controller: SpreadsheetController }) {
         </div>
       )}
     </Dropdown>
+  );
+}
+
+/* ── Note ─────────────────────────────────────────────────────────────────── */
+
+/**
+ * A note — a plain annotation on the active cell, shown when the pointer
+ * rests on it, marked with a violet corner. Distinct from a comment, which
+ * is a thread people reply to.
+ */
+function NoteMenu({ controller, row, col }: { controller: SpreadsheetController; row: number; col: number }) {
+  const existing = controller.noteLookup(row, col) ?? "";
+  const [text, setText] = useState(existing);
+  const [seenRef, setSeenRef] = useState(`${row},${col}`);
+  const ref = `${row},${col}`;
+  /* A different cell: show its note, not the last one typed. */
+  if (seenRef !== ref) {
+    setSeenRef(ref);
+    setText(existing);
+  }
+  return (
+    <Dropdown title="A note on the active cell — shown on hover" triggerClassName={cmd} panelClassName={panelForm} label={<>Note</>}>
+      {(close) => (
+        <div className="w-[260px] p-2" onPointerDown={(e) => e.stopPropagation()}>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            rows={4}
+            placeholder="Anything worth knowing about this cell"
+            className="w-full rounded-md border border-hairline bg-transparent px-2 py-1.5 text-[12px] text-ink outline-none focus:border-ink"
+            aria-label="Note"
+          />
+          <div className="mt-1.5 flex justify-end gap-1.5">
+            {existing && (
+              <button type="button" className={cmd} onMouseDown={(e) => e.preventDefault()} onClick={() => { controller.setNote(row, col, ""); setText(""); close(); }}>
+                Remove
+              </button>
+            )}
+            <button type="button" className={primary} onMouseDown={(e) => e.preventDefault()} onClick={() => { controller.setNote(row, col, text); close(); }}>
+              Save note
+            </button>
+          </div>
+        </div>
+      )}
+    </Dropdown>
+  );
+}
+
+/* ── Picture ──────────────────────────────────────────────────────────────── */
+
+/**
+ * A picture in the active cell: uploaded to the same store documents and
+ * mindmaps use, then written as =IMAGE(address) so it travels with the
+ * sheet and exports as a formula. Without a store the control says so.
+ */
+function ImageUpload({ controller }: { controller: SpreadsheetController }) {
+  const repo = useRepo();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const canUpload = typeof repo.uploadDriveFile === "function";
+
+  async function onFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file || !repo.uploadDriveFile) return;
+    if (!file.type.startsWith("image/")) {
+      setProblem("Choose an image file.");
+      return;
+    }
+    setBusy(true);
+    setProblem(null);
+    const r = await repo.uploadDriveFile(file);
+    setBusy(false);
+    if (!r.ok) {
+      setProblem(r.message);
+      return;
+    }
+    controller.insertImageCell(r.data.fileId ? driveImageSrc(r.data.fileId) : r.data.url);
+  }
+
+  return (
+    <>
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={(e) => void onFile(e)} />
+      <button
+        type="button"
+        className={cmd}
+        disabled={!canUpload || busy}
+        title={canUpload ? "Upload a picture into the active cell" : "Upload isn't configured on this deployment; type =IMAGE(\"https://…\") instead"}
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => fileRef.current?.click()}
+      >
+        {busy ? "Uploading…" : "Image"}
+      </button>
+      {problem && <span className="text-[11px] text-[var(--state-overdue-ink,#b42318)]">{problem}</span>}
+    </>
   );
 }
 

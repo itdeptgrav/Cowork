@@ -160,9 +160,11 @@ class Parser {
         if (this.peek()?.type === "lparen") return this.parseCall(upper);
         if (upper === "TRUE") return { type: "boolean", value: true };
         if (upper === "FALSE") return { type: "boolean", value: false };
-        /* A bare word that is neither a function nor a boolean is #NAME? — a
-           parse failure the engine surfaces as that error. */
-        throw new ParseError(`Unknown name ${t.value}`);
+        /* A bare word that is neither a function nor a boolean is a NAMED
+           RANGE. Whether it exists is the engine's question, at evaluation:
+           the same formula reads #NAME? until the name is defined and a value
+           the moment it is, without being re-typed. */
+        return { type: "name", name: upper };
       }
       default:
         throw new ParseError(`Unexpected ${t.value}`);

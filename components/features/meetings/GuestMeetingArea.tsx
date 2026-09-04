@@ -32,7 +32,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CarouselLayout,
-  ControlBar,
   FocusLayout,
   FocusLayoutContainer,
   GridLayout,
@@ -53,6 +52,9 @@ import {
 import { BREAKPOINT, useMediaQuery } from "@/lib/hooks/useMediaQuery";
 import { COWORK_ROOM_OPTIONS } from "./roomOptions";
 import { DeviceIntentSync } from "./DeviceIntentSync";
+import { MeetingControlBar } from "./MeetingControlBar";
+import { RoomOverlays, RoomSidePanel, useRoomExtras } from "./RoomExtras";
+import { RoomSignalsProvider } from "./RoomSignals";
 import { useFullscreen } from "@/lib/legacy-ui/useFullscreen";
 import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
 
@@ -848,19 +850,74 @@ function GuestRoom({
           onDisconnected={onLeave}
           onError={(e) => setError(e.message)}
         >
-          <GuestStage />
-          <div className="shrink-0 border-t border-white/10">
-            {/* A guest is the MOST likely person to be on a phone — they were
-                sent a link, and a link opens wherever the reader happens to be.
-                The verbose row does not fit 375px, and `variation` is a prop no
-                stylesheet can override. */}
-            <ControlBar variation={wideEnoughForLabels ? "verbose" : "minimal"} />
-          </div>
+          {/**
+           * **A guest gets the same in-call features as everybody else.**
+           *
+           * The stage stays its own — a guest has no tile menu and never reads
+           * the employee directory, which is why `GuestStage` exists. But chat,
+           * a raised hand, a reaction, a reconnection notice and knowing who
+           * else is in the room are not workspace features, and the guest is
+           * usually the person in the meeting with the least context. They were
+           * the ones given the least to work with.
+           */}
+          <GuestExtras compact={!wideEnoughForLabels} />
           <RoomAudioRenderer />
           <DeviceIntentSync onChange={onDeviceIntent} />
         </LiveKitRoom>
       )}
     </section>
+  );
+}
+
+/**
+ * The stage, and everything a guest can do around it.
+ *
+ * One component because the toolbar and the side panel share which panel is
+ * open, and that state has to live above both — while `useChatUnread` needs the
+ * room context, so it cannot live in `GuestRoom`, which is what renders
+ * `LiveKitRoom`.
+ *
+ * `withDirectory={false}`: a guest is not entitled to read the employee
+ * directory, so the roster shows the names people published with. That is what
+ * LiveKit's own tiles show them anyway, so the panel agrees with the grid.
+ */
+function GuestExtras({ compact }: { compact: boolean }) {
+  const { panel, setPanel, unreadChat } = useRoomExtras();
+
+  /* Chromium only. Offering the menu where `setSinkId` does not exist gives a
+     control that changes a dropdown and nothing else. */
+  const canSelectSpeaker =
+    typeof window !== "undefined" &&
+    typeof HTMLMediaElement !== "undefined" &&
+    "setSinkId" in HTMLMediaElement.prototype;
+
+  return (
+    <RoomSignalsProvider>
+      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+        <div className="relative flex min-h-0 flex-1 flex-col">
+          <GuestStage />
+          <RoomOverlays />
+        </div>
+        <RoomSidePanel
+          panel={panel}
+          onClose={() => setPanel(null)}
+          isHost={false}
+          withDirectory={false}
+        />
+      </div>
+      {/* The same single bar the workspace rooms use — a guest gets the same
+          microphone, camera, share and Leave as everybody else, drawn the same
+          way, rather than a second control bar that drifts from it. */}
+      <div className="shrink-0 border-t border-white/10">
+        <MeetingControlBar
+          panel={panel}
+          onPanelChange={setPanel}
+          unreadChat={unreadChat}
+          compact={compact}
+          canSelectSpeaker={canSelectSpeaker}
+        />
+      </div>
+    </RoomSignalsProvider>
   );
 }
 

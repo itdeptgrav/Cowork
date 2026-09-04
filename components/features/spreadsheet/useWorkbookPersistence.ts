@@ -18,6 +18,7 @@
  */
 
 import { useEffect, useRef, useState } from "react";
+import type { WorkbookAccess } from "@/lib/spreadsheet/protection";
 import { Autosaver } from "@/lib/spreadsheet/autosave";
 import type { SerializedWorkbook } from "@/lib/spreadsheet/persistence";
 import {
@@ -25,6 +26,11 @@ import {
   loadWorkbook,
   renameWorkbook,
   saveWorkbook,
+  listVersions as listVersionsRequest,
+  restoreVersion as restoreVersionRequest,
+  saveVersion as saveVersionRequest,
+  deleteVersion as deleteVersionRequest,
+  type WorkbookVersion,
   WorkbookRequestError,
 } from "@/lib/spreadsheet/workbookClient";
 import type { SpreadsheetController } from "./useSpreadsheet";
@@ -43,15 +49,27 @@ function hasContent(wb: { worksheets: { cells: object; cellStyles: object }[] })
 
 export interface WorkbookPersistence {
   state: SaveState;
+  /** How the signed-in person reaches this workbook. A draft is theirs. */
+  access: WorkbookAccess;
   title: string;
   workbookId: string | null;
   errorMessage: string | null;
   rename: (title: string) => void;
   saveNow: () => void;
   retry: () => void;
+  /* Version history — only for a stored workbook; a draft has none yet. */
+  listVersions: () => Promise<WorkbookVersion[]>;
+  /** Flushes any pending save first, so the version holds what is on screen. */
+  saveVersion: (label: string) => Promise<WorkbookVersion>;
+  /** Replaces the live content with the version's; the state being replaced
+      is kept as a version of its own first. */
+  restoreVersion: (versionId: string) => Promise<void>;
+  deleteVersion: (versionId: string) => Promise<void>;
 }
 
 const AUTOSAVE_MS = 1000;
+/** How often a saved workbook keeps an automatic version of itself. */
+const AUTO_VERSION_MS = 15 * 60 * 1000;
 
 /**
  * @param workbookId Which workbook to open. `null` means none is chosen yet —
@@ -68,6 +86,10 @@ export function useWorkbookPersistence(
   const [state, setState] = useState<SaveState>("loading");
   const [title, setTitle] = useState("Untitled workbook");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [access, setAccess] = useState<WorkbookAccess>("owner");
+  /* When the last automatic version was kept. Null until the first save,
+     which only starts the clock — opening a sheet never writes a version. */
+  const lastAutoVersion = useRef<number | null>(null);
   /* The id actually LOADED — echoed back for callers, and distinct from the
      `workbookId` asked for, which is only a request until the load lands. */
   const [loadedId, setLoadedId] = useState<string | null>(null);
@@ -167,10 +189,31 @@ export function useWorkbookPersistence(
       save: async (data) => {
         const m = meta.current;
         if (!m.id) return;
-        const res = await saveWorkbook(m.id, data, m.revision);
+        let res: { revision: number };
+        try {
+          res = await saveWorkbook(m.id, data, m.revision);
+        } catch (e) {
+          /* Somebody else saved first. With live collaboration every client
+             holds the same content, so the save is repeated once at the
+             revision the server now has rather than reported as a conflict;
+             a second refusal is a real conflict and surfaces as one. */
+          if (e instanceof WorkbookRequestError && e.kind === "conflict" && typeof e.currentRevision === "number") {
+            m.revision = e.currentRevision;
+            res = await saveWorkbook(m.id, data, m.revision);
+          } else throw e;
+        }
         m.revision = res.revision;
         setState("saved");
         setErrorMessage(null);
+        /* A version of its own every so often, so a bad afternoon can be
+           undone even after the undo stack is gone. Best-effort: a failed
+           checkpoint is not a failed save. */
+        const nowMs = Date.now();
+        if (lastAutoVersion.current === null) lastAutoVersion.current = nowMs;
+        else if (nowMs - lastAutoVersion.current >= AUTO_VERSION_MS) {
+          lastAutoVersion.current = nowMs;
+          void saveVersionRequest(m.id, "Automatic", true).catch(() => {});
+        }
       },
       onError: handleError,
       /* A settled burst that turned out to change nothing (an undo back to the
@@ -203,6 +246,7 @@ export function useWorkbookPersistence(
            rather than a synchronous write during the effect. */
         setState("loading");
         const loaded = await loadWorkbook(workbookId);
+        setAccess(loaded.access ?? "owner");
         if (cancelled) return;
         controllerRef.current.hydrate(loaded.data);
         autosaver.setBaseline(loaded.data);
@@ -330,8 +374,44 @@ export function useWorkbookPersistence(
     void autosaverRef.current?.flush();
   }
 
+  async function listVersions(): Promise<WorkbookVersion[]> {
+    if (!meta.current.id) return [];
+    return listVersionsRequest(meta.current.id);
+  }
+
+  async function saveVersion(label: string): Promise<WorkbookVersion> {
+    if (!meta.current.id) await ensureRecord();
+    await autosaverRef.current?.flush();
+    const id = meta.current.id;
+    if (!id) throw new Error("Save the sheet before keeping a version of it.");
+    return saveVersionRequest(id, label);
+  }
+
+  async function restoreVersion(versionId: string): Promise<void> {
+    const id = meta.current.id;
+    if (!id) return;
+    await autosaverRef.current?.flush();
+    const res = await restoreVersionRequest(id, versionId);
+    controllerRef.current.hydrate(res.data);
+    autosaverRef.current?.setBaseline(res.data);
+    meta.current.revision = res.revision;
+    setState("saved");
+    setErrorMessage(null);
+  }
+
+  async function deleteVersion(versionId: string): Promise<void> {
+    const id = meta.current.id;
+    if (!id) return;
+    await deleteVersionRequest(id, versionId);
+  }
+
   return {
     state,
+    access,
+    listVersions,
+    saveVersion,
+    restoreVersion,
+    deleteVersion,
     title,
     workbookId: loadedId,
     errorMessage,

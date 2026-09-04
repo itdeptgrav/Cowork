@@ -284,6 +284,20 @@ export function readMeetingStatus(doc: LegacyMeetingDoc): Meeting["status"] {
     case "archived":
     case "scheduled":
       return doc.status;
+    /**
+     * `"ended"` is a finished meeting, not an unknown one.
+     *
+     * `livekit.routes.js` used to write this string, and it is not in the
+     * engine's own `MEET_STATUSES`. It therefore fell to the `default:` below
+     * and every meeting ended through that route came back as **scheduled** —
+     * a call that finished last week reappearing in the list as one that has
+     * not happened yet, with a Join button.
+     *
+     * That route now writes `"completed"`, but documents written before it did
+     * still exist and must not reopen because the word for them changed.
+     */
+    case "ended":
+      return "completed";
     default:
       return "scheduled";
   }
