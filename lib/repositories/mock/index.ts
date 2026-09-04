@@ -402,11 +402,13 @@ import type {
   MusicQueue,
   MusicResult,
   MindMapDetail,
+  MindMapExtras,
   MindMapRecord,
   MindMapRole,
   MindMapSummary,
   MindNode,
 } from "@/lib/domain";
+import { emptyExtras } from "@/lib/domain";
 
 const LATENCY_MS = 120;
 
@@ -8842,7 +8844,11 @@ export class MockRepository implements CoworkRepository {
        a 403 on an id confirms the id is real. */
     if (!mindmap) return delay(null);
     const body = s.mindmapNodes.find((b) => b.mindmapId === id);
-    return delay({ mindmap: { ...mindmap }, nodes: [...(body?.nodes ?? [])] });
+    return delay({
+      mindmap: { ...mindmap },
+      nodes: [...(body?.nodes ?? [])],
+      extras: body?.extras ? structuredClone(body.extras) : emptyExtras(),
+    });
   }
 
   async createMindMap(input: {
@@ -8951,6 +8957,7 @@ export class MockRepository implements CoworkRepository {
   async saveMindMapNodes(
     id: string,
     nodes: MindNode[],
+    extras?: MindMapExtras,
   ): Promise<ActionResult<MindMapDetail>> {
     const g = guard();
     if (g) return g;
@@ -8974,11 +8981,20 @@ export class MockRepository implements CoworkRepository {
     const now = nowIso();
     const stored = nodes.map((n) => ({ ...n }));
     const body = s.mindmapNodes.find((b) => b.mindmapId === id);
+    /* Omitted extras keep what is stored — the same rule the engine applies,
+       so a caller that only changed a card cannot reset the layout. */
+    const keptExtras = extras ? structuredClone(extras) : body?.extras;
     if (body) {
       body.nodes = stored;
+      if (keptExtras) body.extras = keptExtras;
       body.updatedAt = now;
     } else {
-      s.mindmapNodes.push({ mindmapId: id, nodes: stored, updatedAt: now });
+      s.mindmapNodes.push({
+        mindmapId: id,
+        nodes: stored,
+        ...(keptExtras ? { extras: keptExtras } : {}),
+        updatedAt: now,
+      });
     }
     /* `nodeCount` is written here, in the one place that writes cards, so the
        list's figure cannot drift from the tree it describes. */
@@ -8986,7 +9002,13 @@ export class MockRepository implements CoworkRepository {
     map.updatedAt = now;
     map.lastEditedById = me;
     persistStore();
-    return delay(ok({ mindmap: { ...map }, nodes: [...stored] }));
+    return delay(
+      ok({
+        mindmap: { ...map },
+        nodes: [...stored],
+        extras: keptExtras ? structuredClone(keptExtras) : emptyExtras(),
+      }),
+    );
   }
 
   async setMindMapMember(

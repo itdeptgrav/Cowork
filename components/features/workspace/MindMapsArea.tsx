@@ -25,8 +25,11 @@ import {
   type PaletteCommand,
 } from "./CommandPalette";
 import { MindMapWorkbench } from "./MindMapWorkbench";
+import { MindMapImportDialog } from "./MindMapImportDialog";
+import { Popover } from "@/components/ui/Workspace";
+import { MINDMAP_TEMPLATES, templateNodes } from "@/lib/rules/mindmap/templates";
 import { WorkspaceStage } from "./WorkspaceStage";
-import type { MindMapSummary } from "@/lib/domain";
+import type { MindMapSummary, MindNode } from "@/lib/domain";
 
 /**
  * Mindmaps — the browser, and the one that is open.
@@ -74,6 +77,21 @@ export function MindMapsArea({
   const [importLocal, importState] = useAction((r, local: LocalMindMap) =>
     r.createMindMap({ title: local.title, nodes: local.nodes }),
   );
+  /* A map from pasted or uploaded text — Markdown, an outline, OPML. The same
+     create the browser-held map goes through: the engine validates the tree
+     either way, so an import is not a trusted path just because it is new. */
+  const [importText, importTextState] = useAction(
+    (r, input: { title: string; nodes: MindNode[] }) => r.createMindMap(input),
+  );
+  const [showImport, setShowImport] = useState(false);
+  const runTextImport = async (input: { title: string; nodes: MindNode[] }) => {
+    const r = await importText(input);
+    if (!r.ok) return;
+    setShowImport(false);
+    setJustCreated(r.data);
+    setOpenId(r.data.id);
+    maps.refetch();
+  };
   const [rename] = useAction((r, id: string, title: string) =>
     r.renameMindMap(id, title),
   );
@@ -390,6 +408,45 @@ export function MindMapsArea({
         )}
         <span className="flex-1" />
         <CommandPalette commands={commands} surface="Workspace" />
+        <Button size="sm" tone="ghost" onClick={() => setShowImport(true)}>
+          Import
+        </Button>
+        {/* Starting maps. Each is an outline in lib/rules/mindmap/templates.ts;
+            Blank is what New mindmap makes. */}
+        <Popover
+          label="New from template"
+          align="right"
+          trigger={({ toggle }) => (
+            <Button size="sm" tone="ghost" onClick={toggle} disabled={importTextState.isPending}>
+              Templates
+            </Button>
+          )}
+        >
+          {(close) => (
+            <div className="w-[260px] p-1.5">
+              <p className="px-2 pb-1 text-[11px] font-medium text-ink">Start from</p>
+              {MINDMAP_TEMPLATES.filter((t) => t.id !== "blank").map((t) => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    close();
+                    let n = 0;
+                    const stamp = Date.now().toString(36);
+                    void runTextImport({
+                      title: t.label,
+                      nodes: templateNodes(t, () => `n${stamp}${(++n).toString(36)}`),
+                    });
+                  }}
+                  className="block w-full rounded-inset px-2 py-1.5 text-left hover:bg-[var(--control)]"
+                >
+                  <span className="block text-[12.5px] text-ink">{t.label}</span>
+                  <span className="block text-[10.5px] text-ink-faint">{t.hint}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </Popover>
         <Button loading={createState.isPending}
           size="sm"
           disabled={createState.isPending}
@@ -398,6 +455,15 @@ export function MindMapsArea({
           {createState.isPending ? "…" : "New mindmap"}
         </Button>
       </div>
+
+      {showImport && (
+        <MindMapImportDialog
+          busy={importTextState.isPending}
+          error={importTextState.error ?? null}
+          onImport={(input) => void runTextImport(input)}
+          onClose={() => setShowImport(false)}
+        />
+      )}
 
       {/* The map this browser still holds, offered once.
           Above the table rather than inside the empty state, because somebody

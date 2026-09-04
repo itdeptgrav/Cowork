@@ -14,7 +14,13 @@
  * what changed by identity and the model can be tested without a DOM.
  */
 
+import type { Banding } from "./banding";
 import { cellRef, parseCellRef, type CellPos, type Rect } from "./coordinates";
+import type { NamedRange } from "./names";
+import type { ChartSpec } from "./charts";
+import type { SheetProtection } from "./protection";
+import type { PivotDefinition } from "./pivot";
+import type { PageSetup } from "./printHtml";
 import { DEFAULT_COL_WIDTH, DEFAULT_ROW_HEIGHT, type GridMetrics } from "./metrics";
 import type { SheetFilter } from "./filter";
 import type { Validation } from "./validation";
@@ -90,11 +96,30 @@ export interface Worksheet {
   /** Outline bands over rows. A collapsed band hides its rows through the same
       mechanism manual hiding uses, so the geometry needs no new concept. */
   rowGroups?: RowGroup[];
+  /** Outline bands over columns — the same shape, over column indices. */
+  colGroups?: RowGroup[];
+  /** Notes — a plain annotation on a cell, shown on hover; distinct from a
+      comment thread. Sparse, keyed by A1 ref. */
+  notes?: Record<string, string>;
+  /** Charts floating over the grid, each drawn from a range on this sheet. */
+  charts?: ChartSpec[];
+  /** Locked cells — the whole sheet, or ranges of it. See `protection.ts`. */
+  protection?: SheetProtection;
+  /** Alternating row colours (see `banding.ts`). */
+  banding?: Banding[];
+  /** Paper, orientation, margins and print area. See `printHtml.ts`. */
+  pageSetup?: PageSetup;
 }
 
 export interface Workbook {
   worksheets: Worksheet[];
   activeSheetId: string;
+  /** Named ranges — workbook-wide words that stand for a range on a sheet.
+      Absent means none. See `names.ts`. */
+  names?: NamedRange[];
+  /** Pivot tables — each remembers its source and target so Refresh can
+      rebuild it. See `pivot.ts`. */
+  pivots?: PivotDefinition[];
 }
 
 export function createWorksheet(

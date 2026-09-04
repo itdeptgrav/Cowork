@@ -58,7 +58,9 @@ export type NumberFormatKind =
   | "shortDate"
   | "longDate"
   | "fraction"
-  | "text";
+  | "text"
+  /* A pattern of the person's own — see `numberPattern.ts`. */
+  | "custom";
 
 export interface NumberFormat {
   kind: NumberFormatKind;
@@ -66,6 +68,8 @@ export interface NumberFormat {
   decimals?: number;
   /** The currency symbol, for the currency format only. */
   currency?: string;
+  /** The format pattern, for the custom kind only: "#,##0.00", "dd mmm yyyy". */
+  pattern?: string;
 }
 
 /** Everything that can be set on a cell. Absent = the default. */
@@ -81,6 +85,10 @@ export interface CellStyle {
   align?: HAlign;
   valign?: VAlign;
   wrap?: boolean;
+  /** Text rotation in degrees, -90 to 90; positive turns the text up. */
+  rotation?: number;
+  /** Letters stacked top to bottom, upright — "vertical text". */
+  stackText?: boolean;
   borders?: Borders;
   numberFormat?: NumberFormat;
 }
@@ -112,6 +120,8 @@ export function normalizeStyle(s: CellStyle): CellStyle {
   if (s.align) out.align = s.align;
   if (s.valign) out.valign = s.valign;
   if (s.wrap) out.wrap = true;
+  if (typeof s.rotation === "number" && s.rotation !== 0 && Math.abs(s.rotation) <= 90) out.rotation = Math.round(s.rotation);
+  if (s.stackText) out.stackText = true;
   if (s.borders) {
     const b: Borders = {};
     for (const edge of EDGES) {
@@ -124,6 +134,7 @@ export function normalizeStyle(s: CellStyle): CellStyle {
     const nf: NumberFormat = { kind: s.numberFormat.kind };
     if (typeof s.numberFormat.decimals === "number") nf.decimals = s.numberFormat.decimals;
     if (s.numberFormat.currency) nf.currency = s.numberFormat.currency;
+    if (s.numberFormat.kind === "custom" && s.numberFormat.pattern) nf.pattern = s.numberFormat.pattern.slice(0, 120);
     out.numberFormat = nf;
   }
   return out;

@@ -65,6 +65,21 @@ export interface TranscriptLine {
 
 const TOPIC = "meeting-transcript";
 
+/**
+ * Meetings whose parent transcript document this tab has already created.
+ *
+ * The parent exists so the security rules have something to address, which is a
+ * once-per-meeting need — but it was `setDoc(..., { merge: true })` on EVERY
+ * line, doubling the write count and making one document the hot spot for the
+ * whole meeting. Firestore also rate-limits sustained writes to a single
+ * document, so a lively meeting was contending with itself.
+ *
+ * Module-scoped rather than a ref: the guard should survive the hook
+ * remounting, which happens whenever the room is docked, undocked or the panel
+ * is collapsed.
+ */
+const parentEnsured = new Set<string>();
+
 // ── Firestore helpers ──────────────────────────────────────────────────────────
 
 async function saveLineToFirestore(
@@ -88,12 +103,23 @@ async function saveLineToFirestore(
         deleteAtMs,
       },
     );
-    // Ensure parent doc exists so the Firestore security rules can address it
-    await setDoc(
-      doc(firebaseDb, "meeting_transcripts", meetId),
-      { meetId, deleteAtMs, updatedAt: serverTimestamp() },
-      { merge: true },
-    );
+    // Ensure parent doc exists so the Firestore security rules can address it —
+    // once per meeting per tab, not once per line. See `parentEnsured`.
+    if (!parentEnsured.has(meetId)) {
+      parentEnsured.add(meetId);
+      try {
+        await setDoc(
+          doc(firebaseDb, "meeting_transcripts", meetId),
+          { meetId, deleteAtMs, updatedAt: serverTimestamp() },
+          { merge: true },
+        );
+      } catch (e) {
+        /* Let the next line retry rather than leaving the parent missing for
+           the rest of the meeting. */
+        parentEnsured.delete(meetId);
+        throw e;
+      }
+    }
   } catch (e) {
     console.warn("[useMeetingTranscript] saveLineToFirestore:", e);
   }
@@ -187,6 +213,31 @@ export function useMeetingTranscript({
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
   const runningRef = useRef(false);
   const micOnRef = useRef(false);
+  /**
+   * Consecutive restarts that produced no speech, used to back off.
+   *
+   * `onend` re-`start()`s after 300ms whenever the mic is on, which is right
+   * for the ordinary case — the Web Speech API ends a session on its own after
+   * a stretch of silence and has to be restarted to keep listening.
+   *
+   * It is wrong when the restart itself is what is failing. A `network` or
+   * `service-not-allowed`-adjacent failure ends the session immediately, so the
+   * pair became a ~3 Hz retry loop for the length of the meeting: a request
+   * every 300ms to a service that is not answering, with nothing counting the
+   * failures and nothing ever giving up. Only `not-allowed` broke the cycle,
+   * because that branch clears `micOnRef`.
+   *
+   * Reset by any final result, so a working meeting never backs off.
+   *
+   * Counted ONLY for failure ends, never for silence ends. A meeting is mostly
+   * people listening, and the API ends a session after every quiet stretch — so
+   * counting those would climb the ladder and switch off the transcript of the
+   * person who was politely not talking. `lastErrorRef` is what tells the two
+   * apart.
+   */
+  const emptyRestartsRef = useRef(0);
+  /** The last `onerror` reason, consumed by the next `onend`. */
+  const lastErrorRef = useRef<string | null>(null);
   const localPartRef = useRef(localParticipant);
   const nameRef = useRef(participantName);
   const activeLangRef = useRef<LangCode>(SUPPORTED_LANGS.HINDI.code);
@@ -212,12 +263,38 @@ export function useMeetingTranscript({
     });
   }, [meetId]);
 
-  // ── Add line: state + Firestore ───────────────────────────────────────────
-  const addLine = useCallback((line: TranscriptLine) => {
+  /**
+   * Show a line. Does NOT persist it.
+   *
+   * **The split this replaces.** There was one `addLine` that appended to state
+   * AND wrote to Firestore, and BOTH the local recogniser and every remote
+   * participant's `DataReceived` handler called it. LiveKit does not echo your
+   * own `publishData` back to you, so the two paths never overlap for one
+   * speaker — but they do mean that when somebody speaks, every OTHER person in
+   * the room writes that sentence to Firestore as well.
+   *
+   * Because the document id was minted per caller (`Date.now()` plus a random
+   * suffix), the writers never converged on one document. One sentence in an
+   * N-person meeting became N documents and, counting the parent merge, 2N
+   * writes — and on the next load `loadLinesFromFirestore` faithfully rendered
+   * each sentence N times, so it was a visible correctness bug as much as a
+   * billing one.
+   *
+   * The speaker owns their own line. Everybody else just displays it.
+   */
+  const addLineRemote = useCallback((line: TranscriptLine) => {
     transcriptRef.current = [...transcriptRef.current, line];
     setTranscript([...transcriptRef.current]);
-    void saveLineToFirestore(meetIdRef.current, line);
   }, []);
+
+  /** Show a line I spoke, and persist it — exactly once, from here. */
+  const addLineLocal = useCallback(
+    (line: TranscriptLine) => {
+      addLineRemote(line);
+      void saveLineToFirestore(meetIdRef.current, line);
+    },
+    [addLineRemote],
+  );
 
   // ── Receive DataChannel lines from other participants ─────────────────────
   const onDataRef = useRef<
@@ -239,7 +316,8 @@ export function useMeetingTranscript({
         language: LangCode;
       };
       if (data.type === "tx") {
-        addLine({
+        /* Display only. The speaker persisted this already. */
+        addLineRemote({
           name: data.name,
           text: data.text,
           time: data.time,
@@ -280,7 +358,7 @@ export function useMeetingTranscript({
       }),
       language: activeLangRef.current,
     };
-    addLine(line);
+    addLineLocal(line);
     // Broadcast to other room participants
     const lp = localPartRef.current;
     if (lp) {
@@ -314,33 +392,65 @@ export function useMeetingTranscript({
         for (let i = event.resultIndex; i < event.results.length; i++) {
           if (event.results[i].isFinal) {
             const text = event.results[i][0].transcript;
-            if (text?.trim()) sendLineRef.current?.(text);
+            if (text?.trim()) {
+              /* Recognition is working, so the retry ladder resets. */
+              emptyRestartsRef.current = 0;
+              sendLineRef.current?.(text);
+            }
           }
         }
       };
 
       r.onend = () => {
         runningRef.current = false;
-        // Auto-restart on silence timeout / network blip when mic is still on
-        if (micOnRef.current) {
-          setTimeout(() => {
-            const rec = recognitionRef.current;
-            if (rec && micOnRef.current && !runningRef.current) {
-              try {
-                rec.start();
-                runningRef.current = true;
-              } catch {
-                /* already started */
-              }
-            }
-          }, 300);
-        } else {
+        if (!micOnRef.current) {
           setIsTranscribing(false);
+          return;
         }
+
+        /* Why this session ended, and therefore how hard to try again.
+           `no-speech` is the ordinary silence timeout and is not a failure —
+           it restarts immediately and never counts. Anything else did fail. */
+        const err = lastErrorRef.current;
+        lastErrorRef.current = null;
+        const failed = err !== null && err !== "no-speech";
+
+        let delay = 300;
+        if (failed) {
+          /* Give up rather than hammer a service that is not answering. Eight
+             consecutive failures spans about half a minute with the ladder
+             below — long enough to ride out a real network blip, short enough
+             not to spend the meeting retrying. */
+          if (emptyRestartsRef.current >= 8) {
+            setIsTranscribing(false);
+            console.warn(
+              `[useMeetingTranscript] speech recognition kept failing (${err}) — stopping. Toggle the mic to try again.`,
+            );
+            return;
+          }
+          /* 300ms doubling to a 10s ceiling. */
+          delay = Math.min(300 * 2 ** emptyRestartsRef.current, 10_000);
+          emptyRestartsRef.current += 1;
+        }
+
+        setTimeout(() => {
+          const rec = recognitionRef.current;
+          if (rec && micOnRef.current && !runningRef.current) {
+            try {
+              rec.start();
+              runningRef.current = true;
+            } catch {
+              /* already started */
+            }
+          }
+        }, delay);
       };
 
       r.onerror = (event) => {
         runningRef.current = false;
+        /* Recorded for the `onend` that follows, which decides whether to
+           restart immediately, back off, or stop. */
+        lastErrorRef.current = event.error ?? "unknown";
         if (
           event.error === "not-allowed" ||
           event.error === "service-not-allowed"

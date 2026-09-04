@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { documentRoom, mindmapRoom, parseRoom } from "./collabRoom.ts";
+import { documentRoom, mindmapRoom, parseRoom, workbookRoom } from "./collabRoom.ts";
 
 test("a document room is the bare id, so live sessions do not split", () => {
   /* **This is the assertion that protects existing editors.** If documents ever
@@ -38,4 +38,12 @@ test("an id containing a colon still parses as a document", () => {
   /* Only the mindmap prefix is special. Anything else is a document id, however
      it is punctuated. */
   assert.deepEqual(parseRoom("a:b"), { kind: "document", id: "a:b" });
+});
+
+test("a workbook room carries its kind and never collides with the others", () => {
+  assert.equal(workbookRoom("wb-1"), "workbook:wb-1");
+  assert.deepEqual(parseRoom("workbook:wb-1"), { kind: "workbook", id: "wb-1" });
+  assert.equal(parseRoom("workbook:"), null);
+  assert.notEqual(workbookRoom("same"), mindmapRoom("same"));
+  assert.notEqual(workbookRoom("same"), documentRoom("same"));
 });

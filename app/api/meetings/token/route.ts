@@ -1,6 +1,16 @@
 import { NextResponse } from "next/server";
 import { AccessToken } from "livekit-server-sdk";
 import { mailPrincipal } from "@/lib/server/mailPrincipal";
+import { readFirebaseCookie } from "@/lib/auth/firebaseCookie";
+import { getMeet } from "@/lib/legacy/meetings";
+import { getTask } from "@/lib/legacy/tasks";
+import { toMeeting, type LegacyMeetingDoc } from "@/lib/repositories/legacy/workMap";
+import { grantsFor, joinRefusal } from "@/lib/rules/meetings/access";
+import {
+  taskIdFromRoomName,
+  taskJoinRefusal,
+  taskPartyOf,
+} from "@/lib/rules/meetings/taskRoom";
 
 /**
  * A seat in a meeting room.
@@ -29,15 +39,28 @@ import { mailPrincipal } from "@/lib/server/mailPrincipal";
  * you get no token — an administrator with organisation-wide visibility can
  * read that a meeting happened and still cannot walk into it.
  *
- * **KNOWN LIMITATION, and the same one the monitoring route carries.** The
- * meeting record lives in the client-side workspace store, so this route cannot
- * read it to check membership itself; the caller states which meeting and role
- * it is asking for. Verified here: that the caller is authenticated, that the
- * room name is a meeting room, and that the grants match the claimed role. Not
- * verified here: that this person is genuinely on that invitation. Closing it
- * needs the workspace/identity seam resolved — the same blocker recorded in
- * `/api/livekit/token`. Until then this is authentication-level, and the
- * membership rule is enforced in the repository through `joinRefusal`.
+ * **Membership is verified HERE, not merely upstream.** This route used to
+ * record a known limitation: that the meeting lived in the client-side
+ * workspace store, so it could authenticate the caller but not check whether
+ * they were on the invitation — and it would therefore mint a seat in any
+ * room named `meet-` that anybody asked for. That was the whole security of
+ * the meeting product resting on the client choosing not to ask.
+ *
+ * The premise was wrong. The record is one authenticated `GET` away, on the
+ * engine, through the same exchange `mailPrincipal` already makes to resolve
+ * the caller. So the route now reads it — with the CALLER's own token, so the
+ * engine's permissions bound this read too — and applies the same rules the
+ * rest of the product applies:
+ *
+ *  · `meet-<meetingId>` → `joinRefusal`, which is membership and status.
+ *  · `meet-task-<taskId>` → `taskJoinRefusal`, which is the parties to the work.
+ *
+ * Both are the modules the UI and the repository already use, so the three
+ * enforcement points `access.ts` describes now genuinely share one rule
+ * instead of two of them sharing it and this one trusting the caller.
+ *
+ * A seat that cannot be checked is refused rather than granted: a caller with
+ * no Firebase token gets a 403, not a token.
  */
 
 export const runtime = "nodejs";
@@ -76,16 +99,115 @@ export async function POST(request: Request) {
     typeof body === "object" && body !== null && "displayName" in body
       ? String((body as { displayName?: unknown }).displayName ?? "")
       : "";
-  const isOrganiser =
-    typeof body === "object" &&
-    body !== null &&
-    (body as { isOrganiser?: unknown }).isOrganiser === true;
-
   if (!room.startsWith(ROOM_PREFIX) || room.length <= ROOM_PREFIX.length) {
     return NextResponse.json(
       { error: "That is not a meeting room." },
       { status: 400, headers: NO_STORE },
     );
+  }
+
+  /* ── MEMBERSHIP ─────────────────────────────────────────────────────────
+   *
+   * The engine is asked, with the CALLER's own token, whether this person is
+   * on the invitation. That is the whole fix for the limitation this route
+   * used to document: the meeting record is not in the client store after all
+   * — it is one authenticated GET away, the same exchange `mailPrincipal`
+   * already makes to resolve the caller.
+   *
+   * Using the caller's token rather than a service credential is deliberate:
+   * the engine's own permission checks then apply to the read as well, so this
+   * route can never see more than the person it is acting for.
+   */
+  const idToken = readFirebaseCookie(request.headers.get("cookie"));
+  if (!idToken) {
+    /* Fails CLOSED. A caller authenticated by the server-session path carries
+       no Firebase token, so membership cannot be checked for them — and an
+       unverifiable join is a refused join, not a permitted one. */
+    return NextResponse.json(
+      {
+        error:
+          "Your session cannot be checked against this meeting's invitation. Sign in again to join.",
+      },
+      { status: 403, headers: NO_STORE },
+    );
+  }
+
+  const me = principal.employeeId;
+  const taskId = taskIdFromRoomName(room);
+
+  /* Grants are decided by the record, never by the request. For a scheduled
+     meeting `grantsFor` gives the organiser `roomAdmin`; a task room has no
+     organiser, so nobody gets it there. */
+  let grants = {
+    canPublish: true,
+    canSubscribe: true,
+    canPublishData: true,
+    roomAdmin: false,
+  };
+
+  if (taskId !== null) {
+    /* `meet-task-<id>` — the room for a task, whose name is derivable from the
+       task id and therefore secret from nobody. */
+    const found = await getTask({ token: idToken, taskId });
+    if (!found.ok) {
+      return NextResponse.json(
+        {
+          error:
+            found.error.status === 404
+              ? "That task could not be found."
+              : "This meeting's task could not be checked. Try again in a moment.",
+        },
+        { status: found.error.status === 404 ? 404 : 503, headers: NO_STORE },
+      );
+    }
+    const refusal = taskJoinRefusal(taskPartyOf(found.data), me);
+    if (refusal) {
+      return NextResponse.json(
+        { error: refusal },
+        { status: 403, headers: NO_STORE },
+      );
+    }
+  } else {
+    const meetId = room.slice(ROOM_PREFIX.length);
+    const found = await getMeet({ token: idToken, meetId });
+    if (!found.ok) {
+      return NextResponse.json(
+        {
+          error:
+            found.error.status === 404
+              ? "That meeting could not be found."
+              : "This meeting could not be checked. Try again in a moment.",
+        },
+        { status: found.error.status === 404 ? 404 : 503, headers: NO_STORE },
+      );
+    }
+    const meeting = toMeeting({
+      id: meetId,
+      ...(found.data as LegacyMeetingDoc),
+    });
+    if (!meeting) {
+      return NextResponse.json(
+        { error: "That meeting record is incomplete." },
+        { status: 404, headers: NO_STORE },
+      );
+    }
+    /* `joinRefusal` reads membership only — `seesOrganisation` and
+       `hierarchyIds` widen `canView`, never `canJoin`, which is the point of
+       the rule: an administrator may audit a meeting and still not walk into
+       it. Passing the narrow viewer here states that rather than implying an
+       administrator was considered and allowed. */
+    const refusal = joinRefusal(meeting, {
+      employeeId: me,
+      seesOrganisation: false,
+      hierarchyIds: [],
+    });
+    if (refusal) {
+      return NextResponse.json(
+        { error: refusal },
+        { status: 403, headers: NO_STORE },
+      );
+    }
+    grants = grantsFor(meeting, me);
   }
 
   /* Identity is the PRINCIPAL's employee, never the body's. A caller naming
@@ -99,17 +221,16 @@ export async function POST(request: Request) {
     ttl: "12h",
   });
 
-  token.addGrant({
-    room,
-    roomJoin: true,
-    /* Everybody invited may speak, be seen and share. A meeting where
-       participants arrive muted by policy is a broadcast; this is not one. */
-    canPublish: true,
-    canSubscribe: true,
-    canPublishData: true,
-    /* Only the organiser may remove somebody or close the room. */
-    roomAdmin: isOrganiser,
-  });
+  /* Everybody invited may speak, be seen and share — a meeting where
+     participants arrive muted by policy is a broadcast, and this is not one.
+     `roomAdmin` is the organiser's alone, and it comes from `grantsFor`
+     reading the meeting record.
+
+     It used to be `roomAdmin: isOrganiser` with `isOrganiser` read straight
+     from the request body, so `{"isOrganiser": true}` bought a token entitled
+     to remove participants and close the room. The comment above it claimed
+     only the organiser may do those things; the body decided. */
+  token.addGrant({ room, roomJoin: true, ...grants });
 
   return NextResponse.json(
     { token: await token.toJwt(), url },

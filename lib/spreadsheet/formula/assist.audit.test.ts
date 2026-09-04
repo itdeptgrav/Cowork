@@ -76,8 +76,8 @@ test("AUDIT: a caret just before the closing paren still explains the call", () 
 });
 
 test("AUDIT: a non-name argument prefix falls back to the innermost frame", () => {
-  const a = assist("=IF(A1>2,SUM(B|");
-  assert.ok(a && a.kind === "signature", "no function starts with B");
+  const a = assist("=IF(A1>2,SUM(ZQ|");
+  assert.ok(a && a.kind === "signature", "no function starts with ZQ");
   assert.equal(a.help.name, "SUM");
   assert.equal(a.argIndex, 0);
 });
@@ -145,6 +145,6 @@ test("AUDIT: matchFunctions caps its list and returns nothing for junk", () => {
   assert.deepEqual(matchFunctions("").length, 0);
   assert.deepEqual(
     matchFunctions("conc").map((h) => h.name),
-    ["CONCATENATE"],
+    ["CONCAT", "CONCATENATE"],
   );
 });

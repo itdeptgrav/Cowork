@@ -9,12 +9,10 @@
  * deliberately absent rather than stubbed.
  */
 
-import { useRef, useState } from "react";
-import {
-  cellRef,
-  isSingleCell,
-  rangeLabel,
-} from "@/lib/spreadsheet/coordinates";
+import { useEffect, useRef, useState } from "react";
+import { NameBox } from "./NameBox";
+import { useQuery } from "@/lib/hooks/useRepository";
+import { useWorkbookCollab } from "./useWorkbookCollab";
 import { Ribbon } from "./Ribbon";
 import { FormulaBar } from "./FormulaBar";
 import { SheetTabBar } from "./SheetTabBar";
@@ -40,15 +38,21 @@ export function Spreadsheet({
 } = {}) {
   const controller = useSpreadsheet();
   const persistence = useWorkbookPersistence(controller, workbookId, { draft });
-  const { selection } = controller;
+  const me = useQuery((r) => r.getCurrentEmployee(), []);
+  /* Live editing joins the room of the STORED workbook — a draft that just
+     earned its record joins the moment it has an id. */
+  const collab = useWorkbookCollab(controller, persistence.workbookId, me.data ?? null);
+  /* Protection is enforced by the controller, which needs to know who is
+     editing; the persistence layer is what learned it from the load. */
+  const { setAccess } = controller;
+  const { access } = persistence;
+  useEffect(() => {
+    setAccess(access);
+  }, [setAccess, access]);
   const gridRef = useRef<HTMLDivElement>(null);
   /* The find/replace bar lives here, not in the grid, so the ribbon can open it
      as well as Ctrl+F. */
   const [search, setSearch] = useState<false | "find" | "replace">(false);
-
-  const nameBox = isSingleCell(selection.range)
-    ? cellRef(selection.active.row, selection.active.col)
-    : rangeLabel(selection.range);
 
   return (
     /* `sheet-light` keeps the spreadsheet on a light surface whatever theme the
@@ -56,7 +60,7 @@ export function Spreadsheet({
        conditional-format colours are picked against a white grid, so the ground
        under them has to stay white. */
     <div className="sheet-light flex h-full min-h-0 flex-1 flex-col gap-2.5 p-2.5">
-      <WorkbookHeader persistence={persistence} onBack={onBack} />
+      <WorkbookHeader persistence={persistence} onBack={onBack} collab={collab} />
 
       <Ribbon
         controller={controller}
@@ -66,14 +70,9 @@ export function Spreadsheet({
       />
 
       <div className="flex shrink-0 items-center gap-2.5">
-        {/* Name box — the active cell, or the range when more than one is
-            selected. */}
-        <span
-          data-figure
-          className="inline-flex h-8 min-w-[72px] shrink-0 items-center justify-center rounded-full border border-hairline bg-[var(--surface-raised)] px-3 text-[13px] font-medium text-ink"
-        >
-          {nameBox}
-        </span>
+        {/* Name box — the active cell or range; typed into, it jumps to an
+            address, selects a name, or names the selection. */}
+        <NameBox controller={controller} onDone={() => gridRef.current?.focus()} />
         <div className="min-w-0 flex-1">
           <FormulaBar
             controller={controller}
@@ -88,6 +87,7 @@ export function Spreadsheet({
           containerRef={gridRef}
           searchOpen={search}
           onSearchOpen={setSearch}
+          peers={collab.cursors}
         />
       </div>
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  readMindMapExtras,
   readMindMapRecord,
   readMindNode,
   readMindNodes,
@@ -152,4 +153,90 @@ test("an empty body is an empty tree, not a failure", () => {
      has no root and offers a reload, which is a different thing from a map
      whose cards could not be read. */
   assert.deepEqual(readMindNodes([]), []);
+});
+
+/* ── Styling, markers and map-level extras ─────────────────────────────── */
+
+test("a card's style, icon, markers, tags and task link survive the read", () => {
+  const n = readMindNode({
+    id: "a",
+    parentId: "root",
+    title: "A",
+    style: { fill: "#ff8800", shape: "pill", size: "l", bold: true, line: "elbow", junk: 1 },
+    icon: " star ",
+    priority: 2,
+    progress: 50,
+    tags: ["q3", "  launch ", "", 7],
+    taskId: "T-1",
+  })!;
+  assert.deepEqual(n.style, { fill: "#ff8800", shape: "pill", size: "l", bold: true, line: "elbow" });
+  assert.equal(n.icon, "star");
+  assert.equal(n.priority, 2);
+  assert.equal(n.progress, 50);
+  assert.deepEqual(n.tags, ["q3", "launch"]);
+  assert.equal(n.taskId, "T-1");
+});
+
+test("a plain card gains no optional fields — absent stays absent", () => {
+  const n = readMindNode({ id: "a", parentId: "root", title: "A" })!;
+  assert.equal("style" in n, false);
+  assert.equal("icon" in n, false);
+  assert.equal("priority" in n, false);
+  assert.equal("progress" in n, false);
+  assert.equal("tags" in n, false);
+  assert.equal("taskId" in n, false);
+});
+
+test("invalid styling is dropped field by field, never the whole card", () => {
+  const n = readMindNode({
+    id: "a",
+    parentId: "root",
+    title: "A",
+    style: { fill: "url(javascript:alert(1))", shape: "hexagon", size: "huge", bold: "yes" },
+    priority: 9,
+    progress: 33,
+    icon: "   ",
+    tags: "not-an-array",
+  })!;
+  assert.equal(n.style, undefined, "nothing in that style was usable");
+  assert.equal(n.priority, undefined);
+  assert.equal(n.progress, undefined);
+  assert.equal(n.icon, undefined);
+  assert.equal(n.tags, undefined);
+  assert.equal(n.title, "A");
+});
+
+test("a colour is a swatch name, a hex or an rgb() — never a url or a semicolon", () => {
+  const ok = readMindNode({ id: "a", parentId: null, title: "", style: { fill: "rgb(1, 2, 3)" } })!;
+  assert.equal(ok.style?.fill, "rgb(1, 2, 3)");
+  const bad = readMindNode({ id: "a", parentId: null, title: "", style: { fill: "red; background: url(x)" } })!;
+  assert.equal(bad.style, undefined);
+});
+
+test("extras default when absent and keep only what names a real card", () => {
+  const ids = new Set(["root", "a"]);
+  assert.deepEqual(readMindMapExtras(undefined, ids), {
+    settings: { layout: "right", theme: "field" },
+    relations: [],
+    boundaries: [],
+    summaries: [],
+  });
+  const e = readMindMapExtras(
+    {
+      settings: { layout: "radial", theme: "nope" },
+      relations: [
+        { id: "r1", from: "root", to: "a", label: "depends on" },
+        { id: "r2", from: "root", to: "ghost" },
+        { id: "r3", from: "a", to: "a" },
+      ],
+      boundaries: [{ id: "b1", nodeId: "a", label: "Phase 1", color: "#fee" }, { id: "b2", nodeId: "ghost" }],
+      summaries: [{ id: "s1", nodeId: "root", text: "the lot" }],
+    },
+    ids,
+  );
+  assert.deepEqual(e.settings, { layout: "radial", theme: "field" });
+  assert.deepEqual(e.relations.map((r) => r.id), ["r1"]);
+  assert.deepEqual(e.boundaries.map((b) => b.id), ["b1"]);
+  assert.equal(e.boundaries[0].color, "#fee");
+  assert.deepEqual(e.summaries.map((s) => s.id), ["s1"]);
 });

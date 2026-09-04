@@ -42,8 +42,8 @@ export interface ToolbarActions {
   spellcheck: boolean;
   onSpellcheck: (value: boolean) => void;
   /** Null when the reader cannot edit — the mode switch is then not offered. */
-  mode: "editing" | "viewing";
-  onMode: (mode: "editing" | "viewing") => void;
+  mode: "editing" | "viewing" | "suggesting";
+  onMode: (mode: "editing" | "viewing" | "suggesting") => void;
   canEdit: boolean;
 }
 
@@ -477,6 +477,13 @@ export function DocsToolbar({
                   onSelect={() => actions.onMode("editing")}
                 />
                 <MenuItem
+                  label="Suggesting"
+                  note="Propose changes for someone to accept."
+                  icon={<DocIcon.pencil className="h-3.5 w-3.5 text-[#1f8a4c]" />}
+                  active={actions.mode === "suggesting"}
+                  onSelect={() => actions.onMode("suggesting")}
+                />
+                <MenuItem
                   label="Viewing"
                   note="Read it without changing anything."
                   icon={<DocIcon.eye className="h-3.5 w-3.5" />}
@@ -488,6 +495,8 @@ export function DocsToolbar({
           >
             {actions.mode === "editing" ? (
               <DocIcon.pencil className="h-3.5 w-3.5" />
+            ) : actions.mode === "suggesting" ? (
+              <DocIcon.pencil className="h-3.5 w-3.5 text-[#1f8a4c]" />
             ) : (
               <DocIcon.eye className="h-3.5 w-3.5" />
             )}

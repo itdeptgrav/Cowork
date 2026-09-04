@@ -69,3 +69,23 @@ export function styleToCss(style: CellStyle, align: CellAlign): CSSProperties {
 
   return css;
 }
+
+/**
+ * What a cell's TEXT wears on top of the cell box: a rotation, or the stacked
+ * "vertical text". Kept apart from the box so borders and fills stay square
+ * while only the words turn.
+ */
+export function textCss(style: CellStyle): CSSProperties | undefined {
+  if (style.stackText) {
+    return { writingMode: "vertical-lr", textOrientation: "upright", whiteSpace: "nowrap", lineHeight: 1.1 };
+  }
+  if (style.rotation) {
+    return {
+      display: "inline-block",
+      transform: `rotate(${-style.rotation}deg)`,
+      transformOrigin: "center",
+      whiteSpace: "nowrap",
+    };
+  }
+  return undefined;
+}

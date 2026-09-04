@@ -25,14 +25,17 @@ import { SheetIcon } from "./SheetIcons";
 import { HomeTab } from "./HomeTab";
 import { InsertTab } from "./InsertTab";
 import { DataTab } from "./DataTab";
+import { ZOOM_LEVELS } from "@/lib/spreadsheet/metrics";
+import { FormulasTab } from "./FormulasTab";
 import type { SpreadsheetController } from "./useSpreadsheet";
 import type { WorkbookPersistence } from "./useWorkbookPersistence";
 
-type TabId = "home" | "insert" | "data" | "view";
+type TabId = "home" | "insert" | "formulas" | "data" | "view";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "home", label: "Home" },
   { id: "insert", label: "Insert" },
+  { id: "formulas", label: "Formulas" },
   { id: "data", label: "Data" },
   { id: "view", label: "View" },
 ];
@@ -99,6 +102,8 @@ export function Ribbon({
 
         {tab === "insert" && <InsertTab controller={controller} />}
 
+        {tab === "formulas" && <FormulasTab controller={controller} />}
+
         {tab === "data" && <DataTab controller={controller} />}
 
         {tab === "view" && (
@@ -129,6 +134,57 @@ export function Ribbon({
                 onClick={() => controller.unfreeze()}
               >
                 Unfreeze
+              </button>
+            </Group>
+            <Group label="Zoom">
+              <button type="button" className={cmd} onMouseDown={keepFocus} title="Zoom out" onClick={() => controller.setZoom(controller.zoom - 0.1)}>
+                −
+              </button>
+              <select
+                aria-label="Zoom"
+                className="h-7 rounded-md border border-hairline bg-transparent px-1 text-[12px] text-ink"
+                value={String(controller.zoom)}
+                onMouseDown={(e) => e.stopPropagation()}
+                onChange={(e) => controller.setZoom(Number(e.target.value))}
+              >
+                {!ZOOM_LEVELS.includes(controller.zoom as (typeof ZOOM_LEVELS)[number]) && (
+                  <option value={String(controller.zoom)}>{Math.round(controller.zoom * 100)}%</option>
+                )}
+                {ZOOM_LEVELS.map((z) => (
+                  <option key={z} value={String(z)}>
+                    {Math.round(z * 100)}%
+                  </option>
+                ))}
+              </select>
+              <button type="button" className={cmd} onMouseDown={keepFocus} title="Zoom in" onClick={() => controller.setZoom(controller.zoom + 0.1)}>
+                +
+              </button>
+              <button type="button" className={cmd} onMouseDown={keepFocus} disabled={controller.zoom === 1} onClick={() => controller.setZoom(1)}>
+                100%
+              </button>
+            </Group>
+            <Group label="Gridlines">
+              <button
+                type="button"
+                className={`${cmd} ${controller.showGridlines ? "bg-[color-mix(in_srgb,var(--ink)_14%,transparent)] text-ink" : ""}`}
+                onMouseDown={keepFocus}
+                aria-pressed={controller.showGridlines}
+                title="Draw the lines between cells. Off, the sheet reads as a page."
+                onClick={() => controller.setShowGridlines(!controller.showGridlines)}
+              >
+                Gridlines
+              </button>
+            </Group>
+            <Group label="Protection">
+              <button
+                type="button"
+                className={`${cmd} ${controller.showProtected ? "bg-[color-mix(in_srgb,var(--ink)_14%,transparent)] text-ink" : ""}`}
+                onMouseDown={keepFocus}
+                aria-pressed={controller.showProtected}
+                title="Shade every protected cell so the locked areas can be seen"
+                onClick={() => controller.setShowProtected(!controller.showProtected)}
+              >
+                Show protected ranges
               </button>
             </Group>
             <Group label="Rows &amp; columns">

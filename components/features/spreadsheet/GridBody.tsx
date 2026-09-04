@@ -1,5 +1,6 @@
 "use client";
 
+import type { CellPaint } from "@/lib/spreadsheet/conditionalVisual";
 import { memo } from "react";
 import type { ReactNode } from "react";
 import { cellRef, type Rect } from "@/lib/spreadsheet/coordinates";
@@ -19,7 +20,9 @@ import type { SheetFilter } from "@/lib/spreadsheet/filter";
 import { mergeAt } from "@/lib/spreadsheet/merge";
 import { formatValue, resolveAlign } from "@/lib/spreadsheet/format";
 import { isFormula } from "@/lib/spreadsheet/values";
-import { styleToCss } from "./cellStyle";
+import { isRich } from "@/lib/spreadsheet/formula/value";
+import { CellVisual } from "./CellVisual";
+import { styleToCss, textCss } from "./cellStyle";
 
 /**
  * The cell VALUES for the visible window — every populated OR formatted cell,
@@ -60,6 +63,16 @@ interface GridBodyProps {
   metrics: GridMetrics;
   rowWindow: Window;
   colWindow: Window;
+  /** The audit view: a formula cell shows its text, not its result. */
+  showFormulas?: boolean;
+  /** The grid's magnification — the metrics are already scaled; this scales the type. */
+  zoom?: number;
+  /** A cell's note, shown on hover with a corner mark. */
+  noteAt?: (row: number, col: number) => string | undefined;
+  /** When set, protected cells are shaded. */
+  protectedAt?: (row: number, col: number) => boolean;
+  /** Colour-scale fill and data bar from the visual conditional formats. */
+  paintAt?: (row: number, col: number) => CellPaint | null;
 }
 
 function GridBodyInner({
@@ -79,6 +92,11 @@ function GridBodyInner({
   metrics,
   rowWindow,
   colWindow,
+  showFormulas = false,
+  zoom = 1,
+  noteAt,
+  protectedAt,
+  paintAt,
 }: GridBodyProps) {
   /** One cell's node, optionally forced to a span (for a merge anchor), or null
       when the cell has nothing to draw. */
@@ -98,12 +116,19 @@ function GridBodyInner({
        comes from the raw string, not the interpreted number. Formulas keep
        computing; Text format governs typed entries. */
     const asTypedText = style.numberFormat?.kind === "text" && !isFormula(raw);
-    const text = rawEmpty ? "" : asTypedText ? raw : formatValue(value, style.numberFormat);
+    const asFormulaText = showFormulas && isFormula(raw);
+    const text = rawEmpty ? "" : asTypedText || asFormulaText ? raw : formatValue(value, style.numberFormat);
     const link = linkAt(r, c);
     const comment = hasComment(r, c);
+    const note = noteAt?.(r, c);
+    const locked = protectedAt?.(r, c) ?? false;
     const merged = span !== undefined;
+    const rich = isRich(value) ? value.rich : null;
     if (
       text === "" &&
+      !rich &&
+      !note &&
+      !locked &&
       isEmptyStyle(style) &&
       !isCheckbox &&
       !isList &&
@@ -115,8 +140,11 @@ function GridBodyInner({
       return null;
     }
 
-    const align = resolveAlign(asTypedText ? raw : value, style);
+    const paint = paintAt?.(r, c) ?? null;
+    const barPct = paint?.bar ? Math.round(paint.bar.fraction * 100) : 0;
+    const align = asFormulaText ? "left" : resolveAlign(asTypedText ? raw : value, style);
     const css = styleToCss(style, align);
+    const turned = textCss(style);
     const width = span?.width ?? colWidth(metrics, c);
     const height = span?.height ?? rowHeight(metrics, r);
     return (
@@ -135,6 +163,11 @@ function GridBodyInner({
           width: merged ? width - 1 : width,
           height: merged ? height - 1 : height,
           ...css,
+          ...(paint?.background ? { background: paint.background } : {}),
+          ...(paint?.bar && barPct > 0
+            ? { backgroundImage: `linear-gradient(90deg, ${paint.bar.color}66 0 ${barPct}%, transparent ${barPct}% 100%)` }
+            : {}),
+          fontSize: (style.fontSize ?? 13) * zoom,
           /* A merged region must HIDE the boundaries it swallowed. The grid
              lines are drawn under the cells at every row/column boundary, so a
              transparent span still shows the lines it spans across and reads as
@@ -142,7 +175,11 @@ function GridBodyInner({
              fill already does, so that colour is kept when there is one. */
           ...(merged ? { background: css.background ?? "var(--surface-raised)" } : {}),
           ...(isCheckbox ? { justifyContent: "center" } : {}),
+          ...(locked
+            ? { backgroundImage: "repeating-linear-gradient(135deg, rgba(120,120,140,0.14) 0 3px, transparent 3px 9px)" }
+            : {}),
         }}
+        title={note}
       >
         {isCheckbox ? (
           <button
@@ -159,7 +196,11 @@ function GridBodyInner({
           </button>
         ) : (
           <>
-            {link ? (
+            {rich ? (
+              <span className="flex h-full flex-1 items-center overflow-hidden">
+                <CellVisual payload={rich} width={width} height={height} />
+              </span>
+            ) : link ? (
               <a
                 href={link}
                 target="_blank"
@@ -170,7 +211,9 @@ function GridBodyInner({
                 {text || link}
               </a>
             ) : (
-              <span className="flex-1 truncate">{text}</span>
+              <span className="flex-1 truncate" style={turned}>
+                {text}
+              </span>
             )}
             {isList && (
               <button
@@ -199,6 +242,9 @@ function GridBodyInner({
               >
                 ▾
               </button>
+            )}
+            {note && !comment && (
+              <span aria-label="Has a note" className="absolute right-0 top-0 h-0 w-0 border-t-[7px] border-l-[7px] border-t-violet-500 border-l-transparent" />
             )}
             {comment && (
               <button
@@ -273,6 +319,8 @@ function sameData(prev: GridBodyProps, next: GridBodyProps): boolean {
     prev.metrics === next.metrics &&
     prev.filter === next.filter &&
     prev.merges === next.merges &&
+    prev.showFormulas === next.showFormulas &&
+    prev.zoom === next.zoom &&
     prev.rowWindow.start === next.rowWindow.start &&
     prev.rowWindow.end === next.rowWindow.end &&
     prev.colWindow.start === next.colWindow.start &&

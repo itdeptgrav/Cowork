@@ -18,7 +18,7 @@
  */
 
 import { interpret, type CellAlign } from "../values";
-import type { Node } from "./ast";
+import type { Node, RangeNode, RefNode } from "./ast";
 import { FormulaError, NAME, REF, VALUE, isError } from "./errors";
 import { evaluate } from "./evaluator";
 import { parse } from "./parser";
@@ -29,10 +29,14 @@ import {
   formatNumber,
   isArray,
   isBlank,
+  isRich,
   type ScalarValue,
 } from "./value";
 
 type Key = string;
+
+/** The control character between a key's three parts. */
+const SEP = "\u0001";
 
 /** A cell's key. The separator is a control char no sheet id or number holds,
     so the three parts never collide. */
@@ -63,12 +67,55 @@ export class FormulaEngine {
   private stale = new Set<Key>();
   /** Lowercased sheet name → sheet id, for resolving cross-sheet references. */
   private nameToId = new Map<string, string>();
+  private idToName = new Map<string, string>();
+  /** Upper-cased range name → where it points. */
+  private rangeNames = new Map<string, { sheetId: string; top: number; left: number; bottom: number; right: number }>();
 
   /** Tell the engine which sheets exist and what they are called, so a formula's
       `Sheet2!A1` resolves to the right sheet. Call this whenever the workbook's
       sheet list or a sheet's name changes. */
   syncSheets(sheets: readonly { id: string; name: string }[]): void {
     this.nameToId = new Map(sheets.map((s) => [s.name.toLowerCase(), s.id]));
+    this.idToName = new Map(sheets.map((s) => [s.id, s.name]));
+  }
+
+  /**
+   * Tell the engine the workbook's named ranges. Every formula that uses a
+   * name is re-linked and recomputed, so defining, moving or deleting a name
+   * takes effect in the cells that read it without those cells being touched.
+   */
+  setNamedRanges(
+    names: readonly { name: string; sheetId: string; top: number; left: number; bottom: number; right: number }[],
+  ): void {
+    this.rangeNames = new Map(
+      names.map((n) => [n.name.toUpperCase(), { sheetId: n.sheetId, top: n.top, left: n.left, bottom: n.bottom, right: n.right }]),
+    );
+    for (const [key, entry] of this.entries) {
+      if (!entry.ast || !usesName(entry.ast)) continue;
+      for (const p of entry.precedents) this.dependents.get(p)?.delete(key);
+      const ownSheetId = key.slice(0, key.indexOf(SEP));
+      entry.precedents = this.precedentsOf(entry.ast, ownSheetId);
+      for (const p of entry.precedents) {
+        let set = this.dependents.get(p);
+        if (!set) {
+          set = new Set();
+          this.dependents.set(p, set);
+        }
+        set.add(key);
+      }
+      for (const k of this.collectDirty(key)) this.stale.add(k);
+    }
+  }
+
+  /** The node a name stands for — a range on its sheet — or null. */
+  private resolveRangeName(name: string): RangeNode | null {
+    const n = this.rangeNames.get(name.toUpperCase());
+    if (!n) return null;
+    const sheet = this.idToName.get(n.sheetId);
+    if (!sheet) return null;
+    const start: RefNode = { type: "ref", row: n.top, col: n.left, absRow: true, absCol: true, sheet };
+    const end: RefNode = { type: "ref", row: n.bottom, col: n.right, absRow: true, absCol: true, sheet };
+    return { type: "range", start, end, sheet };
   }
 
   private resolveName(name: string): string | undefined {
@@ -175,6 +222,7 @@ export class FormulaEngine {
           const k = keyOf(id, r, c);
           return overrideMap.has(k) ? overrideMap.get(k)! : this.evaluateKey(k, visiting);
         },
+        resolveRangeName: (name) => this.resolveRangeName(name),
       });
     } catch {
       /* No function bug may crash the product — an unexpected exception is a
@@ -218,12 +266,15 @@ export class FormulaEngine {
          recalculation (and the UI above it) down. Each evaluateKey frame has
          its own guard, so an inner cell's failure is a value to its readers. */
       try {
+        const parts = key.split("");
         value = evaluate(entry.ast, {
           resolveCell: (sheet, r, c) => {
             const id = sheet ? this.resolveName(sheet) : ownSheetId;
             if (!id) return REF; // a reference to a sheet that does not exist
             return this.evaluateKey(keyOf(id, r, c), visiting);
           },
+          cell: { sheet: ownSheetId, row: Number(parts[1]), col: Number(parts[2]) },
+          resolveRangeName: (name) => this.resolveRangeName(name),
         });
       } catch {
         value = VALUE;
@@ -272,12 +323,34 @@ export class FormulaEngine {
         case "call":
           n.args.forEach(walk);
           break;
+        case "name": {
+          const target = this.resolveRangeName(n.name);
+          if (target) walk(target);
+          break;
+        }
         default:
           break;
       }
     };
     walk(node);
     return set;
+  }
+}
+
+/** Whether a formula mentions any named range. */
+function usesName(node: Node): boolean {
+  switch (node.type) {
+    case "name":
+      return true;
+    case "unary":
+    case "percent":
+      return usesName(node.operand);
+    case "binary":
+      return usesName(node.left) || usesName(node.right);
+    case "call":
+      return node.args.some(usesName);
+    default:
+      return false;
   }
 }
 
@@ -301,6 +374,7 @@ function literalValue(raw: string): ScalarValue {
 function formatValue(value: ScalarValue): string {
   /* An array does not spill — a cell shows its top-left element. */
   if (isArray(value)) return formatValue(value.first);
+  if (isRich(value)) return "";
   if (isError(value)) return value.code;
   if (isBlank(value)) return "";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
@@ -310,6 +384,7 @@ function formatValue(value: ScalarValue): string {
 
 function alignOf(value: ScalarValue): CellAlign {
   if (isArray(value)) return alignOf(value.first);
+  if (isRich(value)) return "left";
   if (typeof value === "number") return "right";
   if (typeof value === "boolean") return "center";
   if (value instanceof Blank) return "left";

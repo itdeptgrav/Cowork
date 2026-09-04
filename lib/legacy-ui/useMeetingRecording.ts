@@ -88,6 +88,21 @@ export interface PeerStatus {
 }
 
 /**
+ * The rate every participant's recording uploads at.
+ *
+ * Left unset — as it was — each browser picks its own for identical speech, so
+ * the same meeting cost wildly different upload and Drive storage depending on
+ * who attended. This is the recorder that runs for EVERY participant of every
+ * meeting, so it was the expensive one to leave to chance.
+ *
+ * Deliberately the same 24 kbps as `BACKUP_BITS_PER_SECOND` in
+ * `useBackupRecording.ts`: generous for mono voice, and the two recorders
+ * capture the same speech, so a different figure in each would only mean one of
+ * them is wrong.
+ */
+const PRIMARY_BITS_PER_SECOND = 24_000;
+
+/**
  * The format this browser will encode audio into, or null to let it choose.
  *
  * ## Why null is a real answer
@@ -859,10 +874,24 @@ export function useMeetingRecording({
         myUploadStateRef.current = "idle";
 
         /* No `mimeType` where none is supported: passing one a browser does
-           not know is a `NotSupportedError`, not a hint it can ignore. */
+           not know is a `NotSupportedError`, not a hint it can ignore.
+
+           `audioBitsPerSecond` is stated for the same reason the backup
+           recorder states it (`BACKUP_BITS_PER_SECOND` in
+           `useBackupRecording.ts`): left unset, each browser picks its own
+           rate for identical speech, so the same meeting cost wildly different
+           amounts of upload and Drive storage depending on who was in it —
+           and this recorder, the one that runs for EVERY participant of every
+           meeting, was the unset one. 24 kbps mono is generous for voice and
+           matches what the backup has been uploading all along. */
         const recorder = preferred
-          ? new MediaRecorder(stream, { mimeType: preferred })
-          : new MediaRecorder(stream);
+          ? new MediaRecorder(stream, {
+              mimeType: preferred,
+              audioBitsPerSecond: PRIMARY_BITS_PER_SECOND,
+            })
+          : new MediaRecorder(stream, {
+              audioBitsPerSecond: PRIMARY_BITS_PER_SECOND,
+            });
         /**
          * **What the browser ACTUALLY chose, not what we asked for.**
          *

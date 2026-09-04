@@ -14,6 +14,7 @@
 import { useEffect, useRef, useState } from "react";
 import { HeaderContextMenu, type MenuItem } from "./HeaderContextMenu";
 import type { SpreadsheetController } from "./useSpreadsheet";
+import { selectionStats, statsLine } from "@/lib/spreadsheet/stats";
 
 export function SheetTabBar({ controller }: { controller: SpreadsheetController }) {
   const { sheets, hiddenSheets, activeSheetId } = controller;
@@ -25,6 +26,21 @@ export function SheetTabBar({ controller }: { controller: SpreadsheetController 
   useEffect(() => {
     if (renaming) inputRef.current?.select();
   }, [renaming]);
+
+  /* The selection's figures, as Sheets and Excel show them in this corner.
+     Read straight from the engine each render — a selection of up to twenty
+     thousand cells is summed in well under a frame, and anything larger
+     shows nothing rather than stalling the tab bar. */
+  const stats = (() => {
+    const r = controller.selection.range;
+    const cells = (r.bottom - r.top + 1) * (r.right - r.left + 1);
+    if (cells < 2 || cells > 20000) return [];
+    const values = [];
+    for (let row = r.top; row <= r.bottom; row++) {
+      for (let col = r.left; col <= r.right; col++) values.push(controller.engine.getValue(controller.activeSheetId, row, col));
+    }
+    return statsLine(selectionStats(values));
+  })();
 
   function commitRename() {
     if (renaming) controller.renameSheet(renaming.id, renaming.value);
@@ -106,6 +122,21 @@ export function SheetTabBar({ controller }: { controller: SpreadsheetController 
           ),
         )}
       </div>
+
+      {stats.length > 0 && (
+        <div
+          className="ml-auto flex shrink-0 items-center gap-3 px-2 text-[11.5px] text-ink-muted tabular-nums"
+          aria-live="polite"
+          data-figure
+          title="Sum, average, lowest, highest and count of the selected cells"
+        >
+          {stats.map((st) => (
+            <span key={st.label}>
+              <span className="text-ink-faint">{st.label}</span> {st.value}
+            </span>
+          ))}
+        </div>
+      )}
 
       {hiddenSheets.length > 0 && (
         <button

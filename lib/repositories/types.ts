@@ -85,6 +85,7 @@ import type {
   DocumentRole,
   DocumentSummary,
   MindMapDetail,
+  MindMapExtras,
   MindMapRecord,
   MindMapRole,
   MindMapSummary,
@@ -2742,6 +2743,12 @@ export interface CoworkRepository {
   saveMindMapNodes(
     id: string,
     nodes: MindNode[],
+    /**
+     * Layout, theme, relationships and groupings — the map's, not a card's.
+     * Omitted, the server keeps what it has, so a caller that only changed a
+     * card cannot reset the map's layout by not knowing about it.
+     */
+    extras?: MindMapExtras,
   ): Promise<ActionResult<MindMapDetail>>;
   /**
    * Add somebody, or change what they may do. Owners only.

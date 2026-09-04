@@ -1,5 +1,11 @@
 "use client";
 
+import { docToMarkdown, type PmNode } from "@/lib/documents/markdown";
+import { Attachment } from "@/lib/documents/extensions/attachment";
+import { DateChip, DropdownChip, type ChipClickDetail } from "@/lib/documents/extensions/chips";
+import { TextDirectionExtension } from "@/lib/documents/extensions/textDirection";
+import { DocsVoiceTyping } from "./docs/DocsVoiceTyping";
+import { DocsChipPopover } from "./docs/DocsChips";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { dropPoint } from "@tiptap/pm/transform";
@@ -23,6 +29,32 @@ import {
 } from "@tiptap/extension-text-style";
 import Collaboration from "@tiptap/extension-collaboration";
 import CollaborationCaret from "@tiptap/extension-collaboration-caret";
+import { ReactNodeViewRenderer } from "@tiptap/react";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
+import { common, createLowlight } from "lowlight";
+import Typography from "@tiptap/extension-typography";
+import CharacterCount from "@tiptap/extension-character-count";
+import { SuggestDelete, SuggestInsert, Suggesting, setSuggestionAuthor } from "@/lib/documents/extensions/suggestions";
+import { DocsSuggestions } from "./docs/DocsSuggestions";
+import { Details, DetailsContent, DetailsSummary } from "@tiptap/extension-details";
+import Mathematics from "@tiptap/extension-mathematics";
+import Youtube from "@tiptap/extension-youtube";
+import "katex/dist/katex.min.css";
+import { Callout } from "@/lib/documents/extensions/callout";
+import { Column, Columns } from "@/lib/documents/extensions/columns";
+import { Footnote, footnotesOf } from "@/lib/documents/extensions/footnote";
+import { TableOfContents, tocEntriesOf, tocHtml } from "@/lib/documents/extensions/tableOfContents";
+import { Embed, embedSrc } from "@/lib/documents/extensions/embed";
+import { Bookmark, bookmarksOf } from "@/lib/documents/extensions/bookmark";
+import { mentionDirectory, mentionExtension } from "@/lib/documents/extensions/mention";
+import { slashCommandsExtension, type SlashAsk } from "@/lib/documents/extensions/slashCommands";
+import { TableOfContentsView } from "./docs/TableOfContentsView";
+import { FootnotesList } from "./docs/FootnotesList";
+import { DocsPrompt } from "./docs/DocsPrompt";
+
+/* Syntax colouring for code blocks: the common languages, registered once for
+   the module rather than per editor. */
+const lowlight = createLowlight(common);
 import { Icon } from "@/components/ui/Icons";
 import { InlineError } from "@/components/ui/Primitives";
 import { StageError, StageSkeleton } from "./WorkspaceStage";
@@ -41,17 +73,12 @@ import {
   pageSizeIn,
   stepZoom,
 } from "@/lib/rules/documents/pageSetup";
-import { readingMinutes, wordCount } from "@/lib/rules/documents/textStats";
+import { characterCount, readingMinutes, wordCount } from "@/lib/rules/documents/textStats";
 import {
   imageFilesFrom,
   pasteIsImage,
 } from "@/lib/rules/media/clipboardImages";
 import { driveImageSrc } from "@/lib/rules/media/driveUrls";
-import {
-  isPaintable,
-  paintableFormat,
-  type PaintedFormat,
-} from "@/lib/rules/documents/formatPainter";
 import { BlockStyle } from "@/lib/documents/extensions/blockStyle";
 import { PageBreak } from "@/lib/documents/extensions/pageBreak";
 import { SearchHighlight } from "@/lib/documents/extensions/searchHighlight";
@@ -249,7 +276,12 @@ export function DocumentEditor({
   /* View state. None of it is stored: zoom, the rail and the guides are this
      reader's view of the document, not properties of it. Page setup is the
      opposite and lives on the body — see `DocumentPageSetup`. */
-  const [mode, setMode] = useState<"editing" | "viewing">("editing");
+  const [mode, setMode] = useState<"editing" | "viewing" | "suggesting">("editing");
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const chooseMode = useCallback((next: "editing" | "viewing" | "suggesting") => {
+    setMode(next);
+    if (next === "suggesting") setShowSuggestions(true);
+  }, []);
   const [zoom, setZoom] = useState(1);
   const [showOutline, setShowOutline] = useState(true);
   const [showAssistant, setShowAssistant] = useState(false);
@@ -260,6 +292,17 @@ export function DocumentEditor({
   const [showRuler, setShowRuler] = useState(true);
   const [showPageGuides, setShowPageGuides] = useState(false);
   const [spellcheck, setSpellcheck] = useState(true);
+  /** Pageless: no paper, one sheet as wide as the window. A way of looking,
+      not part of the document — print and PDF still paginate. */
+  const [pageless, setPageless] = useState(false);
+  const [voiceOn, setVoiceOn] = useState(false);
+  /** The smart chip a click just opened, with where it is on screen. */
+  const [chip, setChip] = useState<ChipClickDetail | null>(null);
+  /* The attachment picker is reached by id rather than a ref: the slash
+     extension is built during render and takes the opener as an argument,
+     and a ref must not be read on that path. */
+  const attachInputId = "doc-attach-input";
+  const openAttachPicker = () => document.getElementById(attachInputId)?.click();
   /**
    * "Continue writing" — off by default. Fires a real network request on a
    * typing pause, so it is opt-in rather than something that starts
@@ -282,8 +325,28 @@ export function DocumentEditor({
   const [chromeless, setChromeless] = useState(false);
 
   const [dialog, setDialog] = useState<
-    null | "page-setup" | "word-count" | "shortcuts" | "link" | "image"
+    | null
+    | "page-setup"
+    | "word-count"
+    | "shortcuts"
+    | "link"
+    | "image"
+    | "youtube"
+    | "embed"
+    | "math"
+    | "footnote"
+    | "bookmark"
+    | "attachment"
   >(null);
+  /* The directory, for @mentions. Read through a ref so the extension —
+     built once when the editor mounts — always sees the latest list. */
+  const people = useQuery((r) => r.listEmployees(), []);
+  useEffect(() => {
+    mentionDirectory.people = people.data ?? [];
+  }, [people.data]);
+  /* What a slash command asks the editor to open. Link and image have their
+     own dialogs already; the rest are prompts. */
+  const ask: SlashAsk = (kind) => (kind === "attachment" ? openAttachPicker() : setDialog(kind));
   const [finding, setFinding] = useState(false);
 
 
@@ -411,6 +474,9 @@ export function DocumentEditor({
       extensions: [
         StarterKit.configure({
           link: { openOnClick: false },
+          /* Replaced below by the lowlight code block, which is the same node
+             with syntax colouring. */
+          codeBlock: false,
           /* Yjs owns undo when collaborating — ProseMirror's own history would
              undo OTHER PEOPLE's edits, which is the classic way a shared
              document loses somebody else's paragraph. */
@@ -470,6 +536,36 @@ export function DocumentEditor({
           },
         }),
         Placeholder.configure({ placeholder: "Start writing…" }),
+        /* ── Parity blocks ─────────────────────────────────────────────── */
+        CodeBlockLowlight.configure({ lowlight, defaultLanguage: "plaintext" }),
+        /* Smart quotes, dashes and arrows as you type, the way Docs does. */
+        Typography,
+        CharacterCount,
+        SuggestInsert,
+        SuggestDelete,
+        Suggesting,
+        Details.configure({ persist: true, HTMLAttributes: { class: "doc-details" } }),
+        DetailsSummary,
+        DetailsContent,
+        Mathematics,
+        Youtube.configure({ nocookie: true, modestBranding: true }),
+        Callout,
+        Columns,
+        Column,
+        Footnote,
+        TableOfContents.extend({
+          addNodeView() {
+            return ReactNodeViewRenderer(TableOfContentsView);
+          },
+        }),
+        Embed,
+        Bookmark,
+        Attachment,
+        DateChip,
+        DropdownChip,
+        TextDirectionExtension,
+        mentionExtension(),
+        slashCommandsExtension(ask),
         ...(collab.session
           ? [
               Collaboration.configure({ document: collab.session.doc }),
@@ -645,6 +741,16 @@ export function DocumentEditor({
   }, [editor, recomputeOutline]);
 
   const rows = useMemo(() => outlineRows(derived.headings), [derived.headings]);
+  useEffect(() => {
+    if (!editor) return;
+    editor.commands.setSuggesting(mode === "suggesting");
+  }, [editor, mode]);
+  /* Who a suggestion is attributed to — kept on the editor itself, which
+     is built once and must still name whoever is signed in by then. */
+  useEffect(() => {
+    if (!editor) return;
+    setSuggestionAuthor(editor, { id: me.data?.id ?? "", name: me.data?.displayName ?? "" });
+  }, [editor, me.data?.id, me.data?.displayName]);
   const words = wordCount(derived.text);
 
   /**
@@ -1008,22 +1114,66 @@ export function DocumentEditor({
     setPageOverride(null);
   };
 
-  const download = (kind: "html" | "text") => {
+  /* Smart chips open their popover through a DOM event the chip extension
+     raises on a click — see `extensions/chips.ts` for why the chip itself
+     stays plain markup. */
+  useEffect(() => {
+    if (!editor) return;
+    const dom = editor.view.dom;
+    const onChip = (e: Event) => setChip((e as CustomEvent<ChipClickDetail>).detail);
+    dom.addEventListener("cowork:chip", onChip);
+    return () => dom.removeEventListener("cowork:chip", onChip);
+  }, [editor]);
+
+  const download = (kind: "html" | "text" | "markdown") => {
     if (!editor || !doc.data) return;
     const name = doc.data.title.replace(/[^\w\d -]+/g, "").trim() || "document";
     const content =
       kind === "text"
         ? editor.getText()
-        : exportHtml(doc.data.title, editor.getHTML(), pageSetup);
+        : kind === "markdown"
+          ? docToMarkdown(editor.getJSON() as PmNode)
+          : exportHtml(doc.data.title, editor.getHTML(), pageSetup, {
+              toc: tocHtml(tocEntriesOf(editor.state.doc)),
+              footnotes: footnotesOf(editor.state.doc),
+            });
     const blob = new Blob([content], {
-      type: kind === "text" ? "text/plain;charset=utf-8" : "text/html;charset=utf-8",
+      type: kind === "text" ? "text/plain;charset=utf-8" : kind === "markdown" ? "text/markdown;charset=utf-8" : "text/html;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${name}.${kind === "text" ? "txt" : "html"}`;
+    anchor.download = `${name}.${kind === "text" ? "txt" : kind === "markdown" ? "md" : "html"}`;
     anchor.click();
     URL.revokeObjectURL(url);
+  };
+
+  /** A file from the reader's computer, kept in Drive and linked from a
+      block on the page. The same store pasted images go to. */
+  const attachFile = async (file: File | undefined) => {
+    if (!file || !editor) return;
+    const repo = getRepository();
+    if (typeof repo.uploadDriveFile !== "function") {
+      setError("This workspace cannot store attachments yet.");
+      return;
+    }
+    setPasting(true);
+    try {
+      const r = await repo.uploadDriveFile(file);
+      if (!r.ok) {
+        setError(r.message);
+        return;
+      }
+      editor
+        .chain()
+        .focus()
+        .insertAttachment({ name: file.name, url: r.data.url, size: file.size, fileId: r.data.fileId ?? null })
+        .run();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "That file could not be attached.");
+    } finally {
+      setPasting(false);
+    }
   };
 
   /**
@@ -1166,7 +1316,7 @@ export function DocumentEditor({
     const { widthIn: w, heightIn: h } = pageSizeIn(pageSetup);
     const style = document.createElement("style");
     style.id = "doc-print-page";
-    style.textContent = `@page { size: ${w}in ${h}in; margin: ${pageSetup.margins.top}in ${pageSetup.margins.right}in ${pageSetup.margins.bottom}in ${pageSetup.margins.left}in; }`;
+    style.textContent = `@page { size: ${w}in ${h}in; margin: ${pageSetup.margins.top}in ${pageSetup.margins.right}in ${pageSetup.margins.bottom}in ${pageSetup.margins.left}in; }` + (pageSetup.pageColor ? ` [data-doc-print] { background: ${pageSetup.pageColor} !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }` : "");
     document.head.appendChild(style);
     document.body.classList.add("doc-printing");
     const cleanup = () => {
@@ -1396,6 +1546,7 @@ export function DocumentEditor({
               onDownloadText: () => download("text"),
               onDownloadPdf: () => void downloadPdf(),
               onDownloadDocx: () => void downloadDocx(),
+              onDownloadMarkdown: () => download("markdown"),
               onPrint: print,
               onPageSetup: () => setDialog("page-setup"),
               onVersionHistory: () => setShowVersionHistory(true),
@@ -1405,6 +1556,7 @@ export function DocumentEditor({
               onInsertLink: () => setDialog("link"),
               onSpecialCharacters: () => setShowSpecialChars(true),
               onInsertImage: () => setDialog("image"),
+              onAsk: (kind) => (kind === "attachment" ? openAttachPicker() : setDialog(kind)),
               onWordCount: () => setDialog("word-count"),
               onShortcuts: () => setDialog("shortcuts"),
               showOutline,
@@ -1419,9 +1571,15 @@ export function DocumentEditor({
               onChromeless: () => void toggleChrome(),
               spellcheck,
               onSpellcheck: setSpellcheck,
+              voiceOn,
+              onVoiceTyping: setVoiceOn,
+              pageless,
+              onPageless: setPageless,
               mode,
-              onMode: setMode,
+              onMode: chooseMode,
               canEdit: mayEdit,
+              showSuggestions,
+              onShowSuggestions: setShowSuggestions,
             }}
           />
         </div>
@@ -1546,7 +1704,7 @@ export function DocumentEditor({
             spellcheck,
             onSpellcheck: setSpellcheck,
             mode,
-            onMode: setMode,
+            onMode: chooseMode,
             canEdit: mayEdit,
           }}
         />
@@ -1582,12 +1740,12 @@ export function DocumentEditor({
         )}
 
         <div className="relative flex min-w-0 flex-1 flex-col">
-          {showRuler && (
+          {showRuler && !pageless && (
             <DocsRuler
               setup={pageSetup}
               zoom={zoom}
               onChange={(next) => void applyPageSetup(next)}
-              editable={mayEdit && mode === "editing"}
+              editable={mayEdit && mode !== "viewing"}
             />
           )}
 
@@ -1679,33 +1837,38 @@ export function DocumentEditor({
             }}
           >
             <div
-              className="mx-auto"
-              style={{ width: pageWidthPx * zoom, height: naturalHeight * zoom }}
+              className={pageless ? "mx-auto w-full max-w-[1040px]" : "mx-auto"}
+              style={pageless ? { height: naturalHeight * zoom } : { width: pageWidthPx * zoom, height: naturalHeight * zoom }}
             >
               <div
                 ref={page}
                 data-doc-print
                 spellCheck={spellcheck}
-                className="relative rounded-[3px] shadow-[var(--shadow-deck-seat)]"
+                className={`relative ${pageless ? "" : "rounded-[3px] shadow-[var(--shadow-deck-seat)]"} ${pageSetup.lineNumbers ? "doc-line-numbers" : ""}`}
                 style={{
-                  width: pageWidthPx,
-                  minHeight: pageHeightPx,
-                  background: "var(--doc-page)",
-                  paddingTop: `${pageSetup.margins.top}in`,
-                  paddingBottom: `${pageSetup.margins.bottom}in`,
-                  paddingLeft: `${pageSetup.margins.left}in`,
-                  paddingRight: `${pageSetup.margins.right}in`,
+                  width: pageless ? "100%" : pageWidthPx,
+                  minHeight: pageless ? undefined : pageHeightPx,
+                  background: pageSetup.pageColor ?? "var(--doc-page)",
+                  paddingTop: pageless ? "40px" : `${pageSetup.margins.top}in`,
+                  paddingBottom: pageless ? "80px" : `${pageSetup.margins.bottom}in`,
+                  paddingLeft: pageless ? "56px" : `${pageSetup.margins.left}in`,
+                  paddingRight: pageless ? "56px" : `${pageSetup.margins.right}in`,
                   transform: `scale(${zoom})`,
                   transformOrigin: "top left",
                 }}
               >
+                {pageSetup.watermark && (
+                  <span aria-hidden="true" className="doc-watermark" data-doc-watermark>
+                    <span>{pageSetup.watermark}</span>
+                  </span>
+                )}
                 {/* **Header and footer.** On screen the document is one
                     continuous flow, so they show once — in the top and bottom
                     margins of the sheet — as a preview. In PRINT they are
                     `position: fixed`, which repeats an element on every page,
                     and the page number comes from the `@page` margin box in
                     the style block below: the one place CSS can count pages. */}
-                {pageSetup.header && (
+                {pageSetup.header && !pageless && (
                   <span
                     data-doc-hf
                     aria-hidden="true"
@@ -1715,7 +1878,7 @@ export function DocumentEditor({
                     {pageSetup.header}
                   </span>
                 )}
-                {(pageSetup.footer || pageSetup.pageNumbers) && (
+                {(pageSetup.footer || pageSetup.pageNumbers) && !pageless && (
                   <span
                     data-doc-hf
                     data-doc-footer
@@ -1740,7 +1903,7 @@ export function DocumentEditor({
                     }
                   `}</style>
                 )}
-                {showPageGuides && (
+                {showPageGuides && !pageless && (
                   /* Approximate, and the menu says so: the printer decides the
                      real break from content height, and it will not split a
                      heading away from its paragraph the way a flat rule here
@@ -1754,6 +1917,7 @@ export function DocumentEditor({
                   />
                 )}
                 <EditorContent editor={editor} />
+                {editor && <FootnotesList editor={editor} readOnly={readOnly} />}
                 {!readOnly && (
                   <DocsSelectionToolbar
                     editor={editor}
@@ -1798,6 +1962,13 @@ export function DocumentEditor({
             onClose={() => setShowAssistant(false)}
           />
         )}
+        {showSuggestions && editor && (
+          <DocsSuggestions
+            editor={editor}
+            canResolve={mayEdit && mode !== "viewing"}
+            onClose={() => setShowSuggestions(false)}
+          />
+        )}
         {showComments && editor && (
           <DocsComments
             editor={editor}
@@ -1827,7 +1998,12 @@ export function DocumentEditor({
           title="Word count (Ctrl Shift C)"
         >
           <span data-figure>{words}</span> {words === 1 ? "word" : "words"}
-          {words > 0 && <> · {readingMinutes(words)} min read</>}
+          {words > 0 && (
+            <>
+              {" "}· <span data-figure>{characterCount(derived.text, { includeSpaces: true })}</span> characters ·{" "}
+              {readingMinutes(words)} min read
+            </>
+          )}
         </button>
 
         <span>
@@ -1874,6 +2050,8 @@ export function DocumentEditor({
             ? (refusal ?? "You have view access.")
             : mode === "viewing"
               ? "Viewing. Switch to Editing in the toolbar to make changes."
+              : mode === "suggesting"
+                ? "Suggesting. What you type or delete is marked for review, not applied, until someone accepts it."
               : collab.connected
                 ? "Edits are shared live. Everyone in this document sees them as you type."
                 : (collab.reason ??
@@ -1918,6 +2096,7 @@ export function DocumentEditor({
         <AddressDialog
           kind="link"
           initial={(editor.getAttributes("link").href as string) ?? ""}
+          bookmarks={bookmarksOf(editor.state.doc).map((b) => ({ id: b.id, name: b.name }))}
           onRemove={
             editor.isActive("link")
               ? () => {
@@ -1927,7 +2106,7 @@ export function DocumentEditor({
               : undefined
           }
           onSubmit={(value) => {
-            const safe = /^(https?:|mailto:)/i.test(value) ? value : `https://${value}`;
+            const safe = /^(https?:|mailto:|#)/i.test(value) ? value : `https://${value}`;
             editor.chain().focus().setLink({ href: safe }).run();
             setDialog(null);
           }}
@@ -1939,6 +2118,91 @@ export function DocumentEditor({
           kind="image"
           onSubmit={(value) => {
             editor.chain().focus().setImage({ src: value }).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "youtube" && editor && (
+        <DocsPrompt
+          title="YouTube video"
+          label="Video address"
+          hint="A watch or share link. The player is embedded without cookies."
+          placeholder="https://www.youtube.com/watch?v=…"
+          validate={(v) => (/youtu\.?be/.test(v) ? null : "That is not a YouTube address.")}
+          onSubmit={(value) => {
+            editor.chain().focus().setYoutubeVideo({ src: value.trim() }).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "embed" && editor && (
+        <DocsPrompt
+          title="Embed a page"
+          label="Address"
+          hint="A map, a design, a form, a dashboard — anything that allows embedding. Only https addresses."
+          placeholder="https://…"
+          validate={(v) => (embedSrc(v) ? null : "Only an https address can be embedded.")}
+          onSubmit={(value) => {
+            editor.chain().focus().setEmbed(value).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "math" && editor && (
+        <DocsPrompt
+          title="Equation"
+          label="LaTeX"
+          hint={"Written in LaTeX and rendered in place. Click a rendered equation to edit it. Example: \\frac{a}{b} = \\sqrt{c^2 + d^2}"}
+          placeholder="E = mc^2"
+          multiline
+          onSubmit={(value) => {
+            const latex = value.trim();
+            const block = latex.includes("\n") || latex.length > 40;
+            if (block) editor.chain().focus().insertBlockMath({ latex }).run();
+            else editor.chain().focus().insertInlineMath({ latex }).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      {dialog === "footnote" && editor && (
+        <DocsPrompt
+          title="Footnote"
+          label="Note"
+          hint="A number goes in the text at the caret; the note is listed at the foot of the page. Numbers follow position, so a note added above another renumbers them."
+          placeholder="Source, aside, or clarification"
+          multiline
+          onSubmit={(value) => {
+            editor.chain().focus().insertFootnote(value.trim()).run();
+            setDialog(null);
+          }}
+          onClose={() => setDialog(null)}
+        />
+      )}
+      <input
+        id={attachInputId}
+        type="file"
+        className="sr-only"
+        aria-hidden="true"
+        tabIndex={-1}
+        onChange={(e) => {
+          void attachFile(e.target.files?.[0]);
+          e.target.value = "";
+        }}
+      />
+      {voiceOn && editor && <DocsVoiceTyping editor={editor} onClose={() => setVoiceOn(false)} />}
+      {chip && editor && <DocsChipPopover editor={editor} chip={chip} onClose={() => setChip(null)} />}
+      {dialog === "bookmark" && editor && (
+        <DocsPrompt
+          title="Bookmark"
+          label="Name"
+          hint="A place a link can point to. Insert ▸ Link offers your bookmarks and headings."
+          placeholder="Pricing table"
+          onSubmit={(value) => {
+            editor.chain().focus().insertBookmark(value.trim()).run();
             setDialog(null);
           }}
           onClose={() => setDialog(null)}
@@ -1973,8 +2237,23 @@ function SaveState({
  * application's stylesheet — and an export that arrives as unstyled markup is
  * one people conclude was corrupted.
  */
-function exportHtml(title: string, inner: string, setup: DocumentPageSetup): string {
+function exportHtml(
+  title: string,
+  inner: string,
+  setup: DocumentPageSetup,
+  extras: { toc?: string; footnotes?: { number: number; text: string }[] } = {},
+): string {
   const { widthIn, heightIn } = pageSizeIn(setup);
+  /* The table of contents is a node view on screen and an empty <nav> in the
+     stored HTML — the export fills it from the same headings. Footnotes are
+     markers in the text; their notes are listed at the end. */
+  if (extras.toc) inner = inner.replace(/<nav[^>]*data-toc[^>]*>\s*<\/nav>/g, extras.toc);
+  if (extras.footnotes && extras.footnotes.length) {
+    const items = extras.footnotes
+      .map((f) => `<li>${f.text.replace(/[<>&]/g, (c) => (c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;"))}</li>`)
+      .join("");
+    inner += `<aside class="doc-footnotes"><ol>${items}</ol></aside>`;
+  }
   const escaped = title.replace(/[<>&]/g, (c) =>
     c === "<" ? "&lt;" : c === ">" ? "&gt;" : "&amp;",
   );
@@ -1998,6 +2277,17 @@ function exportHtml(title: string, inner: string, setup: DocumentPageSetup): str
   ul[data-type="taskList"] { list-style: none; padding-inline-start: 0.25em; }
   ul[data-type="taskList"] li { display: flex; gap: 0.55em; align-items: flex-start; }
   [data-page-break] { break-after: page; border: 0; }
+  [data-callout] { display: grid; grid-template-columns: auto 1fr; gap: .6em; padding: .8em 1em; border-radius: 8px; background: #f2f2f5; border: 1px solid #e2e2e8; }
+  [data-callout] > * { grid-column: 2; margin: 0; }
+  [data-callout][data-tone="info"] { background: #eaf2ff; border-color: #c9dcff; } [data-callout][data-tone="warning"] { background: #fff4e0; border-color: #ffd9a3; } [data-callout][data-tone="success"] { background: #e8f8f0; border-color: #b9e8cf; }
+  [data-columns] { display: grid; gap: 1.2em; grid-template-columns: repeat(2, minmax(0,1fr)); } [data-columns][data-count="3"] { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .doc-toc { padding: .6em 0 .6em 1em; border-left: 3px solid #d8d8de; } .doc-toc-title { margin: 0 0 .4em; font-size: .8em; letter-spacing: .06em; text-transform: uppercase; color: #6a6a75; } .doc-toc ol { list-style: none; margin: 0; padding: 0; } .doc-toc-l2 { padding-left: 1.2em; } .doc-toc-l3 { padding-left: 2.4em; }
+  body { counter-reset: footnote; } sup[data-footnote] { counter-increment: footnote; } sup[data-footnote]::after { content: counter(footnote); font-size: .75em; }
+  .doc-footnotes { margin-top: 2.5em; padding-top: .8em; border-top: 1px solid #d8d8de; font-size: .85em; }
+  details { border: 1px solid #d8d8de; border-radius: 8px; padding: .4em .8em; } summary { font-weight: 500; }
+  [data-embed] iframe, div[data-youtube-video] iframe { width: 100%; border: 0; border-radius: 8px; }
+  span[data-type="mention"] { border-radius: 999px; padding: .05em .45em; background: #e4e9f5; font-weight: 500; }
+  span[data-bookmark] { display: none; }
   @media print { body { background: #fff; } .page { padding: 0; max-width: none; } }
 </style></head>
 <body><div class="page">${inner}</div></body></html>`;

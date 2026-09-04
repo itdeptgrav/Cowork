@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import {
+import { MAX_WATERMARK_CHARS, 
   DEFAULT_PAGE_SETUP,
   MAX_HEADER_FOOTER_CHARS,
   MAX_MARGIN_IN,
@@ -254,6 +254,70 @@ export function PageSetupDialog({
           </div>
         </div>
 
+        {/* The page's look: a watermark behind the text, the paper's colour,
+            and line numbers down the margin — all part of the document, so
+            everyone sees the same page and print carries them. */}
+        <div>
+          <p className="mb-1.5 text-[11px] text-ink-muted">Page</p>
+          <div className="grid grid-cols-1 gap-2">
+            <label className="flex flex-col gap-1">
+              <span className="text-[11px] text-ink-muted">Watermark</span>
+              <input
+                className="h-8 rounded-inset border border-hairline bg-transparent px-2 text-[12.5px] text-ink outline-none"
+                value={draft.watermark ?? ""}
+                maxLength={MAX_WATERMARK_CHARS}
+                placeholder="None — for example DRAFT or CONFIDENTIAL"
+                onChange={(e) => {
+                  const watermark = e.target.value.slice(0, MAX_WATERMARK_CHARS);
+                  setDraft((d) => {
+                    const { watermark: _w, ...rest } = d;
+                    void _w;
+                    return watermark.trim() ? { ...rest, watermark } : rest;
+                  });
+                }}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-[12px] text-ink-muted">
+              Page colour
+              <input
+                type="color"
+                value={draft.pageColor ?? "#ffffff"}
+                onChange={(e) => setDraft((d) => ({ ...d, pageColor: e.target.value.toLowerCase() }))}
+                className="h-6 w-8 cursor-pointer rounded border border-hairline bg-transparent"
+              />
+              {draft.pageColor && (
+                <button
+                  type="button"
+                  className="rounded-full px-2 py-0.5 text-[11.5px] text-ink-muted hover:bg-[var(--control)] hover:text-ink"
+                  onClick={() =>
+                    setDraft((d) => {
+                      const { pageColor: _c, ...rest } = d;
+                      void _c;
+                      return rest;
+                    })
+                  }
+                >
+                  Default
+                </button>
+              )}
+            </label>
+            <label className="flex items-center gap-2 text-[12px] text-ink-muted">
+              <input
+                type="checkbox"
+                checked={draft.lineNumbers === true}
+                onChange={(e) =>
+                  setDraft((d) => {
+                    const { lineNumbers: _l, ...rest } = d;
+                    void _l;
+                    return e.target.checked ? { ...rest, lineNumbers: true } : rest;
+                  })
+                }
+              />
+              Number the paragraphs down the left margin
+            </label>
+          </div>
+        </div>
+
         {refusal ? (
           <p className="text-[11.5px] text-[var(--state-overdue-ink)]">{refusal}</p>
         ) : (
@@ -417,6 +481,7 @@ export function AddressDialog({
   onSubmit,
   onRemove,
   onClose,
+  bookmarks = [],
 }: {
   kind: "link" | "image";
   initial?: string;
@@ -424,6 +489,9 @@ export function AddressDialog({
   /** Only for a link that is already there. */
   onRemove?: () => void;
   onClose: () => void;
+  /** Places in this document a link can point to (Insert, then Bookmark).
+      Offered under the address box; choosing one applies straight away. */
+  bookmarks?: { id: string; name: string }[];
 }) {
   const [value, setValue] = useState(initial ?? "");
   const [uploading, setUploading] = useState(false);
@@ -559,9 +627,29 @@ export function AddressDialog({
         </>
       )}
 
+      {isLink && bookmarks.length > 0 && (
+        <div className="mt-2.5">
+          <p className="mb-1 text-[10.5px] font-medium uppercase tracking-wide text-ink-faint">Or a place in this document</p>
+          <ul className="max-h-40 overflow-y-auto rounded-inset border border-hairline">
+            {bookmarks.map((b) => (
+              <li key={b.id}>
+                <button
+                  type="button"
+                  onClick={() => onSubmit(`#${b.id}`)}
+                  className="flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-[12.5px] text-ink hover:bg-[var(--control)]"
+                >
+                  <span aria-hidden className="text-ink-faint">&#9873;</span>
+                  {b.name}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <p className="mt-2 text-[11.5px] text-ink-faint">
         {isLink
-          ? "An address without http:// is treated as https://."
+          ? "An address without http:// is treated as https://. A bookmark link starts with # and stays inside the document."
           : canUpload
             ? MAX_IMAGE_BYTES === null
               ? "Uploaded images are stored with the rest of your files, so anyone you share the document with sees them."

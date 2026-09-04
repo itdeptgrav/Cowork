@@ -11,7 +11,10 @@
  * the io modules — the item drives that rather than a second implementation.
  */
 
+import { ShortcutsDialog } from "./ShortcutsDialog";
 import { useEffect, useRef, useState } from "react";
+import type { WorkbookVersion } from "@/lib/spreadsheet/workbookClient";
+import { rangeLabel } from "@/lib/spreadsheet/coordinates";
 import {
   createWorkbook,
   listShares,
@@ -249,7 +252,7 @@ export function FileMenu({
   onNewSheet?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [dialog, setDialog] = useState<null | "share" | "details" | "settings" | "saveAs">(null);
+  const [dialog, setDialog] = useState<null | "share" | "details" | "settings" | "saveAs" | "pageSetup" | "versions" | "shortcuts">(null);
   const [status, setStatus] = useState<string | null>(null);
   const [saveAsTitle, setSaveAsTitle] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
@@ -398,6 +401,35 @@ export function FileMenu({
               Export XLSX <span className="text-ink-faint">workbook</span>
             </button>
             <div className="my-1 h-px bg-[var(--color-hairline)]" />
+            <button
+              type="button"
+              className={item}
+              onClick={choose(() => {
+                const html = controller.printDocument(persistence.title);
+                const w = window.open("", "_blank");
+                if (!w) {
+                  setStatus("The browser blocked the print window. Allow pop-ups for this site and try again.");
+                  return;
+                }
+                w.document.open();
+                w.document.write(html);
+                w.document.close();
+                w.focus();
+                setTimeout(() => w.print(), 250);
+              })}
+            >
+              Print… <span className="text-ink-faint">sheet</span>
+            </button>
+            <button type="button" className={item} onClick={choose(() => setDialog("pageSetup"))}>
+              Page setup…
+            </button>
+            <button type="button" className={item} onClick={choose(() => setDialog("versions"))}>
+              Version history…
+            </button>
+            <button type="button" className={item} onClick={choose(() => setDialog("shortcuts"))}>
+              Keyboard shortcuts…
+            </button>
+            <div className="my-1 h-px bg-[var(--color-hairline)]" />
             <button type="button" className={item} onClick={choose(() => setDialog("share"))}>
               Share…
             </button>
@@ -457,6 +489,24 @@ export function FileMenu({
         </Dialog>
       )}
 
+      {dialog === "shortcuts" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog === "versions" && (
+        <Dialog title="Version history" onClose={() => setDialog(null)}>
+          <VersionHistoryPanel persistence={persistence} onClose={() => setDialog(null)} />
+        </Dialog>
+      )}
+
+      {dialog === "pageSetup" && (
+        <Dialog title="Page setup" onClose={() => setDialog(null)}>
+          <PageSetupForm controller={controller} />
+          <div className="flex justify-end gap-2">
+            <button type="button" className={primary} onClick={() => setDialog(null)}>
+              Done
+            </button>
+          </div>
+        </Dialog>
+      )}
+
       {dialog === "details" && (
         <Dialog title="Details" onClose={() => setDialog(null)}>
           <dl className="flex flex-col gap-1.5 text-[12px]">
@@ -509,6 +559,193 @@ export function FileMenu({
             </button>
           </div>
         </Dialog>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The sheet's page — paper, orientation, margins, what prints. It belongs to
+ * the sheet and saves with it, so everyone prints the same page.
+ */
+function PageSetupForm({ controller }: { controller: SpreadsheetController }) {
+  const s = controller.pageSetup;
+  const select = "h-8 w-full rounded-md border border-hairline bg-transparent px-2 text-[12px] text-ink outline-none focus:border-ink";
+  const check = (label: string, key: "gridlines" | "headings" | "title" | "fitToWidth") => (
+    <label key={key} className="flex items-center gap-2 text-[12px] text-ink">
+      <input type="checkbox" checked={s[key]} onChange={(e) => controller.setPageSetup({ [key]: e.target.checked })} />
+      {label}
+    </label>
+  );
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="grid grid-cols-3 gap-2">
+        <label className="text-[11px] text-ink-muted">
+          Paper
+          <select className={select} value={s.paper} onChange={(e) => controller.setPageSetup({ paper: e.target.value as typeof s.paper })}>
+            <option value="A4">A4</option>
+            <option value="Letter">Letter</option>
+            <option value="Legal">Legal</option>
+          </select>
+        </label>
+        <label className="text-[11px] text-ink-muted">
+          Orientation
+          <select className={select} value={s.orientation} onChange={(e) => controller.setPageSetup({ orientation: e.target.value as typeof s.orientation })}>
+            <option value="portrait">Portrait</option>
+            <option value="landscape">Landscape</option>
+          </select>
+        </label>
+        <label className="text-[11px] text-ink-muted">
+          Margins
+          <select className={select} value={s.margins} onChange={(e) => controller.setPageSetup({ margins: e.target.value as typeof s.margins })}>
+            <option value="normal">Normal</option>
+            <option value="narrow">Narrow</option>
+            <option value="wide">Wide</option>
+          </select>
+        </label>
+      </div>
+      {check("Print gridlines", "gridlines")}
+      {check("Print row numbers and column letters", "headings")}
+      {check("Print the title above the table", "title")}
+      {check("Fit the table to the page width", "fitToWidth")}
+      <div className="flex items-center justify-between gap-2 rounded-md border border-hairline px-2 py-1.5 text-[12px]">
+        <span className="text-ink-muted">
+          {s.area ? <>Print area: <span className="font-mono text-ink">{rangeLabel(s.area)}</span></> : "Prints everything that has content."}
+        </span>
+        <span className="flex gap-1">
+          <button type="button" className={quiet} onClick={() => controller.setPrintArea(true)}>
+            Use selection
+          </button>
+          {s.area && (
+            <button type="button" className={quiet} onClick={() => controller.setPrintArea(false)}>
+              Clear
+            </button>
+          )}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Named checkpoints of the workbook. "Keep a version" saves what is on
+ * screen under a name; Restore puts a version back as the live content —
+ * after keeping the current state as a version of its own, so a restore
+ * can itself be undone from this list.
+ */
+function VersionHistoryPanel({ persistence, onClose }: { persistence: WorkbookPersistence; onClose: () => void }) {
+  const [versions, setVersions] = useState<WorkbookVersion[] | null>(null);
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { listVersions } = persistence;
+  const stored = persistence.workbookId !== null;
+
+  useEffect(() => {
+    let cancelled = false;
+    listVersions()
+      .then((v) => {
+        if (!cancelled) setVersions(v);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) {
+          setVersions([]);
+          setError(e instanceof Error ? e.message : "Could not load the versions.");
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [listVersions]);
+
+  const run = async (key: string, fn: () => Promise<void>) => {
+    setBusy(key);
+    setError(null);
+    try {
+      await fn();
+      setVersions(await persistence.listVersions());
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const when = (iso: string) => {
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString(undefined, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  };
+
+  return (
+    <div className="flex flex-col gap-2.5">
+      {!stored && <p className="text-[12px] text-ink-muted">Save this sheet first; a draft has no history yet.</p>}
+      <div className="flex items-center gap-1.5">
+        <input
+          className={field}
+          value={label}
+          onChange={(e) => setLabel(e.target.value)}
+          placeholder="Name this version, e.g. Sent to finance"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && label.trim()) {
+              e.preventDefault();
+              void run("save", async () => {
+                await persistence.saveVersion(label.trim());
+                setLabel("");
+              });
+            }
+          }}
+        />
+        <button
+          type="button"
+          className={primary}
+          disabled={!label.trim() || busy !== null}
+          onClick={() => void run("save", async () => {
+            await persistence.saveVersion(label.trim());
+            setLabel("");
+          })}
+        >
+          {busy === "save" ? "Keeping…" : "Keep a version"}
+        </button>
+      </div>
+      {error && <p className="text-[11.5px] text-[var(--state-overdue-ink,#b42318)]">{error}</p>}
+      {versions === null ? (
+        <p className="text-[12px] text-ink-muted">Loading…</p>
+      ) : versions.length === 0 ? (
+        <p className="text-[12px] text-ink-muted">No versions yet. Keep one before a big change, and come back here to restore it.</p>
+      ) : (
+        <ul className="max-h-64 divide-y divide-hairline overflow-y-auto rounded-md border border-hairline">
+          {versions.map((v) => (
+            <li key={v.id} className="flex items-center gap-2 px-2.5 py-2 text-[12px]">
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-ink">{v.label || (v.auto ? "Automatic" : "Version")}{v.auto && <span className="ml-1 text-[10px] text-ink-faint">auto</span>}</p>
+                <p className="truncate text-[11px] text-ink-faint">{when(v.createdAt)}{v.createdByName ? ` · ${v.createdByName}` : ""}</p>
+              </div>
+              <button
+                type="button"
+                className={quiet}
+                disabled={busy !== null}
+                onClick={() => {
+                  if (!window.confirm(`Restore "${v.label || "this version"}"? What is on screen now is kept as a version first.`)) return;
+                  void run(v.id, async () => {
+                    await persistence.restoreVersion(v.id);
+                    onClose();
+                  });
+                }}
+              >
+                {busy === v.id ? "Restoring…" : "Restore"}
+              </button>
+              <button
+                type="button"
+                className={quiet}
+                disabled={busy !== null}
+                aria-label={`Delete the version ${v.label}`}
+                onClick={() => void run(`del-${v.id}`, () => persistence.deleteVersion(v.id))}
+              >
+                Delete
+              </button>
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

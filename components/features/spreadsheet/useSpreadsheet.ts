@@ -10,6 +10,8 @@
  * hook only routes to it.
  */
 
+import { colorScaleColor, dataBarFraction, rangeNumbers, type CellPaint } from "@/lib/spreadsheet/conditionalVisual";
+import { bandColorAt, rectsOverlap, type Banding, type BandPreset } from "@/lib/spreadsheet/banding";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cellRef, columnLabel as columnLabelFor, parseCellRef, type CellPos, type Rect } from "@/lib/spreadsheet/coordinates";
 import {
@@ -19,6 +21,33 @@ import {
   type EditSource,
 } from "@/lib/spreadsheet/editor";
 import { FormulaEngine } from "@/lib/spreadsheet/formula";
+import { formatValue } from "@/lib/spreadsheet/format";
+import { defineName, nameProblem, removeName, type NamedRange } from "@/lib/spreadsheet/names";
+import { buildPivot, pivotFields, pivotFootprint, pivotWrites, type PivotDefinition, type PivotSpec, type SourceCell } from "@/lib/spreadsheet/pivot";
+import { DEFAULT_PAGE_SETUP, printHtml, usedRange, type PageSetup } from "@/lib/spreadsheet/printHtml";
+import { clampZoom, colWidth as colWidthOf, rowHeight as rowHeightOf } from "@/lib/spreadsheet/metrics";
+import {
+  mayEdit,
+  protectRange as protectRangeOp,
+  protectSheet as protectSheetOp,
+  protectionAt,
+  protectionInRect,
+  refusalMessage,
+  unprotectRange as unprotectRangeOp,
+  type SheetProtection,
+  type WorkbookAccess,
+} from "@/lib/spreadsheet/protection";
+import {
+  addChart as addChartOp,
+  chartModel,
+  newChart,
+  raiseChart,
+  removeChart as removeChartOp,
+  updateChart as updateChartOp,
+  type ChartModel,
+  type ChartSpec,
+  type ChartType,
+} from "@/lib/spreadsheet/charts";
 import {
   activeWorksheet,
   createWorkbook,
@@ -29,6 +58,10 @@ import {
   withActiveWorksheet,
   type Workbook,
   type Worksheet,
+  metricsOf,
+  applyCellWrites,
+  createWorksheet,
+  type CellWrite,
 } from "@/lib/spreadsheet/model";
 import {
   borderEdgesForPreset,
@@ -59,8 +92,7 @@ import {
   duplicateValueSet,
   rangeContains,
   type CondCondition,
-  type ConditionalFormat,
-} from "@/lib/spreadsheet/conditional";
+  type ConditionalFormat, isVisualCondition } from "@/lib/spreadsheet/conditional";
 import {
   applyMerge,
   hasMergeIn,
@@ -153,6 +185,7 @@ import {
   textToColumnsEdits,
   toggleRowGroup,
   type Delimiter,
+  collapsedCols,
 } from "@/lib/spreadsheet/datatools";
 import { exportWorkbookJson, importWorkbookJson } from "@/lib/spreadsheet/jsonio";
 import {
@@ -170,6 +203,7 @@ import {
   pasteStyles,
   toTSV,
   type Clipboard,
+  transposeClipboard,
 } from "@/lib/spreadsheet/clipboard";
 import { computeFill, fillDestRect } from "@/lib/spreadsheet/fill";
 
@@ -357,14 +391,115 @@ export interface SpreadsheetController {
   replaceAll: (query: string, replacement: string, opts: SearchOptions) => number;
   /** Select and scroll to a cell — how "find next" moves. */
   revealCell: (row: number, col: number) => void;
+  /** Select a rectangle — on another sheet too — and scroll to its corner. */
+  selectRect: (rect: Rect, sheetId?: string) => void;
+
+  /* --- Named ranges (see `lib/spreadsheet/names.ts`) --- */
+  names: NamedRange[];
+  /** Define (or redefine) a name for a range on the active sheet — the
+      current selection when none is given. Returns the problem with the name,
+      or null when it was defined. */
+  defineNamedRange: (name: string, range?: Rect, sheetId?: string) => string | null;
+  removeNamedRange: (name: string) => void;
+
+  /* --- View --- */
+  /** Show each formula's text in its cell instead of its result. */
+  showFormulas: boolean;
+  setShowFormulas: (value: boolean) => void;
+  /** Whether the grid draws its cell boundaries. This reader's alone. */
+  showGridlines: boolean;
+  setShowGridlines: (value: boolean) => void;
+  /** The grid's magnification, 0.5 to 2. This reader's alone; not saved. */
+  zoom: number;
+  setZoom: (zoom: number) => void;
+
+  /* --- Notes, column outlines, pictures --- */
+  /** A cell's note — a plain annotation — or undefined. */
+  noteLookup: (row: number, col: number) => string | undefined;
+  /** Set a note on the active cell; empty text removes it. */
+  setNote: (row: number, col: number, text: string) => void;
+  groupCols: () => void;
+  ungroupCols: () => void;
+  setColsCollapsed: (collapsed: boolean) => void;
+  /** Columns hidden because an outline band is collapsed. */
+  collapsedColsMap: Record<number, true>;
+  /** Put a picture in the active cell by its https address. */
+  insertImageCell: (url: string) => void;
+  /** The view option that shades every protected cell. */
+  showProtected: boolean;
+  setShowProtected: (value: boolean) => void;
+
+  /* --- Live collaboration (see `useWorkbookCollab.ts`) --- */
+  /** Replace the workbook with what the shared document holds, keeping the
+      undo history and the selection; the engine learns only what changed. */
+  applyRemote: (next: Workbook, change: { cells: { sheetId: string; row: number; col: number; value: string }[]; structural: boolean; namesChanged: boolean }) => void;
+
+  /* --- Protection (see `lib/spreadsheet/protection.ts`) --- */
+  /** How the signed-in person reaches the workbook; the owner may edit
+      protected cells and is the only one who may change protection. */
+  access: WorkbookAccess;
+  setAccess: (access: WorkbookAccess) => void;
+  protection: SheetProtection | undefined;
+  /** Lock the selection (or a rectangle) against everyone but the owner. */
+  protectRange: (note?: string, rect?: Rect) => void;
+  unprotectRange: (id: string) => void;
+  protectSheet: (on: boolean) => void;
+  /** What protects a cell, or null — for the lock marker and the refusal. */
+  protectionLookup: (row: number, col: number) => ReturnType<typeof protectionAt>;
+  /** The last refused change, as the sentence to show; cleared by `clearNotice`. */
+  notice: string | null;
+  clearNotice: () => void;
+
+  /* --- Printing (see `lib/spreadsheet/printHtml.ts`) --- */
+  pageSetup: PageSetup;
+  setPageSetup: (patch: Partial<PageSetup>) => void;
+  /** Print only the selection from now on, or clear the area. */
+  setPrintArea: (on: boolean) => void;
+  /** The printable document for the active sheet. */
+  printDocument: (workbookTitle: string) => string;
+
+  /* --- Pivot tables (see `lib/spreadsheet/pivot.ts`) --- */
+  pivots: PivotDefinition[];
+  /** The header names of the selection, for choosing pivot fields. */
+  pivotFieldsOfSelection: () => string[];
+  /** Summarise the selection onto a new sheet; returns the problem, or null. */
+  insertPivot: (spec: PivotSpec) => string | null;
+  /** Rebuild every pivot table from its source's current values. */
+  refreshPivots: () => number;
+  removePivot: (id: string) => void;
+
+  /* --- Charts (see `lib/spreadsheet/charts.ts`) --- */
+  charts: ChartSpec[];
+  selectedChartId: string | null;
+  selectChart: (id: string | null) => void;
+  /** A chart of the current selection, dropped onto the sheet. Needs at
+      least two cells; returns the new chart's id, or null. */
+  insertChart: (type: ChartType) => string | null;
+  updateChart: (id: string, patch: Partial<ChartSpec>) => void;
+  removeChart: (id: string) => void;
+  /** The data a chart draws right now — evaluated values, so formulas plot
+      their results. */
+  chartData: (spec: ChartSpec) => ChartModel;
 
   /** Paste only the values, or only the formatting, of the copied block. */
-  pasteSpecial: (mode: "values" | "formats") => void;
+  pasteSpecial: (mode: "values" | "formats" | "transpose") => void;
   /** Reset the selection's cells to the default style, keeping their values. */
   clearFormatting: () => void;
   /** Drop duplicate rows in the selection, keeping the first of each. Returns
       how many rows were removed. */
   removeDuplicates: () => number;
+  /** Trim the ends and collapse runs of spaces in every selected text cell.
+      Returns how many cells changed. */
+  trimWhitespace: () => number;
+  /** Alternating row colours on the active sheet. */
+  bands: Banding[];
+  /** Band the selection with a preset, replacing any band it overlaps. */
+  addBanding: (preset: BandPreset) => void;
+  /** Remove every band touching the selection. */
+  removeBanding: () => void;
+  /** The colour-scale fill and data bar a cell gets from its conditional
+      formats, or null when no visual rule covers it. */
+  paintAt: (row: number, col: number) => CellPaint | null;
   /** Split the selection's first column across the columns to its right. */
   textToColumns: (delimiter: Delimiter) => void;
   /** Insert a SUM under each run of equal values in the grouping column. */
@@ -395,6 +530,18 @@ export interface SpreadsheetController {
     stamps "You"; a future collaboration layer supplies the real identity. */
 const COMMENT_AUTHOR = "You";
 
+/** The workbook's names in the flat shape the engine takes. */
+function engineNames(wb: Workbook) {
+  return (wb.names ?? []).map((n) => ({
+    name: n.name,
+    sheetId: n.sheetId,
+    top: n.range.top,
+    left: n.range.left,
+    bottom: n.range.bottom,
+    right: n.range.right,
+  }));
+}
+
 export function useSpreadsheet(): SpreadsheetController {
   const [workbook, setWorkbook] = useState<Workbook>(() => createWorkbook());
   const [selection, setSelection] = useState<SelectionState>(() =>
@@ -415,6 +562,8 @@ export function useSpreadsheet(): SpreadsheetController {
      owns the computed values, so an edit recomputes only the cells that depend
      on it rather than the whole sheet. */
   const [engine] = useState(() => new FormulaEngine());
+  const [access, setAccess] = useState<WorkbookAccess>("owner");
+  const [notice, setNotice] = useState<string | null>(null);
   /* The style store — created once, like the engine. Cells reference its ids;
      an edit that formats a cell interns a style here and points the cell at it,
      so identical formatting is shared rather than copied. */
@@ -448,6 +597,7 @@ export function useSpreadsheet(): SpreadsheetController {
   function rebuildEngine(wb: Workbook): void {
     engine.clear();
     engine.syncSheets(sheetIdentities(wb));
+    engine.setNamedRanges(engineNames(wb));
     for (const sheet of wb.worksheets) {
       for (const [ref, cell] of Object.entries(sheet.cells)) {
         const pos = parseCellRef(ref);
@@ -473,6 +623,7 @@ export function useSpreadsheet(): SpreadsheetController {
   }
 
   function applyEdits(label: string, edits: CellEdit[]): void {
+    if (!allowEdits(edits)) return;
     const command = buildCommand(label, worksheet, edits);
     if (command.changes.length === 0) return;
     cancelPendingCut();
@@ -535,6 +686,10 @@ export function useSpreadsheet(): SpreadsheetController {
       resize, hide and freeze leave the values untouched and skip it. */
   function applyStructural(label: string, next: Worksheet, rebuild = true): void {
     if (next === worksheet) return;
+    if (worksheet.protection?.sheet && access !== "owner") {
+      setNotice(refusalMessage({ kind: "sheet" }));
+      return;
+    }
     cancelPendingCut();
     if (rebuild) rebuildEngine(withActiveWorksheet(workbook, next));
     setWorkbook((wb) => withActiveWorksheet(wb, next));
@@ -547,6 +702,10 @@ export function useSpreadsheet(): SpreadsheetController {
       every sheet that changed. */
   function applyStructuralWorkbook(label: string, next: Workbook): void {
     if (next === workbook) return;
+    if (worksheet.protection?.sheet && access !== "owner") {
+      setNotice(refusalMessage({ kind: "sheet" }));
+      return;
+    }
     const command = workbookStructuralCommand(label, activeSheetId, workbook, next);
     if (command.sheets.length === 0) return;
     cancelPendingCut();
@@ -581,6 +740,7 @@ export function useSpreadsheet(): SpreadsheetController {
      the engine themselves; this covers the initial mount. */
   useEffect(() => {
     engine.syncSheets(sheetIdentities(workbook));
+    engine.setNamedRanges(engineNames(workbook));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -650,6 +810,42 @@ export function useSpreadsheet(): SpreadsheetController {
     [worksheet],
   );
 
+  /* Per visual rule (colour scale, data bar), the range's lowest and highest
+     number — what each cell's colour or bar length is measured against. A
+     range is read to 5,000 rows past its top, which bounds a whole-column
+     rule to what a sheet here actually holds. */
+  const cfRangeStats = useMemo(
+    () =>
+      (worksheet.conditionalFormats ?? []).map((cf) => {
+        if (!isVisualCondition(cf.condition)) return null;
+        const values: unknown[] = [];
+        const bottom = Math.min(cf.range.bottom, cf.range.top + 5000);
+        for (let r = cf.range.top; r <= bottom; r++) {
+          for (let c = cf.range.left; c <= cf.range.right; c++) values.push(engine.getValue(activeSheetId, r, c));
+        }
+        return rangeNumbers(values);
+      }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [worksheet],
+  );
+
+  function paintAt(row: number, col: number): CellPaint | null {
+    const cfs = worksheet.conditionalFormats;
+    if (!cfs || cfs.length === 0) return null;
+    let out: CellPaint | null = null;
+    for (let i = 0; i < cfs.length; i++) {
+      const cf = cfs[i];
+      if (!isVisualCondition(cf.condition) || !rangeContains(cf.range, row, col)) continue;
+      const stats = cfRangeStats[i];
+      if (!stats) continue;
+      const v = engine.getValue(activeSheetId, row, col);
+      if (typeof v !== "number") continue;
+      if (cf.condition.type === "colorScale") out = { ...(out ?? {}), background: colorScaleColor(v, stats, cf.condition) };
+      else out = { ...(out ?? {}), bar: { fraction: dataBarFraction(v, stats), color: cf.condition.color } };
+    }
+    return out;
+  }
+
   /**
    * The style a cell is DISPLAYED with: its own style, then each matching
    * conditional-format rule layered on top. The stored style is never changed —
@@ -657,6 +853,11 @@ export function useSpreadsheet(): SpreadsheetController {
    */
   function effectiveStyle(row: number, col: number): CellStyle {
     let style = styleRegistry.get(getCellStyleId(worksheet, row, col));
+    /* Bands sit under everything: a cell's own fill, then a rule's, win. */
+    if (worksheet.banding && worksheet.banding.length && !style.background) {
+      const band = bandColorAt(worksheet.banding, row, col);
+      if (band) style = { ...style, background: band };
+    }
     const cfs = worksheet.conditionalFormats;
     if (!cfs || cfs.length === 0) return style;
     let value: ScalarValue | null = null;
@@ -767,6 +968,26 @@ export function useSpreadsheet(): SpreadsheetController {
       { ...worksheet, validations: remaining.length ? remaining : undefined },
       false,
     );
+  }
+
+  function addBanding(preset: BandPreset): void {
+    const range = { ...selection.range };
+    const band: Banding = {
+      id: `band_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      range,
+      header: preset.header,
+      odd: preset.odd,
+      even: preset.even,
+    };
+    const kept = (worksheet.banding ?? []).filter((b) => !rectsOverlap(b.range, range));
+    applyStructural("Alternating colours", { ...worksheet, banding: [...kept, band] }, false);
+  }
+
+  function removeBanding(): void {
+    const range = selection.range;
+    const kept = (worksheet.banding ?? []).filter((b) => !rectsOverlap(b.range, range));
+    if (kept.length === (worksheet.banding ?? []).length) return;
+    applyStructural("Remove alternating colours", { ...worksheet, banding: kept.length ? kept : undefined }, false);
   }
 
   function addConditionalFormat(condition: CondCondition, styleId: number): void {
@@ -902,15 +1123,19 @@ export function useSpreadsheet(): SpreadsheetController {
 
   /** Paste only the values, or only the formatting, of the copied block. Acts on
       the in-app clipboard — a copy that carries both, of which this takes one. */
-  function pasteSpecial(mode: "values" | "formats"): void {
-    const clip = clipboard;
-    if (!clip) return;
+  function pasteSpecial(mode: "values" | "formats" | "transpose"): void {
+    const source = clipboard;
+    if (!source) return;
+    /* Transposed: the block on its side, values and formatting together. */
+    const clip = mode === "transpose" ? transposeClipboard(source) : source;
     const target: CellPos = { row: selection.range.top, col: selection.range.left };
     const edits: CellEdit[] =
       mode === "values"
         ? pasteEdits(clip, target, bounds, !clip.cut)
-        : pasteStyles(clip, target, bounds);
-    applyEdits(mode === "values" ? "Paste values" : "Paste format", edits);
+        : mode === "transpose"
+          ? [...pasteEdits(clip, target, bounds, false), ...pasteStyles(clip, target, bounds)]
+          : pasteStyles(clip, target, bounds);
+    applyEdits(mode === "values" ? "Paste values" : mode === "transpose" ? "Paste transposed" : "Paste format", edits);
     const rect = pasteRect(clip, target, bounds);
     setSelection({
       anchor: { row: rect.top, col: rect.left },
@@ -1002,6 +1227,49 @@ export function useSpreadsheet(): SpreadsheetController {
     );
   }
 
+  /* --- Notes ----------------------------------------------------------------- */
+
+  const noteLookup = (row: number, col: number): string | undefined => worksheet.notes?.[cellRef(row, col)];
+
+  function setNote(row: number, col: number, text: string): void {
+    const ref = cellRef(row, col);
+    const notes = { ...(worksheet.notes ?? {}) };
+    const trimmed = text.trim();
+    if (trimmed) notes[ref] = trimmed.slice(0, 2000);
+    else delete notes[ref];
+    const ws = { ...worksheet };
+    if (Object.keys(notes).length) ws.notes = notes;
+    else delete ws.notes;
+    applyStructural(trimmed ? "Note" : "Remove note", ws, false);
+  }
+
+  /* --- Column outlines --------------------------------------------------------- */
+
+  function groupCols(): void {
+    const r = selection.range;
+    applyStructural("Group columns", { ...worksheet, colGroups: addRowGroup(worksheet.colGroups, r.left, r.right) }, false);
+  }
+  function ungroupCols(): void {
+    const r = selection.range;
+    applyStructural("Ungroup columns", { ...worksheet, colGroups: removeRowGroup(worksheet.colGroups, r.left, r.right) }, false);
+  }
+  function setColsCollapsed(collapsed: boolean): void {
+    const r = selection.range;
+    applyStructural(
+      collapsed ? "Collapse columns" : "Expand columns",
+      { ...worksheet, colGroups: toggleRowGroup(worksheet.colGroups, r.left, r.right, collapsed) },
+      false,
+    );
+  }
+  const collapsedColsMap = collapsedCols(worksheet.colGroups);
+
+  function insertImageCell(url: string): void {
+    const safe = url.trim().replace(/"/g, "");
+    commitValue(selection.active.row, selection.active.col, `=IMAGE("${safe}")`);
+  }
+
+  const [showProtected, setShowProtected] = useState(false);
+
   function removeDuplicates(): number {
     const rect = selection.range;
     const seen = new Set<string>();
@@ -1040,6 +1308,24 @@ export function useSpreadsheet(): SpreadsheetController {
     return removed;
   }
 
+  /** Trim and collapse whitespace in the selection's text cells. Formulas
+      and numbers are left alone: a leading space is the only thing a text
+      cell can carry that a person cannot see, and it breaks lookups. */
+  function trimWhitespace(): number {
+    const rect = selection.range;
+    const edits: CellEdit[] = [];
+    for (let r = rect.top; r <= rect.bottom; r++) {
+      for (let c = rect.left; c <= rect.right; c++) {
+        const raw = getCellValue(worksheet, r, c);
+        if (!raw || raw.startsWith("=")) continue;
+        const next = raw.replace(/\s+/g, " ").trim();
+        if (next !== raw) edits.push({ row: r, col: c, raw: next });
+      }
+    }
+    if (edits.length) applyEdits("Trim whitespace", edits);
+    return edits.length;
+  }
+
   /** Reset every selected cell to the default style, keeping its value. */
   function clearFormatting(): void {
     const rect = selection.range;
@@ -1053,6 +1339,298 @@ export function useSpreadsheet(): SpreadsheetController {
   /* --- Persistence bridge ------------------------------------------------ */
 
   /** The whole workbook as a serializable value — what a save sends. */
+  /* --- Live collaboration ------------------------------------------------- */
+
+  function applyRemote(
+    next: Workbook,
+    change: { cells: { sheetId: string; row: number; col: number; value: string }[]; structural: boolean; namesChanged: boolean },
+  ): void {
+    if (next === workbook) return;
+    if (change.structural) {
+      rebuildEngine(next);
+    } else {
+      for (const c of change.cells) engine.setCell(c.sheetId, c.row, c.col, c.value);
+      if (change.namesChanged) engine.setNamedRanges(engineNames(next));
+    }
+    /* A colleague removing the sheet being looked at moves the view to the
+       first remaining one; otherwise the view stays put. */
+    const stillThere = next.worksheets.some((ws) => ws.id === activeSheetId);
+    setWorkbook({ ...next, activeSheetId: stillThere ? activeSheetId : next.activeSheetId });
+    if (!stillThere) {
+      setSelection(cellSelection({ row: 0, col: 0 }));
+      setEditing(null);
+    }
+  }
+
+  /* --- Protection --------------------------------------------------------- */
+
+  /** Whether every cell an edit touches may be changed by this person; when
+      not, the refusal is shown and nothing is applied. */
+  function allowEdits(edits: readonly CellEdit[]): boolean {
+    const p = worksheet.protection;
+    if (!p || access === "owner") return true;
+    for (const e of edits) {
+      const hit = protectionInRect(p, { top: e.row, left: e.col, bottom: e.row, right: e.col });
+      if (hit) {
+        setNotice(refusalMessage(hit));
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function setProtection(label: string, next: SheetProtection | undefined): void {
+    const ws = { ...worksheet };
+    if (next) ws.protection = next;
+    else delete ws.protection;
+    /* Recorded as a structural change so it undoes; the owner is the only
+       one who reaches here, so the gate above does not refuse it. */
+    cancelPendingCut();
+    setWorkbook((wb) => withActiveWorksheet(wb, ws));
+    historyRef.current.record(structuralCommand(label, worksheet, ws));
+  }
+
+  function protectRange(note?: string, rect?: Rect): void {
+    if (access !== "owner") {
+      setNotice("Only the owner can protect cells.");
+      return;
+    }
+    const id = `p-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    setProtection("Protect range", protectRangeOp(worksheet.protection, id, rect ?? selection.range, note));
+  }
+
+  function unprotectRange(id: string): void {
+    if (access !== "owner") {
+      setNotice("Only the owner can remove protection.");
+      return;
+    }
+    setProtection("Remove protection", unprotectRangeOp(worksheet.protection, id));
+  }
+
+  function protectSheet(on: boolean): void {
+    if (access !== "owner") {
+      setNotice("Only the owner can protect the sheet.");
+      return;
+    }
+    setProtection(on ? "Protect sheet" : "Unprotect sheet", protectSheetOp(worksheet.protection, on));
+  }
+
+  const protectionLookup = (row: number, col: number) => protectionAt(worksheet.protection, row, col);
+  const clearNotice = () => setNotice(null);
+
+  /* --- Named ranges ------------------------------------------------------ */
+
+  const names = workbook.names ?? [];
+
+  function defineNamedRange(name: string, range?: Rect, sheetId?: string): string | null {
+    const problem = nameProblem(name, names, name);
+    if (problem) return problem;
+    const next = defineName(names, {
+      name,
+      sheetId: sheetId ?? activeSheetId,
+      range: range ?? selection.range,
+    });
+    const wb = { ...workbook, names: next };
+    engine.setNamedRanges(engineNames(wb));
+    setWorkbook(wb);
+    return null;
+  }
+
+  function removeNamedRange(name: string): void {
+    const next = removeName(names, name);
+    const wb = { ...workbook, ...(next.length ? { names: next } : { names: undefined }) };
+    if (!next.length) delete wb.names;
+    engine.setNamedRanges(engineNames(wb));
+    setWorkbook(wb);
+  }
+
+  function selectRect(rect: Rect, sheetId?: string): void {
+    if (sheetId && sheetId !== activeSheetId) {
+      const target = switchSheetOp(workbook, sheetId);
+      if (target !== workbook) applyWorkbook(target);
+    }
+    const pos = { row: rect.top, col: rect.left };
+    setSelection({ anchor: pos, active: pos, range: rect });
+    setEditing(null);
+  }
+
+  const [showFormulas, setShowFormulas] = useState(false);
+  const [showGridlines, setShowGridlines] = useState(true);
+  const [zoom, setZoomState] = useState(1);
+  const setZoom = (z: number) => setZoomState(clampZoom(z));
+
+  /* --- Printing ------------------------------------------------------------- */
+
+  const pageSetup: PageSetup = { ...DEFAULT_PAGE_SETUP, ...(worksheet.pageSetup ?? {}) };
+
+  function setPageSetup(patch: Partial<PageSetup>): void {
+    const next = { ...pageSetup, ...patch };
+    applyStructural("Page setup", { ...worksheet, pageSetup: next }, false);
+  }
+
+  function setPrintArea(on: boolean): void {
+    if (on) setPageSetup({ area: { ...selection.range } });
+    else {
+      const { area: _area, ...rest } = pageSetup;
+      void _area;
+      applyStructural("Clear print area", { ...worksheet, pageSetup: rest }, false);
+    }
+  }
+
+  function printDocument(workbookTitle: string): string {
+    const metrics = metricsOf(worksheet);
+    const rect = pageSetup.area ?? usedRange(new Set([...Object.keys(worksheet.cells), ...Object.keys(worksheet.cellStyles)]), parseCellRef);
+    return printHtml({
+      sheetName: worksheet.name,
+      workbookTitle,
+      rect,
+      cell: (r, c) => {
+        const d = engine.display(activeSheetId, r, c);
+        const style = effectiveStyle(r, c);
+        const text = getCellValue(worksheet, r, c) === "" ? "" : formatValue(engine.getValue(activeSheetId, r, c), style.numberFormat);
+        return { text, style, align: style.align ?? d.align };
+      },
+      colWidth: (c) => colWidthOf(metrics, c),
+      rowHeight: (r) => rowHeightOf(metrics, r),
+      merges: worksheet.merges,
+      setup: pageSetup,
+    });
+  }
+
+  /* --- Pivot tables --------------------------------------------------------- */
+
+  const pivots = workbook.pivots ?? [];
+
+  function sourceMatrix(sheetId: string, rect: Rect): SourceCell[][] {
+    const rows: SourceCell[][] = [];
+    for (let r = rect.top; r <= rect.bottom; r++) {
+      const line: SourceCell[] = [];
+      for (let c = rect.left; c <= rect.right; c++) {
+        const v = engine.getValue(sheetId, r, c);
+        line.push({ text: engine.display(sheetId, r, c).text, number: typeof v === "number" ? v : null });
+      }
+      rows.push(line);
+    }
+    return rows;
+  }
+
+  function pivotFieldsOfSelection(): string[] {
+    return pivotFields(sourceMatrix(activeSheetId, selection.range));
+  }
+
+  /** The target sheet with the table's old footprint cleared and the new
+      table written. */
+  function writePivot(wb: Workbook, def: PivotDefinition, table: ReturnType<typeof buildPivot>, oldFootprint?: Rect): Workbook {
+    const target = wb.worksheets.find((ws) => ws.id === def.target.sheetId);
+    if (!target) return wb;
+    const writes: CellWrite[] = [];
+    if (oldFootprint) {
+      for (let r = oldFootprint.top; r <= oldFootprint.bottom; r++)
+        for (let c = oldFootprint.left; c <= oldFootprint.right; c++) writes.push({ row: r, col: c, value: "" });
+    }
+    for (const w of pivotWrites(table, def.target)) writes.push({ row: w.row, col: w.col, value: w.value });
+    const next = applyCellWrites(target, writes);
+    return { ...wb, worksheets: wb.worksheets.map((ws) => (ws.id === target.id ? next : ws)) };
+  }
+
+  function insertPivot(spec: PivotSpec): string | null {
+    const rect = selection.range;
+    if (rect.bottom - rect.top < 1) return "Select the records with their header row first.";
+    const matrix = sourceMatrix(activeSheetId, rect);
+    const width = rect.right - rect.left + 1;
+    if (spec.rowField >= width || spec.valueField >= width || (spec.colField !== undefined && spec.colField >= width)) return "Choose fields from the selected columns.";
+    const table = buildPivot(matrix, spec);
+    const id = `pivot-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const base = createWorksheet("pivot", "Pivot");
+    const added = addSheetOp(workbook, base, `Pivot ${pivots.length + 1}`);
+    const def: PivotDefinition = {
+      id,
+      source: { sheetId: activeSheetId, rect: { ...rect } },
+      spec,
+      target: { sheetId: added.sheetId, row: 0, col: 0 },
+    };
+    const withTable = writePivot(added.workbook, def, table);
+    const next: Workbook = { ...withTable, pivots: [...pivots, def], activeSheetId: added.sheetId };
+    applyWorkbook(next);
+    return null;
+  }
+
+  function refreshPivots(): number {
+    if (pivots.length === 0) return 0;
+    let wb: Workbook = workbook;
+    let count = 0;
+    for (const def of pivots) {
+      if (!wb.worksheets.some((ws) => ws.id === def.source.sheetId) || !wb.worksheets.some((ws) => ws.id === def.target.sheetId)) continue;
+      const table = buildPivot(sourceMatrix(def.source.sheetId, def.source.rect), def.spec);
+      /* The previous table's extent is unknown after edits; clear a generous
+         box — the target sheet exists for the table, so it holds nothing else. */
+      const old = pivotFootprint(table, def.target);
+      const clear: Rect = { top: old.top, left: old.left, bottom: old.top + 500, right: old.left + 60 };
+      wb = writePivot(wb, def, table, clear);
+      count++;
+    }
+    if (wb !== workbook) applyWorkbook(wb);
+    return count;
+  }
+
+  function removePivot(id: string): void {
+    const next = pivots.filter((p) => p.id !== id);
+    const wb = { ...workbook };
+    if (next.length) wb.pivots = next;
+    else delete wb.pivots;
+    setWorkbook(wb);
+  }
+
+  /* --- Charts --------------------------------------------------------------- */
+
+  const charts = worksheet.charts ?? [];
+  const [selectedChartId, setSelectedChartId] = useState<string | null>(null);
+
+  function selectChart(id: string | null): void {
+    setSelectedChartId(id);
+    if (id) {
+      /* Selecting brings it to the front, as in every drawing program. */
+      const next = raiseChart(charts, id);
+      if (next.some((c, i) => c !== charts[i])) {
+        setWorkbook((wb) => withActiveWorksheet(wb, { ...worksheet, charts: next }));
+      }
+    }
+  }
+
+  function insertChart(type: ChartType): string | null {
+    const rect = selection.range;
+    if (rect.top === rect.bottom && rect.left === rect.right) return null;
+    const id = `chart-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const spec = newChart(id, type, rect, charts, "Chart");
+    applyStructural("Insert chart", { ...worksheet, charts: addChartOp(charts, spec) }, false);
+    setSelectedChartId(id);
+    return id;
+  }
+
+  function updateChart(id: string, patch: Partial<ChartSpec>): void {
+    applyStructural("Change chart", { ...worksheet, charts: updateChartOp(charts, id, patch) }, false);
+  }
+
+  function removeChart(id: string): void {
+    const next = removeChartOp(charts, id);
+    const ws = { ...worksheet };
+    if (next.length) ws.charts = next;
+    else delete ws.charts;
+    applyStructural("Remove chart", ws, false);
+    if (selectedChartId === id) setSelectedChartId(null);
+  }
+
+  function chartData(spec: ChartSpec): ChartModel {
+    return chartModel(
+      spec.rect,
+      (r, c) => {
+        const v = engine.getValue(activeSheetId, r, c);
+        return { text: engine.display(activeSheetId, r, c).text, number: typeof v === "number" ? v : null };
+      },
+      spec.orientation ?? "cols",
+    );
+  }
+
   function serialize(): SerializedWorkbook {
     return serializeWorkbook(workbook, styleRegistry);
   }
@@ -1199,6 +1777,11 @@ export function useSpreadsheet(): SpreadsheetController {
   }
 
   function beginEdit(opts?: BeginEditOptions): void {
+    if (!mayEdit(worksheet.protection, access, { top: selection.active.row, left: selection.active.col, bottom: selection.active.row, right: selection.active.col })) {
+      const hit = protectionAt(worksheet.protection, selection.active.row, selection.active.col);
+      if (hit) setNotice(refusalMessage(hit));
+      return;
+    }
     const { active } = selection;
     const next = startEdit(active, rawValue(active.row, active.col), opts);
     editingRef.current = next;
@@ -1657,9 +2240,59 @@ export function useSpreadsheet(): SpreadsheetController {
     replaceOne,
     replaceAll,
     revealCell,
+    selectRect,
+    names,
+    defineNamedRange,
+    removeNamedRange,
+    showFormulas,
+    setShowFormulas,
+    showGridlines,
+    setShowGridlines,
+    zoom,
+    setZoom,
+    noteLookup,
+    setNote,
+    groupCols,
+    ungroupCols,
+    setColsCollapsed,
+    collapsedColsMap,
+    insertImageCell,
+    showProtected,
+    setShowProtected,
+    applyRemote,
+    access,
+    setAccess,
+    protection: worksheet.protection,
+    protectRange,
+    unprotectRange,
+    protectSheet,
+    protectionLookup,
+    notice,
+    clearNotice,
+    pageSetup,
+    setPageSetup,
+    setPrintArea,
+    printDocument,
+    pivots,
+    pivotFieldsOfSelection,
+    insertPivot,
+    refreshPivots,
+    removePivot,
+    charts,
+    selectedChartId,
+    selectChart,
+    insertChart,
+    updateChart,
+    removeChart,
+    chartData,
     pasteSpecial,
     clearFormatting,
     removeDuplicates,
+    trimWhitespace,
+    paintAt,
+    bands: worksheet.banding ?? [],
+    addBanding,
+    removeBanding,
     textToColumns,
     insertSubtotals,
     groupRows,

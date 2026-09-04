@@ -11,6 +11,7 @@ import {
   pasteEdits,
   pasteRect,
   toTSV,
+  transposeClipboard,
 } from "@/lib/spreadsheet/clipboard";
 
 const BOUNDS = { rows: 100, cols: 26 };
@@ -124,4 +125,22 @@ test("a paste is clipped to the grid rather than clamped onto the last cell", ()
 test("pasteRect is the block anchored at the target, clipped to the grid", () => {
   const clip = fromTSV("1\t2\t3");
   assert.deepEqual(pasteRect(clip, { row: 4, col: 0 }, BOUNDS), rect(4, 0, 4, 2));
+});
+
+test("a transposed clipboard turns rows into columns and keeps styles with their cells", () => {
+  const clip = {
+    rows: 2,
+    cols: 3,
+    cells: [["a", "b", "c"], ["d", "e", "f"]],
+    styles: [[1, 0, 0], [0, 0, 2]],
+    source: { top: 5, left: 1, bottom: 6, right: 3 },
+    cut: true,
+  } as unknown as Parameters<typeof transposeClipboard>[0];
+  const t = transposeClipboard(clip);
+  assert.equal(t.rows, 3);
+  assert.equal(t.cols, 2);
+  assert.deepEqual(t.cells, [["a", "d"], ["b", "e"], ["c", "f"]]);
+  assert.deepEqual(t.styles, [[1, 0], [0, 0], [0, 2]]);
+  assert.deepEqual(t.source, { top: 5, left: 1, bottom: 7, right: 2 });
+  assert.equal(t.cut, false, "a transpose never clears the source");
 });

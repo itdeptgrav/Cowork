@@ -149,6 +149,13 @@ export function tokenizeSpanned(input: string): SpannedToken[] {
       const refMatch = REF.exec(rest);
       if (refMatch) {
         i += refMatch[0].length;
+        /* A ref-shaped word followed by `(` is a FUNCTION whose name happens to
+           look like a cell — LOG10, ATAN2, DEC2BIN, HEX2DEC. Nothing calls a
+           cell, so the bracket settles it. */
+        if (input[i] === "(") {
+          push("name", refMatch[0], start);
+          continue;
+        }
         /* `Sheet2!A1`: a ref-shaped token followed by `!` is an unquoted sheet
            name. A `!=` is the not-equal operator, not a qualifier. */
         if (input[i] === "!" && input[i + 1] !== "=") {

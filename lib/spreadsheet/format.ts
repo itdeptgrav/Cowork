@@ -23,7 +23,8 @@
  * Pure and DOM-free.
  */
 
-import { Blank, formatNumber, isArray, type ScalarValue } from "./formula/value";
+import { Blank, formatNumber, isArray, type ScalarValue, isRich } from "./formula/value";
+import { formatTextWithPattern, formatWithPattern } from "./numberPattern";
 import { isError } from "./formula/errors";
 import type { CellAlign } from "./values";
 import type { CellStyle, NumberFormat } from "./style";
@@ -172,10 +173,13 @@ function formatDate(serial: number, mode: "date" | "time" | "datetime"): string 
  */
 export function formatValue(value: ScalarValue, fmt?: NumberFormat): string {
   if (isArray(value)) return formatValue(value.first, fmt);
+  if (isRich(value)) return "";
   if (isError(value)) return value.code;
   if (value instanceof Blank) return "";
   if (typeof value === "boolean") return value ? "TRUE" : "FALSE";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") {
+    return fmt?.kind === "custom" && fmt.pattern ? formatTextWithPattern(value, fmt.pattern) : value;
+  }
 
   const n = value;
   /* A non-finite number shows the error code under EVERY kind — an Infinity
@@ -222,6 +226,8 @@ export function formatValue(value: ScalarValue, fmt?: NumberFormat): string {
     case "text":
       /* Shown exactly as the number reads, never grouped or rounded. */
       return formatNumber(n);
+    case "custom":
+      return formatWithPattern(n, fmt.pattern ?? "General");
     default:
       return formatNumber(n);
   }

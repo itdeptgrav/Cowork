@@ -14,7 +14,13 @@ const code = (p: string) =>
     .replace(/^\s*\/\/.*$/gm, "");
 
 const POPUP = code("components/features/score/PtsChangePopup.tsx");
-const SHELL = code("components/layout/shell/ShellFrame.tsx");
+/* The shell is TWO modules since the workspace tree was split out of
+   `ShellFrame.tsx` into `WorkspaceShell.tsx` — a bundle split, so that
+   /signin stops downloading LiveKit. "Mounted in the shell" is still one
+   claim, so both files are read as one text. */
+const SHELL =
+  code("components/layout/shell/ShellFrame.tsx") +
+  code("components/layout/shell/WorkspaceShell.tsx");
 const SOUND = code("lib/utils/ptsSound.ts");
 
 test("it reads the ledger and shows only unseen recent changes", () => {

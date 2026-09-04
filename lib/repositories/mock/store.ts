@@ -14,6 +14,7 @@ import type {
   CoworkDocument,
   CoworkDocumentBody,
   MindMapRecord,
+  MindMapExtras,
   MindNode,
   Approval,
   Attachment,
@@ -275,7 +276,13 @@ export interface Store {
   }[];
   mindmaps: MindMapRecord[];
   /** Cards, keyed by map id — the record/body split the real store uses. */
-  mindmapNodes: { mindmapId: string; nodes: MindNode[]; updatedAt: string }[];
+  mindmapNodes: {
+    mindmapId: string;
+    nodes: MindNode[];
+    /** Layout, theme, relationships, groupings. Absent on a map that has none. */
+    extras?: MindMapExtras;
+    updatedAt: string;
+  }[];
   meetingParticipants: MeetingParticipant[];
   meetingEvents: MeetingEvent[];
   notifications: Notification[];

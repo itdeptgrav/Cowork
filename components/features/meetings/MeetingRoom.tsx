@@ -275,6 +275,15 @@ export function MeetingRoom({
               </div>
             ) : null
           }
+          /* The CC button in the control bar, driving the SAME state as the
+             one in the masthead — one transcript, two ways to reach it, so
+             they cannot disagree. Only this room passes it: a task room and a
+             guest room have no transcript panel, and a CC button there would
+             be a control that does nothing. */
+          captions={{
+            on: transcriptOpen,
+            toggle: () => setTranscriptOpen((v) => !v),
+          }}
           aside={
             /* Always mounted, toggled via CSS so the hook (and its Firestore
                subscription) stays alive while hidden. */

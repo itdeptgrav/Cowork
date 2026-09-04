@@ -222,3 +222,14 @@ export function collapsedRows(groups: readonly RowGroup[] | undefined): Record<n
   }
   return hidden;
 }
+
+/**
+ * Column outlines use the very same bands, over column indices. The helpers
+ * above are index-agnostic, so a column group is a `RowGroup` kept in the
+ * sheet's `colGroups`; only the reading of what is hidden gets its own name.
+ */
+export type ColGroup = RowGroup;
+
+export function collapsedCols(groups: readonly RowGroup[] | undefined): Record<number, true> {
+  return collapsedRows(groups);
+}

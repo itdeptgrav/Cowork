@@ -87,28 +87,16 @@ test("AUDIT: threads on many cells stay independent through mixed edits", () => 
   assert.equal(threadAt(comments, "C3")!.entries[0].body, "two edited");
 });
 
-test("AUDIT: structural ops move CELLS but not comments — the documented gap, held", () => {
-  // structure.ts documents that merges/validations/comments/links are NOT
-  // reference-tracked through insert/delete. This asserts today's actual
-  // behaviour so any (welcome) fix will show up as a deliberate test update.
+test("structural ops move comments with their cells (the old gap is closed)", () => {
   let ws = createWorksheet("s", "Sheet1", 10, 5);
   ws = setCellValue(ws, 2, 0, "annotated"); // A3
   ws = { ...ws, comments: addComment(undefined, "A3", entry("1", "note on A3")) };
 
   const inserted = insertRows(ws, 0, 1);
   assert.equal(getCellValue(inserted, 3, 0), "annotated", "the value moved to A4");
-  assert.equal(threadAt(inserted.comments, "A3")?.entries[0].body, "note on A3");
-  assert.equal(
-    threadAt(inserted.comments, "A4"),
-    undefined,
-    "the comment did NOT follow its cell (documented divergence, structure.ts)",
-  );
+  assert.equal(threadAt(inserted.comments, "A4")?.entries[0].body, "note on A3", "and so did its thread");
+  assert.equal(threadAt(inserted.comments, "A3"), undefined);
 
-  const deleted = deleteRows(ws, 2, 1);
-  assert.equal(getCellValue(deleted, 2, 0), "", "the host cell's value is gone");
-  assert.equal(
-    threadAt(deleted.comments, "A3")?.entries[0].body,
-    "note on A3",
-    "the thread now sits on whatever moved into A3 (same documented divergence)",
-  );
+  const gone = deleteRows(ws, 2, 1);
+  assert.equal(gone.comments, undefined, "a deleted cell's thread is gone");
 });

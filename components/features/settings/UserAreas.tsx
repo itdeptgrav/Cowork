@@ -1,7 +1,9 @@
 "use client";
 
+import { useState } from "react";
 import Link from "next/link";
 import { ProfilePicture } from "./ProfilePicture";
+import { ShareDashboardDialog } from "@/components/features/auth/ShareDashboardDialog";
 import { ChangePassword } from "./ChangePassword";
 import { Icon, type IconName } from "@/components/ui/Icons";
 import { WorkspaceHead } from "@/components/ui/Workspace";
@@ -139,6 +141,10 @@ export function SettingsPage() {
 
 export function ProfilePage() {
   const me = useQuery((r) => r.getCurrentEmployee(), []);
+  /* The QR panel mounts only once opened. It starts a camera-free but
+     credential-issuing exchange on mount — a code is minted the moment it
+     appears — so it must not be rendered hidden behind a flag. */
+  const [sharing, setSharing] = useState(false);
   const viewerId = useViewerId();
   const score = useQuery((r) => r.getScoreOverview(viewerId ?? ""), []);
   const roles = useQuery((r) => r.listRoles(), []);
@@ -168,6 +174,7 @@ export function ProfilePage() {
 
   return (
     <>
+      {sharing && <ShareDashboardDialog onClose={() => setSharing(false)} />}
       <div className="mb-4 flex flex-wrap items-center gap-3">
         {/* The avatar IS the control — see `ProfilePicture`. */}
         <ProfilePicture person={p} onChanged={me.refetch} />
@@ -183,9 +190,19 @@ export function ProfilePage() {
             link lives inside a `deck:hidden` block, so on desktop the page was
             reachable only by typing the URL — which meant the Gmail connection
             was effectively unreachable for anyone not told where it was. */}
+        {/* Sign in on a second device by scanning, rather than typing a
+            password on a phone keyboard. Placed next to Settings because it is
+            an action on your own account, not a view of it. */}
+        <button
+          type="button"
+          onClick={() => setSharing(true)}
+          className="ml-auto rounded-full bg-[var(--control)] px-3.5 py-1.5 text-sm text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+        >
+          Share Dashboard
+        </button>
         <Link
           href="/settings"
-          className="ml-auto rounded-full bg-[var(--control)] px-3.5 py-1.5 text-sm text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
+          className="rounded-full bg-[var(--control)] px-3.5 py-1.5 text-sm text-ink-muted transition-colors hover:bg-[var(--control-hover)] hover:text-ink"
         >
           Settings
         </Link>

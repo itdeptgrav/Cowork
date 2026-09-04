@@ -132,12 +132,86 @@ test("the meetings route resolves an identity instead of refusing", () => {
 test("the seat is minted for the PRINCIPAL, never for whoever the body names", () => {
   /* The one thing that must not drift. The participant grid is how people know
      who is in the room, so a caller able to name its own identity could sit in
-     a meeting under somebody else's name. `room`, `displayName` and
-     `isOrganiser` are read from the body; `identity` must not be. */
+     a meeting under somebody else's name. `room` and `displayName` are read
+     from the body; `identity` must not be.
+
+     `isOrganiser` used to be read from the body too, and fed straight into the
+     `roomAdmin` grant — see the privilege test below. */
   assert.match(meetings, /identity: principal\.employeeId/);
   assert.equal(
     /"identity" in body|body as \{ identity/.test(meetings),
     false,
     "the route reads an identity from the request body",
   );
+});
+
+/* ── Membership, and the privilege that used to come from the body ───────── */
+
+/**
+ * The route with its prose removed.
+ *
+ * These assertions are about what the code DOES, and several of them are
+ * absence claims — "no role is read from the body". The route documents the bug
+ * it used to have, quoting the old expression, so an absence claim checked
+ * against the raw file matches the explanation of the fix and reports the fix
+ * as the bug. Strip the comments and the claims mean what they say.
+ */
+const meetingsCode = meetings
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^\s*\/\/.*$/gm, "");
+
+test("no privilege is taken from the request body", () => {
+  /* **The bug this pins.** The grant block read `roomAdmin: isOrganiser`, and
+     `isOrganiser` was `body.isOrganiser === true`. So `{"isOrganiser": true}`
+     bought a token entitled to remove participants and close the room — on any
+     meeting, for any authenticated caller. The comment directly above it said
+     only the organiser may do those things.
+
+     `roomAdmin` may return only from a record the SERVER read. */
+  assert.equal(
+    /isOrganiser\?: unknown|body as \{ isOrganiser/.test(meetingsCode),
+    false,
+    "the route reads a role claim from the request body again",
+  );
+  assert.doesNotMatch(
+    meetingsCode,
+    /roomAdmin:\s*isOrganiser/,
+    "roomAdmin is granted from a body-supplied flag again",
+  );
+  assert.match(
+    meetingsCode,
+    /grantsFor\(meeting, me\)/,
+    "the grants no longer come from the meeting record",
+  );
+});
+
+test("the route checks membership itself, and fails closed", () => {
+  /* It used to authenticate and stop there, minting a seat in any room named
+     `meet-` that anybody asked for — so the security of every meeting rested
+     on the client choosing not to ask. Both room shapes are now checked
+     against the rule the rest of the product uses. */
+  assert.match(meetingsCode, /joinRefusal\(/, "scheduled meetings are unchecked");
+  assert.match(meetingsCode, /taskJoinRefusal\(/, "task rooms are unchecked");
+  assert.match(
+    meetingsCode,
+    /taskIdFromRoomName\(room\)/,
+    "the two room shapes are no longer told apart",
+  );
+
+  /* A caller whose membership cannot be checked is refused, not admitted. */
+  assert.match(meetingsCode, /readFirebaseCookie\(/);
+  assert.match(
+    meetingsCode,
+    /if \(!idToken\) \{[\s\S]{0,400}status: 403/,
+    "a caller with no token to check with is no longer refused",
+  );
+});
+
+test("the membership read is made AS the caller", () => {
+  /* Not with a service credential. The engine's own permission checks then
+     bound this read too, so the route can never see more than the person it is
+     acting for — and a compromised route cannot enumerate the company's
+     meetings. */
+  assert.match(meetingsCode, /getMeet\(\{ token: idToken/);
+  assert.match(meetingsCode, /getTask\(\{ token: idToken/);
 });

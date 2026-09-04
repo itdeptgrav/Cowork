@@ -10,6 +10,8 @@
  */
 
 import type { SaveState, WorkbookPersistence } from "./useWorkbookPersistence";
+import { Presence } from "@/components/features/workspace/Presence";
+import type { WorkbookCollab } from "./useWorkbookCollab";
 
 const LABEL: Record<SaveState, string> = {
   loading: "Loading…",
@@ -63,9 +65,11 @@ function SaveChip({ persistence }: { persistence: WorkbookPersistence }) {
 export function WorkbookHeader({
   persistence,
   onBack,
+  collab,
 }: {
   persistence: WorkbookPersistence;
   onBack?: () => void;
+  collab?: WorkbookCollab;
 }) {
   return (
     <div className="flex shrink-0 items-center justify-between gap-3">
@@ -95,6 +99,12 @@ export function WorkbookHeader({
         }}
         className="min-w-0 max-w-[320px] flex-1 rounded-md bg-transparent px-1.5 py-0.5 text-[17px] font-medium text-ink outline-none transition-colors hover:bg-[color-mix(in_srgb,var(--ink)_6%,transparent)] focus:bg-[color-mix(in_srgb,var(--ink)_6%,transparent)]"
       />
+      {collab?.connected && <Presence peers={collab.peers} />}
+      {collab && !collab.connected && collab.reason && persistence.workbookId && (
+        <span className="hidden text-[11px] text-ink-faint md:inline" title={collab.reason}>
+          Live editing off
+        </span>
+      )}
       <SaveChip persistence={persistence} />
     </div>
   );

@@ -13,6 +13,17 @@
 const SAFE_SCHEMES = ["http:", "https:", "mailto:", "tel:"] as const;
 
 /**
+ * A link to a bookmark in the same document: `#` and the bookmark's id. The
+ * id is a slug (`bookmarkId()` in the bookmark extension), so a fragment is
+ * safe to keep as it is and never needs a scheme.
+ */
+const FRAGMENT = /^#[a-z0-9][a-z0-9_-]{0,63}$/i;
+
+export function isFragmentHref(href: string | null | undefined): boolean {
+  return FRAGMENT.test(String(href ?? "").trim());
+}
+
+/**
  * What the user typed, turned into an address a browser can follow.
  *
  * A bare `example.com` becomes `https://example.com`, because typing the
@@ -24,6 +35,7 @@ const SAFE_SCHEMES = ["http:", "https:", "mailto:", "tel:"] as const;
 export function normaliseHref(input: string): string | null {
   const raw = String(input ?? "").trim();
   if (!raw) return null;
+  if (isFragmentHref(raw)) return raw;
 
   const hasScheme = /^[a-z][a-z0-9+.-]*:/i.test(raw);
 
@@ -62,6 +74,7 @@ export function normaliseHref(input: string): string | null {
 export function isSafeHref(href: string | null | undefined): boolean {
   const raw = String(href ?? "").trim();
   if (!raw) return false;
+  if (isFragmentHref(raw)) return true;
   try {
     const url = new URL(raw);
     return SAFE_SCHEMES.includes(url.protocol as (typeof SAFE_SCHEMES)[number]);
@@ -81,6 +94,9 @@ export function isSafeHref(href: string | null | undefined): boolean {
 export function linkLabel(href: string | null | undefined): string {
   const raw = String(href ?? "").trim();
   if (!raw) return "";
+  /* A bookmark: its slug read back as words, since the name itself is not
+     in the href. */
+  if (isFragmentHref(raw)) return `In this document: ${raw.slice(1).replace(/^bm-/, "").replace(/-/g, " ")}`;
   let url: URL;
   try {
     url = new URL(raw);

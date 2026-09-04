@@ -46,6 +46,50 @@ export interface CustomFormula {
   type: "customFormula";
   formula: string;
 }
+export interface NotEqualTo {
+  type: "notEqualTo";
+  value: number | string;
+}
+export interface GreaterOrEqual {
+  type: "greaterOrEqual";
+  value: number;
+}
+export interface LessOrEqual {
+  type: "lessOrEqual";
+  value: number;
+}
+export interface TextStartsWith {
+  type: "textStartsWith";
+  value: string;
+}
+export interface TextEndsWith {
+  type: "textEndsWith";
+  value: string;
+}
+export interface IsEmpty {
+  type: "isEmpty";
+}
+export interface IsNotEmpty {
+  type: "isNotEmpty";
+}
+/**
+ * A colour scale: every numeric cell in the range takes a colour between
+ * `min` and `max` (through `mid` when set) by where its value sits in the
+ * range's own spread. Drawn by the grid from the range statistics; `styleId`
+ * is unused.
+ */
+export interface ColorScale {
+  type: "colorScale";
+  min: string;
+  mid?: string;
+  max: string;
+}
+/** A data bar: a bar from the cell's left edge, as long as the value's
+    share of the range's maximum. */
+export interface DataBar {
+  type: "dataBar";
+  color: string;
+}
 export type CondCondition =
   | GreaterThan
   | LessThan
@@ -53,7 +97,21 @@ export type CondCondition =
   | Between
   | TextContains
   | DuplicateValues
-  | CustomFormula;
+  | CustomFormula
+  | NotEqualTo
+  | GreaterOrEqual
+  | LessOrEqual
+  | TextStartsWith
+  | TextEndsWith
+  | IsEmpty
+  | IsNotEmpty
+  | ColorScale
+  | DataBar;
+
+/** Rules that paint from the range's numbers rather than a style. */
+export function isVisualCondition(cond: CondCondition): cond is ColorScale | DataBar {
+  return cond.type === "colorScale" || cond.type === "dataBar";
+}
 
 export interface ConditionalFormat {
   range: Rect;
@@ -94,6 +152,26 @@ export function conditionMatches(cond: CondCondition, ctx: CondContext): boolean
       const b = toBoolean(ctx.evalCustom());
       return !isError(b) && b === true;
     }
+    case "notEqualTo":
+      return typeof cond.value === "number"
+        ? !(typeof ctx.value === "number" && ctx.value === cond.value)
+        : ctx.display.toLowerCase() !== String(cond.value).toLowerCase();
+    case "greaterOrEqual":
+      return typeof ctx.value === "number" && ctx.value >= cond.value;
+    case "lessOrEqual":
+      return typeof ctx.value === "number" && ctx.value <= cond.value;
+    case "textStartsWith":
+      return cond.value !== "" && ctx.display.toLowerCase().startsWith(cond.value.toLowerCase());
+    case "textEndsWith":
+      return cond.value !== "" && ctx.display.toLowerCase().endsWith(cond.value.toLowerCase());
+    case "isEmpty":
+      return ctx.display === "";
+    case "isNotEmpty":
+      return ctx.display !== "";
+    case "colorScale":
+    case "dataBar":
+      /* Painted from the range statistics by the grid, never a style match. */
+      return false;
   }
 }
 

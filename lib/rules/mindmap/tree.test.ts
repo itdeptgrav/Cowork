@@ -17,6 +17,9 @@ import {
   toggleCollapsed,
   updateNode,
   type MindMap,
+  addFloating,
+  moveFloating,
+  floatingRoots,
 } from "./tree.ts";
 
 /** root → a(a1, a2), b. */
@@ -197,4 +200,135 @@ test("a javascript URL is refused", () => {
 test("empty and unparseable text is refused", () => {
   assert.equal(normaliseUrl("   "), null);
   assert.equal(normaliseUrl("http://"), null);
+});
+
+/* ── Keyboard-shaped mutations ───────────────────────────────────────────── */
+
+import {
+  addSibling,
+  ancestorsOf,
+  duplicateSubtree,
+  findNodes,
+  indentNode,
+  moveSibling,
+  navigateFrom,
+  outdentNode,
+  revealNodes,
+  siblingsOf,
+} from "./tree.ts";
+
+const order = (m: MindMap, parent: string | null) =>
+  childrenOf(m, parent).map((n) => n.id);
+
+test("Enter adds a sibling directly after the card, not at the end", () => {
+  const m = addSibling(fixture(), "a1", "x");
+  assert.deepEqual(order(m, "a"), ["a1", "x", "a2"]);
+  assert.equal(m.nodes.find((n) => n.id === "x")?.parentId, "a");
+});
+
+test("Enter on the root adds a child, because the root has no siblings", () => {
+  const m = addSibling(fixture(), "root", "x");
+  assert.equal(m.nodes.find((n) => n.id === "x")?.parentId, "root");
+});
+
+test("Alt+Down swaps a card with the sibling below and stops at the end", () => {
+  let m = moveSibling(fixture(), "a1", 1);
+  assert.deepEqual(order(m, "a"), ["a2", "a1"]);
+  m = moveSibling(m, "a1", 1);
+  assert.deepEqual(order(m, "a"), ["a2", "a1"], "the last sibling stays put");
+  /* Siblings elsewhere in the array are untouched. */
+  assert.deepEqual(order(m, "root"), ["a", "b"]);
+});
+
+test("Tab makes a card a child of the sibling above it and opens that sibling", () => {
+  const collapsed = updateNode(fixture(), "a", { collapsed: true });
+  const m = indentNode(collapsed, "b");
+  assert.equal(m.nodes.find((n) => n.id === "b")?.parentId, "a");
+  assert.deepEqual(order(m, "a"), ["a1", "a2", "b"]);
+  assert.equal(m.nodes.find((n) => n.id === "a")?.collapsed, false);
+});
+
+test("Tab on the first sibling and on the root does nothing", () => {
+  const f = fixture();
+  assert.equal(indentNode(f, "a"), f);
+  assert.equal(indentNode(f, "root"), f);
+});
+
+test("Shift+Tab lifts a card out to sit after its parent", () => {
+  const m = outdentNode(fixture(), "a1");
+  assert.equal(m.nodes.find((n) => n.id === "a1")?.parentId, "root");
+  assert.deepEqual(order(m, "root"), ["a", "a1", "b"]);
+});
+
+test("Shift+Tab is refused where the parent has no siblings to join", () => {
+  const f = fixture();
+  assert.equal(outdentNode(f, "a"), f, "a direct child of the root");
+  assert.equal(outdentNode(f, "root"), f);
+});
+
+test("arrows move to parent, first child and neighbouring siblings without wrapping", () => {
+  const f = fixture();
+  assert.equal(navigateFrom(f, "a1", "left"), "a");
+  assert.equal(navigateFrom(f, "a", "right"), "a1");
+  assert.equal(navigateFrom(f, "a1", "down"), "a2");
+  assert.equal(navigateFrom(f, "a2", "down"), null);
+  assert.equal(navigateFrom(f, "a1", "up"), null);
+  assert.equal(navigateFrom(f, "root", "left"), null);
+  assert.equal(navigateFrom(f, "b", "right"), null);
+});
+
+test("siblings are listed in draw order and include the card itself", () => {
+  assert.deepEqual(
+    siblingsOf(fixture(), "a2").map((n) => n.id),
+    ["a1", "a2"],
+  );
+});
+
+test("a search finds titles and descriptions, case-insensitively, in draw order", () => {
+  const m = updateNode(fixture(), "b", { description: "mentions a1 too" });
+  assert.deepEqual(findNodes(m, "A1"), ["a1", "b"]);
+  assert.deepEqual(findNodes(m, "   "), []);
+});
+
+test("revealing a card opens every collapsed ancestor and only those", () => {
+  let m = updateNode(fixture(), "a", { collapsed: true });
+  m = updateNode(m, "root", { collapsed: true });
+  assert.deepEqual(ancestorsOf(m, "a1"), ["a", "root"]);
+  const shown = revealNodes(m, ["a1"]);
+  assert.equal(shown.nodes.find((n) => n.id === "a")?.collapsed, false);
+  assert.equal(shown.nodes.find((n) => n.id === "root")?.collapsed, false);
+  /* Nothing to open returns the same object, so callers can skip a save. */
+  assert.equal(revealNodes(shown, ["a1"]), shown);
+});
+
+test("duplicating a branch copies every card with fresh ids, after the original", () => {
+  let n = 0;
+  const { map: m, newId } = duplicateSubtree(fixture(), "a", () => `c${++n}`);
+  assert.equal(newId, "c1");
+  assert.deepEqual(order(m, "root"), ["a", "c1", "b"]);
+  assert.deepEqual(order(m, "c1").length, 2);
+  /* The copies hang off the COPIED parent, not the original. */
+  for (const child of childrenOf(m, "c1")) assert.equal(child.parentId, "c1");
+  assert.equal(m.nodes.length, 5 + 3);
+  /* The root cannot be duplicated. */
+  assert.equal(duplicateSubtree(fixture(), "root", () => "z").newId, null);
+});
+
+test("floating topics: parentless but not the root, movable, attachable, deletable", () => {
+  let map = { id: "m", nodes: [newNode("root", null, "Root")] } as MindMap;
+  map = addFloating(map, "f", "Idea", 300, 120);
+  assert.equal(rootOf(map)?.id, "root", "the root is still the root");
+  assert.deepEqual(floatingRoots(map).map((n) => n.id), ["f"]);
+  map = moveFloating(map, "f", 350.4, 99.6);
+  assert.deepEqual(map.nodes.find((n) => n.id === "f")?.floating, { x: 350, y: 100 });
+  assert.equal(moveFloating(map, "root", 1, 1), map, "only a floating topic moves");
+  const attached = reparent(map, "f", "root");
+  const f = attached.nodes.find((n) => n.id === "f")!;
+  assert.equal(f.parentId, "root");
+  assert.equal(f.floating, undefined, "attached, it stops floating");
+  const dup = duplicateSubtree(map, "f", () => "f2");
+  assert.deepEqual(dup.map.nodes.find((n) => n.id === "f2")?.floating, { x: 390, y: 140 });
+  const gone = deleteNode(map, "f");
+  assert.deepEqual(gone.nodes.map((n) => n.id), ["root"]);
+  assert.equal(deleteNode(map, "root"), map, "the root cannot be deleted");
 });

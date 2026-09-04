@@ -76,18 +76,12 @@ test("AUDIT: clearing a cell's VALUE does not orphan-delete its link (kept separ
   assert.equal(linkAt(ws.links, "A1"), "https://kept.com", "the link layer is independent");
 });
 
-test("AUDIT: structural ops move cells but not links — the documented gap, held", () => {
-  // Same documented divergence as comments (structure.ts): links are not
-  // reference-tracked through insert/delete. Asserting today's behaviour.
+test("structural ops move links with their cells (the old gap is closed)", () => {
   let ws = createWorksheet("s", "Sheet1", 10, 10);
   ws = setCellValue(ws, 0, 1, "linked"); // B1
   ws = { ...ws, links: setLink(undefined, "B1", "https://x.com") };
   const shifted = insertCols(ws, 0, 1);
   assert.equal(getCellValue(shifted, 0, 2), "linked", "the value moved to C1");
-  assert.equal(linkAt(shifted.links, "B1"), "https://x.com");
-  assert.equal(
-    linkAt(shifted.links, "C1"),
-    undefined,
-    "the link did NOT follow its cell (documented divergence, structure.ts)",
-  );
+  assert.equal(linkAt(shifted.links, "C1"), "https://x.com", "and the link followed it");
+  assert.equal(linkAt(shifted.links, "B1"), undefined);
 });

@@ -4,6 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { useEditorState, type Editor } from "@tiptap/react";
 import { DocIcon } from "./DocsIcons";
 import { MenuHeading, MenuItem, MenuPanel, MenuSeparator, SubMenu } from "./DocsMenu";
+/* Type-level: these modules augment `ChainedCommands` with the commands the
+   Insert menu calls; the augmentation is only visible once they are loaded. */
+import "@/lib/documents/extensions/callout";
+import "@/lib/documents/extensions/columns";
+import "@/lib/documents/extensions/tableOfContents";
+import "@tiptap/extension-details";
 import { CASE_LABELS, CASE_MODES, applyCase } from "@/lib/rules/documents/textCase";
 import { LINE_SPACINGS, PARAGRAPH_STYLES, type HeadingLevel } from "@/lib/documents/typography";
 
@@ -39,6 +45,7 @@ export interface MenuBarActions {
   onDownloadText: () => void;
   onDownloadPdf: () => void;
   onDownloadDocx: () => void;
+  onDownloadMarkdown: () => void;
   onPrint: () => void;
   onPageSetup: () => void;
   onVersionHistory: () => void;
@@ -48,9 +55,18 @@ export interface MenuBarActions {
   onFind: () => void;
   onInsertLink: () => void;
   onSpecialCharacters: () => void;
+  /** Open one of the value-taking insert dialogs: a video, an embed, an
+      equation, a footnote, a bookmark. */
+  onAsk?: (kind: "youtube" | "embed" | "math" | "footnote" | "bookmark" | "attachment") => void;
   onInsertImage: () => void;
   onWordCount: () => void;
   onShortcuts: () => void;
+  /** Voice typing — the browser's speech recogniser writing at the caret. */
+  voiceOn: boolean;
+  onVoiceTyping: (on: boolean) => void;
+  /** Pageless: one continuous sheet as wide as the window, no paper. */
+  pageless: boolean;
+  onPageless: (value: boolean) => void;
 
   showOutline: boolean;
   onShowOutline: (value: boolean) => void;
@@ -68,9 +84,12 @@ export interface MenuBarActions {
   spellcheck: boolean;
   onSpellcheck: (value: boolean) => void;
 
-  mode: "editing" | "viewing";
-  onMode: (mode: "editing" | "viewing") => void;
+  mode: "editing" | "viewing" | "suggesting";
+  onMode: (mode: "editing" | "viewing" | "suggesting") => void;
   canEdit: boolean;
+  /** The review panel listing every proposed change. */
+  showSuggestions: boolean;
+  onShowSuggestions: (value: boolean) => void;
 }
 
 const MENUS = ["File", "Edit", "View", "Insert", "Format", "Tools", "Help"] as const;
@@ -123,7 +142,7 @@ export function DocsMenuBar({
   }, [open]);
 
   const close = () => setOpen(null);
-  const can = actions.canEdit && actions.mode === "editing" && !!editor;
+  const can = actions.canEdit && actions.mode !== "viewing" && !!editor;
   const run = (fn: (e: Editor) => void) => () => {
     if (editor) fn(editor);
   };
@@ -178,6 +197,7 @@ export function DocsMenuBar({
                     <MenuItem label="Plain text (.txt)" onSelect={actions.onDownloadText} />
                     <MenuItem label="PDF document (.pdf)" onSelect={actions.onDownloadPdf} />
                     <MenuItem label="Microsoft Word (.docx)" onSelect={actions.onDownloadDocx} />
+                    <MenuItem label="Markdown (.md)" onSelect={actions.onDownloadMarkdown} />
                   </SubMenu>
                   <MenuItem label="Print" shortcut="Ctrl P" onSelect={actions.onPrint} />
                   <MenuItem label="Version history" onSelect={actions.onVersionHistory} />
@@ -217,6 +237,13 @@ export function DocsMenuBar({
                     onSelect={run((e) => e.chain().focus().selectAll().run())}
                   />
                   <MenuItem label="Find and replace" shortcut="Ctrl F" onSelect={actions.onFind} />
+                  <MenuItem
+                    label="Voice typing"
+                    active={actions.voiceOn}
+                    disabled={!can}
+                    note="Speak, and the words land at the caret. Chrome and Edge."
+                    onSelect={() => actions.onVoiceTyping(!actions.voiceOn)}
+                  />
                   <MenuSeparator />
                   {/* Cut, copy and paste are not listed. The browser will not
                       let a page read or write the clipboard from a menu item,
@@ -246,10 +273,22 @@ export function DocsMenuBar({
                     onSelect={() => actions.onShowRuler(!actions.showRuler)}
                   />
                   <MenuItem
+                    label="Pageless"
+                    active={actions.pageless}
+                    note="One continuous sheet, as wide as the window. Print still paginates."
+                    onSelect={() => actions.onPageless(!actions.pageless)}
+                  />
+                  <MenuItem
                     label="Page guides"
                     active={actions.showPageGuides}
                     note="Approximate. The printed break can differ."
                     onSelect={() => actions.onShowPageGuides(!actions.showPageGuides)}
+                  />
+                  <MenuItem
+                    label="Review suggestions"
+                    active={actions.showSuggestions}
+                    note="Every proposed change, with Accept and Reject."
+                    onSelect={() => actions.onShowSuggestions(!actions.showSuggestions)}
                   />
                   <MenuItem
                     label="Suggest as I write"
@@ -276,6 +315,12 @@ export function DocsMenuBar({
                         label="Editing"
                         active={actions.mode === "editing"}
                         onSelect={() => actions.onMode("editing")}
+                      />
+                      <MenuItem
+                        label="Suggesting"
+                        active={actions.mode === "suggesting"}
+                        note="Edits are proposed, shown in colour, and applied only when accepted."
+                        onSelect={() => actions.onMode("suggesting")}
                       />
                       <MenuItem
                         label="Viewing"
@@ -344,6 +389,42 @@ export function DocsMenuBar({
                     disabled={!can}
                     onSelect={run((e) => e.chain().focus().toggleCodeBlock().run())}
                   />
+                  <MenuSeparator />
+                  <MenuItem
+                    label="Callout"
+                    disabled={!can}
+                    onSelect={run((e) => e.chain().focus().toggleCallout("note").run())}
+                  />
+                  <MenuItem
+                    label="Toggle"
+                    disabled={!can}
+                    onSelect={run((e) => e.chain().focus().setDetails().run())}
+                  />
+                  <MenuItem
+                    label="Two columns"
+                    disabled={!can}
+                    onSelect={run((e) => e.chain().focus().setColumns(2).run())}
+                  />
+                  <MenuItem
+                    label="Three columns"
+                    disabled={!can}
+                    onSelect={run((e) => e.chain().focus().setColumns(3).run())}
+                  />
+                  <MenuItem
+                    label="Table of contents"
+                    disabled={!can}
+                    onSelect={run((e) => e.chain().focus().insertTableOfContents().run())}
+                  />
+                  <MenuSeparator />
+                  <MenuItem label="Footnote…" shortcut="Ctrl Alt F" disabled={!can} onSelect={() => actions.onAsk?.("footnote")} />
+                  <MenuItem label="Equation…" disabled={!can} onSelect={() => actions.onAsk?.("math")} />
+                  <MenuItem label="YouTube video…" disabled={!can} onSelect={() => actions.onAsk?.("youtube")} />
+                  <MenuItem label="Embed a page…" disabled={!can} onSelect={() => actions.onAsk?.("embed")} />
+                  <MenuItem label="Bookmark…" disabled={!can} onSelect={() => actions.onAsk?.("bookmark")} />
+                  <MenuItem label="Attachment…" disabled={!can} note="A file from your computer, kept in Drive." onSelect={() => actions.onAsk?.("attachment")} />
+                  <MenuSeparator />
+                  <MenuItem label="Date chip" disabled={!can} note="Today, as a chip you can click to change." onSelect={run((e) => e.chain().focus().insertDateChip().run())} />
+                  <MenuItem label="Dropdown chip" disabled={!can} note="A status you pick from a list." onSelect={run((e) => e.chain().focus().insertDropdownChip(["Not started", "In progress", "Done"]).run())} />
                   <MenuItem
                     label="Quote"
                     disabled={!can}
@@ -409,6 +490,22 @@ export function DocsMenuBar({
                     <MenuItem label="Bulleted list" disabled={!can} active={editor?.isActive("bulletList")} onSelect={run((e) => e.chain().focus().toggleBulletList().run())} />
                     <MenuItem label="Numbered list" disabled={!can} active={editor?.isActive("orderedList")} onSelect={run((e) => e.chain().focus().toggleOrderedList().run())} />
                     <MenuItem label="Checklist" disabled={!can} active={editor?.isActive("taskList")} onSelect={run((e) => e.chain().focus().toggleTaskList().run())} />
+                  </SubMenu>
+
+                  <SubMenu label="Text direction">
+                    <MenuItem
+                      label="Left to right"
+                      disabled={!can}
+                      active={!!editor && editor.getAttributes("paragraph").dir !== "rtl" && editor.getAttributes("heading").dir !== "rtl"}
+                      onSelect={run((e) => e.chain().focus().setTextDirection(null).run())}
+                    />
+                    <MenuItem
+                      label="Right to left"
+                      shortcut="Ctrl Shift X"
+                      disabled={!can}
+                      active={!!editor && (editor.getAttributes("paragraph").dir === "rtl" || editor.getAttributes("heading").dir === "rtl")}
+                      onSelect={run((e) => e.chain().focus().setTextDirection("rtl").run())}
+                    />
                   </SubMenu>
 
                   {/* Docs' Format → Text → Capitalisation. The transform walks

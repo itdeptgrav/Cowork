@@ -13,10 +13,14 @@ import {
 import { useRepo } from "@/lib/hooks/useRepository";
 import {
   childrenOf,
+  extrasOf,
   normaliseUrl,
   type MindMap,
   type MindNode,
 } from "@/lib/rules/mindmap/tree";
+import { themeOf } from "@/lib/rules/mindmap/theme";
+import { NodeStylePanel } from "./NodeStylePanel";
+import { NodeTaskLink } from "./NodeTaskLink";
 
 /**
  * One card, opened.
@@ -70,7 +74,10 @@ export function NodeInspector({
      cannot happen — the in-memory prototype has no `uploadDriveFile`. */
   const canUpload = typeof repo.uploadDriveFile === "function";
 
-  const isRoot = node.parentId === null;
+  /* Parentless AND not floating: a floating topic is parentless by design and
+     keeps every control a branch card has. */
+  const isRoot = node.parentId === null && !node.floating;
+  const isFloating = !!node.floating;
   const kids = childrenOf(map, node.id);
 
   const addLink = () => {
@@ -166,6 +173,11 @@ export function NodeInspector({
             Root
           </span>
         )}
+        {isFloating && (
+          <span className="shrink-0 rounded-full bg-[var(--control)] px-2 py-0.5 text-[10px] text-ink-muted" title="A card with no parent, placed where it was dropped">
+            Floating
+          </span>
+        )}
         <button
           type="button"
           aria-label="Close details"
@@ -197,6 +209,20 @@ export function NodeInspector({
             placeholder="e.g. Why this branch exists, what still has to be decided…"
           />
         </Field>
+
+        {/* Colour, shape, text, icon, markers and tags — the card's look. */}
+        <NodeStylePanel
+          node={node}
+          theme={themeOf(extrasOf(map).settings.theme)}
+          onChange={onChange}
+        />
+
+        {/* The work this card stands for. */}
+        <NodeTaskLink
+          taskId={node.taskId}
+          readOnly={false}
+          onChange={(taskId) => onChange({ taskId: taskId ?? undefined })}
+        />
 
         {/* ── Images ────────────────────────────────────────────────────── */}
         <div className="mt-5">

@@ -45,11 +45,15 @@ import {
   type Window as GridWindow,
   HEADER_HEIGHT,
   ROW_HEADER_WIDTH,
+  scaleMetrics,
 } from "@/lib/spreadsheet/metrics";
 import { getCellStyleId, metricsOf } from "@/lib/spreadsheet/model";
 import { formatValue } from "@/lib/spreadsheet/format";
 import { columnValues } from "@/lib/spreadsheet/filter";
 import { GridBody } from "./GridBody";
+import { ChartObject } from "./ChartObject";
+import { ChartToolbar } from "./ChartToolbar";
+import type { PeerCursor } from "@/lib/spreadsheet/collabSync";
 import { HeaderContextMenu, type MenuItem } from "./HeaderContextMenu";
 import { CellContextMenu, type CellMenuItem } from "./CellContextMenu";
 import { FilterMenu } from "./FilterMenu";
@@ -95,25 +99,34 @@ export function SpreadsheetGrid({
   containerRef,
   searchOpen,
   onSearchOpen,
+  peers = [],
 }: {
   controller: SpreadsheetController;
   containerRef: RefObject<HTMLDivElement | null>;
   /** The find/replace bar, owned by the parent so the ribbon can open it too. */
   searchOpen: false | "find" | "replace";
   onSearchOpen: (v: false | "find" | "replace") => void;
+  /** Where the other people in the workbook are — drawn as outlines. */
+  peers?: PeerCursor[];
 }) {
   const { worksheet, selection, editing } = controller;
   /* The geometry hides both manually-hidden rows and rows a filter hides. */
+  const zoom = controller.zoom;
   const metrics = useMemo(() => {
-    const base = metricsOf(worksheet);
+    const base = scaleMetrics(metricsOf(worksheet), zoom);
     /* Three things can hide a row: hiding it by hand, a filter, and a collapsed
        outline band. They all land in one map, so the geometry has a single
        notion of "hidden" rather than three. */
     const filtered = controller.filterHiddenRows;
     const collapsed = controller.collapsedRowsMap;
-    if (Object.keys(filtered).length === 0 && Object.keys(collapsed).length === 0) return base;
-    return { ...base, hiddenRows: { ...base.hiddenRows, ...filtered, ...collapsed } };
-  }, [worksheet, controller.filterHiddenRows, controller.collapsedRowsMap]);
+    const collapsedC = controller.collapsedColsMap;
+    if (Object.keys(filtered).length === 0 && Object.keys(collapsed).length === 0 && Object.keys(collapsedC).length === 0) return base;
+    return {
+      ...base,
+      hiddenRows: { ...base.hiddenRows, ...filtered, ...collapsed },
+      hiddenCols: { ...base.hiddenCols, ...collapsedC },
+    };
+  }, [worksheet, zoom, controller.filterHiddenRows, controller.collapsedRowsMap, controller.collapsedColsMap]);
   const frozenRows = worksheet.frozenRows;
   const frozenCols = worksheet.frozenCols;
   const frozenH = rowY(metrics, frozenRows);
@@ -147,6 +160,17 @@ export function SpreadsheetGrid({
   const [caret, setCaret] = useState(0);
   const [helperActive, setHelperActive] = useState(0);
   const [helperClosed, setHelperClosed] = useState(false);
+  const [textActive, setTextActive] = useState(0);
+  /* A text suggestion accepted with Enter or Tab commits once the draft has
+     taken it: the commit reads the editor state, so it must wait a render. */
+  const pendingCommit = useRef<{ text: string; move: "down" | "right" } | null>(null);
+  useEffect(() => {
+    const p = pendingCommit.current;
+    if (p && editing && editing.draft === p.text) {
+      pendingCommit.current = null;
+      controller.commitEdit(p.move);
+    }
+  });
   const pendingCaretRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -266,9 +290,9 @@ export function SpreadsheetGrid({
   const assist = useMemo(
     () =>
       editing && editing.source === "cell"
-        ? formulaAssist(editing.draft, caret)
+        ? formulaAssist(editing.draft, caret, controller.names.map((n) => n.name))
         : null,
-    [editing, caret],
+    [editing, caret, controller.names],
   );
   /* The highlight resets to the top whenever the draft changes (see the editor's
      onChange) — arrow keys, which don't change the draft, leave it put. */
@@ -284,6 +308,14 @@ export function SpreadsheetGrid({
     el.focus();
     el.setSelectionRange(c, c);
   }, [cellDraft]);
+
+  /* A notice fades on its own; a second refusal restarts the clock. */
+  const { notice, clearNotice } = controller;
+  useEffect(() => {
+    if (!notice) return;
+    const t = setTimeout(clearNotice, 4000);
+    return () => clearTimeout(t);
+  }, [notice, clearNotice]);
 
   /* The cell under a pointer, in body content coordinates. */
   function cellAtEvent(e: { clientX: number; clientY: number }): CellPos {
@@ -349,6 +381,7 @@ export function SpreadsheetGrid({
   function onBodyPointerDown(e: ReactPointerEvent) {
     if (e.button !== 0) return;
     focusGrid();
+    if (controller.selectedChartId) controller.selectChart(null);
     controller.clickCell(snapToMerge(cellAtEvent(e)), e.shiftKey);
     draggingRef.current = true;
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
@@ -441,8 +474,9 @@ export function SpreadsheetGrid({
     } catch {
       /* already released */
     }
-    if (resize.kind === "col") controller.resizeCol(resize.index, resize.size);
-    else controller.resizeRow(resize.index, resize.size);
+    /* The drag happened in zoomed pixels; the sheet stores unzoomed ones. */
+    if (resize.kind === "col") controller.resizeCol(resize.index, Math.round(resize.size / zoom));
+    else controller.resizeRow(resize.index, Math.round(resize.size / zoom));
     setResize(null);
   }
 
@@ -546,6 +580,7 @@ export function SpreadsheetGrid({
         submenu: [
           { label: "Values only", onClick: () => controller.pasteSpecial("values"), disabled: !hasClip },
           { label: "Formatting only", onClick: () => controller.pasteSpecial("formats"), disabled: !hasClip },
+          { label: "Transposed", onClick: () => controller.pasteSpecial("transpose"), disabled: !hasClip },
         ],
       },
       {},
@@ -637,6 +672,12 @@ export function SpreadsheetGrid({
   function onGridKeyDown(e: ReactKeyboardEvent) {
     if (editing) return;
     const ctrl = e.ctrlKey || e.metaKey;
+    /* Ctrl+` toggles the formula view, as in Excel and Sheets. */
+    if (ctrl && e.key === "`") {
+      claim(e);
+      controller.setShowFormulas(!controller.showFormulas);
+      return;
+    }
     switch (e.key) {
       case "PageUp":
         claim(e);
@@ -700,6 +741,10 @@ export function SpreadsheetGrid({
       case "Delete":
       case "Backspace":
         claim(e);
+        if (controller.selectedChartId) {
+          controller.removeChart(controller.selectedChartId);
+          return;
+        }
         controller.clearSelection();
         return;
       case "F2":
@@ -796,12 +841,41 @@ export function SpreadsheetGrid({
     }
   }
 
+  /* Text autocomplete — Sheets' offer of a value already in the column when
+     the first letters match. Read straight from the engine on each render
+     while editing: three hundred rows either side, six offers at most. */
+  const textSuggestions: string[] = (() => {
+    if (!editing || editing.source !== "cell") return [];
+    const draft = editing.draft;
+    if (!draft || draft.startsWith("=") || draft.length > 60 || /^[-+.\d]/.test(draft)) return [];
+    const { row, col } = editing.pos;
+    const q = draft.toLowerCase();
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (let r = Math.max(0, row - 300); r <= row + 300 && out.length < 6; r++) {
+      if (r === row) continue;
+      const t = controller.engine.display(controller.activeSheetId, r, col).text;
+      if (!t || seen.has(t) || /^[-+.\d]/.test(t)) continue;
+      const low = t.toLowerCase();
+      if (low === q || !low.startsWith(q)) continue;
+      seen.add(t);
+      out.push(t);
+    }
+    return out;
+  })();
+
+  function acceptText(text: string, move: "down" | "right") {
+    controller.changeEdit(text);
+    pendingCommit.current = { text, move };
+  }
+
   /** Insert a chosen function as `NAME(`, replacing the prefix being typed and
       leaving the caret inside the parens so the signature shows next. */
   function acceptSuggestion(help: FunctionHelp) {
     if (!editing || editing.source !== "cell" || assist?.kind !== "list") return;
     const draft = editing.draft;
-    const insert = `${help.name}(`;
+    /* A named range is a value, not a call: it goes in bare. */
+    const insert = help.named ? help.name : `${help.name}(`;
     const next = draft.slice(0, assist.tokenStart) + insert + draft.slice(caret);
     const nextCaret = assist.tokenStart + insert.length;
     controller.changeEdit(next);
@@ -815,6 +889,31 @@ export function SpreadsheetGrid({
       arrows move the highlight, Enter/Tab accept a suggestion, Escape dismisses
       the popover (a second Escape then cancels the edit as usual). */
   function onEditorKey(e: ReactKeyboardEvent) {
+    if (textSuggestions.length > 0 && !helperClosed) {
+      const n = textSuggestions.length;
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setTextActive((h) => (h + 1) % n);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setTextActive((h) => (h - 1 + n) % n);
+        return;
+      }
+      if (e.key === "Enter" || e.key === "Tab") {
+        e.preventDefault();
+        e.stopPropagation();
+        acceptText(textSuggestions[Math.min(textActive, n - 1)], e.key === "Tab" ? "right" : "down");
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setHelperClosed(true);
+        return;
+      }
+    }
     const showing = assist && !helperClosed;
     if (showing && assist.kind === "list") {
       const n = assist.matches.length;
@@ -1028,6 +1127,7 @@ export function SpreadsheetGrid({
    */
   function gridLinesFor(rows: GridWindow, cols: GridWindow): ReactNode[] {
     const lines: ReactNode[] = [];
+    if (!controller.showGridlines) return lines;
     for (let c = cols.start; c <= cols.end + 1; c++) {
       const x = colX(metrics, c);
       lines.push(
@@ -1081,6 +1181,11 @@ export function SpreadsheetGrid({
     hasComment: (r: number, c: number) => !!controller.commentLookup(r, c),
     onOpenComment: openComment,
     metrics,
+    showFormulas: controller.showFormulas,
+    zoom,
+    noteAt: controller.noteLookup,
+    paintAt: controller.paintAt,
+    protectedAt: controller.showProtected ? (r: number, c: number) => controller.protectionLookup(r, c) !== null : undefined,
   };
 
   return (
@@ -1098,7 +1203,7 @@ export function SpreadsheetGrid({
          selection — without this the browser paints its native text-highlight
          over cell contents while you drag. Text selection is re-enabled only on
          the edit input below, so it works when you double-click into a cell. */
-      className="grid h-full min-h-0 w-full overflow-hidden rounded-card border outline-none select-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--ink)_45%,transparent)]"
+      className="relative grid h-full min-h-0 w-full overflow-hidden rounded-card border outline-none select-none focus-visible:ring-2 focus-visible:ring-[color-mix(in_srgb,var(--ink)_45%,transparent)]"
       style={{
         gridTemplateColumns: `${ROW_HEADER_WIDTH}px minmax(0, 1fr)`,
         gridTemplateRows: `${HEADER_HEIGHT}px minmax(0, 1fr)`,
@@ -1158,6 +1263,67 @@ export function SpreadsheetGrid({
           <div className="relative" style={{ width: totalWidth(metrics), height: totalHeight(metrics) }}>
             {gridLinesFor(rowWindow, colWindow)}
             <GridBody {...commonBodyProps} rowWindow={rowWindow} colWindow={colWindow} />
+
+            {/* The other people's selections, in their own colours, with a name
+                tag on the active cell. Only those on this sheet. */}
+            {peers
+              .filter((p) => p.sheetId === controller.activeSheetId)
+              .map((p) => {
+                const r = p.range;
+                const left = colX(metrics, r.left);
+                const top = rowY(metrics, r.top);
+                const width = colX(metrics, r.right + 1) - left;
+                const height = rowY(metrics, r.bottom + 1) - top;
+                return (
+                  <div key={p.clientId} className="pointer-events-none absolute z-[4]" style={{ left, top, width, height }}>
+                    <div className="absolute inset-0 rounded-[2px] border-2" style={{ borderColor: p.color, background: `${p.color}22` }} />
+                    <span
+                      className="absolute -top-4 left-0 max-w-[140px] truncate rounded-t-md px-1.5 text-[10px] leading-4 text-white"
+                      style={{ background: p.color }}
+                    >
+                      {p.name}
+                    </span>
+                  </div>
+                );
+              })}
+
+            {/* Charts float over the cells in the sheet's own content space,
+                so they scroll with it; paint order follows each chart's z,
+                kept under the sticky headers. */}
+            {controller.charts.length > 0 && (
+              <div className="pointer-events-none absolute inset-0 z-[5]">
+                {[...controller.charts]
+                  .sort((a, b) => (a.z ?? 0) - (b.z ?? 0))
+                  .map((spec, i) => (
+                    <ChartObject
+                      key={spec.id}
+                      spec={
+                        zoom === 1
+                          ? spec
+                          : {
+                              ...spec,
+                              x: (spec.x ?? 24) * zoom,
+                              y: (spec.y ?? 24) * zoom,
+                              w: (spec.w ?? 360) * zoom,
+                              h: (spec.h ?? 240) * zoom,
+                            }
+                      }
+                      model={controller.chartData(spec)}
+                      selected={controller.selectedChartId === spec.id}
+                      readOnly={false}
+                      zIndex={Math.min(9, i + 1)}
+                      onSelect={() => controller.selectChart(spec.id)}
+                      onChange={(patch) => {
+                        const unscaled: typeof patch = { ...patch };
+                        for (const k of ["x", "y", "w", "h"] as const) {
+                          if (typeof patch[k] === "number") unscaled[k] = Math.round((patch[k] as number) / zoom);
+                        }
+                        controller.updateChart(spec.id, unscaled);
+                      }}
+                    />
+                  ))}
+              </div>
+            )}
 
             {multi &&
               (() => {
@@ -1301,6 +1467,7 @@ export function SpreadsheetGrid({
                   setCaret(e.target.selectionStart ?? e.target.value.length);
                   setHelperClosed(false);
                   setHelperActive(0);
+                  setTextActive(0);
                 }}
                 onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
                 onKeyDown={onEditorKey}
@@ -1352,6 +1519,35 @@ export function SpreadsheetGrid({
                   />
                 );
               })()}
+            {editing && editing.source === "cell" && textSuggestions.length > 0 && !helperClosed && (
+              <div
+                role="listbox"
+                aria-label="Suggestions from this column"
+                className="absolute z-20 flex flex-col overflow-hidden rounded-card border border-hairline bg-[var(--surface-raised)] py-1 shadow-lg"
+                style={{
+                  left: colX(metrics, editing.pos.col),
+                  top: rowY(metrics, editing.pos.row) + editH(editing.pos) + 2,
+                  minWidth: editW(editing.pos),
+                }}
+              >
+                {textSuggestions.map((t, i) => (
+                  <button
+                    key={t}
+                    type="button"
+                    role="option"
+                    aria-selected={i === textActive}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() => setTextActive(i)}
+                    onClick={() => acceptText(t, "down")}
+                    className={`px-2 py-1 text-left text-[12.5px] whitespace-nowrap ${
+                      i === textActive ? "bg-[var(--control-active)] text-ink" : "text-ink-muted hover:bg-[var(--control)]"
+                    }`}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+            )}
             {editing && editing.source === "bar" && (
               <div
                 className="pointer-events-none absolute z-10 flex items-center overflow-hidden px-1.5 text-[13px] whitespace-nowrap text-ink"
@@ -1523,6 +1719,20 @@ export function SpreadsheetGrid({
               onClose={() => setFilterMenu(null)}
             />
           );
+        })()}
+
+      {/* A refused change — a protected cell, a locked sheet — said once, briefly. */}
+      {controller.notice && (
+        <div role="status" className="pointer-events-none absolute bottom-3 left-1/2 z-30 -translate-x-1/2 rounded-full border border-hairline bg-[var(--surface-raised)] px-3 py-1.5 text-[12px] text-ink shadow-lg">
+          {controller.notice}
+        </div>
+      )}
+
+      {/* The bar for the selected chart: type, title, legend, axes, remove. */}
+      {controller.selectedChartId &&
+        (() => {
+          const chart = controller.charts.find((c) => c.id === controller.selectedChartId);
+          return chart ? <ChartToolbar controller={controller} chart={chart} /> : null;
         })()}
     </div>
   );

@@ -83,6 +83,50 @@ export interface TaskMeetingParty {
   approverIds?: (string | null | undefined)[];
 }
 
+/**
+ * The fields of a task record that decide who its meeting is between.
+ *
+ * Structural rather than an import of `LegacyTask`, so this rules module stays
+ * free of the adapter layer.
+ */
+export interface TaskPartySource {
+  createdById: string | null;
+  assignedById: string | null;
+  assigneeIds: readonly (string | number)[];
+  pendingAssigneeId: string | null;
+  approverId: string | null;
+  departmentApproverIds: readonly string[];
+}
+
+/**
+ * Build the party from a task record.
+ *
+ * **Why this is a function and not five lines at the call site.** It was five
+ * lines at the call site, and there are now TWO call sites that must agree —
+ * the repository, which decides whether to ask for a seat, and
+ * `/api/meetings/token`, which decides whether to mint one. `access.ts` states
+ * the principle for scheduled meetings: several enforcement points, one rule,
+ * so a control can never appear for something the server refuses. Two hand-
+ * written copies of this mapping would be exactly the drift that promise rules
+ * out — and the dangerous direction is silent, because the server copy
+ * forgetting `pendingAssigneeIds` locks a cross-department assignee out of
+ * their own kickoff.
+ */
+export function taskPartyOf(task: TaskPartySource): TaskMeetingParty {
+  return {
+    createdById: task.createdById,
+    /* Differs from the creator only on a SELF task, where it is the manager —
+       the counterparty for the budget, the priority and the review, and so a
+       party to the meeting. */
+    assignedById: task.assignedById,
+    assigneeIds: task.assigneeIds.map(String),
+    pendingAssigneeIds: task.pendingAssigneeId
+      ? [String(task.pendingAssigneeId)]
+      : [],
+    approverIds: [task.approverId, ...task.departmentApproverIds],
+  };
+}
+
 /** Whether this person is one of the sides of the work. */
 export function isTaskParty(task: TaskMeetingParty, employeeId: string): boolean {
   if (!employeeId) return false;

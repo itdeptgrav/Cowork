@@ -29,13 +29,23 @@
  * looks for its types.
  */
 export type {
+  MindBoundary,
   MindImage,
+  MindLayoutKind,
   MindLink,
+  MindMapExtras,
+  MindMapSettings,
   MindNode,
   MindNodeId,
+  MindNodeStyle,
+  MindPriority,
+  MindProgress,
+  MindRelation,
+  MindSummary,
+  MindThemeKind,
 } from "../../domain/mindmap.ts";
 
-import type { MindNode, MindNodeId } from "../../domain/mindmap.ts";
+import { emptyExtras, type MindMapExtras, type MindNode, type MindNodeId } from "../../domain/mindmap.ts";
 
 /**
  * A map as the canvas works with it.
@@ -50,6 +60,17 @@ export interface MindMap {
   title: string;
   nodes: MindNode[];
   updatedAt: string;
+  /**
+   * Layout, theme, relationships and groupings. Optional so every existing
+   * caller and test that builds a map from cards alone keeps compiling; the
+   * canvas reads it through `extrasOf`, which defaults it.
+   */
+  extras?: MindMapExtras;
+}
+
+/** A map's extras, defaulted. The canvas and the exporters go through this. */
+export function extrasOf(map: MindMap): MindMapExtras {
+  return map.extras ?? emptyExtras();
 }
 
 /* ── Geometry ─────────────────────────────────────────────────────────────── */
@@ -84,7 +105,41 @@ export function childrenOf(map: MindMap, id: MindNodeId | null): MindNode[] {
 }
 
 export function rootOf(map: MindMap): MindNode | null {
-  return map.nodes.find((n) => n.parentId === null) ?? null;
+  return map.nodes.find((n) => n.parentId === null && !n.floating) ?? null;
+}
+
+/** The cards with no parent that are NOT the root — each the top of its own
+    small tree, placed where it was dropped. */
+export function floatingRoots(map: MindMap): MindNode[] {
+  return map.nodes.filter((n) => n.parentId === null && !!n.floating);
+}
+
+/** The root proper: parentless and not floating. */
+export function isRoot(node: MindNode): boolean {
+  return node.parentId === null && !node.floating;
+}
+
+/** A new floating topic at a canvas position, with no branch yet. */
+export function addFloating(map: MindMap, id: MindNodeId, title: string, x: number, y: number): MindMap {
+  if (map.nodes.some((n) => n.id === id)) return map;
+  const node: MindNode = {
+    id,
+    parentId: null,
+    title,
+    description: "",
+    links: [],
+    images: [],
+    collapsed: false,
+    floating: { x: Math.round(x), y: Math.round(y) },
+  };
+  return { ...map, nodes: [...map.nodes, node] };
+}
+
+/** Move a floating topic. Anything else is left alone. */
+export function moveFloating(map: MindMap, id: MindNodeId, x: number, y: number): MindMap {
+  const node = map.nodes.find((n) => n.id === id);
+  if (!node || !node.floating) return map;
+  return { ...map, nodes: map.nodes.map((n) => (n.id === id ? { ...n, floating: { x: Math.round(x), y: Math.round(y) } } : n)) };
 }
 
 /**
@@ -236,7 +291,7 @@ export function addChild(
  */
 export function deleteNode(map: MindMap, id: MindNodeId): MindMap {
   const node = map.nodes.find((n) => n.id === id);
-  if (!node || node.parentId === null) return map;
+  if (!node || isRoot(node)) return map;
   const doomed = subtreeIds(map, id);
   return { ...map, nodes: map.nodes.filter((n) => !doomed.has(n.id)) };
 }
@@ -266,13 +321,17 @@ export function reparent(
 ): MindMap {
   if (id === nextParentId) return map;
   const node = map.nodes.find((n) => n.id === id);
-  if (!node || node.parentId === null) return map;
+  if (!node || isRoot(node)) return map;
   if (subtreeIds(map, id).has(nextParentId)) return map;
+  /* A floating topic dropped onto a card joins its branch and stops floating. */
   return {
     ...map,
-    nodes: map.nodes.map((n) =>
-      n.id === id ? { ...n, parentId: nextParentId } : n,
-    ),
+    nodes: map.nodes.map((n) => {
+      if (n.id !== id) return n;
+      const { floating: _floating, ...rest } = n;
+      void _floating;
+      return { ...rest, parentId: nextParentId };
+    }),
   };
 }
 
@@ -302,6 +361,229 @@ export function nodeDetail(node: MindNode): {
   };
 }
 
+/* ── Keyboard-shaped mutations ────────────────────────────────────────────
+ *
+ * Every mindmap tool worth the name is driven from the keyboard: Tab for a
+ * child, Enter for a sibling, arrows to move between cards, Alt-arrows to
+ * reorder. These are the tree operations those keys need. Each is pure and
+ * returns the same map when it cannot apply, so a key pressed at the wrong
+ * moment is a no-op rather than a corrupted tree.
+ *
+ * Sibling ORDER is the node array's order (`childrenOf` filters it in place),
+ * so an insert has to land at the right index rather than being appended —
+ * that is the one subtlety here and every function below respects it.
+ */
+
+/** The index in `map.nodes` of a card, or -1. */
+function indexOf(map: MindMap, id: MindNodeId): number {
+  return map.nodes.findIndex((n) => n.id === id);
+}
+
+/** The siblings of a card, in draw order, including itself. */
+export function siblingsOf(map: MindMap, id: MindNodeId): MindNode[] {
+  const node = map.nodes.find((n) => n.id === id);
+  if (!node) return [];
+  return childrenOf(map, node.parentId);
+}
+
+/**
+ * Add a sibling immediately AFTER a card. Enter.
+ *
+ * The root has no siblings, so Enter on it adds a child instead — the only
+ * sensible reading of "next card" when there is nothing beside the root.
+ */
+export function addSibling(
+  map: MindMap,
+  afterId: MindNodeId,
+  id: MindNodeId,
+  title = "New idea",
+): MindMap {
+  const after = map.nodes.find((n) => n.id === afterId);
+  if (!after) return map;
+  if (after.parentId === null) return addChild(map, afterId, id, title);
+
+  /* Insert after the LAST node of the reference card's subtree in array order?
+     No — sibling order is decided by the relative order of the siblings alone,
+     so inserting right after the reference card is enough and keeps the array
+     readable. */
+  const at = indexOf(map, afterId) + 1;
+  const nodes = [...map.nodes];
+  nodes.splice(at, 0, newNode(id, after.parentId, title));
+  return { ...map, nodes };
+}
+
+/**
+ * Move a card one place among its siblings. Alt+Up / Alt+Down.
+ *
+ * Swaps positions in the node array with the neighbouring sibling, which is all
+ * `childrenOf` needs to draw them the other way round. Anything between them in
+ * the array that is not a sibling is untouched.
+ */
+export function moveSibling(map: MindMap, id: MindNodeId, direction: -1 | 1): MindMap {
+  const sibs = siblingsOf(map, id);
+  const i = sibs.findIndex((n) => n.id === id);
+  if (i < 0) return map;
+  const j = i + direction;
+  if (j < 0 || j >= sibs.length) return map;
+  const a = indexOf(map, sibs[i].id);
+  const b = indexOf(map, sibs[j].id);
+  const nodes = [...map.nodes];
+  [nodes[a], nodes[b]] = [nodes[b], nodes[a]];
+  return { ...map, nodes };
+}
+
+/**
+ * Make a card a child of the sibling above it. Tab in an outliner.
+ *
+ * Refused for the first sibling (there is nothing above to go under) and for
+ * the root. The moved card lands as the LAST child of its new parent, which is
+ * where an outliner puts it, and the new parent is opened so the move is seen.
+ */
+export function indentNode(map: MindMap, id: MindNodeId): MindMap {
+  const sibs = siblingsOf(map, id);
+  const i = sibs.findIndex((n) => n.id === id);
+  if (i <= 0) return map;
+  const newParent = sibs[i - 1];
+  const moved = reparent(map, id, newParent.id);
+  if (moved === map) return map;
+  return {
+    ...moved,
+    nodes: moved.nodes.map((n) =>
+      n.id === newParent.id && n.collapsed ? { ...n, collapsed: false } : n,
+    ),
+  };
+}
+
+/**
+ * Lift a card out to sit AFTER its parent, among the parent's siblings.
+ * Shift+Tab in an outliner.
+ *
+ * Refused for the root and for its direct children, whose parent has no
+ * siblings to join.
+ */
+export function outdentNode(map: MindMap, id: MindNodeId): MindMap {
+  const node = map.nodes.find((n) => n.id === id);
+  if (!node || node.parentId === null) return map;
+  const parent = map.nodes.find((n) => n.id === node.parentId);
+  if (!parent || parent.parentId === null) return map;
+
+  /* Reparent, then move the card to sit right after its old parent in array
+     order so it draws as the parent's next sibling rather than at the end. */
+  const nodes = map.nodes.filter((n) => n.id !== id);
+  const at = nodes.findIndex((n) => n.id === parent.id) + 1;
+  nodes.splice(at, 0, { ...node, parentId: parent.parentId });
+  return { ...map, nodes };
+}
+
+/**
+ * Where an arrow key goes from a card.
+ *
+ * Left is the parent. Right is the first child — opening a collapsed card is
+ * the caller's decision, so a collapsed card's children are still offered.
+ * Up and Down are the previous and next sibling, wrapping at neither end: a
+ * key that jumps from the last sibling to the first is one that surprises.
+ */
+export function navigateFrom(
+  map: MindMap,
+  id: MindNodeId,
+  direction: "left" | "right" | "up" | "down",
+): MindNodeId | null {
+  const node = map.nodes.find((n) => n.id === id);
+  if (!node) return null;
+  if (direction === "left") return node.parentId;
+  if (direction === "right") return childrenOf(map, id)[0]?.id ?? null;
+  const sibs = siblingsOf(map, id);
+  const i = sibs.findIndex((n) => n.id === id);
+  const j = i + (direction === "up" ? -1 : 1);
+  return sibs[j]?.id ?? null;
+}
+
+/**
+ * Every ancestor of a card, nearest first. Used to open the branches above a
+ * search hit so the hit can actually be seen.
+ */
+export function ancestorsOf(map: MindMap, id: MindNodeId): MindNodeId[] {
+  const byId = new Map(map.nodes.map((n) => [n.id, n]));
+  const out: MindNodeId[] = [];
+  let cursor = byId.get(id);
+  let steps = 0;
+  while (cursor && cursor.parentId !== null && steps++ < map.nodes.length) {
+    out.push(cursor.parentId);
+    cursor = byId.get(cursor.parentId);
+  }
+  return out;
+}
+
+/** Open every collapsed card above these ids, so all of them are on screen. */
+export function revealNodes(map: MindMap, ids: readonly MindNodeId[]): MindMap {
+  const toOpen = new Set<MindNodeId>();
+  for (const id of ids) for (const a of ancestorsOf(map, id)) toOpen.add(a);
+  if (toOpen.size === 0) return map;
+  let changed = false;
+  const nodes = map.nodes.map((n) => {
+    if (toOpen.has(n.id) && n.collapsed) {
+      changed = true;
+      return { ...n, collapsed: false };
+    }
+    return n;
+  });
+  return changed ? { ...map, nodes } : map;
+}
+
+/**
+ * Cards whose title or description contains the query, case-insensitively.
+ *
+ * In draw order — the order `layoutMap` places them — so "next match" walks
+ * the map top to bottom rather than in creation order.
+ */
+export function findNodes(map: MindMap, query: string): MindNodeId[] {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  return map.nodes
+    .filter(
+      (n) =>
+        n.title.toLowerCase().includes(q) || n.description.toLowerCase().includes(q),
+    )
+    .map((n) => n.id);
+}
+
+/**
+ * A deep copy of a card and its subtree, as a new sibling after the original.
+ *
+ * Ids are minted by the caller, one per copied card, so the copy can be made in
+ * a collaborative session without two clients minting the same id.
+ */
+export function duplicateSubtree(
+  map: MindMap,
+  id: MindNodeId,
+  mintId: () => MindNodeId,
+): { map: MindMap; newId: MindNodeId | null } {
+  const node = map.nodes.find((n) => n.id === id);
+  if (!node || isRoot(node)) return { map, newId: null };
+
+  const ids = subtreeIds(map, id);
+  const fresh = new Map<MindNodeId, MindNodeId>();
+  for (const old of ids) fresh.set(old, mintId());
+
+  const copies: MindNode[] = map.nodes
+    .filter((n) => ids.has(n.id))
+    .map((n) => ({
+      ...n,
+      id: fresh.get(n.id)!,
+      parentId: n.id === id ? n.parentId : fresh.get(n.parentId!)!,
+      links: n.links.map((l) => ({ ...l })),
+      images: n.images.map((i) => ({ ...i })),
+      /* A duplicated floating topic lands a little away from the original. */
+      ...(n.id === id && n.floating ? { floating: { x: n.floating.x + 40, y: n.floating.y + 40 } } : {}),
+    }));
+
+  /* The copied root goes right after the original; its descendants follow. */
+  const at = indexOf(map, id) + 1;
+  const nodes = [...map.nodes];
+  nodes.splice(at, 0, ...copies);
+  return { map: { ...map, nodes }, newId: fresh.get(id)! };
+}
+
 /** A URL the card will actually open, or null. */
 export function normaliseUrl(raw: string): string | null {
   const text = raw.trim();
@@ -320,4 +602,16 @@ export function normaliseUrl(raw: string): string | null {
   } catch {
     return null;
   }
+}
+
+/** Fold or unfold every branch at once. The root itself never folds. */
+export function setAllCollapsed(map: MindMap, collapsed: boolean): MindMap {
+  return {
+    ...map,
+    nodes: map.nodes.map((n) => {
+      const hasKids = map.nodes.some((k) => k.parentId === n.id);
+      const next = collapsed && hasKids && !isRoot(n);
+      return n.collapsed === next ? n : { ...n, collapsed: next };
+    }),
+  };
 }

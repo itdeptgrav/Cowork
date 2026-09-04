@@ -1,4 +1,5 @@
-import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageCard, MessageReply, MessageSearchHit, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageReply, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { MindMapExtras } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import {
@@ -255,6 +256,7 @@ import {
 import {
   readMindMapRecord,
   readMindNodes,
+  readMindMapExtras,
 } from "../../legacy/mindmaps.ts";
 import {
   readExternalShareInvite,
@@ -431,6 +433,7 @@ function toAttendanceRows(rows: readonly unknown[]): MeetingAttendance[] {
 import {
   taskJoinRefusal,
   taskMeetingRoomName,
+  taskPartyOf,
 } from "../../rules/meetings/taskRoom.ts";
 import type { TaskMeetingSession } from "../../domain/tasks.ts";
 import {
@@ -9100,7 +9103,7 @@ export class LegacyRepository {
 
   async getMindMap(id: string): Promise<MindMapDetail | null> {
     const token = await this.#token();
-    const r = await legacyFetch<{ mindmap?: unknown; nodes?: unknown }>({
+    const r = await legacyFetch<{ mindmap?: unknown; nodes?: unknown; extras?: unknown }>({
       path: `/cowork/mindmaps/${encodeURIComponent(id)}`,
       token,
     });
@@ -9121,7 +9124,11 @@ export class LegacyRepository {
       throw new Error(
         "This mindmap's cards could not be read — the map is stored but its shape is not one that can be drawn.",
       );
-    return { mindmap, nodes };
+    return {
+      mindmap,
+      nodes,
+      extras: readMindMapExtras(r.data.extras, new Set(nodes.map((n) => n.id))),
+    };
   }
 
   async createMindMap(input: {
@@ -9200,9 +9207,10 @@ export class LegacyRepository {
   async saveMindMapNodes(
     id: string,
     nodes: MindNode[],
+    extras?: MindMapExtras,
   ): Promise<ActionResult<MindMapDetail>> {
     const token = await this.#token();
-    const r = await legacyFetch<{ mindmap?: unknown; nodes?: unknown }>({
+    const r = await legacyFetch<{ mindmap?: unknown; nodes?: unknown; extras?: unknown }>({
       path: `/cowork/mindmaps/${encodeURIComponent(id)}/nodes`,
       /* `legacyFetch` speaks GET/POST/PATCH/DELETE. The route accepts PUT
          because replacing the whole tree is what PUT means, and POST is
@@ -9210,7 +9218,9 @@ export class LegacyRepository {
          than the shape bent here. */
       method: "PUT",
       token,
-      body: { nodes },
+      /* Extras only when the caller has them: the engine keeps its stored
+         extras for a body that carries none. */
+      body: extras ? { nodes, extras } : { nodes },
     });
     if (!r.ok) return this.#mindMapRefusal(r.error);
     const mindmap = readMindMapRecord(r.data.mindmap);
@@ -9221,7 +9231,14 @@ export class LegacyRepository {
         code: "offline",
         message: "The mindmap was saved but not returned.",
       };
-    return { ok: true, data: { mindmap, nodes: saved } };
+    return {
+      ok: true,
+      data: {
+        mindmap,
+        nodes: saved,
+        extras: readMindMapExtras(r.data.extras, new Set(saved.map((n) => n.id))),
+      },
+    };
   }
 
   async setMindMapMember(
@@ -9450,21 +9467,15 @@ export class LegacyRepository {
           message: "That task could not be found.",
         };
       }
-      const refusal = taskJoinRefusal(
-        {
-          createdById: host.createdById,
-          /* Differs from the creator only on a SELF task, where it is the
-             manager — the counterparty for the budget, the priority and the
-             review, and so a party to the meeting. */
-          assignedById: host.assignedById,
-          assigneeIds: host.assigneeIds.map(String),
-          pendingAssigneeIds: host.pendingAssigneeId
-            ? [String(host.pendingAssigneeId)]
-            : [],
-          approverIds: [host.approverId, ...host.departmentApproverIds],
-        },
-        me,
-      );
+      /* The mapping lives in `taskPartyOf` because the token route now makes
+         this same check server-side, and two hand-written copies of it would
+         drift — silently, and in the dangerous direction.
+
+         (Naming that route's path in this comment is deliberately avoided:
+         `taskRoom.test.ts` asserts the refusal is reached before the seat is
+         requested by comparing where each string first appears in this file,
+         so a mention in prose reads as the request itself.) */
+      const refusal = taskJoinRefusal(taskPartyOf(host), me);
       if (refusal) {
         return {
           ok: false as const,
@@ -10105,13 +10116,46 @@ export class LegacyRepository {
     }
   }
 
+  /**
+   * Every meeting session on this task, newest first, bounded.
+   *
+   * **Why the whole history and not a page of it.** The panel sums credit
+   * across sessions and draws a bracket from the first start to the last end —
+   * "the sessions are the record" — so a page would silently understate both.
+   *
+   * **Why it is bounded anyway.** `TaskMeetingPanel` re-runs this every five
+   * seconds while a meeting is open, to refresh who is in the room. An
+   * unbounded collection read on a five-second timer costs the whole history
+   * on every tick, and grows every time the task is met about — so a task that
+   * has been discussed for a year makes its own meetings expensive. The cap is
+   * ~55x the largest per-task count in the product today (366 sessions exist
+   * across every task), so it changes nothing that is displayed now and stops
+   * the cost growing without limit.
+   *
+   * It is NOT a silent cap: hitting it warns, because past that point the
+   * figures above genuinely would be short and somebody needs to know that
+   * rather than read a wrong total.
+   */
   async listTaskMeetingSessions(taskId: TaskId): Promise<TaskMeetingSession[]> {
+    const HISTORY_CAP = 200;
     try {
-      const { collection, getDocs } = await import("firebase/firestore");
+      const { collection, getDocs, limit, orderBy, query } = await import(
+        "firebase/firestore"
+      );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const snap = await getDocs(
-        collection(legacyDb(), ...this.#taskMeetingSessions(String(taskId))),
+        query(
+          collection(legacyDb(), ...this.#taskMeetingSessions(String(taskId))),
+          orderBy("startedAt", "desc"),
+          limit(HISTORY_CAP + 1),
+        ),
       );
+      if (snap.size > HISTORY_CAP) {
+        console.warn(
+          `[listTaskMeetingSessions] task ${String(taskId)} has more than ${HISTORY_CAP} ` +
+            `meeting sessions; the totals shown are of the most recent ${HISTORY_CAP}.`,
+        );
+      }
       return snap.docs
         .map((d) => {
           const raw = d.data() as Record<string, unknown>;

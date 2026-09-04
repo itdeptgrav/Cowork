@@ -1,17 +1,35 @@
 /**
  * The workbook repository, browser side.
  *
- * This is the client half of the persistence seam: the UI calls these, they
- * talk to the Node API over `fetch`, and the API talks to the store. The browser
- * therefore never holds a database credential — it holds a session cookie, and
- * the server decides everything from it (`credentials: "include"` carries it).
+ * ## Where these calls go now, and why it changed
  *
- * Every failure the routes can return is turned into a typed
- * `WorkbookRequestError` with a `kind`, so the caller (autosave, load) can react
- * to each — retry a network drop, surface an unauthorized, reconcile a conflict
- * — rather than parsing HTTP statuses at the call site.
+ * They go to the engine — `grav-cms-backend`, `/cowork/workbooks…` — with a
+ * Firebase ID token, exactly as mindmaps and documents do. They used to go to
+ * this app's own `/api/spreadsheet/workbooks` routes, which wrote a JSON file on
+ * the Next.js server's disk (`lib/server/workbookStore.ts`). That server is
+ * Vercel, its disk is ephemeral, and every deploy began with an empty file: a
+ * sheet built on Monday was gone by the next release while the chip said
+ * "Saved". Firestore, behind the engine, is where every other Cowork record
+ * lives, and now sheets do too. See `routes/task_routes/coworkWorkbooks.js` in
+ * the engine for how a workbook is split to fit and why only changed parts are
+ * written.
+ *
+ * **The exported API is unchanged.** `SheetsArea`, `FileMenu` and
+ * `useWorkbookPersistence` call the same functions with the same shapes and
+ * receive the same typed `WorkbookRequestError`s, so the surfaces above did not
+ * have to move. Only the transport under them did.
+ *
+ * ## Identity
+ *
+ * The principal is the Cowork employee id, resolved by the engine from the
+ * verified token — the same id mindmap and document membership uses. Share
+ * grants therefore name colleagues the way the rest of the workspace does,
+ * rather than a Firebase uid the sharing UI could not display.
  */
 
+import { idToken } from "@/lib/legacy/firebase";
+import { joinUrl, readConfig } from "@/lib/legacy/config";
+import { PUBLIC_ENV } from "@/lib/legacy/publicEnv";
 import type { SerializedWorkbook } from "./persistence";
 
 export interface WorkbookSummary {
@@ -20,7 +38,7 @@ export interface WorkbookSummary {
   revision: number;
   createdAt: string;
   updatedAt: string;
-  /** Who owns it. */
+  /** Who owns it — an employee id. */
   ownerId?: string;
   /** Who it is shared with. Present only when YOU own it — a person it was
       shared with cannot see who else holds it. */
@@ -35,12 +53,14 @@ export interface LoadedWorkbook {
   id: string;
   title: string;
   revision: number;
+  access?: "owner" | "viewer" | "commenter" | "editor";
   data: SerializedWorkbook;
 }
 
 export type WorkbookErrorKind =
   | "network"
   | "unauthorized"
+  | "forbidden"
   | "not-found"
   | "conflict"
   | "bad-request"
@@ -60,7 +80,7 @@ export class WorkbookRequestError extends Error {
   }
 }
 
-const BASE = "/api/spreadsheet/workbooks";
+const PATH = "/cowork/workbooks";
 
 /** Map a non-ok response to a typed error, reading the server's message. */
 async function errorFrom(res: Response): Promise<WorkbookRequestError> {
@@ -74,37 +94,64 @@ async function errorFrom(res: Response): Promise<WorkbookRequestError> {
   const kind: WorkbookErrorKind =
     res.status === 401
       ? "unauthorized"
-      : res.status === 404
-        ? "not-found"
-        : res.status === 409
-          ? "conflict"
-          : res.status === 400
-            ? "bad-request"
-            : "server";
+      : res.status === 403
+        ? "forbidden"
+        : res.status === 404
+          ? "not-found"
+          : res.status === 409
+            ? "conflict"
+            : res.status === 400
+              ? "bad-request"
+              : "server";
   return new WorkbookRequestError(kind, res.status, message, payload.currentRevision);
 }
 
-/** Run a fetch, turning a dropped connection into a `network` error. */
-async function request(input: RequestInfo, init?: RequestInit): Promise<Response> {
+/**
+ * Run a request against the engine.
+ *
+ * A missing token is `unauthorized` rather than a thrown configuration error:
+ * the autosaver's error handler already knows what to do with that — stop
+ * trying, keep editing locally, say "Sign in to save" — and a throw of any other
+ * shape would land in its generic branch and lose that sentence.
+ */
+async function request(path: string, init?: RequestInit): Promise<Response> {
+  let base: string;
   try {
-    return await fetch(input, { credentials: "include", ...init });
+    base = readConfig(PUBLIC_ENV).apiUrl;
+  } catch {
+    throw new WorkbookRequestError("server", 0, "Cowork is not connected to its backend.");
+  }
+
+  const token = await idToken().catch(() => null);
+  if (!token) throw new WorkbookRequestError("unauthorized", 401, "Sign in to save your workbook.");
+
+  try {
+    return await fetch(joinUrl(base, path), {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        Authorization: `Bearer ${token}`,
+        ...(init?.headers ?? {}),
+      },
+      cache: "no-store",
+    });
   } catch {
     throw new WorkbookRequestError("network", 0, "Could not reach the server.");
   }
 }
 
 export async function listWorkbooks(): Promise<WorkbookSummary[]> {
-  const res = await request(BASE);
+  const res = await request(PATH);
   if (!res.ok) throw await errorFrom(res);
   const body = (await res.json()) as { workbooks: WorkbookSummary[] };
-  return body.workbooks;
+  return body.workbooks ?? [];
 }
 
 export async function createWorkbook(
   title: string,
   data: SerializedWorkbook,
 ): Promise<{ id: string; title: string; revision: number }> {
-  const res = await request(BASE, {
+  const res = await request(PATH, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title, data }),
@@ -114,7 +161,7 @@ export async function createWorkbook(
 }
 
 export async function loadWorkbook(id: string): Promise<LoadedWorkbook> {
-  const res = await request(`${BASE}/${encodeURIComponent(id)}`);
+  const res = await request(`${PATH}/${encodeURIComponent(id)}`);
   if (!res.ok) throw await errorFrom(res);
   return res.json();
 }
@@ -124,7 +171,7 @@ export async function saveWorkbook(
   data: SerializedWorkbook,
   baseRevision: number,
 ): Promise<{ revision: number; updatedAt: string }> {
-  const res = await request(`${BASE}/${encodeURIComponent(id)}`, {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}`, {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ data, baseRevision }),
@@ -134,7 +181,7 @@ export async function saveWorkbook(
 }
 
 export async function renameWorkbook(id: string, title: string): Promise<{ title: string }> {
-  const res = await request(`${BASE}/${encodeURIComponent(id)}`, {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ title }),
@@ -144,28 +191,29 @@ export async function renameWorkbook(id: string, title: string): Promise<{ title
 }
 
 export async function deleteWorkbook(id: string): Promise<void> {
-  const res = await request(`${BASE}/${encodeURIComponent(id)}`, { method: "DELETE" });
+  const res = await request(`${PATH}/${encodeURIComponent(id)}`, { method: "DELETE" });
   if (!res.ok) throw await errorFrom(res);
 }
 
 /** One person's standing on a workbook, as the sharing UI edits it. */
 export interface ShareGrant {
+  /** An employee id. */
   principalId: string;
   role: "viewer" | "commenter" | "editor";
 }
 
 /** Who a workbook is shared with. Owner-only; a 403 means you are not the owner. */
 export async function listShares(id: string): Promise<ShareGrant[]> {
-  const res = await request(`/api/spreadsheet/workbooks/${encodeURIComponent(id)}/shares`);
+  const res = await request(`${PATH}/${encodeURIComponent(id)}/shares`);
   if (!res.ok) throw await errorFrom(res);
   return ((await res.json()) as { shares: ShareGrant[] }).shares ?? [];
 }
 
 /** Replace the whole share list. Passing `[]` makes the workbook private again. */
 export async function setShares(id: string, shares: ShareGrant[]): Promise<ShareGrant[]> {
-  const res = await request(`/api/spreadsheet/workbooks/${encodeURIComponent(id)}/shares`, {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}/shares`, {
     method: "PUT",
-    headers: { "content-type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ shares }),
   });
   if (!res.ok) throw await errorFrom(res);
@@ -179,4 +227,45 @@ export async function duplicateWorkbook(
 ): Promise<{ id: string; title: string; revision: number }> {
   const source = await loadWorkbook(id);
   return createWorkbook(title, source.data);
+}
+
+/* ── Version history ─────────────────────────────────────────────────────── */
+
+export interface WorkbookVersion {
+  id: string;
+  label: string;
+  revision: number;
+  createdAt: string;
+  createdById: string;
+  createdByName: string;
+  auto: boolean;
+}
+
+export async function listVersions(id: string): Promise<WorkbookVersion[]> {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}/versions`);
+  if (!res.ok) throw await errorFrom(res);
+  const body = (await res.json()) as { versions: WorkbookVersion[] };
+  return body.versions ?? [];
+}
+
+export async function saveVersion(id: string, label: string, auto = false): Promise<WorkbookVersion> {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}/versions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ label, auto }),
+  });
+  if (!res.ok) throw await errorFrom(res);
+  const body = (await res.json()) as { version: WorkbookVersion };
+  return body.version;
+}
+
+export async function restoreVersion(id: string, versionId: string): Promise<{ revision: number; data: SerializedWorkbook }> {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}/restore`, { method: "POST" });
+  if (!res.ok) throw await errorFrom(res);
+  return res.json();
+}
+
+export async function deleteVersion(id: string, versionId: string): Promise<void> {
+  const res = await request(`${PATH}/${encodeURIComponent(id)}/versions/${encodeURIComponent(versionId)}`, { method: "DELETE" });
+  if (!res.ok) throw await errorFrom(res);
 }

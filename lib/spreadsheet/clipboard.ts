@@ -209,3 +209,34 @@ export function pasteRect(clip: Clipboard, target: CellPos, bounds: Bounds): Rec
     right: Math.min(bounds.cols - 1, target.col + clip.cols - 1),
   };
 }
+
+/**
+ * The same block turned on its side: rows become columns. Formulas are kept
+ * as they are — a transposed relative reference would point somewhere else
+ * entirely, so a pasted transpose is treated as values, the way Paste values
+ * is. The source rectangle is swapped too, so the pasted extent is right.
+ */
+export function transposeClipboard(clip: Clipboard): Clipboard {
+  const cells: string[][] = [];
+  const styles: number[][] = [];
+  for (let c = 0; c < clip.cols; c++) {
+    const row: string[] = [];
+    const srow: number[] = [];
+    for (let r = 0; r < clip.rows; r++) {
+      row.push(clip.cells[r]?.[c] ?? "");
+      srow.push(clip.styles[r]?.[c] ?? 0);
+    }
+    cells.push(row);
+    styles.push(srow);
+  }
+  const { top, left } = clip.source;
+  return {
+    ...clip,
+    rows: clip.cols,
+    cols: clip.rows,
+    cells,
+    styles,
+    source: { top, left, bottom: top + clip.cols - 1, right: left + clip.rows - 1 },
+    cut: false,
+  };
+}

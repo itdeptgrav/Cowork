@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  isFragmentHref,
   isSafeHref,
   linkLabel,
   normaliseHref,
@@ -90,4 +91,14 @@ test("links open without handing the new page control of this one", () => {
    */
   assert.match(LINK_WINDOW_FEATURES, /noopener/);
   assert.match(LINK_WINDOW_FEATURES, /noreferrer/);
+});
+
+test("a link to a bookmark in the same document keeps its # and counts as safe", () => {
+  assert.equal(normaliseHref("#bm-timeline"), "#bm-timeline");
+  assert.equal(isSafeHref("#bm-timeline"), true);
+  assert.equal(normaliseHref("#"), null, "a fragment with no id points nowhere");
+  assert.equal(isSafeHref("#javascript:alert(1)"), false);
+  assert.equal(isFragmentHref("#bm-timeline"), true);
+  assert.equal(isFragmentHref("https://example.com/#bm-timeline"), false);
+  assert.equal(linkLabel("#bm-launch-plan"), "In this document: launch plan");
 });

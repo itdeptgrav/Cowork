@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 import {
   replayOrder,
   sessionsReadyToFinalize,
@@ -372,7 +373,7 @@ test("a paused recording does not go on saying REC", () => {
   );
 });
 
-test("the engine relays pause to the room, or only the host pauses", () => {
+test("the engine relays pause to the room, or only the host pauses", { skip: backendAvailable() ? false : "engine checkout not found" }, () => {
   /**
    * The client emitted `recording_pause` and listened for `recording_paused`,
    * mirroring start and stop — but the engine had no listener for it, so the
@@ -380,23 +381,17 @@ test("the engine relays pause to the room, or only the host pauses", () => {
    * other participant carried on recording. Pause appeared to work and did
    * exactly half of its job.
    */
-  const server = readFileSync(
-    "D:/GRAV_Project/grav-cms-backend/server.js",
-    "utf8",
-  );
+  const server = backendSource("server.js");
   assert.match(server, /socket\.on\("recording_pause"/);
   assert.match(server, /socket\.on\("recording_resume"/);
   assert.match(server, /emit\("recording_paused"/);
   assert.match(server, /emit\("recording_resumed"/);
 });
 
-test("somebody joining during a pause does not start capturing", () => {
+test("somebody joining during a pause does not start capturing", { skip: backendAvailable() ? false : "engine checkout not found" }, () => {
   /* The engine replays `recording_started` to a late joiner. Without the
      paused flag they would be the only voice in the paused stretch. */
-  const server = readFileSync(
-    "D:/GRAV_Project/grav-cms-backend/server.js",
-    "utf8",
-  );
+  const server = backendSource("server.js");
   assert.match(server, /paused: info\.paused === true/);
   assert.match(HOOK_CODE, /if \(p\?\.paused\) pauseRecording\(\)/);
 });
@@ -515,9 +510,31 @@ test("an unsupported format is never forced on the recorder", () => {
    * rescue. Safari records `audio/mp4` and nothing else.
    */
   assert.match(HOOK_CODE, /function getSupportedMimeType\(\): string \| null/);
-  assert.match(
-    HOOK_CODE,
-    /preferred\s*\?\s*new MediaRecorder\(stream, \{ mimeType: preferred \}\)\s*:\s*new MediaRecorder\(stream\)/,
+
+  /* The RULE, not the exact source shape. This used to pin the whole
+     expression verbatim, which broke the moment `audioBitsPerSecond` was added
+     to both branches — a change that cannot affect what this test is about.
+     What must hold is that a `mimeType` is passed ONLY on the `preferred`
+     branch, and only ever as `preferred` itself. */
+  const at = HOOK_CODE.indexOf("const recorder = preferred");
+  assert.ok(at !== -1, "the recorder is no longer constructed from `preferred`");
+  const construction = HOOK_CODE.slice(at, HOOK_CODE.indexOf(";", at));
+
+  const mimeMentions = [...construction.matchAll(/mimeType:\s*([^,\s}]+)/g)].map(
+    (m) => m[1],
+  );
+  assert.deepEqual(
+    mimeMentions,
+    ["preferred"],
+    "a mimeType other than `preferred` reaches the recorder",
+  );
+
+  /* And the fallback branch constructs without one at all. */
+  const elseBranch = construction.slice(construction.indexOf(" : "));
+  assert.doesNotMatch(
+    elseBranch,
+    /mimeType/,
+    "the no-support branch forces a mimeType, which is the NotSupportedError",
   );
 });
 

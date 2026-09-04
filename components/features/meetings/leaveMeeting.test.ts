@@ -610,7 +610,9 @@ test("the listener is removed when the meeting ends", () => {
 
 test("it is mounted in the shell, beside the meeting itself", () => {
   /* It has to ask whether the room is on this page or floating in the corner. */
-  const shell = code("components/layout/shell/ShellFrame.tsx");
+  const shell =
+    code("components/layout/shell/ShellFrame.tsx") +
+    code("components/layout/shell/WorkspaceShell.tsx");
   assert.match(shell, /<MeetingReloadGuard \/>/);
 });
 

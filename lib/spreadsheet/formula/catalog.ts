@@ -17,7 +17,11 @@ export type FnCategory =
   | "Date"
   | "Statistical"
   | "Lookup"
-  | "Array";
+  | "Array"
+  | "Financial"
+  | "Info"
+  | "Engineering"
+  | "Visual";
 
 export interface FnArg {
   name: string;
@@ -42,7 +46,12 @@ export interface FunctionHelp {
    * skipped for that function and the whole signature is shown instead.
    */
   signature?: string;
+  /** A named range offered among the suggestions — inserted as the bare
+      name, since a name is not called. */
+  named?: boolean;
 }
+
+import { MORE_FUNCTION_HELP } from "./functions/catalogMore";
 
 const req = (name: string): FnArg => ({ name });
 const opt = (name: string): FnArg => ({ name, optional: true });
@@ -128,6 +137,7 @@ export const FUNCTION_HELP: Record<string, FunctionHelp> = {
   UNIQUE: { name: "UNIQUE", category: "Array", args: [req("range"), opt("by_column"), opt("exactly_once")], summary: "Returns the rows of a range with duplicates removed.", example: "UNIQUE(A1:A10)" },
   FILTER: { name: "FILTER", category: "Array", args: [req("range"), req("condition"), opt("if_empty")], summary: "Returns only the rows of a range where the condition column is TRUE.", example: "FILTER(A1:B10, C1:C10)" },
   SORT: { name: "SORT", category: "Array", args: [req("range"), opt("sort_index"), opt("is_ascending")], summary: "Sorts the rows of a range by one of its columns.", example: "SORT(A1:B10, 1, TRUE)" },
+  ...MORE_FUNCTION_HELP,
 };
 
 /** The signature line, e.g. `SUM(value1, [value2, …])`. */
