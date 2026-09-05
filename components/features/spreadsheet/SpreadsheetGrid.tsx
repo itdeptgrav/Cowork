@@ -58,6 +58,10 @@ import { ChartToolbar } from "./ChartToolbar";
 import type { PeerCursor } from "@/lib/spreadsheet/collabSync";
 import { HeaderContextMenu, type MenuItem } from "./HeaderContextMenu";
 import { CellContextMenu, type CellMenuItem } from "./CellContextMenu";
+import { ImageImportDialog } from "./ImageImportDialog";
+import { FilePicker } from "./FilePicker";
+import { useRepo } from "@/lib/hooks/useRepository";
+import { driveImageSrc } from "@/lib/rules/media/driveUrls";
 import { FilterMenu } from "./FilterMenu";
 import { SearchReplaceBar } from "./SearchReplaceBar";
 import { LinkEditor } from "./LinkEditor";
@@ -181,6 +185,12 @@ export function SpreadsheetGrid({
   const fillingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
 
+  const repo = useRepo();
+  /* The in-memory prototype has no file store, so the menu entry is offered
+     disabled rather than promising an upload that cannot happen — the same
+     test the ribbon's Insert ▸ Image makes. */
+  const canUploadImage = typeof repo.uploadDriveFile === "function";
+
   const [fillPreview, setFillPreview] = useState<Rect | null>(null);
   const [resize, setResize] = useState<ResizeState>(null);
   const [menu, setMenu] = useState<MenuState>(null);
@@ -189,6 +199,13 @@ export function SpreadsheetGrid({
   const [cellMenu, setCellMenu] = useState<{ x: number; y: number } | null>(null);
   const [linkEditor, setLinkEditor] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
   const [commentAt, setCommentAt] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  /* The picture chosen from disk, waiting to be cropped. Held here rather than
+     inside the dialog so the file input can be cleared the moment it is read —
+     otherwise choosing the SAME file twice in a row fires no change event. */
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  /* Mounting the chooser is what opens it — see `FilePicker`. */
+  const [pickingImage, setPickingImage] = useState(false);
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
@@ -630,6 +647,15 @@ export function SpreadsheetGrid({
           { label: "Row below", onClick: () => controller.insertRows("below") },
           { label: "Column left", onClick: () => controller.insertCols("left") },
           { label: "Column right", onClick: () => controller.insertCols("right") },
+          {},
+          {
+            label: "Image",
+            /* Off, not hidden, where the deployment has no file store: a menu
+               whose contents change between deployments is one nobody can be
+               told how to use. The ribbon's Insert ▸ Image says the same. */
+            disabled: !canUploadImage || imageBusy,
+            onClick: () => setPickingImage(true),
+          },
         ],
       },
       {
@@ -1698,6 +1724,49 @@ export function SpreadsheetGrid({
           onClose={() => {
             onSearchOpen(false);
             focusGrid();
+          }}
+        />
+      )}
+
+      {pickingImage && (
+        <FilePicker
+          accept="image/*"
+          onPick={(chosen) => {
+            setPickingImage(false);
+            if (!chosen) return;
+            /* `accept` is a filter, not a guarantee — every browser lets you
+               switch it to "All files". */
+            if (!chosen.type.startsWith("image/")) {
+              controller.setNotice("Choose an image file.");
+              return;
+            }
+            setImageFile(chosen);
+          }}
+        />
+      )}
+
+      {imageFile && (
+        <ImageImportDialog
+          file={imageFile}
+          onCancel={() => setImageFile(null)}
+          onConfirm={({ file, size }) => {
+            setImageFile(null);
+            if (!repo.uploadDriveFile) return;
+            setImageBusy(true);
+            void repo
+              .uploadDriveFile(file)
+              .then((r) => {
+                if (!r.ok) {
+                  controller.setNotice(r.message);
+                  return;
+                }
+                /* The Drive id is the durable half — the URL is a fallback that
+                   stops meaning anything if the CDN host moves. */
+                const src = r.data.fileId ? driveImageSrc(r.data.fileId) : r.data.url;
+                controller.insertImageCell(src, size);
+              })
+              .catch(() => controller.setNotice("That image could not be uploaded."))
+              .finally(() => setImageBusy(false));
           }}
         />
       )}

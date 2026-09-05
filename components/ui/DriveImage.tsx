@@ -26,6 +26,7 @@ export function DriveImage({
   alt,
   width,
   className,
+  style,
   apiBase = process.env.NEXT_PUBLIC_LEGACY_API_URL,
   onExhausted,
 }: {
@@ -36,6 +37,14 @@ export function DriveImage({
   /** Delivered width asked of the CDN. Not a layout size. */
   width?: number;
   className?: string;
+  /**
+   * Inline layout, for a caller whose sizing is computed rather than a class.
+   *
+   * A spreadsheet cell is the case: its `object-fit` follows the IMAGE
+   * formula's mode argument and its box follows the row and column, so neither
+   * can be a Tailwind class.
+   */
+  style?: React.CSSProperties;
   apiBase?: string | null;
   /** Called when every source has failed, so a caller can show its own state. */
   onExhausted?: () => void;
@@ -54,6 +63,7 @@ export function DriveImage({
       src={src}
       alt={alt}
       className={className}
+      style={style}
       onError={() => {
         if (attempt + 1 < sources.length) {
           setAttempt(attempt + 1);

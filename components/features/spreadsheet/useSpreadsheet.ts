@@ -423,8 +423,15 @@ export interface SpreadsheetController {
   setColsCollapsed: (collapsed: boolean) => void;
   /** Columns hidden because an outline band is collapsed. */
   collapsedColsMap: Record<number, true>;
-  /** Put a picture in the active cell by its https address. */
-  insertImageCell: (url: string) => void;
+  /**
+   * Put a picture in the active cell by its https address.
+   *
+   * `size` is the picture's own pixel size, already run through the import
+   * ceiling by the caller — pass it and the cell grows to fit, which is the
+   * point of a picture in a cell. Omit it and only the formula is written, for
+   * a caller that has no dimensions to offer (a typed address, say).
+   */
+  insertImageCell: (url: string, size?: { width: number; height: number }) => void;
   /** The view option that shades every protected cell. */
   showProtected: boolean;
   setShowProtected: (value: boolean) => void;
@@ -449,6 +456,15 @@ export interface SpreadsheetController {
   /** The last refused change, as the sentence to show; cleared by `clearNotice`. */
   notice: string | null;
   clearNotice: () => void;
+  /**
+   * Say something went wrong, from outside the controller.
+   *
+   * The grid owns a few actions the controller cannot — an upload that fails,
+   * a file that will not decode — and they need the same one line the refusals
+   * use. A second error surface beside it would mean two places to look for
+   * why nothing happened.
+   */
+  setNotice: (message: string) => void;
 
   /* --- Printing (see `lib/spreadsheet/printHtml.ts`) --- */
   pageSetup: PageSetup;
@@ -1263,9 +1279,36 @@ export function useSpreadsheet(): SpreadsheetController {
   }
   const collapsedColsMap = collapsedCols(worksheet.colGroups);
 
-  function insertImageCell(url: string): void {
+  function insertImageCell(url: string, size?: { width: number; height: number }): void {
     const safe = url.trim().replace(/"/g, "");
-    commitValue(selection.active.row, selection.active.col, `=IMAGE("${safe}")`);
+    const { row, col } = selection.active;
+    const raw = `=IMAGE("${safe}")`;
+
+    /* BOTH refusals are checked before anything is applied.
+       `applyStructural` only guards protection on the whole SHEET, while the
+       write itself is gated twice more — by validation and by protection on a
+       RANGE. Sizing first and writing second therefore left a protected cell
+       resized to a picture that was never allowed in, with nothing said. There
+       is no partial version of inserting a picture, so neither half runs until
+       both gates have answered. */
+    if (!isEditAllowed(row, col, raw)) {
+      setNotice("This cell only accepts values from its drop-down list.");
+      return;
+    }
+    /* Sets its own notice naming which rule refused. */
+    if (!allowEdits([{ row, col, raw }])) return;
+
+    /* Then the size, and the picture last, so the first undo takes the picture
+       away and leaves the sheet looking like a sheet — undoing to a
+       picture-shaped empty cell reads as the undo having failed. */
+    if (size && size.width > 0 && size.height > 0) {
+      applyStructural(
+        "Size cell to image",
+        setRowHeight(setColWidth(worksheet, col, Math.round(size.width)), row, Math.round(size.height)),
+        false,
+      );
+    }
+    applyEdits("Insert image", [{ row, col, raw }]);
   }
 
   const [showProtected, setShowProtected] = useState(false);
@@ -2269,6 +2312,7 @@ export function useSpreadsheet(): SpreadsheetController {
     protectionLookup,
     notice,
     clearNotice,
+    setNotice,
     pageSetup,
     setPageSetup,
     setPrintArea,

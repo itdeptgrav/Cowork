@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "@/components/ui/Icons";
 import {
   ALL_MEMBERS,
@@ -8,6 +8,7 @@ import {
   pathTo,
   type PersonNode,
 } from "@/lib/rules/tasks/peopleFilter";
+import { branchColumnTop } from "@/lib/rules/tasks/branchColumn";
 
 /**
  * Whose tasks the list is showing.
@@ -102,6 +103,15 @@ export function PersonFilter({
   const [openPath, setOpenPath] = useState<string[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
   const stripRef = useRef<HTMLDivElement>(null);
+  /**
+   * How far each team's column is pushed down, to sit level with its own row.
+   *
+   * Indexed by column, so `tops[1]` belongs to the first team opened. Measured
+   * rather than derived: the row's position depends on how many people are
+   * above it, how far its column is scrolled and how much the column above
+   * that was itself pushed down — none of which is known until it is drawn.
+   */
+  const [tops, setTops] = useState<number[]>([]);
 
   /* Opening the menu opens it onto the current selection — including onto
      nothing when there is none, so a menu reopened after picking All members
@@ -145,6 +155,61 @@ export function PersonFilter({
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
   }, [open, openPath]);
+
+  /**
+   * Put each team's column level with the row that opened it.
+   *
+   * **Every column used to start at the panel's top.** So a team opened from a
+   * name near the bottom of a long list appeared beside names it has nothing
+   * to do with, a whole list-height from its own row — and the one thing the
+   * columns exist to show, who reports to whom, was the one thing the layout
+   * did not say.
+   *
+   * Measured after paint and written back as a margin. `useLayoutEffect` and
+   * not `useEffect`: the column is already on screen by then, and doing this a
+   * frame later would show it snapping down from the top every time.
+   *
+   * Recomputed when a column is SCROLLED, too. Listened for on the strip in
+   * the capture phase, because scroll does not bubble — without that, scrolling
+   * a manager's list left their team's column behind at the old offset.
+   */
+  useLayoutEffect(() => {
+    if (!open) return;
+    function place() {
+      const strip = stripRef.current;
+      if (!strip) return;
+      const stripTop = strip.getBoundingClientRect().top;
+      const next = openPath.map((id, level) => {
+        const row = strip.querySelector<HTMLElement>(
+          `[data-col="${level}"] [data-person="${CSS.escape(id)}"]`,
+        );
+        const column = strip.querySelector<HTMLElement>(
+          `[data-col="${level + 1}"]`,
+        );
+        if (!row || !column) return 0;
+        return branchColumnTop({
+          rowTop: row.getBoundingClientRect().top - stripTop,
+          columnHeight: column.getBoundingClientRect().height,
+          available: document.documentElement.clientHeight - stripTop,
+        });
+      });
+      /* Only on a real change — this runs after every paint, and setting an
+         equal array would render forever. */
+      setTops((prev) =>
+        prev.length === next.length && prev.every((v, i) => v === next[i])
+          ? prev
+          : next,
+      );
+    }
+    place();
+    const strip = stripRef.current;
+    strip?.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      strip?.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
+  }, [open, openPath, tops]);
 
   useEffect(() => {
     if (!open) return;
@@ -235,6 +300,9 @@ export function PersonFilter({
             {columns.map((col, level) => (
               <ul
                 key={col.parent ? col.parent.id : "root"}
+                data-col={level}
+                /* Level with the row that opened it — see the layout effect. */
+                style={level > 0 ? { marginTop: tops[level - 1] ?? 0 } : undefined}
                 role="listbox"
                 aria-label={
                   col.parent
@@ -330,7 +398,11 @@ function PersonRow({
   const selected = node.id === value;
 
   return (
-    <li role="option" aria-selected={selected}>
+    /* `data-person` is what the layout effect measures against to put this
+       person's team level with this row. On the `<li>` rather than the inner
+       wrapper so the offset is taken from the row's outer box, which is what
+       the column beside it is being aligned to. */
+    <li role="option" aria-selected={selected} data-person={node.id}>
       {/* A row, not a button: the expander and the name are two controls and a
           button inside a button is invalid HTML that browsers flatten. The
           wash lives HERE, on the non-pressable wrapper, which is what lets it

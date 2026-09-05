@@ -291,3 +291,43 @@ test("the menu is themed, never a native select", () => {
   assert.doesNotMatch(src, /<select\b/);
   assert.doesNotMatch(src, /<Select\b/);
 });
+
+/* ── A team sits level with the person it belongs to ──────────────────────── */
+
+test("each team's column is offset to its own row, not pinned to the top", () => {
+  /* Every column started at the panel's top, so a team opened from a name near
+     the bottom of a long list appeared beside people it has nothing to do with
+     — the one thing the columns exist to show, who reports to whom, was the one
+     thing the layout did not say. */
+  const src = code(FILTER);
+  assert.match(src, /style=\{level > 0 \? \{ marginTop: tops\[level - 1\] \?\? 0 \} : undefined\}/);
+  assert.match(src, /data-col=\{level\}/);
+  assert.match(src, /data-person=\{node\.id\}/);
+});
+
+test("the offset is measured, and clamped by the shared rule", () => {
+  /* The row's position depends on how many people are above it, how far its
+     column is scrolled and how far the column above was itself pushed down —
+     none of which is known until it is drawn. */
+  const src = code(FILTER);
+  assert.match(src, /import \{ branchColumnTop \} from "@\/lib\/rules\/tasks\/branchColumn"/);
+  assert.match(src, /rowTop: row\.getBoundingClientRect\(\)\.top - stripTop/);
+  assert.match(src, /available: document\.documentElement\.clientHeight - stripTop/);
+});
+
+test("it is placed before the frame is shown, not after", () => {
+  /* A useEffect would show the column snapping down from the top each time. */
+  assert.match(code(FILTER), /useLayoutEffect\(\(\) => \{/);
+});
+
+test("scrolling a column moves its team with it", () => {
+  /* Scroll does not bubble, so the listener has to capture — without it,
+     scrolling a manager's list left their team behind at the old offset. */
+  assert.match(code(FILTER), /addEventListener\("scroll", place, true\)/);
+});
+
+test("the measurement cannot loop forever", () => {
+  /* It runs after every paint and writes state; setting an equal array would
+     render without end. */
+  assert.match(code(FILTER), /prev\.length === next\.length && prev\.every/);
+});
