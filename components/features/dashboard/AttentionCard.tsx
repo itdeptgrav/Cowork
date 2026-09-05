@@ -104,7 +104,11 @@ export function AttentionCard() {
     <Card
       title={team ? "Where to step in" : "Needs you"}
       padded={false}
-      className="min-w-0"
+      /* `h-full` is what turns the stretched wrapper into a stretched CARD:
+         the wrapper grows with `flex-1`, and without this the section inside it
+         would still draw at its content's height and leave the frost panel
+         short of the column's foot. */
+      className="min-w-0 deck:h-full"
       /* **A way out, not a tally.**
 
          This read "N urgent", which repeated what the rows already say — they
@@ -157,17 +161,18 @@ export function AttentionCard() {
           />
         </div>
       ) : (
-        /* **The card ends at its last row.**
+        /* **Six rows, then nothing — and no "+N more" strip.**
 
-           It had a "+N more waiting" strip under the list and stretched to the
-           bottom of the column, which put a band of empty card under the strip
-           — so the one thing at the foot of the card was a line about rows that
-           were not there, floating above space that held nothing either. The
+           The card fills the column again (see `Home`), but the LIST still
+           stops at six. What was removed and stays removed is the "+N more
+           waiting" line that used to sit under it: the one thing at the foot of
+           the card was then a sentence about rows that were not there. The
            header's "View all" is the way to the rest and says so in words; a
            second pointer under a list is a footnote to a link.
 
-           So: six rows, then the card stops. What is below it is the field,
-           which is not empty in the way an empty card is. */
+           Any height beyond the sixth row is simply empty card. If that becomes
+           a nuisance, the fix is to let the list use it — raise the cap and
+           scroll — rather than to shorten the card. */
         <ul className="divide-y divide-hairline">
           {signals.slice(0, VISIBLE_SIGNALS).map((s) => (
             <SignalRow key={s.id} signal={s} />

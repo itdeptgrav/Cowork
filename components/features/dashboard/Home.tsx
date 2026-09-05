@@ -207,13 +207,27 @@ export function Home() {
               work surfaces the way a full roster did. */}
           {isAdmin && <AttendanceButton />}
           <QuickAssign />
-          {/* Packs to its rows. It held the rest of the column for a while,
-              which put a band of empty card under the last notification — the
-              list is capped at six, so beyond that height there is nothing for
-              the card to hold. Field below a card that has ended reads as 
-              composition; empty card below its own content reads as a 
-              loading failure. */}
-          <div className="min-w-0">
+          {/**
+            * Holds the rest of the column, so the two regions end on one line.
+            *
+            * **This reverses an earlier decision, on the owner's instruction
+            * (5 Sep 2026).** It used to pack to its rows, because the list is
+            * capped at six and beyond that height there is nothing for the card
+            * to hold — the reasoning being that field below a finished card
+            * reads as composition, while empty card below its own content reads
+            * as a loading failure.
+            *
+            * The counter-argument, and the one that won: a right column that
+            * stops short of the left one reads as unfinished at every window
+            * size, and it does so ALL the time, whereas the empty band only
+            * appears when there are few signals. If it becomes a nuisance the
+            * fix is to let the list use the extra height rather than to shorten
+            * the card again.
+            *
+            * `deck:` only, like the fixed height it fills: below that the
+            * columns stack and the page scrolls, where stretching means
+            * nothing. */}
+          <div className="min-w-0 deck:min-h-0 deck:flex-1">
             <AttentionCard />
           </div>
         </div>

@@ -243,6 +243,7 @@ export function FileMenu({
   persistence,
   local,
   onNewSheet,
+  onCloseFile,
   variant = "bar",
 }: {
   controller: SpreadsheetController;
@@ -253,6 +254,14 @@ export function FileMenu({
   variant?: "bar" | "ribbon";
   /** Leave this workbook and start another — the browser owns that. */
   onNewSheet?: () => void;
+  /**
+   * Put this sheet down and go back to the list.
+   *
+   * Absent where there is no list to go back to, and the item is then not
+   * rendered at all — a standalone spreadsheet should not offer a Close that
+   * leads nowhere.
+   */
+  onCloseFile?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [dialog, setDialog] = useState<null | "share" | "details" | "settings" | "saveAs" | "pageSetup" | "versions" | "shortcuts">(null);
@@ -539,6 +548,24 @@ export function FileMenu({
             <button type="button" className={item} onClick={choose(() => setDialog("settings"))}>
               Settings
             </button>
+            {/* **Close, at the foot, behind its own rule.**
+                The only way out of an open sheet was the back arrow in the
+                corner — a File menu that offers New sheet, Open, Save and
+                Share and then has no way to put the file down is missing the
+                other half of its own vocabulary.
+                Last, and separated: it is the one item here that ENDS the
+                session with this sheet, and it must not sit a pixel above
+                Share where a mis-click costs the reader their place. It goes
+                through the same guard as the back arrow, so it asks when
+                anything is still unsaved. */}
+            {onCloseFile && (
+              <>
+                <div className="my-1 h-px bg-[var(--color-hairline)]" />
+                <button type="button" className={item} onClick={choose(() => onCloseFile())}>
+                  Close
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>

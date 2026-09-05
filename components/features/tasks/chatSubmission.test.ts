@@ -176,9 +176,19 @@ test("the shared box drops its frame on the card, not its function", () => {
 test("the dialog lets the panel inside be the surface", () => {
   /* SubmissionPanel and ReviewPanel each render their own Panel. A frosted
      dialog shell around one puts a panel inside a panel — the box-inside-a-box
-     the design system rules out — and draws two borders a few pixels apart. */
+     the design system rules out — and draws two borders a few pixels apart.
+
+     Matched on the CLASS, not the bare word: the dialog now names
+     `--frost-panel-solid` in a style override, which makes the panel inside it
+     opaque — and a search for "frost-panel" hits that token too, so the loose
+     version failed on a change that was the opposite of painting a surface. */
   assert.equal(
-    /frost-bar|frost-panel/.test(CARD.slice(CARD.indexOf("TaskPanelDialog"), CARD.indexOf("ChatSubmissionCard"))),
+    /className="[^"]*frost-(bar|panel)/.test(
+      CARD.slice(
+        CARD.indexOf("TaskPanelDialog"),
+        CARD.indexOf("ChatSubmissionCard"),
+      ),
+    ),
     false,
     "the dialog is painting a surface of its own",
   );

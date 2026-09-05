@@ -110,6 +110,20 @@
      `[data-perf="plain"]` uses when it drops the blur. */
   --frost-bar-solid: rgb(248, 248, 250);
   --frost-panel: rgba(232, 232, 234, 0.8);
+  /**
+   * The panel colour with nothing showing through it.
+   *
+   * `--frost-panel` is translucent and relies on `backdrop-filter` to hide what
+   * is behind it. That works over the page's own quiet ground and fails over a
+   * BUSY one — and a modal is exactly that case: the submission dialog is a
+   * portal on `document.body`, so what sits behind it is the whole task page,
+   * read straight through the panel at 74% and interleaved with its own text.
+   *
+   * The same value `[data-perf="plain"]` already falls back to when it drops
+   * the blur, named here so a surface that must be opaque can ask for it
+   * instead of hoping the blur lands.
+   */
+  --frost-panel-solid: rgb(238, 238, 240);
   --hairline: rgba(10, 10, 10, 0.12);
   --hairline-slab: rgba(255, 255, 255, 0.1);
 
@@ -299,6 +313,8 @@
   --frost-bar: rgba(24, 24, 28, 0.92);
   --frost-bar-solid: rgb(24, 24, 28);
   --frost-panel: rgba(32, 32, 37, 0.74);
+  /* See `--frost-panel-solid` at `:root`. */
+  --frost-panel-solid: rgb(32, 32, 37);
   --hairline: rgba(255, 255, 255, 0.11);
   --hairline-slab: rgba(255, 255, 255, 0.09);
 

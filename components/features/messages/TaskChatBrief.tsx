@@ -75,10 +75,17 @@ export function TaskChatBrief({ chat }: { chat: PairedTaskChat }) {
 
       {open && (
         <div className="mt-1 space-y-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
-          <section>
-            <h3 className="text-[10px] tracking-[0.09em] text-ink-faint uppercase">
-              Brief
-            </h3>
+          {/**
+            * The brief, with the way out beside it.
+            *
+            * The link used to sit at the FOOT of the panel, under the
+            * deliverables — so on a task with a long brief it was below the
+            * fold of the card, and the one control in here was the last thing
+            * anybody found. Up here it is on the first line, where the eye
+            * already is, and it does not move when the brief grows.
+            */}
+          <div className="flex items-start justify-between gap-3">
+            <section className="min-w-0 flex-1">
             {hasBrief ? (
               /* `whitespace-pre-wrap` so the paragraphs somebody typed survive.
                  A brief collapsed into one block is a different document. */
@@ -92,7 +99,21 @@ export function TaskChatBrief({ chat }: { chat: PairedTaskChat }) {
                 No brief was written for this task.
               </p>
             )}
-          </section>
+            </section>
+
+            {/* The product's primary button — `bg-ink` on `--body-bg` ink, so
+                it reads white on dark and dark on light without either colour
+                being written here. Sized to this card's 11px type rather than
+                the 13px the full-size one uses: a standard-height button in a
+                panel of small print reads as something pasted in. */}
+            <Link
+              href={`/tasks/${chat.taskId}`}
+              className="inline-flex shrink-0 items-center gap-1 rounded-full bg-ink px-3 py-1 text-[11px] font-medium text-[var(--body-bg)] transition-opacity duration-[180ms] ease-[var(--ease-deck)] hover:opacity-90"
+            >
+              Open the task
+              <Icon.chevronRight aria-hidden className="h-3 w-3" />
+            </Link>
+          </div>
 
           <section>
             <h3 className="text-[10px] tracking-[0.09em] text-ink-faint uppercase">
@@ -126,14 +147,6 @@ export function TaskChatBrief({ chat }: { chat: PairedTaskChat }) {
             )}
           </section>
 
-          {/* The way to everything this deliberately leaves out. */}
-          <Link
-            href={`/tasks/${chat.taskId}`}
-            className="inline-flex items-center gap-1 text-[11px] text-ink-muted transition-colors hover:text-ink"
-          >
-            Open the task
-            <Icon.chevronRight aria-hidden className="h-3 w-3" />
-          </Link>
         </div>
       )}
     </div>

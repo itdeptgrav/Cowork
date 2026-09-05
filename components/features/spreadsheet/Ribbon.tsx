@@ -59,6 +59,7 @@ export function Ribbon({
   persistence,
   local,
   onNewSheet,
+  onCloseFile,
   onSearchOpen,
 }: {
   controller: SpreadsheetController;
@@ -66,6 +67,9 @@ export function Ribbon({
   /** The file on disk this sheet is bound to, passed through to the File menu. */
   local?: LocalFileBinding;
   onNewSheet?: () => void;
+  /** Close this sheet and go back to the list — File ▸ Close. Passed straight
+   *  through; the guard that asks about unsaved work lives in `Spreadsheet`. */
+  onCloseFile?: () => void;
   /** Opens the find/replace bar the grid renders. */
   onSearchOpen?: (v: "find" | "replace") => void;
 }) {
@@ -85,7 +89,7 @@ export function Ribbon({
       {/* The tab strip. File sits apart from the tabs because it opens a menu
           rather than swapping the strip. */}
       <div role="tablist" aria-label="Ribbon" className="flex items-center gap-1 border-b border-hairline px-2 pt-1">
-        <FileMenu controller={controller} persistence={persistence} local={local} onNewSheet={onNewSheet} variant="ribbon" />
+        <FileMenu controller={controller} persistence={persistence} local={local} onNewSheet={onNewSheet} onCloseFile={onCloseFile} variant="ribbon" />
         <span aria-hidden className="mx-1 h-4 w-px bg-[var(--color-hairline)]" />
         {TABS.map((t) => (
           <button

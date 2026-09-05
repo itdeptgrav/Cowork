@@ -30,7 +30,7 @@ test("shrinking moves to the previous rung", () => {
 test("every step lands on something the picker can show", () => {
   /* Walk the whole ladder in both directions and assert the result is always
      offered. This is the property the old code broke. */
-  let n = FONT_SIZES[0];
+  let n: number = FONT_SIZES[0];
   for (let i = 0; i < FONT_SIZES.length - 1; i++) {
     n = up(n);
     assert.ok(

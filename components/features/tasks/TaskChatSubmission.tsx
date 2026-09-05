@@ -72,7 +72,10 @@ export function TaskPanelDialog({
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[80] overflow-y-auto overscroll-contain bg-black/45 p-4"
+      /* A heavier scrim than a sheet or a menu takes. This one covers a task
+         page dense with cards, and at 45% every one of them stayed legible
+         around the dialog and competed with it. */
+      className="fixed inset-0 z-[80] overflow-y-auto overscroll-contain bg-black/70 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
@@ -84,6 +87,29 @@ export function TaskPanelDialog({
         /* `my-auto` centres a short panel and lets a tall one scroll from the
            top instead of being clipped at both ends. */
         className="mx-auto my-auto w-full max-w-2xl"
+        /**
+         * **The panel inside this must be OPAQUE.**
+         *
+         * `SubmissionPanel` paints itself with `frost-panel`, which is 74%
+         * transparent and hides what is behind it with `backdrop-filter`. That
+         * holds over the page's own ground and fails here: this is a portal on
+         * `document.body`, so what is behind it is the entire task page, and it
+         * read straight through — the submission form and the thread's own
+         * cards drawn over each other, both legible, neither readable.
+         *
+         * Overriding the custom property rather than laying an opaque div under
+         * the child: the property inherits, so the panel simply paints solid,
+         * with no second element to line its corners up with and no second
+         * border a hair outside the first. `--color-frost-panel` is what the
+         * class actually reads; `--frost-panel` is set too because the
+         * reduced-transparency rule mixes from that one.
+         */
+        style={
+          {
+            "--color-frost-panel": "var(--frost-panel-solid)",
+            "--frost-panel": "var(--frost-panel-solid)",
+          } as React.CSSProperties
+        }
       >
         <div className="flex justify-end pb-2">
           <button
