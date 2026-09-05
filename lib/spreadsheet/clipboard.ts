@@ -43,10 +43,43 @@ export interface Clipboard {
   /** Whether this was a cut: the source is emptied on paste, and formulas move
       verbatim rather than being re-based. */
   cut: boolean;
+  /**
+   * The size of each copied cell that holds a PICTURE, block-relative.
+   *
+   * A picture sizes the cell it lives in, so that size is part of the picture
+   * the way a style is: copy one elsewhere and arriving at the default 100 × 24
+   * would be arriving cropped.
+   *
+   * Carried here and not in `styles` because a row height and a column width
+   * are not cell properties — they belong to the row and the column. Writing
+   * them for every copied cell would mean an ordinary paste of text silently
+   * resized whatever columns it landed on. Picture cells only, for that reason.
+   */
+  imageSizes?: readonly CopiedImageSize[];
+}
+
+/** One picture cell's size, positioned relative to the copied block. */
+export interface CopiedImageSize {
+  /** Rows below the block's top-left. */
+  row: number;
+  /** Columns right of the block's top-left. */
+  col: number;
+  width: number;
+  height: number;
 }
 
 /** Read a rectangle's RAW content AND styles into an internal clipboard block. */
-export function copyRange(ws: Worksheet, rect: Rect, cut = false): Clipboard {
+export function copyRange(
+  ws: Worksheet,
+  rect: Rect,
+  cut = false,
+  /**
+   * Whether that cell shows a picture. Supplied by the caller because only the
+   * formula engine can answer it — a cell may arrive at a picture through a
+   * reference rather than by holding `=IMAGE(` itself.
+   */
+  holdsImage?: (row: number, col: number) => boolean,
+): Clipboard {
   const rows = rect.bottom - rect.top + 1;
   const cols = rect.right - rect.left + 1;
   const cells: string[][] = [];
@@ -61,7 +94,52 @@ export function copyRange(ws: Worksheet, rect: Rect, cut = false): Clipboard {
     cells.push(line);
     styles.push(styleLine);
   }
-  return { rows, cols, cells, styles, source: rect, cut };
+  const imageSizes: CopiedImageSize[] = [];
+  if (holdsImage) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const row = rect.top + r;
+        const col = rect.left + c;
+        if (!holdsImage(row, col)) continue;
+        imageSizes.push({
+          row: r,
+          col: c,
+          width: ws.colWidths[col] ?? ws.defaultColWidth,
+          height: ws.rowHeights[row] ?? ws.defaultRowHeight,
+        });
+      }
+    }
+  }
+  return {
+    rows,
+    cols,
+    cells,
+    styles,
+    source: rect,
+    cut,
+    ...(imageSizes.length ? { imageSizes } : {}),
+  };
+}
+
+/**
+ * Where each copied picture's size lands, given the paste site.
+ *
+ * Clipped to the sheet like every other part of a paste: a block pasted near
+ * the right edge loses its overhanging columns, and their sizes with them.
+ */
+export function pasteSizes(
+  clip: Clipboard,
+  target: CellPos,
+  bounds: Bounds,
+): CopiedImageSize[] {
+  const out: CopiedImageSize[] = [];
+  for (const size of clip.imageSizes ?? []) {
+    const row = target.row + size.row;
+    const col = target.col + size.col;
+    if (row >= bounds.rows || col >= bounds.cols) continue;
+    out.push({ row, col, width: size.width, height: size.height });
+  }
+  return out;
 }
 
 /**

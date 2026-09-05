@@ -74,7 +74,7 @@ import {
   type Mark,
 } from "@/lib/spreadsheet/style";
 import { adjustFormula } from "@/lib/spreadsheet/formula/references";
-import { BLANK, type ScalarValue } from "@/lib/spreadsheet/formula/value";
+import { BLANK, isRich, type ScalarValue } from "@/lib/spreadsheet/formula/value";
 import { sortRangeEdits, type SortDirection } from "@/lib/spreadsheet/sort";
 import { computeFilterHidden, type ColumnFilter, type SheetFilter } from "@/lib/spreadsheet/filter";
 import {
@@ -200,6 +200,7 @@ import {
   fromTSV,
   pasteEdits,
   pasteRect,
+  pasteSizes,
   pasteStyles,
   toTSV,
   type Clipboard,
@@ -268,6 +269,14 @@ export interface SpreadsheetController {
   copy: () => void;
   cut: () => void;
   paste: () => void;
+  /**
+   * Place clipboard text the caller already holds.
+   *
+   * What the native `paste` event uses: that event arrives WITH its text, so
+   * there is nothing to go and read — and reading it again needs a permission
+   * the event does not.
+   */
+  pasteText: (text: string | null) => void;
   undo: () => void;
   redo: () => void;
   /** The rectangle a handle dragged to `target` would fill — for the preview. */
@@ -314,6 +323,17 @@ export interface SpreadsheetController {
   hideCols: () => void;
   unhideCols: () => void;
   resizeCol: (col: number, width: number) => void;
+  /**
+   * Both axes of ONE cell, in a single command.
+   *
+   * Not `resizeCol` followed by `resizeRow`: each derives its next worksheet
+   * from the SAME render's `worksheet`, so the second one's result does not
+   * contain the first one's change and silently discards it. A picture dragged
+   * bigger got its new height and kept its old width.
+   *
+   * One command is also one undo, which is what a single drag should be.
+   */
+  resizeCell: (row: number, col: number, width: number, height: number) => void;
   /** Resize a run of columns as one undoable command. */
   resizeCols: (from: number, to: number, width: number) => void;
   autoFitCol: (col: number, width: number) => void;
@@ -1906,13 +1926,13 @@ export function useSpreadsheet(): SpreadsheetController {
 
   function copy(): void {
     const rect = selection.range;
-    setClipboard(copyRange(worksheet, rect, false));
+    setClipboard(copyRange(worksheet, rect, false, holdsImage));
     writeSystemClipboard(rect);
   }
 
   function cut(): void {
     const rect = selection.range;
-    setClipboard(copyRange(worksheet, rect, true));
+    setClipboard(copyRange(worksheet, rect, true, holdsImage));
     writeSystemClipboard(rect);
   }
 
@@ -1930,6 +1950,32 @@ export function useSpreadsheet(): SpreadsheetController {
     /* Formatting travels with the block (Phase 5): the source styles land on the
        destination, replacing whatever was there. */
     edits.push(...pasteStyles(clip, target, bounds));
+
+    /* A picture's cell size travels with it — crop, rotation and size were
+       settled once at import and a copy is not a re-import, so nothing is asked
+       again. Only cells that HELD a picture, so an ordinary paste of text never
+       resizes what it lands on.
+
+       **Before `applyEdits`, and that ordering is load-bearing.**
+       `applyStructural` REPLACES the worksheet with one computed from this
+       render's `worksheet`, while `applyEdits` applies its changes functionally
+       to whatever the workbook currently is. Structural second therefore throws
+       the pasted values away — and with `rebuild: false` the engine keeps them,
+       so the cell went on drawing its picture while its value was gone and the
+       formula bar showed nothing. Structural first composes correctly.
+
+       One command for the whole block for the same reason: each `setColWidth`
+       derives from the worksheet it is handed, so applying them separately from
+       one starting worksheet would keep only the last. */
+    const sizes = pasteSizes(clip, target, bounds);
+    if (sizes.length) {
+      let next = worksheet;
+      for (const s of sizes) {
+        next = setRowHeight(setColWidth(next, s.col, s.width), s.row, s.height);
+      }
+      applyStructural("Size pasted images", next, false);
+    }
+
     applyEdits(clip.cut ? "Cut" : "Paste", edits);
 
     const rect = pasteRect(clip, target, bounds);
@@ -1945,20 +1991,30 @@ export function useSpreadsheet(): SpreadsheetController {
     }
   }
 
+  /**
+   * Place clipboard text that the caller already has.
+   *
+   * The decision `paste()` makes, split out so the native `paste` event can use
+   * it: that event arrives WITH its text, so there is nothing to go and read —
+   * and reading it again through `navigator.clipboard` needs a permission the
+   * event does not.
+   */
+  function pasteText(text: string | null): void {
+    /* Prefer the internal block when the system clipboard still holds what we
+       wrote (an in-app round trip keeps formulas); otherwise parse whatever is
+       there as tab-separated values. */
+    if (text !== null && text !== "" && text !== lastTSVRef.current) {
+      pasteBlock(fromTSV(text), true);
+    } else if (clipboard) {
+      pasteBlock(clipboard, false);
+    } else if (text !== null && text !== "") {
+      pasteBlock(fromTSV(text), true);
+    }
+  }
+
   function paste(): void {
     let text: string | null = null;
-    const finish = () => {
-      /* Prefer the internal block when the system clipboard still holds what we
-         wrote (an in-app round trip keeps formulas); otherwise parse whatever is
-         there as tab-separated values. */
-      if (text !== null && text !== "" && text !== lastTSVRef.current) {
-        pasteBlock(fromTSV(text), true);
-      } else if (clipboard) {
-        pasteBlock(clipboard, false);
-      } else if (text !== null && text !== "") {
-        pasteBlock(fromTSV(text), true);
-      }
-    };
+    const finish = () => pasteText(text);
     try {
       const read = navigator.clipboard?.readText();
       if (read && typeof read.then === "function") {
@@ -2124,6 +2180,26 @@ export function useSpreadsheet(): SpreadsheetController {
     const { at, end } = colSpan();
     applyStructural("Unhide columns", setColsHidden(worksheet, at, end, false), false);
   }
+  /**
+   * Whether that cell shows a picture.
+   *
+   * Asked of the ENGINE rather than by looking for `=IMAGE(` in the text, so a
+   * cell that arrives at a picture through a reference counts too — and a cell
+   * whose text merely mentions IMAGE does not.
+   */
+  function holdsImage(row: number, col: number): boolean {
+    const value = engine.getValue(activeSheetId, row, col);
+    return isRich(value) && value.rich.type === "image";
+  }
+
+  function resizeCell(row: number, col: number, width: number, height: number): void {
+    applyStructural(
+      "Resize image",
+      setRowHeight(setColWidth(worksheet, col, Math.round(width)), row, Math.round(height)),
+      false,
+    );
+  }
+
   function resizeCol(col: number, width: number): void {
     applyStructural("Resize column", setColWidth(worksheet, col, width), false);
   }
@@ -2368,6 +2444,7 @@ export function useSpreadsheet(): SpreadsheetController {
     copy,
     cut,
     paste,
+    pasteText,
     undo,
     redo,
     fillPreviewRect,
@@ -2391,6 +2468,7 @@ export function useSpreadsheet(): SpreadsheetController {
     hideCols,
     unhideCols,
     resizeCol,
+    resizeCell,
     resizeCols,
     autoFitCol,
     freezeRows,

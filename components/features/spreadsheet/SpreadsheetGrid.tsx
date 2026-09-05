@@ -60,6 +60,9 @@ import { HeaderContextMenu, type MenuItem } from "./HeaderContextMenu";
 import { CellContextMenu, type CellMenuItem } from "./CellContextMenu";
 import { ImageImportDialog } from "./ImageImportDialog";
 import { FilePicker } from "./FilePicker";
+import { ImageTransformBox } from "./ImageTransformBox";
+import { imageFromClipboard } from "@/lib/spreadsheet/clipboardImage";
+import { isRich } from "@/lib/spreadsheet/formula/value";
 import { useRepo } from "@/lib/hooks/useRepository";
 import { driveImageSrc } from "@/lib/rules/media/driveUrls";
 import { FilterMenu } from "./FilterMenu";
@@ -206,6 +209,10 @@ export function SpreadsheetGrid({
   const [imageBusy, setImageBusy] = useState(false);
   /* Mounting the chooser is what opens it — see `FilePicker`. */
   const [pickingImage, setPickingImage] = useState(false);
+  /* The cell whose picture is being resized, or null. Its own state and not a
+     mode on the selection: moving the selection ends it, and the box has to
+     disappear with the thing it was drawn around. */
+  const [transforming, setTransforming] = useState<{ row: number; col: number } | null>(null);
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
@@ -840,8 +847,13 @@ export function SpreadsheetGrid({
               controller.cut();
               return;
             case "v":
-              claim(e);
-              controller.paste();
+              /* NOT `claim(e)`. Calling `preventDefault()` on the Ctrl+V
+                 keydown stops the browser generating a `paste` event at all —
+                 and that event is the only thing that carries clipboard BYTES,
+                 so preventing it is why pasting a picture did nothing.
+                 `stopPropagation` still keeps the shortcut from reaching the
+                 app shell; the paste itself is done by `onPaste` below. */
+              e.stopPropagation();
               return;
             case "f":
               claim(e);
@@ -1231,6 +1243,15 @@ export function SpreadsheetGrid({
 
   /* The props every GridBody (main body and the frozen bands) shares — only the
      row/column windows differ between them. */
+  /* The picture in a cell, or null. Read from the ENGINE rather than by
+     looking for "=IMAGE(" in the text, so a formula that arrives at a picture
+     some other way is treated the same as a literal one. */
+  const imageAt = (row: number, col: number) => {
+    const value = controller.engine.getValue(controller.activeSheetId, row, col);
+    const rich = isRich(value) ? value.rich : null;
+    return rich && rich.type === "image" ? rich : null;
+  };
+
   const commonBodyProps = {
     worksheet,
     sheetId: controller.activeSheetId,
@@ -1258,6 +1279,34 @@ export function SpreadsheetGrid({
       ref={containerRef}
       tabIndex={0}
       onKeyDown={onGridKeyDown}
+      /* A picture on the system clipboard — a screenshot, a copy from a browser
+         or another sheet. Only a real `paste` event carries bytes:
+         `navigator.clipboard.readText()`, which `controller.paste()` uses, can
+         only ever see text, which is why pasting a picture did nothing at all.
+
+         It opens the SAME editor Insert ▸ Image opens, because this is an
+         import like any other: it has not been cropped or sized yet, and it
+         needs uploading. A picture copied from one CELL to another is a
+         different thing entirely — that arrives as text (the =IMAGE formula)
+         and is handled by the ordinary paste, keeping the size it already had
+         without asking anything. */
+      onPaste={(e) => {
+        /* While a cell is open for editing the textarea owns the paste — it is
+           placing characters in a line of text, not cells in a sheet. */
+        if (editing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const file = canUploadImage ? imageFromClipboard(e.clipboardData) : null;
+        if (file) {
+          setImageFile(file);
+          return;
+        }
+        /* Text goes through the ordinary paste, but with the text the EVENT
+           carries. `navigator.clipboard.readText()` — what the Paste menu item
+           still falls back on — needs a permission this does not, and cannot
+           see bytes at all. */
+        controller.pasteText(e.clipboardData?.getData("text/plain") ?? null);
+      }}
       role="grid"
       aria-label={`${worksheet.name} grid`}
       aria-rowcount={worksheet.rowCount}
@@ -1321,13 +1370,54 @@ export function SpreadsheetGrid({
           onPointerMove={onBodyPointerMove}
           onPointerUp={onBodyPointerUp}
           onContextMenu={openCellMenu}
-          onDoubleClick={() => controller.beginEdit()}
+          onDoubleClick={() => {
+            /* A picture answers a double-click with a resize box. The editor
+               would show the raw =IMAGE("https://…") address — which is what
+               the cell holds, but not what anybody double-clicked a picture
+               to get, and it offered no way to resize the thing on screen.
+               F2 and the formula bar still reach the formula. */
+            const { row, col } = selection.active;
+            if (imageAt(row, col)) {
+              setTransforming({ row, col });
+              return;
+            }
+            controller.beginEdit();
+          }}
           className="absolute inset-0 overflow-auto"
           style={{ touchAction: "none" }}
         >
           <div className="relative" style={{ width: totalWidth(metrics), height: totalHeight(metrics) }}>
             {gridLinesFor(rowWindow, colWindow)}
             <GridBody {...commonBodyProps} rowWindow={rowWindow} colWindow={colWindow} />
+
+            {/* The resize box on a picture. In the scroll content, so it
+                scrolls with its cell rather than being placed against the
+                viewport and drifting off it. */}
+            {transforming &&
+              (() => {
+                const { row, col } = transforming;
+                /* Derived from the selection rather than only from its own
+                   state: clicking another cell, or arrowing away, moves the
+                   selection — and a box left drawn around a cell nobody is on
+                   any more is a control with no subject. */
+                if (selection.active.row !== row || selection.active.col !== col) return null;
+                const payload = imageAt(row, col);
+                /* The picture may have gone — a formula edited elsewhere, an
+                   undo, a collaborator's change. A box around nothing is worse
+                   than no box. */
+                if (!payload) return null;
+                return (
+                  <ImageTransformBox
+                    left={colX(metrics, col)}
+                    top={rowY(metrics, row)}
+                    size={{ width: colWidth(metrics, col), height: rowHeight(metrics, row) }}
+                    url={payload.url}
+                    zoom={zoom}
+                    onResize={(next) => controller.resizeCell(row, col, next.width, next.height)}
+                    onDone={() => setTransforming(null)}
+                  />
+                );
+              })()}
 
             {/* The other people's selections, in their own colours, with a name
                 tag on the active cell. Only those on this sheet. */}
@@ -1492,7 +1582,11 @@ export function SpreadsheetGrid({
               />
             )}
 
-            {!editing && (
+            {/* Not while a picture's resize box is open: the fill handle sits
+                at the selection's bottom-right and so does the box's SE handle,
+                which is the same pixel meaning two things. The box owns the
+                cell while it is open. */}
+            {!editing && !transforming && (
               /* The visible handle stays a small square, but the thing you have
                  to hit is bigger than 7px — a padded, transparent target around
                  it, centred on the selection's corner. */
