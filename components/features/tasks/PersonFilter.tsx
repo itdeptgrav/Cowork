@@ -51,6 +51,34 @@ import {
  * picked somebody four levels down and came back to a collapsed tree would
  * otherwise find no trace of their own selection.
  */
+/**
+ * One row frame, shared by every option in the menu.
+ *
+ * **The wash is on this wrapper, not on the button inside it.** That is the
+ * whole trick, and it took three goes to find. Put the background on the name
+ * button and the 24px arrow slot beside it takes width from the highlighted
+ * surface — so every row's fill stopped 27px short of the panel's right edge
+ * while starting 1px from its left, and a lopsided fill is what the eye reads
+ * as a broken width. On the wrapper, the fill spans the panel's full inner box
+ * and the slot costs nothing, because the slot is inside the thing being
+ * filled. It is what roughly twenty rows in this codebase already do —
+ * `MindMapOutline`'s tree row is the closest twin, wash on the `<li>` and the
+ * fold chevron a `shrink-0` sibling.
+ *
+ * `pl-2.5` + `gap-2` + `pr-1` puts every count 36px from the row's right edge,
+ * derived from the arrow's own 24px box rather than restated as a number the
+ * arrow has to be kept in step with.
+ */
+const ROW =
+  "flex items-center gap-2 rounded-lg pr-1 pl-2.5 text-sm transition-colors";
+
+/**
+ * The name, inside that frame. No background, no radius, no side padding of
+ * its own — all three belong to the wrapper now, or the fill comes back inset.
+ */
+const ROW_NAME =
+  "flex min-w-0 flex-1 items-center justify-between gap-3 py-1.5 text-left focus:outline-none";
+
 export function PersonFilter({
   nodes,
   value,
@@ -73,17 +101,50 @@ export function PersonFilter({
    */
   const [openPath, setOpenPath] = useState<string[]>([]);
   const rootRef = useRef<HTMLDivElement>(null);
+  const stripRef = useRef<HTMLDivElement>(null);
 
-  /* Open onto the current selection, every time the menu opens — including
-     onto nothing when there is no selection, so a menu reopened after picking
-     All members does not still stand three columns deep in somebody's team.
-     `pathTo` ends at the person themselves and it is their MANAGERS whose
-     teams have to be showing, hence dropping the last id. */
-  useEffect(() => {
-    if (!open) return;
+  /* Opening the menu opens it onto the current selection — including onto
+     nothing when there is none, so a menu reopened after picking All members
+     does not still stand three columns deep in somebody's team. `pathTo` ends
+     at the person themselves and it is their MANAGERS whose teams have to be
+     showing, hence dropping the last id.
+
+     In the event rather than an effect keyed on `open`: this is a thing that
+     happens when somebody presses the button, not state to be kept in step
+     with something outside React, and as an effect it re-rendered twice on
+     every open — the second time only to move the columns. */
+  function openOnto() {
     const path = value ? pathTo(nodes, value) : [];
     setOpenPath(path.length > 1 ? path.slice(0, -1) : []);
-  }, [open, value, nodes]);
+    setOpen(true);
+  }
+
+  /**
+   * Keep the strip inside the window, and the newest column inside the strip.
+   *
+   * The strip is anchored to the trigger's left edge and grows rightwards, so
+   * how much room it has depends on where in the toolbar the trigger sits —
+   * something no CSS max-width can know. Measured here instead: at 768px the
+   * third column ran off the right of the screen and took the page's own
+   * horizontal scrollbar with it.
+   *
+   * Then `scrollLeft` to the end, because a column you just opened and cannot
+   * see reads as a control that did nothing.
+   */
+  useEffect(() => {
+    if (!open) return;
+    function fit() {
+      const el = stripRef.current;
+      if (!el) return;
+      /* Left-anchored, so its own width does not move this. */
+      const left = el.getBoundingClientRect().left;
+      el.style.maxWidth = `${Math.max(240, document.documentElement.clientWidth - left - 12)}px`;
+      el.scrollLeft = el.scrollWidth;
+    }
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [open, openPath]);
 
   useEffect(() => {
     if (!open) return;
@@ -135,7 +196,7 @@ export function PersonFilter({
         aria-label="Whose tasks to show"
         aria-haspopup="listbox"
         aria-expanded={open}
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => (open ? setOpen(false) : openOnto())}
         className="flex h-8 max-w-[220px] items-center gap-1.5 rounded-full bg-[var(--surface-sunken)] pr-2.5 pl-3.5 text-sm text-ink transition-colors hover:bg-[var(--control)] focus:outline-none focus-visible:ring-2 focus-visible:ring-ink"
       >
         <span className="truncate">
@@ -167,7 +228,10 @@ export function PersonFilter({
               than running off the right edge. Its 4px padding is what gives the
               shadows room inside that scroll box, and the matching -4px left
               keeps the first column flush with the trigger. */}
-          <div className="absolute -left-1 top-full z-50 flex max-w-[calc(100vw-1.5rem)] items-start gap-1 overflow-x-auto p-1">
+          <div
+            ref={stripRef}
+            className="absolute -left-1 top-full z-50 flex max-w-[calc(100vw-1.5rem)] items-start gap-1 overflow-x-auto scroll-slim p-1"
+          >
             {columns.map((col, level) => (
               <ul
                 key={col.parent ? col.parent.id : "root"}
@@ -177,7 +241,7 @@ export function PersonFilter({
                     ? `${col.parent.name}'s team`
                     : "Whose tasks to show"
                 }
-                className="max-h-[360px] w-[240px] shrink-0 overflow-y-auto rounded-xl border border-hairline bg-[var(--surface-raised)] p-1 shadow-lg"
+                className="max-h-[360px] w-[240px] shrink-0 overflow-y-auto scroll-slim rounded-xl border border-hairline bg-[var(--surface-raised)] p-1 shadow-lg"
               >
                 {/* The resting state, and always first: the way back out of a
                     filter has to be as reachable as the way in. Only in the
@@ -186,23 +250,33 @@ export function PersonFilter({
                 {!col.parent && (
                   <>
                     <li role="option" aria-selected={value === ALL_MEMBERS}>
-                      <button
-                        type="button"
-                        onClick={() => pick(ALL_MEMBERS)}
-                        className={`flex w-full items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors ${
+                      {/* The same frame every name gets, spacer included.
+                          Nobody manages the whole company, so there is no
+                          arrow to put in that slot — but it is reserved all
+                          the same, because it is what puts this count in the
+                          same column as the rest. */}
+                      <div
+                        className={`${ROW} ${
                           value === ALL_MEMBERS
                             ? "bg-[var(--control)] text-ink"
-                            : "text-ink-muted hover:bg-[var(--control)] hover:text-ink"
+                            : "text-ink-muted focus-within:bg-[var(--control)] hover:bg-[var(--control)] hover:text-ink"
                         }`}
                       >
-                        <span className="truncate">All members</span>
-                        <span
-                          data-figure
-                          className="shrink-0 text-xs text-ink-faint"
+                        <button
+                          type="button"
+                          onClick={() => pick(ALL_MEMBERS)}
+                          className={ROW_NAME}
                         >
-                          {totalCount}
-                        </span>
-                      </button>
+                          <span className="truncate">All members</span>
+                          <span
+                            data-figure
+                            className="shrink-0 text-xs text-ink-faint"
+                          >
+                            {totalCount}
+                          </span>
+                        </button>
+                        <span aria-hidden className="h-6 w-6 shrink-0" />
+                      </div>
                     </li>
                     {nodes.length > 0 && (
                       <li aria-hidden className="my-1 h-px bg-hairline" />
@@ -258,22 +332,25 @@ function PersonRow({
   return (
     <li role="option" aria-selected={selected}>
       {/* A row, not a button: the expander and the name are two controls and a
-          button inside a button is invalid HTML that browsers flatten. */}
-      <div className="flex items-center gap-0.5">
-        <button
-          type="button"
-          onClick={() => onPick(node.id)}
-          className={`flex min-w-0 flex-1 items-center justify-between gap-3 rounded-lg px-2.5 py-1.5 text-left text-sm transition-colors ${
-            selected
-              ? "bg-[var(--control)] text-ink"
-              : isOpen
-                ? /* On the open path: lifted out of the muted rows so the
-                     reporting line reads across the columns, but without the
-                     selected row's fill — being open is not being chosen. */
-                  "text-ink hover:bg-[var(--control)]"
-                : "text-ink-muted hover:bg-[var(--control)] hover:text-ink"
-          }`}
-        >
+          button inside a button is invalid HTML that browsers flatten. The
+          wash lives HERE, on the non-pressable wrapper, which is what lets it
+          reach the panel's edges past both of them — see `ROW`.
+
+          `focus-within` and not only `hover`, because the fill is the only
+          thing marking which row you are on, and a keyboard has no pointer. */}
+      <div
+        className={`${ROW} ${
+          selected
+            ? "bg-[var(--control)] text-ink"
+            : isOpen
+              ? /* On the open path: lifted out of the muted rows so the
+                   reporting line reads across the columns, but without the
+                   selected row's fill — being open is not being chosen. */
+                "text-ink focus-within:bg-[var(--control)] hover:bg-[var(--control)]"
+              : "text-ink-muted focus-within:bg-[var(--control)] hover:bg-[var(--control)] hover:text-ink"
+        }`}
+      >
+        <button type="button" onClick={() => onPick(node.id)} className={ROW_NAME}>
           <span className="truncate">{node.name}</span>
           <span data-figure className="shrink-0 text-xs text-ink-faint">
             {node.count}
@@ -291,8 +368,8 @@ function PersonRow({
             onClick={onOpen}
             className={`grid h-6 w-6 shrink-0 place-items-center rounded transition-colors ${
               isOpen
-                ? "bg-[var(--control)] text-ink"
-                : "text-ink-faint hover:bg-[var(--control)] hover:text-ink"
+                ? "bg-[var(--control-active)] text-ink"
+                : "text-ink-faint hover:bg-[var(--control-active)] hover:text-ink focus-visible:bg-[var(--control-active)] focus-visible:text-ink"
             }`}
           >
             {/* No rotation on open. The arrow points at where the team appears,
@@ -301,8 +378,9 @@ function PersonRow({
             <Icon.chevronRight aria-hidden className="h-3.5 w-3.5" />
           </button>
         ) : (
-          /* Exactly the expander's width, so the counts line up whether or not
-             the person manages anybody. */
+          /* Exactly the expander's box, so the counts line up whether or not
+             the person manages anybody. Inside the filled wrapper, so it costs
+             the highlight nothing. */
           <span aria-hidden className="h-6 w-6 shrink-0" />
         )}
       </div>
