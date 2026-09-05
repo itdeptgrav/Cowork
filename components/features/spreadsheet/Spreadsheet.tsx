@@ -250,7 +250,9 @@ export function Spreadsheet({
        conditional-format colours are picked against a white grid, so the ground
        under them has to stay white. */
     <div
-      className="sheet-light relative flex h-full min-h-0 flex-1 flex-col gap-2.5 p-2.5"
+      /* `sheet-chrome`: a drag across the toolbar, header or tab bar selects
+         nothing — see globals.css. Typing fields inside stay selectable. */
+      className="sheet-light sheet-chrome relative flex h-full min-h-0 flex-1 flex-col gap-2.5 p-2.5"
       onDragEnter={(e) => {
         if (!dragHasFiles(e.dataTransfer?.types as readonly string[] | undefined)) return;
         setDragDepth((d) => d + 1);

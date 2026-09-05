@@ -132,3 +132,38 @@ export function autoRowHeight(
   for (const h of cellHeights) if (h > tallest) tallest = h;
   return tallest;
 }
+
+/**
+ * The heights a sheet actually renders at: the taller of what is stored and
+ * what the wrapped text needs.
+ *
+ * ## Why a stored height is a floor and not a ceiling
+ *
+ * This started as "a stored height always wins", on the reasoning that
+ * somebody who dragged a row border had already answered the question. That is
+ * true of a dragged row and false of every other way a height gets stored —
+ * and the second is far more common, because a height arrives with the FILE.
+ * A workbook whose rows were sized for unwrapped text opens here, every row
+ * carries a height, and auto-fit is locked out of all of them: the text wraps
+ * and is then clipped by a row that will not grow.
+ *
+ * So the rule is the max. Wrapped text is always fully visible, which is the
+ * entire point of asking for it, and a row explicitly made TALLER than its
+ * content still keeps that room.
+ *
+ * The one thing this gives up is deliberately making a row SHORTER than its
+ * wrapped text. That is not a loss worth protecting: it is a row that hides
+ * what is in it, and turning wrapping off is the way to ask for that.
+ */
+export function mergeRowHeights(
+  auto: Readonly<Record<number, number>>,
+  stored: Readonly<Record<number, number>>,
+): Record<number, number> {
+  const out: Record<number, number> = { ...stored };
+  for (const [key, height] of Object.entries(auto)) {
+    const row = Number(key);
+    const existing = out[row];
+    if (existing === undefined || height > existing) out[row] = height;
+  }
+  return out;
+}

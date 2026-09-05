@@ -16,6 +16,11 @@
 import { BAND_PRESETS } from "@/lib/spreadsheet/banding";
 import { useState } from "react";
 import { columnLabel } from "@/lib/spreadsheet/coordinates";
+import {
+  DEFAULT_FONT_SIZE,
+  fontSizeOptions,
+  stepFontSize,
+} from "@/lib/spreadsheet/fontSizes";
 import type { BorderLineStyle, BorderPreset, CellStyle, NumberFormatKind } from "@/lib/spreadsheet/style";
 import { Dropdown } from "./Dropdown";
 import { PATTERN_EXAMPLES, formatWithPattern, patternProblem } from "@/lib/spreadsheet/numberPattern";
@@ -95,7 +100,10 @@ const FONTS = [
   { label: "Serif", value: "Georgia, 'Times New Roman', serif" },
   { label: "Mono", value: "ui-monospace, 'Cascadia Code', monospace" },
 ];
-const SIZES = [10, 11, 12, 13, 14, 16, 18, 24, 32];
+/* The ladder, the default and the stepping all come from one place now — see
+   `lib/spreadsheet/fontSizes.ts`. They used to be a local array here and a
+   `± 1` on the buttons, which disagreed the moment the ladder stopped being
+   consecutive. */
 const BORDER_PRESETS: { label: string; value: BorderPreset }[] = [
   { label: "All borders", value: "all" },
   { label: "Outer border", value: "outer" },
@@ -167,6 +175,9 @@ export function HomeTab({
   onSearchOpen?: (v: "find" | "replace") => void;
 }) {
   const s: CellStyle = controller.activeStyle;
+  /* What the active cell is actually drawn at — the grid falls back to the same
+     default, so the toolbar can never report a size the sheet is not using. */
+  const sizeNow = s.fontSize ?? DEFAULT_FONT_SIZE;
   const set = (patch: Partial<CellStyle>) => controller.applyFormat(patch);
   const keep = (e: React.MouseEvent) => e.preventDefault();
   const [borderStyle, setBorderStyle] = useState<BorderLineStyle>("thin");
@@ -242,11 +253,18 @@ export function HomeTab({
         <select aria-label="Font" className={`${sel} w-24`} value={s.fontFamily ?? ""} onChange={(e) => set({ fontFamily: e.target.value || undefined })}>
           {FONTS.map((f) => <option key={f.label} value={f.value}>{f.label}</option>)}
         </select>
-        <select aria-label="Font size" className={`${sel} w-14`} value={s.fontSize ?? 13} onChange={(e) => set({ fontSize: Number(e.target.value) === 13 ? undefined : Number(e.target.value) })}>
-          {SIZES.map((n) => <option key={n} value={n}>{n}</option>)}
+        {/* The options include the applied size even when it is not a rung —
+            a workbook opened from a file brings whatever Excel had, and a
+            picker that cannot show its own value is how this looked broken. */}
+        <select aria-label="Font size" className={`${sel} w-14`} value={sizeNow} onChange={(e) => set({ fontSize: Number(e.target.value) === DEFAULT_FONT_SIZE ? undefined : Number(e.target.value) })}>
+          {fontSizeOptions(sizeNow).map((n) => <option key={n} value={n}>{n}</option>)}
         </select>
-        <button type="button" title="Grow font" className={cell} onMouseDown={keep} onClick={() => set({ fontSize: Math.min(96, (s.fontSize ?? 13) + 1) })}><Ico.grow /></button>
-        <button type="button" title="Shrink font" className={cell} onMouseDown={keep} onClick={() => set({ fontSize: Math.max(6, (s.fontSize ?? 13) - 1) })}><Ico.shrink /></button>
+        {/* One RUNG at a time, not one point. Stepping by a point past 14 —
+            where the ladder jumps to 16 — produced a size the picker beside
+            these had no option for, so the number stopped following the
+            buttons. `stepFontSize` owns that and is tested. */}
+        <button type="button" title="Grow font" className={cell} onMouseDown={keep} onClick={() => set({ fontSize: stepFontSize(sizeNow, 1) })}><Ico.grow /></button>
+        <button type="button" title="Shrink font" className={cell} onMouseDown={keep} onClick={() => set({ fontSize: stepFontSize(sizeNow, -1) })}><Ico.shrink /></button>
         <button type="button" title="Bold (Ctrl+B)" aria-pressed={s.bold} className={`${cell} ${s.bold ? on : ""}`} onMouseDown={keep} onClick={() => controller.toggleMark("bold")}><span className="font-bold">B</span></button>
         <button type="button" title="Italic (Ctrl+I)" aria-pressed={s.italic} className={`${cell} ${s.italic ? on : ""}`} onMouseDown={keep} onClick={() => controller.toggleMark("italic")}><span className="italic">I</span></button>
         <button type="button" title="Underline (Ctrl+U)" aria-pressed={s.underline} className={`${cell} ${s.underline ? on : ""}`} onMouseDown={keep} onClick={() => controller.toggleMark("underline")}><span className="underline">U</span></button>

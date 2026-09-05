@@ -49,6 +49,7 @@ import {
 } from "@/lib/spreadsheet/metrics";
 import { getCellStyleId, metricsOf } from "@/lib/spreadsheet/model";
 import { autoWrapHeights } from "./autoWrapHeights";
+import { mergeRowHeights } from "@/lib/spreadsheet/wrapHeight";
 import { formatValue } from "@/lib/spreadsheet/format";
 import { columnValues } from "@/lib/spreadsheet/filter";
 import { GridBody } from "./GridBody";
@@ -144,8 +145,13 @@ export function SpreadsheetGrid({
     const withAuto =
       Object.keys(autoHeights).length === 0
         ? worksheet
-        : /* Manual heights win: spread the stored map LAST. */
-          { ...worksheet, rowHeights: { ...autoHeights, ...worksheet.rowHeights } };
+        : /* The TALLER of the two, not "stored wins" — see `mergeRowHeights`.
+             A stored height is usually the file's, sized for unwrapped text,
+             and letting it win locked auto-fit out of every row in the sheet. */
+          {
+            ...worksheet,
+            rowHeights: mergeRowHeights(autoHeights, worksheet.rowHeights),
+          };
     const base = scaleMetrics(metricsOf(withAuto), zoom);
     /* Three things can hide a row: hiding it by hand, a filter, and a collapsed
        outline band. They all land in one map, so the geometry has a single

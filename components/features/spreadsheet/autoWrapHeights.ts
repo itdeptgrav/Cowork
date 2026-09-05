@@ -51,10 +51,37 @@ function measurerFor(font: string): (s: string) => number {
   };
 }
 
+/**
+ * The grid's own font family, read from the page rather than assumed.
+ *
+ * **Assuming it was a real defect, not a tidiness point.** The measurement
+ * used `system-ui, sans-serif`; the grid renders in Geist, which is about 2.4%
+ * wider. Under greedy wrapping a small per-character error compounds — each
+ * line fits one more word than it really can — and a paragraph predicted at 8
+ * lines rendered as 10. The row was then built for 8 and clipped the rest,
+ * which is the same symptom as no wrapping at all.
+ *
+ * Read once and cached: it is a property of the stylesheet, not of a cell.
+ *
+ * Resolved lazily at MEASUREMENT time rather than handed in from React: the
+ * measurement runs during render, so anything an effect set would arrive a
+ * render too late for the pass that needed it. `document.body` carries the
+ * family by inheritance, which is the one the grid gets.
+ */
+let gridFamily: string | null = null;
+function familyFromPage(): string {
+  if (gridFamily) return gridFamily;
+  if (typeof document === "undefined" || !document.body)
+    return "system-ui, sans-serif";
+  const f = getComputedStyle(document.body).fontFamily;
+  gridFamily = f && f.trim() ? f : "system-ui, sans-serif";
+  return gridFamily;
+}
+
 /** The CSS font shorthand for a cell, matching what the grid renders. */
 function fontOf(style: CellStyle): string {
   const size = style.fontSize ?? 13;
-  const family = style.fontFamily ?? "system-ui, sans-serif";
+  const family = style.fontFamily ?? familyFromPage();
   const weight = style.bold ? "700" : "400";
   const italic = style.italic ? "italic " : "";
   return `${italic}${weight} ${size}px ${family}`;

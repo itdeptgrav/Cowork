@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   autoRowHeight,
+  mergeRowHeights,
   wrapLineCount,
   wrappedCellHeight,
   WRAP_LINE_HEIGHT,
@@ -66,4 +67,29 @@ test("auto-fit never shrinks a row below the default", () => {
      would move everything below it for no visible reason. */
   assert.equal(autoRowHeight([10, 12], 24), 24);
   assert.equal(autoRowHeight([], 24), 24);
+});
+
+test("a stored height too short for wrapped text is grown, not obeyed", () => {
+  /* The reported case: a file's rows arrive with heights sized for UNWRAPPED
+     text, so every row carries one and auto-fit was locked out of all of them
+     — the text wrapped and was then clipped by a row that would not grow. */
+  const merged = mergeRowHeights({ 2: 76 }, { 2: 24 });
+  assert.equal(merged[2], 76);
+});
+
+test("a row deliberately made taller than its content keeps the room", () => {
+  assert.equal(mergeRowHeights({ 5: 40 }, { 5: 120 })[5], 120);
+});
+
+test("rows nothing knows about are left exactly as they were", () => {
+  const merged = mergeRowHeights({ 1: 50 }, { 0: 24, 9: 30 });
+  assert.deepEqual(merged, { 0: 24, 1: 50, 9: 30 });
+});
+
+test("neither side is mutated", () => {
+  const auto = { 1: 50 };
+  const stored = { 1: 24 };
+  mergeRowHeights(auto, stored);
+  assert.deepEqual(auto, { 1: 50 });
+  assert.deepEqual(stored, { 1: 24 });
 });

@@ -211,7 +211,28 @@ function GridBodyInner({
                 {text || link}
               </a>
             ) : (
-              <span className="flex-1 truncate" style={turned}>
+              /**
+               * **`truncate` is `white-space: nowrap`**, and it sat on this
+               * span unconditionally — so a cell with Wrap text on had
+               * `white-space: normal` on the cell and `nowrap` on the span
+               * inside it, and the span won. Wrapping did nothing visible; the
+               * row even grew to fit lines that were never drawn.
+               *
+               * `min-w-0` is the other half. The span is a flex item, and a
+               * flex item's default `min-width: auto` refuses to shrink below
+               * its content — so even once it wrapped it laid out at its
+               * natural width (measured at 372px inside a 100px cell) and
+               * broke at the wrong place. Zero lets it shrink to the column,
+               * which is what makes the wrap land where the column ends.
+               */
+              <span
+                className={
+                  style.wrap
+                    ? "min-w-0 flex-1 break-words whitespace-normal"
+                    : "flex-1 truncate"
+                }
+                style={turned}
+              >
                 {text}
               </span>
             )}

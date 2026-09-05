@@ -1458,6 +1458,46 @@
   color-scheme: light;
 }
 
+/**
+ * The spreadsheet's chrome does not take a text selection.
+ *
+ * Dragging across a spreadsheet is how you select CELLS. When the surrounding
+ * furniture is selectable too, a drag that starts or ends slightly off the grid
+ * highlights the toolbar instead — "← All sheets", the title, "Saved", the font
+ * and format menus — and leaves a text selection behind, so the next Ctrl+C
+ * copies those words rather than the cells.
+ *
+ * The grid and the ribbon each carried `select-none` of their own; everything
+ * between and around them did not. One rule at the root covers all of it, and
+ * cannot be forgotten again the next time a control is added.
+ *
+ * **Fields stay selectable**, deliberately: the title, the name box, the
+ * formula bar and the cell editor are places you type, and selecting inside
+ * them is the point. `user-select: none` on a text input also blocks
+ * double-click-to-select-a-word, which would make the formula bar hostile.
+ */
+.sheet-chrome {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.sheet-chrome input,
+.sheet-chrome textarea,
+.sheet-chrome [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* A `<select>` needs saying explicitly: the browser's own stylesheet gives form
+   controls `user-select: auto`, which beats an inherited `none` from an
+   ancestor. Without this the font, size and number-format menus still
+   highlighted — the "Default", "13" and "General" in the report. There is no
+   text in a select anybody needs to take; it is a menu, not a label. */
+.sheet-chrome select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* ── The document editor is light too ───────────────────────────────────────
    Same reasoning as the sheet above, and the same mechanism.
 
