@@ -64,12 +64,17 @@ test("ordering does not mutate its input", () => {
   assert.deepEqual(input.map((s) => s.id), ["unread", "overdue"]);
 });
 
-test("the card shows six rows and then ends", () => {
-  /* CHANGED ON PURPOSE — this asserted a "+N more waiting" strip under the
-     list. That strip has gone, and with it the card's stretch to the bottom of
-     the column: together they put a line about rows that were not there above a
-     band of card holding nothing either. The header's "View all" is the route
-     to the rest and says so in words. */
+test("the card shows six rows, and fills the column", () => {
+  /* The list cap and the missing footer strip are unchanged: the "+N more
+     waiting" line put a sentence about rows that were not there at the foot of
+     the card, and "View all" in the header is the route to the rest.
+
+     **The stretch assertion is REVERSED, by the owner's instruction (5 Sep
+     2026).** It used to require the card to pack to its rows, on the grounds
+     that empty card below its own content reads as a loading failure. The
+     counter-argument that won: a right column stopping short of the left one
+     reads as unfinished at every window size and does so all the time, while
+     the empty band only appears when there are few signals. */
   const src = code(CARD);
   assert.match(src, /const VISIBLE_SIGNALS = 6;/);
   assert.match(src, /signals\.slice\(0, VISIBLE_SIGNALS\)/);
@@ -78,12 +83,11 @@ test("the card shows six rows and then ends", () => {
     false,
     "the footer strip is back under the list",
   );
-  /* And the card packs to its rows rather than filling the column. */
-  assert.equal(
-    /deck:h-full/.test(src),
-    false,
-    "the card stretches past its own content again",
-  );
+  /* `deck:` only: below that breakpoint the columns stack and the page
+     scrolls, where a full-height card would mean nothing. */
+  assert.match(src, /deck:h-full/);
+  const home = code("components/features/dashboard/Home.tsx");
+  assert.match(home, /deck:min-h-0 deck:flex-1/);
 });
 
 test("the header carries a way out, not a tally", () => {

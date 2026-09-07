@@ -48,6 +48,8 @@ import {
   scaleMetrics,
 } from "@/lib/spreadsheet/metrics";
 import { getCellStyleId, metricsOf } from "@/lib/spreadsheet/model";
+import { autoWrapHeights } from "./autoWrapHeights";
+import { mergeRowHeights } from "@/lib/spreadsheet/wrapHeight";
 import { formatValue } from "@/lib/spreadsheet/format";
 import { columnValues } from "@/lib/spreadsheet/filter";
 import { GridBody } from "./GridBody";
@@ -56,6 +58,13 @@ import { ChartToolbar } from "./ChartToolbar";
 import type { PeerCursor } from "@/lib/spreadsheet/collabSync";
 import { HeaderContextMenu, type MenuItem } from "./HeaderContextMenu";
 import { CellContextMenu, type CellMenuItem } from "./CellContextMenu";
+import { ImageImportDialog } from "./ImageImportDialog";
+import { FilePicker } from "./FilePicker";
+import { ImageTransformBox } from "./ImageTransformBox";
+import { imageFromClipboard } from "@/lib/spreadsheet/clipboardImage";
+import { isRich } from "@/lib/spreadsheet/formula/value";
+import { useRepo } from "@/lib/hooks/useRepository";
+import { driveImageSrc } from "@/lib/rules/media/driveUrls";
 import { FilterMenu } from "./FilterMenu";
 import { SearchReplaceBar } from "./SearchReplaceBar";
 import { LinkEditor } from "./LinkEditor";
@@ -112,8 +121,45 @@ export function SpreadsheetGrid({
   const { worksheet, selection, editing } = controller;
   /* The geometry hides both manually-hidden rows and rows a filter hides. */
   const zoom = controller.zoom;
+  /**
+   * Rows grown to fit their wrapped text.
+   *
+   * Computed on the UNSCALED metrics and merged before `scaleMetrics`, so zoom
+   * multiplies an auto height exactly as it multiplies a manual one — computing
+   * after the scale would apply the zoom twice to the text and once to the box.
+   *
+   * Only cells carrying a wrap style are looked at, which is what keeps this
+   * off the hot path: `cellStyles` is sparse, so a sheet with no wrapping does
+   * a single `Object.keys` and stops. A row whose height was set BY HAND is
+   * left alone — auto-fit answers "how much room does this need", and somebody
+   * who dragged a row to a size has already answered it.
+   */
+  const autoHeights = useMemo(
+    () => autoWrapHeights(worksheet, controller.effectiveStyle, (r, c) =>
+      controller.engine.display(controller.activeSheetId, r, c).text,
+    ),
+    /* `effectiveStyle` and `engine` are deliberately not dependencies. Neither
+       is memoised in the controller, so both take a new identity on every
+       render — including every scroll frame — and listing them would run a
+       canvas measurement of every wrapped cell sixty times a second while
+       somebody scrolls. Everything that can CHANGE the answer (the styles, the
+       values, the column widths, the defaults) lives on `worksheet`, and the
+       closure re-created with it is the current one. */
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [worksheet, controller.activeSheetId],
+  );
   const metrics = useMemo(() => {
-    const base = scaleMetrics(metricsOf(worksheet), zoom);
+    const withAuto =
+      Object.keys(autoHeights).length === 0
+        ? worksheet
+        : /* The TALLER of the two, not "stored wins" — see `mergeRowHeights`.
+             A stored height is usually the file's, sized for unwrapped text,
+             and letting it win locked auto-fit out of every row in the sheet. */
+          {
+            ...worksheet,
+            rowHeights: mergeRowHeights(autoHeights, worksheet.rowHeights),
+          };
+    const base = scaleMetrics(metricsOf(withAuto), zoom);
     /* Three things can hide a row: hiding it by hand, a filter, and a collapsed
        outline band. They all land in one map, so the geometry has a single
        notion of "hidden" rather than three. */
@@ -126,7 +172,7 @@ export function SpreadsheetGrid({
       hiddenRows: { ...base.hiddenRows, ...filtered, ...collapsed },
       hiddenCols: { ...base.hiddenCols, ...collapsedC },
     };
-  }, [worksheet, zoom, controller.filterHiddenRows, controller.collapsedRowsMap, controller.collapsedColsMap]);
+  }, [worksheet, zoom, autoHeights, controller.filterHiddenRows, controller.collapsedRowsMap, controller.collapsedColsMap]);
   const frozenRows = worksheet.frozenRows;
   const frozenCols = worksheet.frozenCols;
   const frozenH = rowY(metrics, frozenRows);
@@ -142,6 +188,12 @@ export function SpreadsheetGrid({
   const fillingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
 
+  const repo = useRepo();
+  /* The in-memory prototype has no file store, so the menu entry is offered
+     disabled rather than promising an upload that cannot happen — the same
+     test the ribbon's Insert ▸ Image makes. */
+  const canUploadImage = typeof repo.uploadDriveFile === "function";
+
   const [fillPreview, setFillPreview] = useState<Rect | null>(null);
   const [resize, setResize] = useState<ResizeState>(null);
   const [menu, setMenu] = useState<MenuState>(null);
@@ -150,6 +202,17 @@ export function SpreadsheetGrid({
   const [cellMenu, setCellMenu] = useState<{ x: number; y: number } | null>(null);
   const [linkEditor, setLinkEditor] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
   const [commentAt, setCommentAt] = useState<{ row: number; col: number; x: number; y: number } | null>(null);
+  /* The picture chosen from disk, waiting to be cropped. Held here rather than
+     inside the dialog so the file input can be cleared the moment it is read —
+     otherwise choosing the SAME file twice in a row fires no change event. */
+  const [imageFile, setImageFile] = useState<File | null>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  /* Mounting the chooser is what opens it — see `FilePicker`. */
+  const [pickingImage, setPickingImage] = useState(false);
+  /* The cell whose picture is being resized, or null. Its own state and not a
+     mode on the selection: moving the selection ends it, and the box has to
+     disappear with the thing it was drawn around. */
+  const [transforming, setTransforming] = useState<{ row: number; col: number } | null>(null);
 
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [scroll, setScroll] = useState({ top: 0, left: 0 });
@@ -591,6 +654,15 @@ export function SpreadsheetGrid({
           { label: "Row below", onClick: () => controller.insertRows("below") },
           { label: "Column left", onClick: () => controller.insertCols("left") },
           { label: "Column right", onClick: () => controller.insertCols("right") },
+          {},
+          {
+            label: "Image",
+            /* Off, not hidden, where the deployment has no file store: a menu
+               whose contents change between deployments is one nobody can be
+               told how to use. The ribbon's Insert ▸ Image says the same. */
+            disabled: !canUploadImage || imageBusy,
+            onClick: () => setPickingImage(true),
+          },
         ],
       },
       {
@@ -775,8 +847,13 @@ export function SpreadsheetGrid({
               controller.cut();
               return;
             case "v":
-              claim(e);
-              controller.paste();
+              /* NOT `claim(e)`. Calling `preventDefault()` on the Ctrl+V
+                 keydown stops the browser generating a `paste` event at all —
+                 and that event is the only thing that carries clipboard BYTES,
+                 so preventing it is why pasting a picture did nothing.
+                 `stopPropagation` still keeps the shortcut from reaching the
+                 app shell; the paste itself is done by `onPaste` below. */
+              e.stopPropagation();
               return;
             case "f":
               claim(e);
@@ -1166,6 +1243,15 @@ export function SpreadsheetGrid({
 
   /* The props every GridBody (main body and the frozen bands) shares — only the
      row/column windows differ between them. */
+  /* The picture in a cell, or null. Read from the ENGINE rather than by
+     looking for "=IMAGE(" in the text, so a formula that arrives at a picture
+     some other way is treated the same as a literal one. */
+  const imageAt = (row: number, col: number) => {
+    const value = controller.engine.getValue(controller.activeSheetId, row, col);
+    const rich = isRich(value) ? value.rich : null;
+    return rich && rich.type === "image" ? rich : null;
+  };
+
   const commonBodyProps = {
     worksheet,
     sheetId: controller.activeSheetId,
@@ -1193,6 +1279,34 @@ export function SpreadsheetGrid({
       ref={containerRef}
       tabIndex={0}
       onKeyDown={onGridKeyDown}
+      /* A picture on the system clipboard — a screenshot, a copy from a browser
+         or another sheet. Only a real `paste` event carries bytes:
+         `navigator.clipboard.readText()`, which `controller.paste()` uses, can
+         only ever see text, which is why pasting a picture did nothing at all.
+
+         It opens the SAME editor Insert ▸ Image opens, because this is an
+         import like any other: it has not been cropped or sized yet, and it
+         needs uploading. A picture copied from one CELL to another is a
+         different thing entirely — that arrives as text (the =IMAGE formula)
+         and is handled by the ordinary paste, keeping the size it already had
+         without asking anything. */
+      onPaste={(e) => {
+        /* While a cell is open for editing the textarea owns the paste — it is
+           placing characters in a line of text, not cells in a sheet. */
+        if (editing) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const file = canUploadImage ? imageFromClipboard(e.clipboardData) : null;
+        if (file) {
+          setImageFile(file);
+          return;
+        }
+        /* Text goes through the ordinary paste, but with the text the EVENT
+           carries. `navigator.clipboard.readText()` — what the Paste menu item
+           still falls back on — needs a permission this does not, and cannot
+           see bytes at all. */
+        controller.pasteText(e.clipboardData?.getData("text/plain") ?? null);
+      }}
       role="grid"
       aria-label={`${worksheet.name} grid`}
       aria-rowcount={worksheet.rowCount}
@@ -1256,13 +1370,54 @@ export function SpreadsheetGrid({
           onPointerMove={onBodyPointerMove}
           onPointerUp={onBodyPointerUp}
           onContextMenu={openCellMenu}
-          onDoubleClick={() => controller.beginEdit()}
+          onDoubleClick={() => {
+            /* A picture answers a double-click with a resize box. The editor
+               would show the raw =IMAGE("https://…") address — which is what
+               the cell holds, but not what anybody double-clicked a picture
+               to get, and it offered no way to resize the thing on screen.
+               F2 and the formula bar still reach the formula. */
+            const { row, col } = selection.active;
+            if (imageAt(row, col)) {
+              setTransforming({ row, col });
+              return;
+            }
+            controller.beginEdit();
+          }}
           className="absolute inset-0 overflow-auto"
           style={{ touchAction: "none" }}
         >
           <div className="relative" style={{ width: totalWidth(metrics), height: totalHeight(metrics) }}>
             {gridLinesFor(rowWindow, colWindow)}
             <GridBody {...commonBodyProps} rowWindow={rowWindow} colWindow={colWindow} />
+
+            {/* The resize box on a picture. In the scroll content, so it
+                scrolls with its cell rather than being placed against the
+                viewport and drifting off it. */}
+            {transforming &&
+              (() => {
+                const { row, col } = transforming;
+                /* Derived from the selection rather than only from its own
+                   state: clicking another cell, or arrowing away, moves the
+                   selection — and a box left drawn around a cell nobody is on
+                   any more is a control with no subject. */
+                if (selection.active.row !== row || selection.active.col !== col) return null;
+                const payload = imageAt(row, col);
+                /* The picture may have gone — a formula edited elsewhere, an
+                   undo, a collaborator's change. A box around nothing is worse
+                   than no box. */
+                if (!payload) return null;
+                return (
+                  <ImageTransformBox
+                    left={colX(metrics, col)}
+                    top={rowY(metrics, row)}
+                    size={{ width: colWidth(metrics, col), height: rowHeight(metrics, row) }}
+                    url={payload.url}
+                    zoom={zoom}
+                    onResize={(next) => controller.resizeCell(row, col, next.width, next.height)}
+                    onDone={() => setTransforming(null)}
+                  />
+                );
+              })()}
 
             {/* The other people's selections, in their own colours, with a name
                 tag on the active cell. Only those on this sheet. */}
@@ -1427,7 +1582,11 @@ export function SpreadsheetGrid({
               />
             )}
 
-            {!editing && (
+            {/* Not while a picture's resize box is open: the fill handle sits
+                at the selection's bottom-right and so does the box's SE handle,
+                which is the same pixel meaning two things. The box owns the
+                cell while it is open. */}
+            {!editing && !transforming && (
               /* The visible handle stays a small square, but the thing you have
                  to hit is bigger than 7px — a padded, transparent target around
                  it, centred on the selection's corner. */
@@ -1659,6 +1818,49 @@ export function SpreadsheetGrid({
           onClose={() => {
             onSearchOpen(false);
             focusGrid();
+          }}
+        />
+      )}
+
+      {pickingImage && (
+        <FilePicker
+          accept="image/*"
+          onPick={(chosen) => {
+            setPickingImage(false);
+            if (!chosen) return;
+            /* `accept` is a filter, not a guarantee — every browser lets you
+               switch it to "All files". */
+            if (!chosen.type.startsWith("image/")) {
+              controller.setNotice("Choose an image file.");
+              return;
+            }
+            setImageFile(chosen);
+          }}
+        />
+      )}
+
+      {imageFile && (
+        <ImageImportDialog
+          file={imageFile}
+          onCancel={() => setImageFile(null)}
+          onConfirm={({ file, size }) => {
+            setImageFile(null);
+            if (!repo.uploadDriveFile) return;
+            setImageBusy(true);
+            void repo
+              .uploadDriveFile(file)
+              .then((r) => {
+                if (!r.ok) {
+                  controller.setNotice(r.message);
+                  return;
+                }
+                /* The Drive id is the durable half — the URL is a fallback that
+                   stops meaning anything if the CDN host moves. */
+                const src = r.data.fileId ? driveImageSrc(r.data.fileId) : r.data.url;
+                controller.insertImageCell(src, size);
+              })
+              .catch(() => controller.setNotice("That image could not be uploaded."))
+              .finally(() => setImageBusy(false));
           }}
         />
       )}

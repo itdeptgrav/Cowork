@@ -168,14 +168,20 @@ export function actionableFor(
 
   /* 2 — submitted work whose current stage is mine. Later stages are not my
      turn yet, and putting them here would ask people to act out of order. */
+  /* `?? null` for the same reason as `openSubmissions` below: the field is
+     required on `TaskView`, but a LIST read leaves it null and a narrowed
+     fixture may omit it entirely. Absent means "no submission is known" — the
+     caller hydrates it where the answer matters, and `undefined !== null`
+     passing this gate would dereference it on the next line. */
+  const latest = view.latestSubmission ?? null;
   if (
     task.status === "in_review" &&
-    view.latestSubmission !== null &&
+    latest !== null &&
     mayReview({
-      chain: view.latestSubmission.reviewChain,
-      currentStage: view.latestSubmission.currentStage,
+      chain: latest.reviewChain,
+      currentStage: latest.currentStage,
       viewerId,
-      submittedById: view.latestSubmission.submittedById,
+      submittedById: latest.submittedById,
     })
   )
     return {

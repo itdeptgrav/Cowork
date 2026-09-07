@@ -110,6 +110,20 @@
      `[data-perf="plain"]` uses when it drops the blur. */
   --frost-bar-solid: rgb(248, 248, 250);
   --frost-panel: rgba(232, 232, 234, 0.8);
+  /**
+   * The panel colour with nothing showing through it.
+   *
+   * `--frost-panel` is translucent and relies on `backdrop-filter` to hide what
+   * is behind it. That works over the page's own quiet ground and fails over a
+   * BUSY one — and a modal is exactly that case: the submission dialog is a
+   * portal on `document.body`, so what sits behind it is the whole task page,
+   * read straight through the panel at 74% and interleaved with its own text.
+   *
+   * The same value `[data-perf="plain"]` already falls back to when it drops
+   * the blur, named here so a surface that must be opaque can ask for it
+   * instead of hoping the blur lands.
+   */
+  --frost-panel-solid: rgb(238, 238, 240);
   --hairline: rgba(10, 10, 10, 0.12);
   --hairline-slab: rgba(255, 255, 255, 0.1);
 
@@ -120,6 +134,23 @@
   --control: rgba(10, 10, 10, 0.06);
   --control-hover: rgba(10, 10, 10, 0.1);
   --control-active: rgba(10, 10, 10, 0.14);
+
+  /**
+   * The submission and rework cards in a task thread.
+   *
+   * Its own token rather than `--surface-raised`, which is what these used and
+   * what made them the brightest thing in the thread: a raised film lifts a
+   * card ABOVE the conversation, and these two are the conversation — they sit
+   * on a side, beside the messages, and reading down a task they were louder
+   * than the work being discussed.
+   *
+   * Dark is a flat, slightly cool near-black rather than a translucent film.
+   * Owner-specified, so it is stated once here as the value it is: a film
+   * would land wherever whatever is behind it happened to put it, which is not
+   * a colour anybody can ask for. Light keeps the recessed step the rest of
+   * the system uses, since the ask was to darken against a dark thread.
+   */
+  --event-card: rgba(10, 10, 10, 0.04);
 
   --c1: #00b26b;
   --c2: #c3d02e;
@@ -282,6 +313,8 @@
   --frost-bar: rgba(24, 24, 28, 0.92);
   --frost-bar-solid: rgb(24, 24, 28);
   --frost-panel: rgba(32, 32, 37, 0.74);
+  /* See `--frost-panel-solid` at `:root`. */
+  --frost-panel-solid: rgb(32, 32, 37);
   --hairline: rgba(255, 255, 255, 0.11);
   --hairline-slab: rgba(255, 255, 255, 0.09);
 
@@ -290,6 +323,9 @@
   --control: rgba(255, 255, 255, 0.08);
   --control-hover: rgba(255, 255, 255, 0.13);
   --control-active: rgba(255, 255, 255, 0.18);
+  /* See `--event-card` at `:root`. Solid, not a film — this is the colour the
+     owner named, and it has to land there whatever sits behind it. */
+  --event-card: #1a1b21;
 
   --c1: #10c47c;
   --c2: #cfdc3c;
@@ -1409,6 +1445,7 @@
   --hairline: rgba(10, 10, 10, 0.14);
   --surface-raised: #ffffff;
   --surface-sunken: rgba(10, 10, 10, 0.04);
+  --event-card: rgba(10, 10, 10, 0.04);
   --control: rgba(10, 10, 10, 0.06);
   --control-hover: rgba(10, 10, 10, 0.1);
   --control-active: rgba(10, 10, 10, 0.14);
@@ -1437,6 +1474,46 @@
   color-scheme: light;
 }
 
+/**
+ * The spreadsheet's chrome does not take a text selection.
+ *
+ * Dragging across a spreadsheet is how you select CELLS. When the surrounding
+ * furniture is selectable too, a drag that starts or ends slightly off the grid
+ * highlights the toolbar instead — "← All sheets", the title, "Saved", the font
+ * and format menus — and leaves a text selection behind, so the next Ctrl+C
+ * copies those words rather than the cells.
+ *
+ * The grid and the ribbon each carried `select-none` of their own; everything
+ * between and around them did not. One rule at the root covers all of it, and
+ * cannot be forgotten again the next time a control is added.
+ *
+ * **Fields stay selectable**, deliberately: the title, the name box, the
+ * formula bar and the cell editor are places you type, and selecting inside
+ * them is the point. `user-select: none` on a text input also blocks
+ * double-click-to-select-a-word, which would make the formula bar hostile.
+ */
+.sheet-chrome {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.sheet-chrome input,
+.sheet-chrome textarea,
+.sheet-chrome [contenteditable="true"] {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* A `<select>` needs saying explicitly: the browser's own stylesheet gives form
+   controls `user-select: auto`, which beats an inherited `none` from an
+   ancestor. Without this the font, size and number-format menus still
+   highlighted — the "Default", "13" and "General" in the report. There is no
+   text in a select anybody needs to take; it is a menu, not a label. */
+.sheet-chrome select {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
 /* ── The document editor is light too ───────────────────────────────────────
    Same reasoning as the sheet above, and the same mechanism.
 
@@ -1462,6 +1539,7 @@
   --hairline: rgba(10, 10, 10, 0.14);
   --surface-raised: #ffffff;
   --surface-sunken: rgba(10, 10, 10, 0.04);
+  --event-card: rgba(10, 10, 10, 0.04);
   --control: rgba(10, 10, 10, 0.06);
   --control-hover: rgba(10, 10, 10, 0.1);
   --control-active: rgba(10, 10, 10, 0.14);

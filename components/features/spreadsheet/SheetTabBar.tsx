@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { HeaderContextMenu, type MenuItem } from "./HeaderContextMenu";
 import type { SpreadsheetController } from "./useSpreadsheet";
 import { selectionStats, statsLine } from "@/lib/spreadsheet/stats";
+import { selectionLabel } from "@/lib/spreadsheet/selection";
 
 export function SheetTabBar({ controller }: { controller: SpreadsheetController }) {
   const { sheets, hiddenSheets, activeSheetId } = controller;
@@ -41,6 +42,13 @@ export function SheetTabBar({ controller }: { controller: SpreadsheetController 
     }
     return statsLine(selectionStats(values));
   })();
+
+  /* Named from the rectangle alone — see `selectionLabel`. Null on a single
+     cell, which is the selection people are in almost all the time. */
+  const scope = selectionLabel(controller.selection.range, {
+    rows: controller.worksheet.rowCount,
+    cols: controller.worksheet.colCount,
+  });
 
   function commitRename() {
     if (renaming) controller.renameSheet(renaming.id, renaming.value);
@@ -123,18 +131,42 @@ export function SheetTabBar({ controller }: { controller: SpreadsheetController 
         )}
       </div>
 
-      {stats.length > 0 && (
-        <div
-          className="ml-auto flex shrink-0 items-center gap-3 px-2 text-[11.5px] text-ink-muted tabular-nums"
-          aria-live="polite"
-          data-figure
-          title="Sum, average, lowest, highest and count of the selected cells"
-        >
-          {stats.map((st) => (
-            <span key={st.label}>
-              <span className="text-ink-faint">{st.label}</span> {st.value}
+      {/**
+        * What is selected, in words.
+        *
+        * Ctrl+A cycles between the data region and the whole sheet, and the two
+        * are indistinguishable once the selection runs past the bottom of the
+        * window — so the next Delete, fill or format lands on whichever it
+        * happens to be. This is the only place that says which.
+        */}
+      {(scope || stats.length > 0) && (
+        /* One container so the pair is pinned right together — `ml-auto` on
+           whichever happened to render first would move when the other
+           appeared. */
+        <div className="ml-auto flex shrink-0 items-center">
+          {scope && (
+            <span
+              className="px-2 text-[11.5px] text-ink-muted"
+              aria-live="polite"
+              title="What Ctrl+A or your drag has selected"
+            >
+              {scope}
             </span>
-          ))}
+          )}
+          {stats.length > 0 && (
+            <span
+              className="flex items-center gap-3 px-2 text-[11.5px] text-ink-muted tabular-nums"
+              aria-live="polite"
+              data-figure
+              title="Sum, average, lowest, highest and count of the selected cells"
+            >
+              {stats.map((st) => (
+                <span key={st.label}>
+                  <span className="text-ink-faint">{st.label}</span> {st.value}
+                </span>
+              ))}
+            </span>
+          )}
         </div>
       )}
 

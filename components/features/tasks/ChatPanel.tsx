@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import type {
   MessageAttachment,
   MessageCard,
@@ -33,6 +33,7 @@ import { ChangeEventCard } from "./ChangeEventCard";
 import { ReworkEventCard } from "./ReworkEventCard";
 import { SubmissionEventCard } from "./SubmissionEventCard";
 import { parseReworkNotice } from "@/lib/rules/tasks/reworkNotice";
+import { eventByViewer } from "@/lib/rules/messages/eventSide";
 import { parseSubmissionNotice } from "@/lib/rules/tasks/submissionNotice";
 import { formatClock, formatDate, formatDateTime } from "@/lib/utils/format";
 import { clearDraft, readDraft, saveDraft } from "@/components/features/messages/draftStorage";
@@ -72,6 +73,15 @@ import {
 } from "@/lib/rules/media/conversationGallery";
 import { copyPlan } from "@/lib/rules/media/copyMessage";
 import { COPIED_NOTICE, runCopyPlan } from "@/lib/utils/copyToClipboard";
+import {
+  ChatSubmissionCard,
+  TaskNotStartedNotice,
+  TaskPanelDialog,
+} from "./TaskChatSubmission";
+import { nextAction } from "./statusMeta";
+import { awaitsDecision } from "@/lib/rules/tasks/outputs";
+import { viewerHolds } from "@/lib/rules/tasks/viewerHolds";
+import { SubmissionPanel } from "./SubmissionPanel";
 
 /** Uploads are staged before send; keep the batch bounded, as the thread does. */
 const MAX_ATTACHMENTS = 10;
@@ -126,9 +136,21 @@ function sameDayIso(a: string, b: string): boolean {
 export function ChatPanel({
   taskId,
   status,
+  embedded = false,
 }: {
   taskId: string;
   status: TaskStatus;
+  /**
+   * Render as the body of a surface that already has its own frame and header.
+   *
+   * The Task chat tab of a direct message is the one caller. Three things
+   * change and nothing else does: the frosted `Panel` becomes a plain column —
+   * a panel inside the thread's panel is the box-inside-a-box the design system
+   * forbids — the "Discussion" heading and thread switcher go, because the tab
+   * bar above already says which conversation this is, and the message list
+   * scrolls inside itself so the composer stays on screen.
+   */
+  embedded?: boolean;
 }) {
   /* Legacy's gating, from `app/coworking/tasks/page.js:9080`:
        isPreConfirmed  = !["confirmed","in_progress","done"].includes(status)
@@ -143,8 +165,16 @@ export function ChatPanel({
     status === "in_progress" ||
     status === "in_review" ||
     status === "completed";
+  /**
+   * Embedded is always the WORKING thread, and that is a limit rather than a
+   * preference: the negotiation thread is a separate legacy route that is not
+   * wired — `listTaskChat` returns `[]` for it and `sendTaskChat` refuses —
+   * so offering it in a direct message would be offering an empty box that
+   * cannot be posted to. The task page keeps both, where the read-only record
+   * of how the terms were agreed is worth reading.
+   */
   const [thread, setThread] = useState<"chat" | "draft">(
-    started ? "chat" : "draft",
+    embedded || started ? "chat" : "draft",
   );
   /**
    * The unsent message, kept per TASK and per thread.
@@ -217,6 +247,18 @@ export function ChatPanel({
   /** One-line confirmations that do not deserve an error banner. */
   const [notice, setNotice] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  /**
+   * Which full-page flow the thread has opened over itself, if any.
+   *
+   * Both wrap the real panel from the Submission and Review tabs rather than a
+   * chat-sized imitation — see `TaskChatSubmission`. A handover and a decision
+   * both carry rules (requirements, attempt numbering, the review chain, the
+   * deduction waiver) that a two-button shortcut would quietly skip.
+   */
+  const [flow, setFlow] = useState<null | "submit">(null);
+  /* The attach menu's own open/closed state went with the menu: `CardComposer`
+     owns it now, and this panel only says what the submission row should read
+     and what pressing it does. */
   /* Auto-growing composer, same helper as Messages — see there. */
   const composerRef = useRef<HTMLTextAreaElement>(null);
   useAutoGrowTextarea(composerRef, text, 128);
@@ -308,6 +350,99 @@ export function ChatPanel({
      from who has posted: somebody who has not spoken yet is still an audience,
      and a tick that ignored them would claim more than it knows. */
   const { data: taskView } = useQuery((r) => r.getTask(taskId as TaskId), [taskId]);
+  /**
+   * The submission still awaiting a decision, if there is one.
+   *
+   * `supersededById` is the whole test: a resubmission replaces the attempt
+   * before it, and showing both would put two live decisions in one thread for
+   * one piece of work. Keyed on `updatedAt` so approving or returning the work
+   * clears the card without a reload.
+   */
+  const { data: submissions, refetch: refetchSubmissions } = useQuery(
+    (r) => r.listSubmissions(taskId as TaskId),
+    [taskId, taskView?.task.updatedAt],
+  );
+  /**
+   * **`!supersededById` was not the right test, and this is the fix.**
+   *
+   * That flag is set when a LATER attempt replaces this one. A submission the
+   * reviewer sent back for REWORK has no replacement yet, so it is neither
+   * superseded nor open — and the card went on offering it under the very
+   * message announcing the rework, telling the assignee their returned work
+   * was "waiting on your reviewer".
+   *
+   * `awaitsDecision` asks the question that actually matters, from the place
+   * the engine records the answer for each kind. Supersession is still tested
+   * first: it is the cheaper rule and it covers the resubmission case, where
+   * two attempts would otherwise both look live.
+   */
+  const openSubmission =
+    submissions?.find(
+      (s) =>
+        !s.supersededById &&
+        !!taskView &&
+        awaitsDecision({
+          submission: s,
+          taskStatus: taskView.task.status,
+          openSubmissions: taskView.openSubmissions ?? [],
+        }),
+    ) ?? null;
+  /**
+   * Has this task ever been handed over?
+   *
+   * Every submission, not only the one awaiting a decision — work that was
+   * returned for rework has no open submission, and the next send is still a
+   * REPLACEMENT rather than a first handover. Gating the wording on the open
+   * one would flip the menu back to "Add submission" at exactly the moment
+   * somebody is resubmitting.
+   */
+  const hasSubmitted = (submissions?.length ?? 0) > 0;
+  /**
+   * May THIS person hand work over here?
+   *
+   * **Only the assignee submits.** The assigner has nothing to hand in — they
+   * are the one being handed to — and offering them "Update submission" invited
+   * them into a form that would refuse them.
+   *
+   * The same three conditions `SubmissionPanel` gates its own form on, so the
+   * menu cannot offer what the panel behind it would then decline: "a control
+   * that exists only to be refused is worse than no control."
+   *
+   *   · `viewerHolds` — and `=== "yes"`, never `!== "no"`. It answers `unknown`
+   *     while the viewer is being read, and hiding the item for that moment is
+   *     right where asserting a refusal about an unidentified person is the
+   *     defect that rule exists to prevent.
+   *   · a task with OUTPUTS is delivered output by output; a whole-task
+   *     handover would ask its reviewer to approve work the same chain is
+   *     approving a piece at a time.
+   *   · `in_progress` — while a submission is awaiting a decision there is
+   *     nothing to update until it comes back.
+   */
+  const holds = viewerHolds({
+    viewerId,
+    assignments: taskView?.assignments ?? [],
+  });
+  const canSubmitHere =
+    holds === "yes" &&
+    !!taskView &&
+    taskView.task.outputs.length === 0 &&
+    taskView.task.status === "in_progress";
+  /**
+   * What the task is waiting for, when it has not started.
+   *
+   * Only in the embedded thread: the task page carries the same sentence in
+   * its own "Your move" banner a few hundred pixels above, and stating one
+   * rule twice on one screen is how the two come to disagree.
+   *
+   * `nextAction` rather than a status check written here — it is the resolver
+   * the banner uses, so this cannot say a deadline needs approving when what
+   * the task actually wants is the assignment confirmed. Null once the work is
+   * under way, which is what makes it a gate rather than a permanent banner.
+   */
+  const gate =
+    embedded && !started && taskView
+      ? nextAction(taskView, viewerId ?? "")
+      : null;
   const audience = taskAudience({
     assignorId: taskView?.assigner?.id ?? null,
     assigneeIds: (taskView?.assignees ?? []).map((a) => a.id),
@@ -727,35 +862,39 @@ export function ChatPanel({
     };
   });
 
-  return (
-    <Panel
-      padded={false}
-      className="chat-select relative"
-      /* The same drop behaviour as the message thread, and for the same
-         reason — this panel already shares that composer's paste handler, its
-         upload path and its attachment rendering. */
-      onDragEnter={(e) => {
-        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        setDragDepthState((d) => dragDepth(d, "enter"));
-      }}
-      onDragOver={(e) => {
-        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        /* Or the browser navigates to the file instead of dropping it. */
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "copy";
-      }}
-      onDragLeave={(e) => {
-        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        setDragDepthState((d) => dragDepth(d, "leave"));
-      }}
-      onDrop={(e) => {
-        if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
-        e.preventDefault();
-        setDragDepthState((d) => dragDepth(d, "drop"));
-        const dropped = filesFromClipboard(e.dataTransfer);
-        if (dropped.length) void handleFiles(dropped);
-      }}
-    >
+  /* The same drop behaviour as the message thread, and for the same reason —
+     this panel already shares that composer's paste handler, its upload path
+     and its attachment rendering.
+
+     Built as an object rather than written inline because the surface that
+     receives the drop is now one of two elements, and two copies of four
+     handlers is two places for a dropped file to stop working. */
+  const dragProps = {
+    onDragEnter: (e: DragEvent<HTMLElement>) => {
+      if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+      setDragDepthState((d) => dragDepth(d, "enter"));
+    },
+    onDragOver: (e: DragEvent<HTMLElement>) => {
+      if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+      /* Or the browser navigates to the file instead of dropping it. */
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    },
+    onDragLeave: (e: DragEvent<HTMLElement>) => {
+      if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+      setDragDepthState((d) => dragDepth(d, "leave"));
+    },
+    onDrop: (e: DragEvent<HTMLElement>) => {
+      if (!canDrop || !dragCarriesFiles(e.dataTransfer?.types)) return;
+      e.preventDefault();
+      setDragDepthState((d) => dragDepth(d, "drop"));
+      const dropped = filesFromClipboard(e.dataTransfer);
+      if (dropped.length) void handleFiles(dropped);
+    },
+  };
+
+  const body = (
+    <>
       {isDropActive(dragDepthState) && (
         <div className="pointer-events-none absolute inset-0 z-20 grid place-items-center rounded-card bg-[color-mix(in_srgb,var(--body-bg)_78%,transparent)] backdrop-blur-[2px]">
           <div className="flex flex-col items-center gap-2 rounded-panel border border-dashed border-ink/40 px-8 py-6">
@@ -767,6 +906,10 @@ export function ChatPanel({
           </div>
         </div>
       )}
+      {/* Embedded, the tab bar and the task picker above already say which
+          conversation this is and which task it belongs to. A "Discussion"
+          heading under them would be a third label for one thing. */}
+      {!embedded && (
       <div className="flex flex-wrap items-center gap-3 border-b border-hairline px-5 py-3">
         <h2 className="text-sm font-medium text-ink">Discussion</h2>
         {/* The working thread appears only once the task has been confirmed —
@@ -792,11 +935,27 @@ export function ChatPanel({
           </span>
         )}
       </div>
+      )}
 
+      {/* Embedded, this is the one part that scrolls, so the composer stays put
+          and the page never grows a second scrollbar. On the task page it is an
+          ordinary block and the page scrolls, which is what that layout wants. */}
+      <div
+        className={
+          embedded ? "min-h-0 flex-1 overflow-y-auto scroll-slim" : undefined
+        }
+      >
       {isLoading ? (
         <div className="px-5 py-3">
           <SkeletonRows rows={4} />
         </div>
+      ) : gate ? (
+        /* The task is not under way, so the thread is empty for a REASON and
+           the pane says which. Stands in for the empty state rather than
+           sitting above it: two explanations of one blank pane is one too
+           many. Shown even when the thread does have messages, because the
+           decision is still the thing that matters most on this screen. */
+        <TaskNotStartedNotice taskId={taskId} action={gate} />
       ) : !data?.length ? (
         <EmptyState
           compact
@@ -883,6 +1042,14 @@ export function ChatPanel({
                             notice.deduction ? notice.deduction.waived : null
                           }
                           deductionPoints={notice.deduction?.points ?? 0}
+                          /* Posted as `system`, so the reviewer is only named
+                             in the sentence — resolved back to a person rather
+                             than compared as a string here. */
+                          mine={eventByViewer({
+                            actorName: notice.byName || m.senderName,
+                            viewerId,
+                            people: people ?? [],
+                          })}
                         />
                       );
                     }
@@ -898,13 +1065,16 @@ export function ChatPanel({
                     );
                   })()
                 ) : submissionNotice ? (
-                  /* A submission is a milestone, not a chat line — a centred
-                     event card, with the note and any proof, rather than a
-                     personal bubble that reads like the submitter typed it. */
+                  /* A submission is a milestone, not a chat line — an event
+                     card, with the note and any proof, rather than a personal
+                     bubble that reads like the submitter typed it. It still
+                     takes the submitter's SIDE: the engine posts it under
+                     their id, so `mine` is the ordinary sender test. */
                   <SubmissionEventCard
                     byName={person?.displayName ?? m.senderName}
                     note={submissionNotice.note}
                     at={m.createdAt}
+                    mine={mine}
                     attachments={
                       attachments.length > 0 ? (
                         <MessageAttachments
@@ -1158,6 +1328,31 @@ export function ChatPanel({
         </ol>
       )}
 
+      {/**
+        * The open submission, at the end of the thread.
+        *
+        * Placed here rather than spliced under the engine's "submitted work
+        * for completion review" line, and that is deliberate: matching that
+        * sentence would break the day it is reworded, and it would pin a LIVE
+        * decision to a historical message. This card describes what is open
+        * now, so the newest thing in the thread is the thing waiting on
+        * somebody — which is where a reader's eye already is.
+        */}
+      {thread === "chat" && openSubmission && taskView && (
+        <div className="px-3 pb-1 sm:px-4">
+          <ChatSubmissionCard
+            view={taskView}
+            submission={openSubmission}
+            viewerId={viewerId}
+            onDecided={() => {
+              refetch();
+              refetchSubmissions();
+            }}
+          />
+        </div>
+      )}
+      </div>
+
       {/* Read-only once the task is under way: legacy marks the negotiation
           thread "read-only" the moment it reaches confirmed. */}
       {composerReadOnly ? (
@@ -1340,22 +1535,49 @@ export function ChatPanel({
                 />
                 {/* The "+" share sheet — Photos & files, Poll, Location,
                     Contact — the same one the message thread carries. */}
+                {/**
+                  * **Two kinds of attachment, and the difference is not the
+                  * file.** The same PDF can be a reference somebody should look
+                  * at, or the work itself being handed over for review. Only
+                  * the second starts a review, numbers an attempt and moves the
+                  * task — so it cannot be guessed from the file, and both sit in
+                  * this one menu with a line each saying which is which.
+                  *
+                  * It was a second bespoke menu on a second paperclip beside
+                  * this one. Same rows, same purpose, twice — so the submission
+                  * moved in here and the other button went.
+                  *
+                  * `submission` is undefined for anybody who cannot submit —
+                  * the assigner, every reader of a task delivered by outputs,
+                  * anyone whose work is already with a reviewer — and the row
+                  * simply is not offered. A control that exists only to be
+                  * refused is worse than no control.
+                  */}
                 <CardComposer
                   people={people ?? []}
                   onCard={(card) => void sendCard(card)}
                   onPickFiles={() => fileRef.current?.click()}
                   disabled={uploading || state.isPending}
+                  submission={
+                    canSubmitHere
+                      ? {
+                          /* **"Add" only the first time.** Submitting again does
+                             not file a second submission beside the first — the
+                             engine overwrites the record in place and the
+                             attempt number goes up. A menu still offering to
+                             "add" one invites somebody to think they are filing
+                             a separate thing. */
+                          label: hasSubmitted
+                            ? "Update submission"
+                            : "Add submission",
+                          hint: hasSubmitted
+                            ? "Replaces what you sent and starts the review again."
+                            : "Hands the work over and starts its review.",
+                          onPick: () => setFlow("submit"),
+                        }
+                      : undefined
+                  }
                 />
-                <button
-                  type="button"
-                  onClick={() => fileRef.current?.click()}
-                  disabled={uploading || state.isPending}
-                  aria-label="Attach a file"
-                  title="Attach a file — any type, any size"
-                  className="grid h-9 w-9 shrink-0 place-items-center rounded-full text-ink-faint transition-colors hover:bg-[var(--control)] hover:text-ink disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent disabled:hover:text-ink-faint"
-                >
-                  <Icon.attach className="h-4 w-4" />
-                </button>
                 {/* Record a voice note — staged through the SAME upload path a
                     picked file takes, so it sends and plays like any audio. */}
                 <VoiceRecorder
@@ -1461,6 +1683,57 @@ export function ChatPanel({
           onForwarded={() => setNotice("Message forwarded.")}
         />
       )}
+
+      {/**
+        * The real panels, over the thread.
+        *
+        * Not chat-sized imitations of them. A handover numbers an attempt,
+        * resolves a review chain and checks the task's requirements; a
+        * decision can waive a deduction, name failed criteria, carry
+        * correction files and re-rank the returned work. Rebuilding either in
+        * a bubble would mean two implementations of one rule, and the one in
+        * the bubble would be the one that quietly fell behind.
+        */}
+      {/* Only the handover opens a dialog now. The DECISION moved onto the
+          submitted-work card itself — see `ChatSubmissionCard` — because it is
+          two options and a sentence, and a second screen in front of that is a
+          step nobody needed. Submitting still earns one: it carries the files,
+          the requirement checks and the attempt. */}
+      {flow === "submit" && taskView && (
+        <TaskPanelDialog title="Add submission" onClose={() => setFlow(null)}>
+          <SubmissionPanel
+            view={taskView}
+            onChange={() => {
+              refetch();
+              refetchSubmissions();
+              setFlow(null);
+            }}
+          />
+        </TaskPanelDialog>
+      )}
+    </>
+  );
+
+  /**
+   * The frame, or none.
+   *
+   * Embedded, this is the body of a pane that already has a frosted panel, a
+   * header and a tab bar around it, so it renders a plain column: a panel
+   * inside a panel is the box-inside-a-box the design system rules out, and it
+   * would draw a second border a few pixels inside the first.
+   *
+   * `min-h-0` is what makes the message list scroll instead of the page. A flex
+   * child's default `min-height: auto` refuses to shrink below its content, so
+   * without it the list grows to its full length, the column grows with it, and
+   * the composer leaves the bottom of the screen.
+   */
+  return embedded ? (
+    <div className="chat-select relative flex h-full min-h-0 flex-col" {...dragProps}>
+      {body}
+    </div>
+  ) : (
+    <Panel padded={false} className="chat-select relative" {...dragProps}>
+      {body}
     </Panel>
   );
 }

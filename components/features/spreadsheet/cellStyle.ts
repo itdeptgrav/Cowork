@@ -10,6 +10,7 @@
 
 import type { CSSProperties } from "react";
 import type { CellAlign } from "@/lib/spreadsheet/values";
+import { WRAP_LINE_HEIGHT } from "@/lib/spreadsheet/wrapHeight";
 import type { Border, CellStyle } from "@/lib/spreadsheet/style";
 
 const BORDER_WIDTH: Record<Border["style"], string> = {
@@ -56,6 +57,11 @@ export function styleToCss(style: CellStyle, align: CellAlign): CSSProperties {
   if (style.wrap) {
     css.whiteSpace = "normal";
     css.wordBreak = "break-word";
+    /* Pinned, not left at `normal`. The row's height is COMPUTED from this
+       number before the browser lays the text out — see `wrapHeight.ts` — and a
+       line height that varied with the font's own metrics would make that
+       computation wrong by a line on somebody else's machine. */
+    css.lineHeight = WRAP_LINE_HEIGHT;
   } else {
     css.whiteSpace = "nowrap";
   }

@@ -134,13 +134,21 @@ test("AUDIT: Ctrl+A ladder — data region first, whole sheet second", () => {
   assert.deepEqual(sel.range, selectAllRect(B), "second press: everything");
 });
 
-test("AUDIT: Ctrl+A at whole-sheet stays at whole-sheet (as Excel/Sheets do)", () => {
+test("AUDIT: Ctrl+A cycles back to the data region on the third press", () => {
+  /* **This reverses what this test used to assert**, by the owner's decision
+     (4 Sep 2026). Excel and Sheets latch on the whole sheet, and that latch is
+     the reported problem: overshooting had no way back except clicking a cell,
+     which also threw away where you were. Pressing the same key again is what
+     somebody already does when a toggle goes one step too far. */
   const filled = filledOf([0, 0], [0, 1], [1, 0], [1, 1]);
+  const region = { top: 0, left: 0, bottom: 1, right: 1 };
   let sel = cellSelection({ row: 0, col: 0 });
-  sel = selectAllStep(sel, filled, B); // region
-  sel = selectAllStep(sel, filled, B); // everything
-  sel = selectAllStep(sel, filled, B); // pressed once more — must stay everything
-  assert.deepEqual(sel.range, selectAllRect(B));
+  sel = selectAllStep(sel, filled, B);
+  assert.deepEqual(sel.range, region, "first press: the data region");
+  sel = selectAllStep(sel, filled, B);
+  assert.deepEqual(sel.range, selectAllRect(B), "second press: everything");
+  sel = selectAllStep(sel, filled, B);
+  assert.deepEqual(sel.range, region, "third press: back to the data region");
 });
 
 test("AUDIT: Ctrl+A on an isolated empty cell selects the whole sheet at once", () => {

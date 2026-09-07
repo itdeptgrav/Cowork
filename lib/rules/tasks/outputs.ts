@@ -198,6 +198,46 @@ export function mayReview(input: {
 }
 
 /**
+ * Is this submission still waiting for somebody to decide on it?
+ *
+ * **Not the same question as `mayReview`, and the difference is the bug this
+ * exists to fix.** `mayReview` asks whether a review may PROCEED, and for an
+ * output submission it answers `true` from the output id alone — which stays
+ * true long after the output has been reviewed. Neither does
+ * `supersededById === null` answer it: that flag is set when a LATER attempt
+ * replaces this one, so a submission sent back for rework — where no
+ * resubmission exists yet — is neither superseded nor open, and read as open by
+ * anything that tests only for supersession.
+ *
+ * The reported symptom: after a reviewer returned work for rework, the task
+ * thread went on showing the submission card under the very message announcing
+ * the rework, telling the person who had just been sent their work back that it
+ * was "waiting on your reviewer".
+ *
+ * The two kinds are answered from different places, because that is where the
+ * engine records the answer:
+ *
+ *   · **task-level** — the task is moved to `in_review` while a decision is
+ *     outstanding and away from it the moment one is made, so the status IS
+ *     the record.
+ *   · **per-output** — the task stays `in_progress` throughout, so the status
+ *     says nothing. The mapper keeps `openSubmissions` for exactly this and
+ *     filters it on `review === null`; the task-level submission is
+ *     deliberately absent from that list, which is why it cannot be the only
+ *     test here.
+ */
+export function awaitsDecision(input: {
+  submission: { id: string; outputId: string | null };
+  taskStatus: string;
+  /** `view.openSubmissions` — output submissions with no review recorded. */
+  openSubmissions: readonly { id: string }[];
+}): boolean {
+  if (input.submission.outputId === null)
+    return input.taskStatus === "in_review";
+  return input.openSubmissions.some((s) => s.id === input.submission.id);
+}
+
+/**
  * Is this task blocked — nothing on it anybody could sit down to?
  *
  * **The same question `hasStartableOutput` answers, asked of the VIEW.** That

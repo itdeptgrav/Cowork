@@ -5,10 +5,14 @@
  *
  * A sparkline is drawn to the cell's own size on every render, so a column
  * dragged wider gets a wider chart; it has no axes, labels or legend, which
- * is the whole point of one. The picture is an ordinary `<img>` limited to
- * https addresses (the function refuses anything else), never scripted.
+ * is the whole point of one. The picture goes through `DriveImage`, which
+ * walks CDN, then proxy, then the stored address as each source fails — a file
+ * uploaded a moment ago is not on the CDN yet, and a single source shows a
+ * broken cell at exactly the moment somebody has just filled it. Limited to
+ * https addresses (the IMAGE function refuses anything else), never scripted.
  */
 
+import { DriveImage } from "@/components/ui/DriveImage";
 import type { RichPayload } from "@/lib/spreadsheet/formula/value";
 
 const ACCENT = "#5b7bd5";
@@ -77,12 +81,17 @@ function Sparkline({ p, width, height }: { p: Extract<RichPayload, { type: "spar
 export function CellVisual({ payload, width, height }: { payload: RichPayload; width: number; height: number }) {
   if (payload.type === "sparkline") return <Sparkline p={payload} width={width} height={height} />;
   const fit = payload.mode === 2 ? "fill" : payload.mode === 3 ? "none" : "contain";
+  /* `DriveImage` rather than a bare `<img>`, because a bare one is broken at
+     the single moment this feature is most used: a file uploaded a second ago
+     404s on the CDN until Google indexes it, which is exactly when somebody is
+     looking at the cell they just filled. `DriveImage` walks CDN → proxy → the
+     stored URL on error, recovering the Drive id from the URL itself. A plain
+     https address that is not a Drive file passes straight through as its own
+     only source, so a hand-typed =IMAGE("https://…") is unaffected. */
   return (
-    // eslint-disable-next-line @next/next/no-img-element
-    <img
-      src={payload.url}
+    <DriveImage
+      url={payload.url}
       alt=""
-      draggable={false}
       style={{ width: "100%", height: "100%", objectFit: fit, objectPosition: "left center", display: "block" }}
     />
   );

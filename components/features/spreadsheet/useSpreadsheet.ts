@@ -74,7 +74,7 @@ import {
   type Mark,
 } from "@/lib/spreadsheet/style";
 import { adjustFormula } from "@/lib/spreadsheet/formula/references";
-import { BLANK, type ScalarValue } from "@/lib/spreadsheet/formula/value";
+import { BLANK, isRich, type ScalarValue } from "@/lib/spreadsheet/formula/value";
 import { sortRangeEdits, type SortDirection } from "@/lib/spreadsheet/sort";
 import { computeFilterHidden, type ColumnFilter, type SheetFilter } from "@/lib/spreadsheet/filter";
 import {
@@ -200,6 +200,7 @@ import {
   fromTSV,
   pasteEdits,
   pasteRect,
+  pasteSizes,
   pasteStyles,
   toTSV,
   type Clipboard,
@@ -268,6 +269,14 @@ export interface SpreadsheetController {
   copy: () => void;
   cut: () => void;
   paste: () => void;
+  /**
+   * Place clipboard text the caller already holds.
+   *
+   * What the native `paste` event uses: that event arrives WITH its text, so
+   * there is nothing to go and read — and reading it again needs a permission
+   * the event does not.
+   */
+  pasteText: (text: string | null) => void;
   undo: () => void;
   redo: () => void;
   /** The rectangle a handle dragged to `target` would fill — for the preview. */
@@ -314,6 +323,17 @@ export interface SpreadsheetController {
   hideCols: () => void;
   unhideCols: () => void;
   resizeCol: (col: number, width: number) => void;
+  /**
+   * Both axes of ONE cell, in a single command.
+   *
+   * Not `resizeCol` followed by `resizeRow`: each derives its next worksheet
+   * from the SAME render's `worksheet`, so the second one's result does not
+   * contain the first one's change and silently discards it. A picture dragged
+   * bigger got its new height and kept its old width.
+   *
+   * One command is also one undo, which is what a single drag should be.
+   */
+  resizeCell: (row: number, col: number, width: number, height: number) => void;
   /** Resize a run of columns as one undoable command. */
   resizeCols: (from: number, to: number, width: number) => void;
   autoFitCol: (col: number, width: number) => void;
@@ -423,8 +443,15 @@ export interface SpreadsheetController {
   setColsCollapsed: (collapsed: boolean) => void;
   /** Columns hidden because an outline band is collapsed. */
   collapsedColsMap: Record<number, true>;
-  /** Put a picture in the active cell by its https address. */
-  insertImageCell: (url: string) => void;
+  /**
+   * Put a picture in the active cell by its https address.
+   *
+   * `size` is the picture's own pixel size, already run through the import
+   * ceiling by the caller — pass it and the cell grows to fit, which is the
+   * point of a picture in a cell. Omit it and only the formula is written, for
+   * a caller that has no dimensions to offer (a typed address, say).
+   */
+  insertImageCell: (url: string, size?: { width: number; height: number }) => void;
   /** The view option that shades every protected cell. */
   showProtected: boolean;
   setShowProtected: (value: boolean) => void;
@@ -449,6 +476,15 @@ export interface SpreadsheetController {
   /** The last refused change, as the sentence to show; cleared by `clearNotice`. */
   notice: string | null;
   clearNotice: () => void;
+  /**
+   * Say something went wrong, from outside the controller.
+   *
+   * The grid owns a few actions the controller cannot — an upload that fails,
+   * a file that will not decode — and they need the same one line the refusals
+   * use. A second error surface beside it would mean two places to look for
+   * why nothing happened.
+   */
+  setNotice: (message: string) => void;
 
   /* --- Printing (see `lib/spreadsheet/printHtml.ts`) --- */
   pageSetup: PageSetup;
@@ -1263,9 +1299,36 @@ export function useSpreadsheet(): SpreadsheetController {
   }
   const collapsedColsMap = collapsedCols(worksheet.colGroups);
 
-  function insertImageCell(url: string): void {
+  function insertImageCell(url: string, size?: { width: number; height: number }): void {
     const safe = url.trim().replace(/"/g, "");
-    commitValue(selection.active.row, selection.active.col, `=IMAGE("${safe}")`);
+    const { row, col } = selection.active;
+    const raw = `=IMAGE("${safe}")`;
+
+    /* BOTH refusals are checked before anything is applied.
+       `applyStructural` only guards protection on the whole SHEET, while the
+       write itself is gated twice more — by validation and by protection on a
+       RANGE. Sizing first and writing second therefore left a protected cell
+       resized to a picture that was never allowed in, with nothing said. There
+       is no partial version of inserting a picture, so neither half runs until
+       both gates have answered. */
+    if (!isEditAllowed(row, col, raw)) {
+      setNotice("This cell only accepts values from its drop-down list.");
+      return;
+    }
+    /* Sets its own notice naming which rule refused. */
+    if (!allowEdits([{ row, col, raw }])) return;
+
+    /* Then the size, and the picture last, so the first undo takes the picture
+       away and leaves the sheet looking like a sheet — undoing to a
+       picture-shaped empty cell reads as the undo having failed. */
+    if (size && size.width > 0 && size.height > 0) {
+      applyStructural(
+        "Size cell to image",
+        setRowHeight(setColWidth(worksheet, col, Math.round(size.width)), row, Math.round(size.height)),
+        false,
+      );
+    }
+    applyEdits("Insert image", [{ row, col, raw }]);
   }
 
   const [showProtected, setShowProtected] = useState(false);
@@ -1863,13 +1926,13 @@ export function useSpreadsheet(): SpreadsheetController {
 
   function copy(): void {
     const rect = selection.range;
-    setClipboard(copyRange(worksheet, rect, false));
+    setClipboard(copyRange(worksheet, rect, false, holdsImage));
     writeSystemClipboard(rect);
   }
 
   function cut(): void {
     const rect = selection.range;
-    setClipboard(copyRange(worksheet, rect, true));
+    setClipboard(copyRange(worksheet, rect, true, holdsImage));
     writeSystemClipboard(rect);
   }
 
@@ -1887,6 +1950,32 @@ export function useSpreadsheet(): SpreadsheetController {
     /* Formatting travels with the block (Phase 5): the source styles land on the
        destination, replacing whatever was there. */
     edits.push(...pasteStyles(clip, target, bounds));
+
+    /* A picture's cell size travels with it — crop, rotation and size were
+       settled once at import and a copy is not a re-import, so nothing is asked
+       again. Only cells that HELD a picture, so an ordinary paste of text never
+       resizes what it lands on.
+
+       **Before `applyEdits`, and that ordering is load-bearing.**
+       `applyStructural` REPLACES the worksheet with one computed from this
+       render's `worksheet`, while `applyEdits` applies its changes functionally
+       to whatever the workbook currently is. Structural second therefore throws
+       the pasted values away — and with `rebuild: false` the engine keeps them,
+       so the cell went on drawing its picture while its value was gone and the
+       formula bar showed nothing. Structural first composes correctly.
+
+       One command for the whole block for the same reason: each `setColWidth`
+       derives from the worksheet it is handed, so applying them separately from
+       one starting worksheet would keep only the last. */
+    const sizes = pasteSizes(clip, target, bounds);
+    if (sizes.length) {
+      let next = worksheet;
+      for (const s of sizes) {
+        next = setRowHeight(setColWidth(next, s.col, s.width), s.row, s.height);
+      }
+      applyStructural("Size pasted images", next, false);
+    }
+
     applyEdits(clip.cut ? "Cut" : "Paste", edits);
 
     const rect = pasteRect(clip, target, bounds);
@@ -1902,20 +1991,30 @@ export function useSpreadsheet(): SpreadsheetController {
     }
   }
 
+  /**
+   * Place clipboard text that the caller already has.
+   *
+   * The decision `paste()` makes, split out so the native `paste` event can use
+   * it: that event arrives WITH its text, so there is nothing to go and read —
+   * and reading it again through `navigator.clipboard` needs a permission the
+   * event does not.
+   */
+  function pasteText(text: string | null): void {
+    /* Prefer the internal block when the system clipboard still holds what we
+       wrote (an in-app round trip keeps formulas); otherwise parse whatever is
+       there as tab-separated values. */
+    if (text !== null && text !== "" && text !== lastTSVRef.current) {
+      pasteBlock(fromTSV(text), true);
+    } else if (clipboard) {
+      pasteBlock(clipboard, false);
+    } else if (text !== null && text !== "") {
+      pasteBlock(fromTSV(text), true);
+    }
+  }
+
   function paste(): void {
     let text: string | null = null;
-    const finish = () => {
-      /* Prefer the internal block when the system clipboard still holds what we
-         wrote (an in-app round trip keeps formulas); otherwise parse whatever is
-         there as tab-separated values. */
-      if (text !== null && text !== "" && text !== lastTSVRef.current) {
-        pasteBlock(fromTSV(text), true);
-      } else if (clipboard) {
-        pasteBlock(clipboard, false);
-      } else if (text !== null && text !== "") {
-        pasteBlock(fromTSV(text), true);
-      }
-    };
+    const finish = () => pasteText(text);
     try {
       const read = navigator.clipboard?.readText();
       if (read && typeof read.then === "function") {
@@ -2081,6 +2180,26 @@ export function useSpreadsheet(): SpreadsheetController {
     const { at, end } = colSpan();
     applyStructural("Unhide columns", setColsHidden(worksheet, at, end, false), false);
   }
+  /**
+   * Whether that cell shows a picture.
+   *
+   * Asked of the ENGINE rather than by looking for `=IMAGE(` in the text, so a
+   * cell that arrives at a picture through a reference counts too — and a cell
+   * whose text merely mentions IMAGE does not.
+   */
+  function holdsImage(row: number, col: number): boolean {
+    const value = engine.getValue(activeSheetId, row, col);
+    return isRich(value) && value.rich.type === "image";
+  }
+
+  function resizeCell(row: number, col: number, width: number, height: number): void {
+    applyStructural(
+      "Resize image",
+      setRowHeight(setColWidth(worksheet, col, Math.round(width)), row, Math.round(height)),
+      false,
+    );
+  }
+
   function resizeCol(col: number, width: number): void {
     applyStructural("Resize column", setColWidth(worksheet, col, width), false);
   }
@@ -2269,6 +2388,7 @@ export function useSpreadsheet(): SpreadsheetController {
     protectionLookup,
     notice,
     clearNotice,
+    setNotice,
     pageSetup,
     setPageSetup,
     setPrintArea,
@@ -2324,6 +2444,7 @@ export function useSpreadsheet(): SpreadsheetController {
     copy,
     cut,
     paste,
+    pasteText,
     undo,
     redo,
     fillPreviewRect,
@@ -2347,6 +2468,7 @@ export function useSpreadsheet(): SpreadsheetController {
     hideCols,
     unhideCols,
     resizeCol,
+    resizeCell,
     resizeCols,
     autoFitCol,
     freezeRows,

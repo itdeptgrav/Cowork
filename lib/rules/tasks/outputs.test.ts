@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   allOutputsApproved,
+  awaitsDecision,
   hasStartableOutput,
   isOutputWorkable,
   isTaskBlocked,
@@ -273,5 +274,82 @@ test("submitted-and-waiting is not startable, so a task of those is blocked", ()
       { isWorkable: false, state: "not_started" },
     ]),
     true,
+  );
+});
+
+
+/* ── Is this submission still waiting on somebody? ────────────────────────── */
+
+/**
+ * THE REPORTED BUG. A reviewer sent work back for rework and the task thread
+ * went on showing the submission card under the very message announcing it —
+ * telling the person whose work had just been returned that it was "waiting on
+ * your reviewer".
+ *
+ * The cause was testing `supersededById === null` and calling that open. That
+ * flag means a LATER attempt replaced this one; a returned submission has no
+ * replacement yet, so it is neither superseded nor open.
+ */
+test("a task-level submission sent back for rework is no longer open", () => {
+  const submission = { id: "s1", outputId: null };
+  /* Awaiting a decision: the engine parks the task in `in_review`. */
+  assert.equal(
+    awaitsDecision({ submission, taskStatus: "in_review", openSubmissions: [] }),
+    true,
+  );
+  /* Returned for rework — back to in_progress, and nothing is waiting. */
+  assert.equal(
+    awaitsDecision({ submission, taskStatus: "in_progress", openSubmissions: [] }),
+    false,
+    "a returned submission still reads as awaiting a decision",
+  );
+});
+
+test("an approved task-level submission is not open either", () => {
+  assert.equal(
+    awaitsDecision({
+      submission: { id: "s1", outputId: null },
+      taskStatus: "completed",
+      openSubmissions: [],
+    }),
+    false,
+  );
+});
+
+test("an output submission is answered by openSubmissions, not by the status", () => {
+  /* An output review happens while the task is legitimately still in progress,
+     so the status says nothing at all about it. The mapper filters
+     `openSubmissions` on `review === null`, which is the record. */
+  const submission = { id: "t:puri", outputId: "puri" };
+  assert.equal(
+    awaitsDecision({
+      submission,
+      taskStatus: "in_progress",
+      openSubmissions: [{ id: "t:puri" }],
+    }),
+    true,
+  );
+  assert.equal(
+    awaitsDecision({
+      submission,
+      taskStatus: "in_progress",
+      openSubmissions: [{ id: "t:gopalpur" }],
+    }),
+    false,
+    "a reviewed output still reads as open",
+  );
+});
+
+test("mayReview is not a substitute for it", () => {
+  /* `mayReview` answers whether a review may PROCEED, and for an output it is
+     true from the id alone — which stays true long after the decision. Using
+     it to decide whether to SHOW the card is what put a decided submission
+     back on screen. */
+  const submission = { id: "t:puri", outputId: "puri" };
+  assert.equal(mayReview({ outputId: "puri", taskStatus: "in_progress" }), true);
+  assert.equal(
+    awaitsDecision({ submission, taskStatus: "in_progress", openSubmissions: [] }),
+    false,
+    "awaitsDecision has collapsed into mayReview",
   );
 });

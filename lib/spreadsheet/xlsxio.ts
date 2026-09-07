@@ -22,11 +22,18 @@
  *    round trip THROUGH THIS LIBRARY loses bold/italic/underline even though the
  *    file a real Excel opens is not missing them. Number formats do read back
  *    (via `.z`) and are mapped to the nearest of our format kinds.
- *  · **NOT preserved:** cell/text colours, borders, alignment, wrapping, column
- *    widths, row heights, freeze panes, filters, data validation, conditional
- *    formatting, merged cells, hyperlinks and comments. They have XLSX
- *    equivalents but are out of this exchange's scope; a reader sees values,
- *    formulas and the basics above, and nothing here pretends otherwise.
+ *  · **Wrapping, alignment, column widths and row heights round-trip.** They
+ *    were not preserved, and the cost was not cosmetic: a file whose columns
+ *    were sized to hold their text arrived with every column at the default AND
+ *    with wrapping stripped, so a long value had nowhere to go and was cut off
+ *    with an ellipsis — the same file read perfectly in Excel. Widths convert
+ *    through Excel's character unit; see `xlsxMetrics.ts`.
+ *  · **NOT preserved:** cell/text colours, borders, freeze panes, filters, data
+ *    validation, conditional formatting, merged cells, hyperlinks and comments.
+ *    They have XLSX equivalents but are out of this exchange's scope; a reader
+ *    sees values, formulas and the basics above, and nothing here pretends
+ *    otherwise. `lib/rules/sheets/roundTrip.ts` is what warns somebody BEFORE a
+ *    file carrying them is linked for saving.
  *  · Cells beyond a generous cap (rows/columns far past what a hand-built sheet
  *    reaches) are skipped rather than materialised, so a pathological file
  *    cannot exhaust memory.
@@ -52,6 +59,14 @@ import {
   type NumberFormat,
   type NumberFormatKind,
 } from "./style";
+import {
+  colWidthPx,
+  colWidthToWch,
+  rowHeightPx,
+  rowHeightToHpt,
+  type XlsxColInfo,
+  type XlsxRowInfo,
+} from "./xlsxMetrics";
 import type { SerializedCell, SerializedSheet, SerializedWorkbook } from "./persistence";
 
 /* Cells beyond MAX_IMPORT_ROWS/MAX_IMPORT_COLS (model.ts — shared with the
@@ -129,7 +144,16 @@ function sheetToXlsx(ws: Worksheet, registry: StyleRegistry): XLSX.WorkSheet {
     if (style.bold) font.bold = true;
     if (style.italic) font.italic = true;
     if (style.underline) font.underline = true;
-    if (Object.keys(font).length) cell.s = { font };
+    const alignment: Record<string, unknown> = {};
+    if (style.wrap) alignment.wrapText = true;
+    if (style.align) alignment.horizontal = style.align;
+    if (style.valign)
+      alignment.vertical = style.valign === "middle" ? "center" : style.valign;
+    if (Object.keys(font).length || Object.keys(alignment).length)
+      cell.s = {
+        ...(Object.keys(font).length ? { font } : {}),
+        ...(Object.keys(alignment).length ? { alignment } : {}),
+      };
     if (style.numberFormat) {
       const code = formatCode(style.numberFormat);
       if (code) cell.z = code;
@@ -139,6 +163,29 @@ function sheetToXlsx(ws: Worksheet, registry: StyleRegistry): XLSX.WorkSheet {
     maxCol = Math.max(maxCol, pos.col);
   }
   sheet["!ref"] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: maxRow, c: maxCol } });
+
+  /**
+   * The sizes, written back.
+   *
+   * Both arrays are DENSE up to the last sized line, because that is the shape
+   * SheetJS reads: an index carries a column, so a sparse array would move
+   * every width one column left of where it belongs. Unsized lines are written
+   * as empty slots, which the reader treats as "no width set".
+   */
+  const cols: XLSX.ColInfo[] = [];
+  for (const [k, px] of Object.entries(ws.colWidths)) {
+    const i = Number(k);
+    if (Number.isFinite(i) && i >= 0) cols[i] = { wch: colWidthToWch(px) };
+  }
+  if (cols.length) sheet["!cols"] = [...cols].map((c) => c ?? {});
+
+  const rows: XLSX.RowInfo[] = [];
+  for (const [k, px] of Object.entries(ws.rowHeights)) {
+    const i = Number(k);
+    if (Number.isFinite(i) && i >= 0) rows[i] = { hpt: rowHeightToHpt(px) };
+  }
+  if (rows.length) sheet["!rows"] = [...rows].map((r) => r ?? {});
+
   return sheet;
 }
 
@@ -184,11 +231,60 @@ function cellStyleFrom(cell: XLSX.CellObject): CellStyle | null {
   if (kind) style.numberFormat = { kind };
   /* Read styles back too, for the day the library (or a Pro build) provides
      them; the Community Edition returns no `.s`, which simply yields nothing. */
-  const font = (cell as { s?: { font?: { bold?: boolean; italic?: boolean; underline?: boolean } } }).s?.font;
+  const s = (
+    cell as {
+      s?: {
+        font?: { bold?: boolean; italic?: boolean; underline?: boolean };
+        alignment?: {
+          wrapText?: boolean;
+          horizontal?: string;
+          vertical?: string;
+        };
+      };
+    }
+  ).s;
+  const font = s?.font;
   if (font?.bold) style.bold = true;
   if (font?.italic) style.italic = true;
   if (font?.underline) style.underline = true;
+  /**
+   * Alignment, and `wrapText` above all.
+   *
+   * Dropping it is what made an imported file unreadable: the cell arrived
+   * narrow (the column width was dropped too) AND unwrapped, so a long value
+   * had nowhere to go and was cut off with an ellipsis. Excel showed the same
+   * file wrapped over three lines.
+   */
+  const a = s?.alignment;
+  if (a?.wrapText) style.wrap = true;
+  if (a?.horizontal === "left" || a?.horizontal === "center" || a?.horizontal === "right")
+    style.align = a.horizontal;
+  if (a?.vertical === "top" || a?.vertical === "bottom" || a?.vertical === "middle")
+    style.valign = a.vertical === "middle" ? "middle" : a.vertical;
   return Object.keys(style).length ? style : null;
+}
+
+/** Sparse index → pixels, keeping only the lines the file actually sized. */
+function sizeMap<T>(
+  info: T[] | undefined,
+  toPx: (i: T | undefined) => number | null,
+): Record<number, number> {
+  const out: Record<number, number> = {};
+  if (!Array.isArray(info)) return out;
+  info.forEach((entry, i) => {
+    const px = toPx(entry);
+    if (px !== null) out[i] = px;
+  });
+  return out;
+}
+
+function hiddenIndices(info: { hidden?: boolean }[] | undefined): number[] {
+  if (!Array.isArray(info)) return [];
+  const out: number[] = [];
+  info.forEach((entry, i) => {
+    if (entry?.hidden) out.push(i);
+  });
+  return out;
 }
 
 /** Parse `.xlsx` bytes into a loadable workbook, or a human-readable error.
@@ -249,10 +345,19 @@ export function xlsxToWorkbook(bytes: ArrayBuffer | Uint8Array): XlsxImportResul
         defaultColWidth: DEFAULT_COL_WIDTH,
         frozenRows: 0,
         frozenCols: 0,
-        rowHeights: {},
-        colWidths: {},
-        hiddenRows: [],
-        hiddenCols: [],
+        /**
+         * The sizes the file set, converted from Excel's units.
+         *
+         * Dropped before this, so a workbook whose columns were sized to hold
+         * their text arrived with every column at the default and the text cut
+         * off. Only columns the file actually sized are carried — see
+         * `colWidthPx`, which answers null rather than a default so an unsized
+         * column keeps taking the sheet's own.
+         */
+        rowHeights: sizeMap(ws["!rows"] as XlsxRowInfo[] | undefined, rowHeightPx),
+        colWidths: sizeMap(ws["!cols"] as XlsxColInfo[] | undefined, colWidthPx),
+        hiddenRows: hiddenIndices(ws["!rows"] as XlsxRowInfo[] | undefined),
+        hiddenCols: hiddenIndices(ws["!cols"] as XlsxColInfo[] | undefined),
         cells,
       };
     });

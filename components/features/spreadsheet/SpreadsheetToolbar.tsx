@@ -19,6 +19,10 @@ import type {
   NumberFormatKind,
   VAlign,
 } from "@/lib/spreadsheet/style";
+import {
+  DEFAULT_FONT_SIZE,
+  fontSizeOptions,
+} from "@/lib/spreadsheet/fontSizes";
 import { Dropdown } from "./Dropdown";
 import { SheetIcon } from "./SheetIcons";
 import type { SpreadsheetController } from "./useSpreadsheet";
@@ -30,7 +34,8 @@ const FONTS: { label: string; value: string | undefined }[] = [
   { label: "Mono", value: "ui-monospace, 'Cascadia Code', monospace" },
 ];
 
-const SIZES = [10, 11, 12, 13, 14, 16, 18, 24, 32];
+/* The size ladder lives in lib/spreadsheet/fontSizes.ts, shared with the
+   ribbon's own picker so the two cannot drift apart. */
 
 const NUMBER_FORMATS: { label: string; value: NumberFormatKind }[] = [
   { label: "Automatic", value: "automatic" },
@@ -214,10 +219,10 @@ export function SpreadsheetToolbar({
         aria-label="Font size"
         title="Font size"
         className={`${selectClass} ml-0.5 w-14`}
-        value={s.fontSize ?? 13}
-        onChange={(e) => set({ fontSize: Number(e.target.value) === 13 ? undefined : Number(e.target.value) })}
+        value={s.fontSize ?? DEFAULT_FONT_SIZE}
+        onChange={(e) => set({ fontSize: Number(e.target.value) === DEFAULT_FONT_SIZE ? undefined : Number(e.target.value) })}
       >
-        {SIZES.map((size) => (
+        {fontSizeOptions(s.fontSize ?? DEFAULT_FONT_SIZE).map((size) => (
           <option key={size} value={size}>
             {size}
           </option>

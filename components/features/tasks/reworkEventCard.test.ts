@@ -43,7 +43,7 @@ test("the card shows points cut, or that the deduction was waived", () => {
 
 test("a submission renders as an event card, not a personal bubble", () => {
   /* The engine posts it as the submitter, so it must be recognised and lifted
-     out of the bubble path into a centred event. */
+     out of the bubble path into an event card. */
   assert.match(CHAT, /const submissionNotice = deleted\s*\?\s*null\s*:\s*parseSubmissionNotice\(m\.text\)/);
   assert.match(CHAT, /: submissionNotice \? \(/);
   assert.match(CHAT, /<SubmissionEventCard/);
@@ -51,4 +51,42 @@ test("a submission renders as an event card, not a personal bubble", () => {
   assert.match(CHAT, /attachments=\{\s*attachments\.length > 0/);
   const card = code("components/features/tasks/SubmissionEventCard.tsx");
   assert.match(card, /Submitted for review/);
+});
+
+test("both event cards take a side rather than sitting in the middle", () => {
+  /* A handover and a return are two people answering each other, so they sit
+     where their messages sit. Centred said "the room announced this" about
+     something one person did. */
+  const sub = code("components/features/tasks/SubmissionEventCard.tsx");
+  for (const card of [CARD, sub]) {
+    assert.match(card, /mine \? "justify-end" : "justify-start"/);
+    assert.doesNotMatch(card, /justify-center/);
+    /* The accent mirrors onto the outer edge, so a card on the right does not
+       point its rule back into the thread. */
+    assert.match(card, /mine \? "border-e-2" : "border-s-2"/);
+    assert.match(card, /borderInlineEndColor/);
+    assert.match(card, /borderInlineStartColor/);
+  }
+});
+
+test("each card is sided from the person who actually did it", () => {
+  /* A submission carries the submitter's id, so the ordinary sender test is
+     right. A rework is posted as `system` and only NAMES its reviewer, so it
+     goes through the resolver instead of a string comparison written here. */
+  assert.match(CHAT, /<SubmissionEventCard[\s\S]*?mine=\{mine\}/);
+  assert.match(
+    CHAT,
+    /mine=\{eventByViewer\(\{\s*actorName: notice\.byName \|\| m\.senderName,/,
+  );
+  assert.match(CHAT, /import \{ eventByViewer \} from "@\/lib\/rules\/messages\/eventSide"/);
+});
+
+test("the cards use their own surface, not the raised film", () => {
+  /* `--surface-raised` lifted them above the conversation and made them the
+     brightest thing in a thread they are only part of. */
+  const sub = code("components/features/tasks/SubmissionEventCard.tsx");
+  for (const card of [CARD, sub]) {
+    assert.match(card, /bg-\[var\(--event-card\)\]/);
+    assert.doesNotMatch(card, /bg-\[var\(--surface-raised\)\]/);
+  }
 });
