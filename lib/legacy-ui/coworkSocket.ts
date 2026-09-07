@@ -65,6 +65,38 @@ export interface ParticipantStatus {
   timestamp?: number;
 }
 
+/**
+ * The organiser ended (or cancelled) the meeting — server → room.
+ *
+ * Emitted by the engine's `setCoworkMeetStatus` into the meeting's socket room,
+ * `meeting_<meetId>`, which holds every browser in the call — guests included,
+ * whom a list of employee ids can never reach. The recorder listens for it and
+ * finalises this person's audio; the room disconnects itself on the same cue.
+ */
+export interface MeetStatusSignal {
+  meetId: string;
+  status: string;
+  title?: string;
+  endedBy?: string;
+  endedByName?: string;
+}
+
+/**
+ * The statuses that mean "there is no meeting to be in any more".
+ *
+ * Kept in step with `canJoin` in the engine's public meeting-info route and
+ * with `joinRefusal` — a status one of them treats as finished and this does
+ * not is a room that stays open after the organiser ended it.
+ */
+export const FINISHED_MEET_STATUSES = ["completed", "cancelled", "archived", "ended"] as const;
+
+export function isFinishedMeetStatus(status: string | undefined | null): boolean {
+  return (
+    typeof status === "string" &&
+    (FINISHED_MEET_STATUSES as readonly string[]).includes(status)
+  );
+}
+
 let socket: Socket | null = null;
 
 /**
@@ -154,6 +186,39 @@ export function onRecordingRefused(
   socket?.on("recording_refused", handler);
   return () => {
     socket?.off("recording_refused", handler);
+  };
+}
+
+/**
+ * The organiser ended the meeting — see `MeetStatusSignal`.
+ *
+ * A subscription helper rather than a listener inside the recorder alone,
+ * because the recorder is not the only thing that has to hear it: the meeting
+ * page's wrap-up panel listens too, after the room itself has gone.
+ */
+export function onMeetStatus(
+  handler: (payload: MeetStatusSignal) => void,
+): () => void {
+  socket?.on("meet_status", handler);
+  return () => {
+    socket?.off("meet_status", handler);
+  };
+}
+
+/**
+ * Each participant's record/upload state, as the room relays it.
+ *
+ * Exposed for the organiser's wrap-up panel, which outlives the room: the
+ * recorder's own listener goes with the room, and the panel exists to watch
+ * everybody's audio ARRIVE after End for everyone — the one moment the room is
+ * no longer there to watch it.
+ */
+export function onParticipantStatus(
+  handler: (payload: ParticipantStatus & { timestamp?: number }) => void,
+): () => void {
+  socket?.on("participant_status", handler);
+  return () => {
+    socket?.off("participant_status", handler);
   };
 }
 

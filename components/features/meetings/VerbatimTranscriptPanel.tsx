@@ -71,6 +71,12 @@ const MODE_LABEL: Record<TranscriptMode, string> = {
   translate: "Translated to English",
 };
 
+/* Render the transcript one page at a time. A long meeting is hundreds of
+   lines, and putting all of them in the DOM at once is what made opening the
+   panel stutter. The whole record is ALREADY in memory — this only limits how
+   much is drawn, so paging costs nothing on the server and adds no request. */
+const PAGE_SIZE = 50;
+
 export function VerbatimTranscriptPanel({
   meetId,
   meetStatus,
@@ -85,6 +91,11 @@ export function VerbatimTranscriptPanel({
   const [step, setStep] = useState(0);
   const [genError, setGenError] = useState<string | null>(null);
   const [dlLoading, setDlLoading] = useState(false);
+  /* Which page of the transcript is on screen. Reset whenever the record or the
+     tab changes, so switching to Translated does not strand you on page 7 of a
+     verbatim transcript that had more lines. */
+  const [page, setPage] = useState(0);
+  const listTopRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -105,6 +116,11 @@ export function VerbatimTranscriptPanel({
       cancelled = true;
     };
   }, [meetId]);
+
+  /* A fresh record or a new tab starts at the first page. */
+  useEffect(() => {
+    setPage(0);
+  }, [mode, record]);
 
   const stepTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   useEffect(() => {
@@ -191,7 +207,9 @@ export function VerbatimTranscriptPanel({
           type="button"
           onClick={() => setMode(m)}
           disabled={generating}
-          className={`rounded-full px-3 py-1 transition-colors ${
+          /* 32px tall on a phone, where this is tapped; the desk keeps the
+             slimmer pill. */
+          className={`min-h-8 rounded-full px-3 py-1 transition-colors sm:min-h-0 ${
             mode === m
               ? "bg-[var(--surface-raised)] text-ink shadow-sm"
               : "text-ink-faint hover:text-ink-muted"
@@ -282,6 +300,21 @@ export function VerbatimTranscriptPanel({
 
   const reviewCount = modeResult.utterances.filter((u) => u.needsReview).length;
 
+  /* Paginate the render — see PAGE_SIZE. The whole transcript is already loaded;
+     this only limits how many lines are in the DOM at once. */
+  const utterances = modeResult.utterances;
+  const total = utterances.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const current = Math.min(page, pageCount - 1);
+  const start = current * PAGE_SIZE;
+  const shown = utterances.slice(start, start + PAGE_SIZE);
+  const goTo = (p: number) => {
+    setPage(p);
+    /* Back to the first line of the new page rather than wherever the last one
+       was scrolled to. */
+    listTopRef.current?.scrollIntoView({ block: "nearest" });
+  };
+
   return (
     <div className="mt-2">
       {ModeTabs}
@@ -317,10 +350,10 @@ export function VerbatimTranscriptPanel({
         </div>
       )}
 
-      <div className="flex flex-col divide-y divide-hairline">
-        {modeResult.utterances.map((u, i) => (
+      <div ref={listTopRef} className="flex flex-col divide-y divide-hairline">
+        {shown.map((u, i) => (
           <div
-            key={i}
+            key={start + i}
             className={`flex gap-3 py-2 ${u.needsReview ? "rounded-inset bg-[var(--surface-sunken)] px-2" : ""}`}
           >
             <span
@@ -348,6 +381,35 @@ export function VerbatimTranscriptPanel({
           </div>
         ))}
       </div>
+
+      {pageCount > 1 && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-hairline pt-3 text-xs">
+          <span className="text-ink-faint tabular-nums">
+            Lines {start + 1}–{Math.min(start + PAGE_SIZE, total)} of {total}
+          </span>
+          <div className="flex items-center gap-1">
+            <Button
+              tone="ghost"
+              size="sm"
+              disabled={current === 0}
+              onClick={() => goTo(current - 1)}
+            >
+              Previous
+            </Button>
+            <span className="px-1 text-ink-faint tabular-nums">
+              Page {current + 1} / {pageCount}
+            </span>
+            <Button
+              tone="ghost"
+              size="sm"
+              disabled={current >= pageCount - 1}
+              onClick={() => goTo(current + 1)}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
 
       {genError && (
         <div className="mt-3">

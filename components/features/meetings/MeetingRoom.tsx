@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { COWORK_ROOM_OPTIONS } from "./roomOptions";
 import { LiveKitRoom, useParticipants } from "@livekit/components-react";
+import { DisconnectReason } from "livekit-client";
 import "@livekit/components-styles";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
@@ -11,8 +12,14 @@ import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { useFullscreen } from "@/lib/legacy-ui/useFullscreen";
 import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
 import { RecordingControls } from "./RecordingControls";
-import { TranscriptPanel } from "./TranscriptPanel";
+/* `TranscriptPanel` — the in-room live-caption rail driven by the browser's
+   SpeechRecognition — is no longer mounted here, at the owner's request. The
+   after-meeting transcript in the details rail is unaffected: it is
+   generated from the Drive audio by Gemini, a different source entirely. */
 import { RoomInterior } from "./RoomInterior";
+import { MeetingEndWatch } from "./MeetingEndWatch";
+import type { LeaveReason } from "./MeetingSessionContext";
+import type { MeetStatusSignal } from "@/lib/legacy-ui/coworkSocket";
 import { formatDateTime } from "@/lib/utils/format";
 import type { Meeting } from "@/lib/domain";
 
@@ -47,7 +54,12 @@ export function MeetingRoom({
   meeting: Meeting;
   isOrganiser: boolean;
   displayName: string;
-  onLeave: () => void;
+  /**
+   * The room closed — and why, when it knows. `"ended"` is the organiser's
+   * End for everyone reaching this browser (the socket, or the LiveKit room
+   * deleted underneath the call); `"left"` is a pressed Leave.
+   */
+  onLeave: (reason?: LeaveReason) => void;
   /**
    * Drawn small, in a corner, over another page.
    *
@@ -79,7 +91,22 @@ export function MeetingRoom({
     null,
   );
   const [error, setError] = useState<string | null>(null);
-  const [transcriptOpen, setTranscriptOpen] = useState(false);
+
+  /**
+   * The organiser ended the meeting for everyone.
+   *
+   * The recorder hears `meet_status` on the socket and finalises this
+   * person's audio itself, then calls this; `MeetingEndWatch` below
+   * disconnects the room on the state change, which lands in `onDisconnected`
+   * as a `CLIENT_INITIATED` leave. The ref is what that callback reads,
+   * because it closes over an older render.
+   */
+  const [ended, setEnded] = useState<MeetStatusSignal | null>(null);
+  const endedRef = useRef(false);
+  const onMeetingEnded = useCallback((signal: MeetStatusSignal) => {
+    endedRef.current = true;
+    setEnded(signal);
+  }, []);
 
   const [present, presentState] = useAction((r, joined: boolean) =>
     r.recordMeetingPresence(meeting.id, joined),
@@ -97,6 +124,7 @@ export function MeetingRoom({
     employeeName: displayName,
     firstName,
     isHost: isOrganiser,
+    onMeetingEnded,
   });
 
   /**
@@ -196,19 +224,6 @@ export function MeetingRoom({
         ) : (
         <>
           <RecordingControls recording={recording} isHost={isOrganiser} />
-          {/* Transcript toggle */}
-          <button
-            type="button"
-            title={transcriptOpen ? "Hide transcript" : "Show transcript"}
-            onClick={() => setTranscriptOpen((v) => !v)}
-            className={`grid h-9 w-9 place-items-center rounded-full sm:h-8 sm:w-8 transition-colors ${
-              transcriptOpen
-                ? "bg-white/20 text-slab-ink"
-                : "text-slab-ink-muted hover:bg-white/10 hover:text-slab-ink"
-            }`}
-          >
-            <Icon.chat className="h-4 w-4" />
-          </button>
         </>
         )
       }
@@ -253,12 +268,40 @@ export function MeetingRoom({
            go. `flex-1` takes what the header does not. */
         className="flex min-h-0 flex-1"
         onConnected={() => void present(true)}
-        onDisconnected={() => {
+        onDisconnected={(reason) => {
+          /* A DELIBERATE leave stops this person's own capture and finalises
+             (uploads) their audio right away, rather than leaving it to the
+             background drain to catch later. Guarded on CLIENT_INITIATED so a
+             network blip — which LiveKit reconnects from while `connect` is
+             still set — does not finalise a recording that should resume;
+             `stopRecording` is idempotent and a no-op when nothing is
+             recording, so this is safe either way.
+
+             `ROOM_DELETED` is the organiser's End for everyone arriving
+             through LiveKit itself — the engine deletes the room after it has
+             told the socket — so the meeting is over and the audio is
+             finalised on the same line. */
+          const endedForEveryone =
+            endedRef.current || reason === DisconnectReason.ROOM_DELETED;
+          if (
+            reason === DisconnectReason.CLIENT_INITIATED ||
+            reason === DisconnectReason.ROOM_DELETED
+          )
+            void recording.stopRecording();
           void present(false);
-          onLeave();
+          onLeave(
+            endedForEveryone
+              ? "ended"
+              : reason === DisconnectReason.CLIENT_INITIATED
+                ? "left"
+                : undefined,
+          );
         }}
         onError={(e) => setError(e.message)}
       >
+        {/* Takes this browser out once the meeting has been ended for
+            everyone; draws nothing. */}
+        <MeetingEndWatch ended={ended !== null} />
         {/* The inside of the room, shared with a task's meeting so both get
             every feature and a future fix lands in both. */}
         <RoomInterior
@@ -275,24 +318,10 @@ export function MeetingRoom({
               </div>
             ) : null
           }
-          /* The CC button in the control bar, driving the SAME state as the
-             one in the masthead — one transcript, two ways to reach it, so
-             they cannot disagree. Only this room passes it: a task room and a
-             guest room have no transcript panel, and a CC button there would
-             be a control that does nothing. */
-          captions={{
-            on: transcriptOpen,
-            toggle: () => setTranscriptOpen((v) => !v),
-          }}
-          aside={
-            /* Always mounted, toggled via CSS so the hook (and its Firestore
-               subscription) stays alive while hidden. */
-            <TranscriptPanel
-              meetId={meeting.id}
-              participantName={displayName}
-              open={transcriptOpen}
-            />
-          }
+          /* No `captions` and no `aside` any more. The live-caption rail and
+             its CC button were removed; `MeetingControlBar` still accepts an
+             optional `captions` and simply draws no button when none is
+             passed, which is what every other room already did. */
         />
       </LiveKitRoom>
     </RoomFrame>
@@ -389,12 +418,20 @@ function RoomFrame({
        * against the black backdrop a browser paints behind a full-screen
        * element read as a photograph of a window rather than as the screen.
        */
+      /**
+       * **No minimum height of its own any more.** `min-h-[520px]` was a
+       * leftover from the in-flow days, and it fought the box the engine
+       * hands over: the meeting page's stage is 416px on a phone and 480px on
+       * a tablet (see its ladder), so a frame that insisted on 520 ran 104px
+       * past the stage and over the Participants panel underneath it. The
+       * stage is the one place the height is decided.
+       */
       className={
         compact
           ? "slab slab-flat relative flex h-full flex-col overflow-hidden"
           : isFullscreen
             ? "slab slab-flat fixed inset-0 flex h-full w-full flex-col overflow-hidden"
-            : "slab slab-flat relative flex h-full min-h-[520px] flex-col overflow-hidden rounded-card"
+            : "slab slab-flat relative flex h-full min-h-0 flex-col overflow-hidden rounded-card"
       }
       data-on-slab
     >
@@ -487,9 +524,11 @@ function RoomFrame({
             onPointerDown={(e) => e.stopPropagation()}
             title="Open in a floating window"
             aria-label="Open the meeting in a floating window"
+            /* 32px in the corner window too: on a phone it is the window a
+               thumb reaches for, and 24px missed. */
             className={
               compact
-                ? "grid h-6 w-6 shrink-0 place-items-center rounded-full text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
+                ? "grid h-8 w-8 shrink-0 place-items-center rounded-full text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
                 : "grid h-9 w-9 shrink-0 place-items-center rounded-full sm:h-8 sm:w-8 text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
             }
           >
@@ -507,7 +546,7 @@ function RoomFrame({
                full size — was the one they could not find. */
             title="Back to the full meeting"
             aria-label="Back to the full meeting"
-            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
+            className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
           >
             <Icon.chevronRight className="h-3 w-3" />
             Open

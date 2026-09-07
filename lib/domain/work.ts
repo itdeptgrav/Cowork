@@ -447,6 +447,29 @@ export interface Message {
   starredBy?: EmployeeId[];
 }
 
+/**
+ * One meeting-chat message as the ledger stores it.
+ *
+ * Separate from `Message` on purpose: a meeting message has no conversation,
+ * no reply, no reactions and no read receipts — and a guest can write one,
+ * which is why `senderKind` exists at all. Modelling it as a `Message` would
+ * mean six fields that are always empty and one rule that cannot be true.
+ */
+export interface StoredMeetingMessage {
+  messageId: string;
+  senderId: string;
+  senderName: string;
+  /** A guest's display name is self-typed and unverified, so the bubble has
+      to be able to say which kind of person said this. */
+  senderKind: "employee" | "guest";
+  text: string;
+  attachments: MessageAttachment[];
+  /** ISO, from the SERVER clock — which is what makes every reader agree
+      about the order. */
+  createdAt: string;
+  createdAtMs: number;
+}
+
 export interface Group {
   /**
    * Owning tenant. Every read is scoped to it; every write stamps it.

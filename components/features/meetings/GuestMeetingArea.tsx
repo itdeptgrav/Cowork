@@ -14,34 +14,22 @@
  *      it. Error states cover: invalid token, meeting not started yet,
  *      meeting ended, and server errors.
  *   2. Room — once the guest submits their name and the backend returns
- *      LiveKit credentials, we drop them into a lightweight LiveKit room,
- *      carrying over the mic/camera/device choice made in the lobby. The
- *      recording hook RUNS — a guest's microphone is captured and uploaded on
- *      the same 30-second cadence as anybody else's, through the no-auth
- *      `guest-chunk` / `guest-finalize` routes keyed by the `guestSessionId`
- *      issued at join. This said "guests can't upload to Drive", which was
- *      true before those routes existed and left every meeting with a guest in
- *      it missing the one voice most likely to matter. No transcript (needs
- *      LiveKit DataChannel which needs auth participants to broadcast), and
- *      otherwise just the participant grid + control bar.
+ *      LiveKit credentials, the call is handed to the SHELL as a
+ *      `GuestSession`, and this page renders only a `MeetingStage` saying
+ *      where to draw it. `MeetingEngine` mounts `GuestRoom` over that stage
+ *      and keeps it when the guest navigates — a link in the chat, Back — as
+ *      the same draggable corner window and picture-in-picture window an
+ *      employee gets. The room used to be a phase of this page, and a page
+ *      unmounts: every navigation ended the guest's call and finalised their
+ *      recording mid-sentence. The recording hook runs inside `GuestRoom`,
+ *      through the no-auth `guest-chunk` / `guest-finalize` routes keyed by
+ *      the `guestSessionId` issued at join.
  *
  * All API calls go through `meetingMedia.ts` — the `getPublicMeetingInfo` and
  * `guestJoinMeeting` functions hit the NO-AUTH backend routes directly.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  CarouselLayout,
-  FocusLayout,
-  FocusLayoutContainer,
-  GridLayout,
-  LiveKitRoom,
-  ParticipantTile,
-  RoomAudioRenderer,
-  useTracks,
-} from "@livekit/components-react";
-import { Track } from "livekit-client";
-import "@livekit/components-styles";
 import { Button, Input, InlineError } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
 import { Mark } from "@/components/layout/shell/Mark";
@@ -49,17 +37,16 @@ import {
   getPublicMeetingInfo,
   guestJoinMeeting,
 } from "@/lib/legacy/meetingMedia";
-import { BREAKPOINT, useMediaQuery } from "@/lib/hooks/useMediaQuery";
-import { COWORK_ROOM_OPTIONS } from "./roomOptions";
-import { DeviceIntentSync } from "./DeviceIntentSync";
-import { MeetingControlBar } from "./MeetingControlBar";
-import { RoomOverlays, RoomSidePanel, useRoomExtras } from "./RoomExtras";
-import { RoomSignalsProvider } from "./RoomSignals";
-import { useFullscreen } from "@/lib/legacy-ui/useFullscreen";
-import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
+import { MeetingStage } from "./MeetingStage";
+import { useMeetingSession } from "./MeetingSessionContext";
+import { PendingAudioDrain } from "./PendingAudioDrain";
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
+/**
+ * What this page is showing. There is no "room" phase any more: the room is
+ * the shell's `GuestSession`, and the page reads it from there — see `live`.
+ */
 type Phase =
   | { kind: "loading" }
   | {
@@ -69,37 +56,13 @@ type Phase =
       canJoin: boolean;
       participantCount: number;
     }
-  | {
-      kind: "room";
-      token: string;
-      url: string;
-      meetTitle: string;
-      camEnabled: boolean;
-      micEnabled: boolean;
-      camId: string;
-      micId: string;
-      /**
-       * What a guest needs to have their voice recorded like anybody else's.
-       *
-       * `guest-join` has always returned these three; this screen discarded
-       * them, on a comment that said "guests can't upload to Drive". That was
-       * true once and has not been for some time: `/cowork/audio/guest-chunk`
-       * and `/cowork/audio/guest-finalize` take a `guestSessionId` instead of a
-       * Firebase token, merge the chunks and push the file to Drive through the
-       * same `uploadAudioToDrive` an employee's recording uses, into the same
-       * `meeting_audio_recordings` collection the summary reads.
-       *
-       * So a guest's voice was missing from every recording and every summary —
-       * not because it could not be captured, but because nothing asked for it.
-       */
-      meetId: string;
-      guestId: string;
-      guestSessionId: string;
-    }
   | { kind: "error"; message: string };
 
 export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
+  /* Bumped to re-read the invite — after a guest leaves, the meeting may
+     still be running and the lobby should offer to rejoin it. */
+  const [reload, setReload] = useState(0);
   const [name, setName] = useState("");
   const [camEnabled, setCamEnabled] = useState(false);
   const [micEnabled, setMicEnabled] = useState(true);
@@ -110,7 +73,21 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
 
   const devices = useDeviceLists(camEnabled || micEnabled);
 
-  // Resolve the token to meeting info on first render
+  /**
+   * The call the shell is holding for THIS link, if any.
+   *
+   * Read from the shell rather than kept in local state, so a page that was
+   * left and returned to — Open on the corner window, the browser's Back —
+   * finds the room it left rather than a lobby offering to join it twice.
+   */
+  const meetingSession = useMeetingSession();
+  const live =
+    meetingSession.session?.kind === "guest" &&
+    meetingSession.session.shareToken === shareToken
+      ? meetingSession.session
+      : null;
+
+  // Resolve the token to meeting info on first render, and again on reload
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -132,7 +109,9 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
     return () => {
       cancelled = true;
     };
-  }, [shareToken]);
+  }, [shareToken, reload]);
+
+  const openSession = meetingSession.open;
 
   async function join() {
     const safeName = name.trim();
@@ -148,22 +127,49 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
       const d = res.data!;
       if (!d.token || !d.url)
         throw new Error("Server did not return room credentials.");
-      setPhase({
-        kind: "room",
+      const meetTitle = d.meetTitle ?? "CoWork Meeting";
+      /**
+       * Hand the call to the shell. Everything the room needs travels on the
+       * session, because this page may be gone by the time it is drawn.
+       *
+       * The identity fields are carried rather than dropped — the guest's
+       * voice is recorded with these. Empty strings where the engine sent
+       * nothing: the recorder refuses to start without a meet id and a
+       * session, which is the right answer for a build whose engine predates
+       * guest recording.
+       */
+      openSession({
+        kind: "guest",
+        shareToken,
+        meetId: d.meetId ?? "",
+        meetTitle,
         token: d.token,
         url: d.url,
-        meetTitle: d.meetTitle ?? "CoWork Meeting",
-        camEnabled,
-        micEnabled,
-        camId,
-        micId,
-        /* Carried rather than dropped — the guest's voice is recorded with
-           these. Empty strings where the engine sent nothing: the recorder
-           refuses to start without a meet id and a session, which is the right
-           answer for a build whose engine predates guest recording. */
-        meetId: d.meetId ?? "",
         guestId: d.guestId ?? "",
         guestSessionId: d.guestSessionId ?? "",
+        guestName: safeName,
+        micEnabled,
+        camEnabled,
+        micId,
+        camId,
+        onLeave: (reason) => {
+          /* The organiser ended it: say so, and offer nothing. Their own
+             Leave, or a connection that gave up: the meeting may well still be
+             running, so re-read the invite and let the lobby offer to rejoin —
+             which is what the signed-in page's Rejoin does. */
+          if (reason === "ended") {
+            setPhase({
+              kind: "lobby",
+              meetTitle,
+              status: "ended",
+              canJoin: false,
+              participantCount: 0,
+            });
+            return;
+          }
+          setPhase({ kind: "loading" });
+          setReload((n) => n + 1);
+        },
       });
     } catch (e) {
       setJoinError(e instanceof Error ? e.message : "Could not join.");
@@ -172,40 +178,43 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
     }
   }
 
+  if (live) {
+    /**
+     * **The room is the shell's; this page is only where it is drawn.**
+     *
+     * A full-viewport stage, as the room itself was when it lived here: a
+     * guest joins to be shown something, and they have no other Cowork window
+     * to keep. The engine positions `GuestRoom` over this box, and takes it
+     * to a corner the moment this page is left.
+     */
+    return <MeetingStage className="h-dvh w-full" />;
+  }
+
   if (phase.kind === "loading") return <Shell><Spinner /></Shell>;
   if (phase.kind === "error") return <Shell><ErrorCard message={phase.message} /></Shell>;
-  if (phase.kind === "room") {
-    return (
-      <GuestRoom
-        token={phase.token}
-        url={phase.url}
-        meetTitle={phase.meetTitle}
-        camEnabled={phase.camEnabled}
-        micEnabled={phase.micEnabled}
-        camId={phase.camId}
-        micId={phase.micId}
-        meetId={phase.meetId}
-        guestId={phase.guestId}
-        guestSessionId={phase.guestSessionId}
-        guestName={name.trim() || "Guest"}
-        onLeave={() =>
-          setPhase({
-            kind: "lobby",
-            meetTitle: phase.meetTitle,
-            status: "ended",
-            canJoin: false,
-            participantCount: 0,
-          })
-        }
-      />
-    );
-  }
 
   const { meetTitle, status, canJoin, participantCount } = phase;
 
   if (!canJoin) {
     return (
       <Shell>
+        {/**
+         * **A guest's second chance at their own audio.**
+         *
+         * A guest's recording is uploaded by their own browser and by nothing
+         * else: the finalize route takes the identity from the caller, so no
+         * host and no server can push it for them. If the upload failed at
+         * the moment they left — a dropped connection, a tab closed a beat too
+         * soon — the chunks sit in this browser's IndexedDB with nothing to
+         * retry them, because the signed-in shell that carries this drain
+         * everywhere is a shell a guest never sees.
+         *
+         * This card is the one page a guest reliably returns to — the link
+         * they were sent, reloaded — so the drain lives here. It needs no
+         * sign-in: `drainPendingAudio` picks the guest routes from the
+         * `guestSessionId` stored beside each chunk.
+         */}
+        <PendingAudioDrain />
         <div className="max-w-md space-y-5 text-center">
           <span
             aria-hidden="true"
@@ -220,7 +229,9 @@ export function GuestMeetingArea({ shareToken }: { shareToken: string }) {
               status === "completed" ||
               status === "archived"
                 ? "This meeting has ended."
-                : "This link is not currently active. Ask the host to share an active link."}
+                : status === "cancelled"
+                  ? "This meeting was cancelled."
+                  : "This link is not currently active. Ask the host to share an active link."}
             </p>
           </div>
         </div>
@@ -640,345 +651,6 @@ function CameraOffIcon({ className }: { className?: string }) {
       />
       <path d="M2 2l12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
     </svg>
-  );
-}
-
-/**
- * The guest room — the grid, the controls, and the guest's own voice.
- *
- * **Recording is not an employee privilege.** It reads as one because the
- * uploads an employee makes are authenticated with their Firebase token, and a
- * guest has no account to hold one. The engine answered that a long time ago
- * with `/cowork/audio/guest-chunk` and `/cowork/audio/guest-finalize`, which
- * take the `guestSessionId` issued at join instead — same 30-second cadence,
- * same merge, same `uploadAudioToDrive`, same `meeting_audio_recordings`
- * collection the summary reads. `useMeetingRecording` has carried a
- * `guestSessionId` parameter for exactly this since it was ported.
- *
- * Only this screen never asked. So a meeting with a guest in it produced a
- * recording with a hole where they spoke, and a summary that could not
- * attribute a word of it — the one participant most likely to be the reason
- * the meeting happened.
- */
-
-function GuestRoom({
-  token,
-  url,
-  meetTitle,
-  camEnabled,
-  micEnabled,
-  camId,
-  micId,
-  meetId,
-  guestId,
-  guestSessionId,
-  guestName,
-  onLeave,
-}: {
-  token: string;
-  url: string;
-  meetTitle: string;
-  camEnabled: boolean;
-  micEnabled: boolean;
-  camId: string;
-  micId: string;
-  meetId: string;
-  guestId: string;
-  guestSessionId: string;
-  guestName: string;
-  onLeave: () => void;
-}) {
-  const [error, setError] = useState<string | null>(null);
-
-  /**
-   * The guest's own microphone, captured and uploaded exactly as a colleague's
-   * is.
-   *
-   * `employeeId` carries the guest id: the hook uses it as the identity for the
-   * socket room and as the folder its chunks are written under, and the engine
-   * keys a guest's chunk directory by the same `guestId` it minted at join. It
-   * is an identity, not a claim of employment — and passing a blank would put
-   * every guest's audio in one unnamed pile.
-   *
-   * `isHost: false` always. A guest hears the host's start and stop over the
-   * socket like everybody else and never drives the room's recording.
-   */
-  const recording = useMeetingRecording({
-    meetId,
-    employeeId: guestId,
-    employeeName: guestName,
-    firstName: guestName.trim().split(/\s+/)[0] || guestName,
-    isHost: false,
-    guestSessionId,
-  });
-  /* Read so the hook is unmistakably live rather than looking like a call whose
-     result was thrown away — and so a guest can be told their voice failed to
-     reach Drive instead of finding out from a silent gap in the summary. */
-  const uploadFailed = recording.uploadError;
-
-  /* A guest gets the same full-screen control as everybody else. They are the
-     ones most likely to want it — a guest joins to be SHOWN something, and
-     they have no other Cowork window to lose. */
-  const {
-    attach: fullscreenRef,
-    isFullscreen,
-    supported: canFullscreen,
-    toggle: toggleFullscreen,
-  } = useFullscreen();
-
-  /* The live microphone and camera, seeded from the lobby. See the note where
-     they are passed to LiveKitRoom. */
-  const [micOn, setMicOn] = useState(micEnabled);
-  const [camOn, setCamOn] = useState(camEnabled);
-  const onDeviceIntent = useCallback(
-    (next: { mic: boolean; cam: boolean }) => {
-      setMicOn(next.mic);
-      setCamOn(next.cam);
-    },
-    [],
-  );
-
-  /* See the note at the guest's ControlBar. */
-  const wideEnoughForLabels = useMediaQuery(BREAKPOINT.sm);
-
-  return (
-    <section
-      /**
-       * **`h-dvh`, not `min-h-screen`.** A minimum lets the column grow past the
-       * viewport, and the control bar is the LAST child of that column — so
-       * everything below the fold, which is the microphone, the camera, the
-       * screen share and Leave. A guest scrolled to find the grid empty and no
-       * way to speak.
-       *
-       * `dvh` rather than `vh` because a phone's address bar changes the
-       * viewport as it hides: `100vh` is the LARGEST it will be, so the bar
-       * spends most of its life just off the bottom of a phone screen.
-       *
-       * The grid inside takes the space left over and scrolls within itself if
-       * it must; the controls never move.
-       */
-      /* `fixed inset-0` on the full screen: Tailwind's `relative` is author CSS
-         and beats the browser's own `:fullscreen { position: fixed }`, which
-         leaves an element painted over everything but still laid out where it
-         sat. See the same note in MeetingRoom's RoomFrame. */
-      className={
-        isFullscreen
-          ? "slab slab-flat fixed inset-0 flex h-full w-full flex-col overflow-hidden"
-          : "slab slab-flat relative flex h-dvh flex-col overflow-hidden"
-      }
-      ref={fullscreenRef}
-      data-on-slab
-    >
-      <header className="flex shrink-0 items-center gap-3 border-b border-white/10 px-4 py-3">
-        <Icon.meeting className="h-4 w-4 text-slab-ink-muted" />
-        <span className="flex-1 truncate text-sm font-medium text-slab-ink">
-          {meetTitle}
-        </span>
-        {/* Said where it happens. A guest whose clips are not reaching Drive
-            would otherwise learn it from a gap in a summary nobody can fix
-            afterwards, and the recording is still running — this is a warning,
-            not a failure of the meeting. */}
-        {uploadFailed ? (
-          <span
-            className="truncate text-[11px] text-[var(--state-rework-ink)]"
-            title={uploadFailed}
-          >
-            Your audio is not uploading
-          </span>
-        ) : null}
-        {canFullscreen && (
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            title={isFullscreen ? "Exit full screen" : "Full screen"}
-            aria-label={
-              isFullscreen
-                ? "Exit full screen"
-                : "Show the meeting full screen"
-            }
-            aria-pressed={isFullscreen}
-            className={`grid h-9 w-9 shrink-0 place-items-center rounded-full sm:h-8 sm:w-8 transition-colors ${
-              isFullscreen
-                ? "bg-white/20 text-slab-ink"
-                : "text-slab-ink-muted hover:bg-white/10 hover:text-slab-ink"
-            }`}
-          >
-            {isFullscreen ? (
-              <Icon.collapse className="h-4 w-4" />
-            ) : (
-              <Icon.expand className="h-4 w-4" />
-            )}
-          </button>
-        )}
-        <span className="text-[11px] text-slab-ink-muted">Guest</span>
-      </header>
-
-      {error ? (
-        <div className="grid flex-1 place-items-center px-8 py-16 text-center">
-          <p className="text-[15px] font-medium text-slab-ink">
-            Connection error
-          </p>
-          <p className="mt-1.5 text-xs text-slab-ink-muted">{error}</p>
-        </div>
-      ) : (
-        <LiveKitRoom
-          token={token}
-          serverUrl={url}
-          connect
-          /* See MeetingRoom: LiveKit tears the room down on `beforeunload`,
-             which is fired when a reload is PROPOSED — so a guest who cancelled
-             the browser's dialog was dropped from a meeting they had just
-             chosen not to leave. */
-          options={COWORK_ROOM_OPTIONS}
-          /**
-           * **The lobby's choice is where this STARTS, not what it is.**
-           *
-           * These props are re-applied on every `SignalConnected`, and that
-           * fires on every reconnect — so passing the lobby values as constants
-           * meant a guest who muted themselves in the room was unmuted again by
-           * the next connection blip, and a guest who unmuted was silently
-           * muted. Held as state and kept level with the real tracks by
-           * `DeviceIntentSync`, a reconnect restores what they actually chose.
-           *
-           * The device constraints still ride along, so a guest who picked a
-           * particular microphone in the lobby keeps that microphone.
-           */
-          video={camOn ? (camId ? { deviceId: { exact: camId } } : true) : false}
-          audio={micOn ? (micId ? { deviceId: { exact: micId } } : true) : false}
-          data-lk-theme="default"
-          className="flex min-h-0 flex-1 flex-col"
-          onDisconnected={onLeave}
-          onError={(e) => setError(e.message)}
-        >
-          {/**
-           * **A guest gets the same in-call features as everybody else.**
-           *
-           * The stage stays its own — a guest has no tile menu and never reads
-           * the employee directory, which is why `GuestStage` exists. But chat,
-           * a raised hand, a reaction, a reconnection notice and knowing who
-           * else is in the room are not workspace features, and the guest is
-           * usually the person in the meeting with the least context. They were
-           * the ones given the least to work with.
-           */}
-          <GuestExtras compact={!wideEnoughForLabels} />
-          <RoomAudioRenderer />
-          <DeviceIntentSync onChange={onDeviceIntent} />
-        </LiveKitRoom>
-      )}
-    </section>
-  );
-}
-
-/**
- * The stage, and everything a guest can do around it.
- *
- * One component because the toolbar and the side panel share which panel is
- * open, and that state has to live above both — while `useChatUnread` needs the
- * room context, so it cannot live in `GuestRoom`, which is what renders
- * `LiveKitRoom`.
- *
- * `withDirectory={false}`: a guest is not entitled to read the employee
- * directory, so the roster shows the names people published with. That is what
- * LiveKit's own tiles show them anyway, so the panel agrees with the grid.
- */
-function GuestExtras({ compact }: { compact: boolean }) {
-  const { panel, setPanel, unreadChat } = useRoomExtras();
-
-  /* Chromium only. Offering the menu where `setSinkId` does not exist gives a
-     control that changes a dropdown and nothing else. */
-  const canSelectSpeaker =
-    typeof window !== "undefined" &&
-    typeof HTMLMediaElement !== "undefined" &&
-    "setSinkId" in HTMLMediaElement.prototype;
-
-  return (
-    <RoomSignalsProvider>
-      <div className="flex min-h-0 flex-1 flex-col md:flex-row">
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          <GuestStage />
-          <RoomOverlays />
-        </div>
-        <RoomSidePanel
-          panel={panel}
-          onClose={() => setPanel(null)}
-          isHost={false}
-          withDirectory={false}
-        />
-      </div>
-      {/* The same single bar the workspace rooms use — a guest gets the same
-          microphone, camera, share and Leave as everybody else, drawn the same
-          way, rather than a second control bar that drifts from it. */}
-      <div className="shrink-0 border-t border-white/10">
-        <MeetingControlBar
-          panel={panel}
-          onPanelChange={setPanel}
-          unreadChat={unreadChat}
-          compact={compact}
-          canSelectSpeaker={canSelectSpeaker}
-        />
-      </div>
-    </RoomSignalsProvider>
-  );
-}
-
-function GuestStage() {
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: true },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { onlySubscribed: false },
-  );
-  /**
-   * **A shared screen takes the large slot, on its own.**
-   *
-   * An equal grid is the wrong shape the moment somebody shares: the thing
-   * everyone joined to look at gets the same few hundred pixels as a face,
-   * and text on a shared document is unreadable at that size. `RoomStage`
-   * has promoted a share for Cowork people all along — a guest was the one
-   * reader left squinting at it in a tile.
-   *
-   * **Automatic, with no control beside it, and that is deliberate.** A
-   * guest has no tile menu — nothing here is pinnable, hideable or
-   * silenceable by them — so the layout has to be right on its own rather
-   * than offering a fix. When the share ends the grid simply returns.
-   */
-  const share =
-    tracks.find((t) => t.source === Track.Source.ScreenShare) ?? null;
-  /* The sharer's own camera stays in the strip: they are still a person in
-     the room, and only their SHARE has been promoted. Matched on identity
-     AND source so the one track that moved is the one removed. */
-  const others = share
-    ? tracks.filter(
-        (t) =>
-          t.participant.identity !== share.participant.identity ||
-          t.source !== share.source,
-      )
-    : [];
-
-  return (
-    <div className="min-h-0 flex-1 p-2">
-      {share ? (
-        /**
-         * **Carousel FIRST, focus second.** The container's contract, not a
-         * style choice: it expects the small side component before the large
-         * main one. Written the other way round it silently swaps them — the
-         * share lands in the thumbnail strip and a face fills the screen,
-         * which is the exact opposite of the point. `RoomStage` carries the
-         * same warning for the same reason.
-         */
-        <FocusLayoutContainer className="h-full">
-          <CarouselLayout tracks={others}>
-            <ParticipantTile />
-          </CarouselLayout>
-          <FocusLayout trackRef={share} />
-        </FocusLayoutContainer>
-      ) : (
-        <GridLayout tracks={tracks} className="h-full">
-          <ParticipantTile />
-        </GridLayout>
-      )}
-    </div>
   );
 }
 

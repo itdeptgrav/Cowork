@@ -29,7 +29,7 @@ function code(path: string): string {
 
 const DETAIL = "components/features/meetings/MeetingDetailArea.tsx";
 const ROOM = "components/features/meetings/MeetingRoom.tsx";
-const GUEST = "components/features/meetings/GuestMeetingArea.tsx";
+const GUEST = "components/features/meetings/GuestRoom.tsx";
 const MASTHEAD = "components/features/meetings/MeetingMasthead.tsx";
 const MEDIA = "lib/hooks/useMediaQuery.ts";
 
@@ -68,14 +68,22 @@ test("the room's height is a ladder, not one desk measurement", () => {
   /* 520px on a 667px phone left the control bar — the only way to mute or
      leave — below the fold. */
   const src = code(DETAIL);
-  assert.match(src, /min-h-\[26rem\]/);
-  assert.match(src, /sm:min-h-\[30rem\]/);
-  assert.match(src, /deck:min-h-\[32\.5rem\]/);
+  /* Each rung is ALSO capped to the screen's own height: a phone held
+     sideways is 375px tall, and a 480px room there put the microphone and
+     Leave below the fold — the same fault at the other axis. */
+  assert.match(src, /min-h-\[min\(26rem,calc\(100dvh-6rem\)\)\]/);
+  assert.match(src, /sm:min-h-\[min\(30rem,calc\(100dvh-6rem\)\)\]/);
+  assert.match(src, /deck:min-h-\[min\(32\.5rem,calc\(100dvh-6rem\)\)\]/);
   assert.doesNotMatch(
     src,
     /MeetingStage[\s\S]{0,200}min-h-\[520px\]/,
     "the flat 520px is back",
   );
+  /* And the frame the engine draws into that box must not carry a minimum of
+     its own: `min-h-[520px]` on the frame ran 104px past a 416px stage and
+     over the Participants panel underneath it, at every width below deck. */
+  const frame = code(ROOM).slice(code(ROOM).indexOf("slab slab-flat relative flex h-full"));
+  assert.match(frame.slice(0, 200), /h-full min-h-0 flex-col/, "the frame has a minimum height of its own again");
 });
 
 test("a narrow screen gets the compact control bar, not only the corner window", () => {
@@ -102,7 +110,11 @@ test("guests get the same treatment", () => {
   /* A guest is the likeliest person to be on a phone: they were sent a link,
      and a link opens wherever the reader happens to be. */
   const src = code(GUEST);
-  assert.match(src, /<GuestExtras compact=\{!wideEnoughForLabels\} \/>/);
+  /* Tolerates the extra props the guest room threads through (meetId,
+     guestSessionId) and the multi-line shape, while still pinning that compact
+     tracks the screen width — the same way the control-bar assertion below
+     spans a multi-line element. */
+  assert.match(src, /<GuestExtras[\s\S]{0,160}compact=\{compact \|\| !wideEnoughForLabels\}/);
   assert.match(
     src,
     /<MeetingControlBar[\s\S]{0,220}compact=\{compact\}/,
@@ -222,12 +234,12 @@ test("breakpoints come from named constants, not loose pixel values", () => {
 
 /* --------------------------------------------------- the rail's own shape */
 
-test("the room sticks while the rail scrolls past it", () => {
-  /* The room is a fixed height and the rail is seven panels tall, so the left
-     column ran out of content less than halfway down and left a column-wide
-     hole of nothing under the video — the emptiest part of the page was its
-     centre. Sticky also means reading the transcript no longer scrolls a live
-     meeting off the screen. */
+test("the short rail sticks while the content column scrolls past it", () => {
+  /* The room used to be the sticky part, with every panel in the rail — which
+     beside a CLOSED room was a 280px box next to a column-wide hole. Now the
+     content (participants, guest link, the record) fills the column under the
+     room, and the short rail of facts and logs is the part that sticks — the
+     usual shape of a sidebar. `self-start` is still what lets it slide. */
   const src = code(DETAIL);
   assert.match(src, /deck:sticky/);
   assert.match(src, /deck:self-start/, "a stretched grid item has nothing to slide within");

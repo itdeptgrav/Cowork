@@ -23,7 +23,7 @@ function code(path: string): string {
 }
 
 const ROOM = "components/features/meetings/MeetingRoom.tsx";
-const GUEST = "components/features/meetings/GuestMeetingArea.tsx";
+const GUEST = "components/features/meetings/GuestRoom.tsx";
 const HOOK = "lib/legacy-ui/useFullscreen.ts";
 const ICONS = "components/ui/Icons.tsx";
 

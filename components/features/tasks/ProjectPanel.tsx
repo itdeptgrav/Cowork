@@ -602,14 +602,22 @@ export function ProjectPanel({
                   </div>
 
                   {/* Edit and remove, on the row they act on.
-                      Offered only to the pair the repository accepts — the
-                      person who raised the task or the person carrying it — for
-                      the reason stated above `mayDelegate`: a control the
-                      server will refuse is its own defect.
-                      A DELEGATED requirement is not editable here: subtasks have
-                      been handed out against its text, and rewriting it would
-                      change what they were accepted to satisfy. */}
-                  {mayDelegate &&
+                      **`mayEditRequirements`, not `mayDelegate`** — the gate is
+                      stated in full above where it is defined. This read
+                      `mayDelegate`, which is `isOwner || isAssignee`, so the
+                      RECEIVER of a task saw a pencil and a cross on somebody
+                      else's requirements: `edit-details` refuses anybody but
+                      `task.assignedBy` once a task has left draft, so both
+                      controls could only ever 403 for them. A requirement is
+                      the assigner's statement of what "done" means, and the
+                      person carrying the task does not get to rewrite it.
+                      Adding a requirement was already gated correctly; only the
+                      per-row controls were not.
+                      A DELEGATED requirement is not editable here either:
+                      subtasks have been handed out against its text, and
+                      rewriting it would change what they were accepted to
+                      satisfy. */}
+                  {mayEditRequirements &&
                     r.ownership !== "delegated" &&
                     editingIndex !== i && (
                       <div className="flex shrink-0 items-center gap-1 opacity-0 transition-opacity duration-[140ms] group-hover/req:opacity-100 focus-within:opacity-100 deck:opacity-0">

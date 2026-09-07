@@ -58,7 +58,7 @@ export function MeetingMasthead({
   actions?: ReactNode;
 }) {
   return (
-    <header className="mb-4 flex flex-col gap-3 deck:flex-row deck:items-start deck:justify-between deck:gap-6">
+    <header className="mb-6 flex flex-col gap-4 deck:flex-row deck:items-start deck:justify-between deck:gap-6">
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
           {/**
@@ -66,11 +66,19 @@ export function MeetingMasthead({
            * frequently long; left to itself it wraps to a last line holding one
            * word. Balancing costs nothing and stops the ragged orphan.
            */}
-          <h1 className="min-w-0 text-[clamp(1.25rem,2.4vw,1.75rem)] leading-[1.15] font-[350] tracking-[-0.03em] text-balance text-ink">
+          <h1 className="min-w-0 text-[clamp(1.5rem,2.8vw,2rem)] leading-[1.12] font-[350] tracking-[-0.03em] text-balance text-ink">
             {title}
           </h1>
           <Chip tone={status === "live" ? "positive" : "neutral"}>
-            {status === "waiting" ? "waiting room" : status}
+            {/* A dot in the status's own ink — the same mark the dashboard and
+                the participant rows use, so "live" is green everywhere. */}
+            <span
+              aria-hidden
+              className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-current align-middle"
+            />
+            {status === "waiting"
+              ? "Waiting room"
+              : status.charAt(0).toUpperCase() + status.slice(1)}
           </Chip>
         </div>
 
@@ -82,7 +90,7 @@ export function MeetingMasthead({
          * Separators are real elements rather than `::before` content so they
          * are not read aloud, and the whole line wraps as units.
          */}
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-2.5 gap-y-1 text-xs text-ink-muted">
+        <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-ink-muted">
           <MetaItem icon={<Icon.calendar className="h-3.5 w-3.5" />}>
             {when}
           </MetaItem>

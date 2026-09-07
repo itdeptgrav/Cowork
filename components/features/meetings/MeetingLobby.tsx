@@ -6,6 +6,7 @@ import { PreJoin } from "@livekit/components-react";
 import "@livekit/components-styles";
 import { Button, Chip, InlineError } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
+import { PublicLinkPanel } from "./PublicLinkPanel";
 import { useAction } from "@/lib/hooks/useRepository";
 import { formatDateTime } from "@/lib/utils/format";
 import type { Meeting } from "@/lib/domain";
@@ -87,7 +88,13 @@ export function MeetingLobby({
             {formatDateTime(meeting.startsAt)}
           </span>
         </span>
-        <Chip tone="positive">scheduled</Chip>
+        <Chip tone="positive">
+          <Icon.calendar
+            className="mr-1 inline-block h-3 w-3 align-[-1px]"
+            aria-hidden
+          />
+          Scheduled
+        </Chip>
       </header>
 
       {/* PreJoin brings its own controls and its own join button, so the only
@@ -103,6 +110,22 @@ export function MeetingLobby({
           onSubmit={() => void join()}
           onError={(e) => setFailed(e.message)}
           data-lk-theme="default"
+        />
+      </div>
+
+      {/* The other way in. The guest link is minted here, under "Or", rather
+          than in a second card beneath the lobby — one place holds both ways
+          to join, and the button is the same width as the one above it. */}
+      <div className="px-3 pb-3">
+        <div className="mb-3 flex items-center gap-3" aria-hidden="true">
+          <span className="h-px flex-1 bg-white/10" />
+          <span className="text-xs text-slab-ink-muted">Or</span>
+          <span className="h-px flex-1 bg-white/10" />
+        </div>
+        <PublicLinkPanel
+          meetId={meeting.id}
+          ctaLabel="Share meeting link"
+          onSlab
         />
       </div>
 

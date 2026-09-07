@@ -24,7 +24,7 @@ function code(path: string): string {
 }
 
 const DETAIL = "components/features/meetings/MeetingDetailArea.tsx";
-const GUEST = "components/features/meetings/GuestMeetingArea.tsx";
+const GUEST = "components/features/meetings/GuestRoom.tsx";
 const ROOM = "components/features/meetings/MeetingRoom.tsx";
 /**
  * The room's interior was extracted so a task's meeting could use it too. The
@@ -118,10 +118,16 @@ test("there is a way back in", () => {
 
 test("the guest view still unmounts its room on leave", () => {
   /* This one was always right — it is here so a later tidy-up cannot quietly
-     give the guest view the bug the signed-in view just lost. */
-  const src = code(GUEST);
-  const handler = /onLeave=\{\(\) =>([\s\S]*?)\n      \}/.exec(src)?.[1] ?? "";
+     give the guest view the bug the signed-in view just lost. The room is
+     the shell's now, so "unmount" is the session closing: the engine calls
+     the session's `onLeave` and then `close()`, and the page moves phase —
+     to the ended card for an organiser's End, back to the lobby otherwise. */
+  const src = code("components/features/meetings/GuestMeetingArea.tsx");
+  const handler = /onLeave: \(reason\) =>([\s\S]*?)\n        \},/.exec(src)?.[1] ?? "";
   assert.match(handler, /setPhase\(/, "guest leave no longer changes phase");
+  assert.match(handler, /reason === "ended"/, "an organiser's End is not told apart from a Leave");
+  const engine = code("components/features/meetings/MeetingEngine.tsx");
+  assert.match(engine, /session\.onLeave\?\.\(reason\);\s*close\(\);/);
 });
 
 test("MeetingRoom still reports its own disconnect", () => {
@@ -129,7 +135,13 @@ test("MeetingRoom still reports its own disconnect", () => {
      LiveKit disconnects — including a disconnect the person did not ask for. */
   const src = code(ROOM);
   assert.match(src, /onDisconnected=\{/, "no disconnect handler");
-  assert.match(src, /onLeave\(\)/, "disconnect no longer notifies the parent");
+  /* With the REASON now: "ended" for the organiser's End for everyone, "left"
+     for a pressed Leave, nothing for a connection that gave up. */
+  assert.match(
+    src,
+    /onLeave\(\s*endedForEveryone\s*\?\s*"ended"/,
+    "disconnect no longer notifies the parent",
+  );
 });
 
 /* ── The floating window shares a corner with the music bar ───────────────── */
@@ -279,18 +291,42 @@ test("scrolling does not re-render the shell to move the meeting", () => {
   const engine = code("components/features/meetings/MeetingEngine.tsx");
   assert.match(engine, /useLayoutEffect/, "positioning is not in a layout effect");
   assert.match(engine, /home\.style\.left/, "the position is not written directly");
-  /* Passive, so moving the meeting can never make the page scroll badly. */
-  /* Stronger than a passive listener: there is no scroll listener AT ALL. The
-     docked box is positioned in document coordinates, so scrolling moves it
-     because the document moves — on the compositor, in the same frame as
-     everything else. Nothing runs late, so nothing can shear. */
   assert.match(engine, /window.scrollX/);
   assert.match(engine, /window.scrollY/);
-  assert.equal(
-    /addEventListener\("scroll"/.test(engine),
-    false,
-    "the meeting is repositioned on scroll again, which always lags the page",
+
+  /**
+   * **This used to assert there was no scroll listener at all — and that
+   * rule no longer describes a correct engine.**
+   *
+   * The meeting page's stage is `position: sticky` (it pins the video while
+   * the rail's panels scroll past it). A sticky element's DOCUMENT position
+   * changes while it is stuck, and neither a resize nor a body ResizeObserver
+   * reports that — so a box placed once in document coordinates drifted off
+   * the stage during a scroll and snapped back only when some other event
+   * happened to re-measure it. Opening the History panel was exactly such an
+   * event, and "the meeting box moves when I click History" was the report.
+   *
+   * So the engine follows the stage on scroll. What the ORIGINAL rule was
+   * protecting is kept intact and asserted directly instead: the scroll path
+   * never touches React state. It is passive and capturing, coalesced to one
+   * placement per frame, and writes straight to a style.
+   */
+  assert.match(
+    engine,
+    /addEventListener\("scroll", schedule, \{ passive: true, capture: true \}\)/,
+    "the scroll follow must be passive and capturing, and go through the rAF coalescer",
   );
+  assert.match(engine, /requestAnimationFrame\(/, "placement is not coalesced per frame");
+  assert.match(engine, /ro\.observe\(document\.body\)/, "a panel growing above the stage is not observed");
+  /* The reason the follow exists: without a sticky stage, none of this is
+     needed, and the old rule would be right again. */
+  const detail = code("components/features/meetings/MeetingDetailArea.tsx");
+  assert.match(detail, /deck:sticky/, "the stage is no longer sticky — re-read the scroll follow");
+  /* And the invariant that actually matters, stated as the code: the docked
+     position is a style write, never a state write. */
+  const effect = engine.slice(engine.indexOf("const place = () =>"));
+  const body = effect.slice(0, effect.indexOf("}, [homeReady, docked, stageEl]);"));
+  assert.doesNotMatch(body, /set[A-Z]\w*\(/, "the placement path calls setState — that re-renders per scroll frame");
 });
 
 test("joining is silent and dark by default", () => {
@@ -408,7 +444,9 @@ test("a pinned track is enlarged and the rest stay visible", () => {
    */
   const room = roomTree();
   assert.match(room, /<FocusLayoutContainer/);
-  assert.match(room, /<FocusLayout trackRef=\{pinned\}/);
+  /* The large tile is our own ParticipantTile (not LiveKit's bare FocusLayout)
+     so a pinned tile keeps its on-tile menu and can unpin itself. */
+  assert.match(room, /<ParticipantTile trackRef=\{pinned\}>/);
   assert.match(room, /<CarouselLayout tracks=\{others\}/);
   /* No grid when something is pinned, and no focus layout when nothing is. */
   assert.match(room, /pinned \? \(/);
@@ -424,41 +462,49 @@ test("a shared screen pins itself once, and can be overridden", () => {
 });
 
 
-/* ── The per-tile menu: three options, all of which do something ──────────── */
+/* ── The per-tile menu: every option does something ──────────────────────── */
 
 test("every entry in the tile menu takes real effect", () => {
   /**
    * A menu of plausible-looking options that quietly do nothing is worse than a
-   * short one: somebody presses "hide", sees no change, and stops trusting the
-   * rest of the controls too. So each of the three is wired to something
-   * verifiable by looking at the screen.
+   * short one. Hide was removed 2026-09-04 at the owner's request, leaving Pin
+   * and Silence — each wired to something verifiable on the screen.
    */
   const menu = code("components/features/meetings/TileMenu.tsx");
   /* Pin — hands the key up to the stage, which swaps to the focus layout. */
-  assert.match(menu, /onPin\(isPinned \? null : key\)/);
-  /* Hide — the stage filters the grid by these keys. */
-  assert.match(menu, /onHide\(key, !isHidden\)/);
-  const room = roomTree();
-  assert.match(room, /hiddenKeys\.has\(keyOf\(t\)\)/);
+  assert.match(menu, /onPin\(isPinned \? null : trackKey\)/);
   /* Silence — LiveKit's own per-participant volume in this browser. */
   assert.match(menu, /participant\.setVolume\(silenced \? 1 : 0\)/);
+  /* Hide is gone: no menu item offers it. */
+  assert.doesNotMatch(menu, /Hide this tile/);
 
+  const room = roomTree();
   /**
-   * **And the grid still gets LiveKit's own tile as its DIRECT child.**
+   * **And the grid still gets a ParticipantTile as its DIRECT child.**
    *
    * This is the guard on the mistake that turned a live meeting into a black
    * rectangle. `ParticipantTile` renders `children ?? defaultContent`, so
-   * anything passed as a child REPLACES the video; and `GridLayout` sizes its
-   * direct children, so wrapping the tile collapses it to nothing. The controls
-   * therefore live above the grid, and the grid is left alone.
+   * `TileContent` REPLACES the video (the supported seam), while `GridLayout`
+   * sizes its direct children — so wrapping the tile in a div collapses it to
+   * nothing. The menu now lives INSIDE the tile content, layered over it, which
+   * is the same safe seam the raised hand uses; the grid's child stays the tile.
    */
+  /* The tile is now a shared template held in `tile` (so the guest room can be
+     handed the same stage with `directory={false}`), used verbatim as the
+     grid's direct child — still a bare ParticipantTile, a variable and not a
+     wrapper. */
   assert.match(
     room,
-    /<GridLayout tracks=\{visible\} className="h-full">\s*<ParticipantTile>/,
-    "the grid's child is no longer LiveKit's own tile — the tiles will not render",
+    /<GridLayout tracks=\{visible\} className="h-full">\s*\{tile\}/,
+    "the grid's child is no longer the shared tile template — the tiles will not render",
+  );
+  assert.match(
+    room,
+    /const tile = \(\s*<ParticipantTile>\s*<TileContent directory=\{directory\} \/>/,
+    "the tile template is no longer a bare ParticipantTile holding TileContent",
   );
   /* Supplying the tile's CONTENT is the supported seam and keeps the tile as
-     the grid's direct child. Wrapping it is the thing that breaks. */
+     the grid's direct child. Wrapping it in a div is the thing that breaks. */
   assert.equal(
     /<div[^>]*>\s*<ParticipantTile/.test(room),
     false,
@@ -480,7 +526,7 @@ test("an option that cannot work is absent, not disabled", () => {
      is a different track from the person's microphone. */
   const menu = code("components/features/meetings/TileMenu.tsx");
   assert.match(menu, /\{remote && !isScreen && \(/);
-  assert.match(menu, /p instanceof RemoteParticipant/);
+  assert.match(menu, /participant instanceof RemoteParticipant/);
 });
 
 test("hiding cannot strand the reader with an empty stage", () => {
@@ -506,7 +552,9 @@ test("the pinned tile is the LARGE one, not the thumbnail", () => {
   );
   assert.notEqual(block, "", "the focus layout was not found");
   const carousel = block.indexOf("<CarouselLayout");
-  const focus = block.indexOf("<FocusLayout ");
+  /* The large tile is now our own ParticipantTile (with trackRef={pinned}), the
+     container's SECOND child; the carousel of thumbnails is the first. */
+  const focus = block.indexOf("<ParticipantTile trackRef=");
   assert.ok(carousel !== -1 && focus !== -1, "both children must be present");
   assert.ok(
     carousel < focus,

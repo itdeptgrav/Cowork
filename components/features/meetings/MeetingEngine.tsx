@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { useMeetingSession } from "./MeetingSessionContext";
 import { MeetingRoom } from "./MeetingRoom";
 import { TaskRoom } from "./TaskRoom";
+import { GuestRoom } from "./GuestRoom";
 import { useDocumentPip } from "@/lib/legacy-ui/useDocumentPip";
 import { useAutoPip } from "@/lib/legacy-ui/useAutoPip";
 
@@ -28,9 +29,10 @@ import { useAutoPip } from "@/lib/legacy-ui/useAutoPip";
  * ## Three places, one room
  *
  * · **Docked** — over the rectangle the meeting page published.
- * · **Floating** — bottom-left of the tab, when you have navigated elsewhere.
- * · **Picture-in-picture** — a real window over other applications, when you
- *   have left the tab entirely.
+ * · **Picture-in-picture** — a real window over other applications, bottom-
+ *   right of the screen, the moment you leave the page (Chrome and Edge).
+ * · **Floating** — bottom-left of the tab, where the browser has no such
+ *   window to give, or refused to open one — see the leaving effect below.
  *
  * All three render the SAME element. `MeetingRoom` is portalled into one
  * container that is created once and physically moved between the page and the
@@ -66,6 +68,27 @@ const FLOATING = {
 
 const PIP_SIZE = { width: 400, height: 300 };
 
+/**
+ * The floating window's size on THIS screen.
+ *
+ * The nominal 340×232 is a desk measurement. A phone narrower than 340px plus
+ * its two 16px margins — a 320px iPhone SE, a 360px Android with a scrollbar —
+ * had the window's right edge off the screen, with Leave on it. So the width
+ * is capped to what fits, never below 240px (the control bar's six buttons),
+ * and the height follows in the same proportion so the picture keeps its
+ * shape rather than turning into a letterbox.
+ */
+function floatingSize(): { width: number; height: number } {
+  const width = Math.min(
+    FLOATING.width,
+    Math.max(240, window.innerWidth - FLOATING.left * 2),
+  );
+  return {
+    width,
+    height: Math.round((width / FLOATING.width) * FLOATING.height),
+  };
+}
+
 export function MeetingEngine() {
   const { session, stageEl, close } = useMeetingSession();
   const router = useRouter();
@@ -86,14 +109,19 @@ export function MeetingEngine() {
     setHomeReady(el !== null);
   }, []);
   const pip = useDocumentPip(homeRef, homeReady);
+  /* The two callbacks are stable for the hook's life; the object holding them
+     is rebuilt every render. Depending on the callbacks rather than the object
+     keeps `openPip` — and the media-session handler registered on it — from
+     being remade on every render of the shell. */
+  const { open: openWindow, close: closeWindow } = pip;
 
   const openPip = useCallback(() => {
-    void pip.open(PIP_SIZE).catch(() => {
+    void openWindow(PIP_SIZE).catch(() => {
       /* Refused — no permission, or the window was blocked. The in-tab
          floating presentation is already on screen, so there is nothing to
          report and nothing lost. */
     });
-  }, [pip]);
+  }, [openWindow]);
 
   /* Registers the browser's own "enter picture-in-picture automatically"
      offer. It does nothing until the reader accepts it. */
@@ -104,9 +132,80 @@ export function MeetingEngine() {
         ? "Meeting"
         : session.kind === "task"
           ? session.taskTitle
-          : session.meeting.title,
+          : session.kind === "guest"
+            ? session.meetTitle
+            : session.meeting.title,
     onEnter: openPip,
   });
+
+  /**
+   * Leaving the page puts the meeting STRAIGHT into the real window.
+   *
+   * ## What this replaces
+   *
+   * Navigating away used to land the meeting in the in-tab corner window,
+   * and the picture-in-picture window — the one that floats over other
+   * applications, bottom-right of the screen — was a second press away, on
+   * the corner window's own pop-out button. Two windows for one act of
+   * leaving, and the first was the one nobody wanted: it lives inside the
+   * tab, so it is gone the moment you switch to another one.
+   *
+   * ## Why it can be done here and not on `visibilitychange`
+   *
+   * `requestWindow()` needs a user gesture. Switching tab is not one — which
+   * is why `useAutoPip` goes through the browser's own offer — but the CLICK
+   * that navigated away is, and the browser keeps it usable for a few
+   * seconds. The stage unmounts as the route changes, well inside that
+   * allowance, so the window opens on the strength of the click that left.
+   *
+   * ## When it is refused, and what happens then
+   *
+   * The Back button is browser chrome and grants no gesture; a route that
+   * takes longer than the allowance to arrive spends it; Firefox and Safari
+   * have no such window at all (`pip.supported`). The promise rejects, the
+   * in-tab corner window is what remains, and nothing is lost — it is the
+   * presentation that was already on screen. The home element is kept
+   * invisible while the attempt is in flight so the corner window does not
+   * flash for a frame before the real one takes over; a layout effect, so
+   * that happens before the first paint rather than after it.
+   *
+   * A TRANSITION, not a state: it fires when the stage GOES, and only then.
+   * Re-trying on every render while floating would re-open a window the
+   * reader had just closed, and would take the next unrelated click on some
+   * other page as its gesture.
+   */
+  const prevStageRef = useRef<HTMLElement | null>(null);
+  const [pipPending, setPipPending] = useState(false);
+  useLayoutEffect(() => {
+    const prev = prevStageRef.current;
+    /* Recorded before any early return, or a transition that happened while
+       there was no session would be seen again by the next render that has
+       one. */
+    prevStageRef.current = stageEl;
+    if (!session) return;
+    if (prev !== null && stageEl === null) {
+      /* Left the page. */
+      if (pip.isOpen || !pip.supported) return;
+      setPipPending(true);
+      void openWindow(PIP_SIZE)
+        .then(() => {
+          /* Back on the page before the window had finished opening — the
+             stage that reappeared wants the room, not an empty box. */
+          if (prevStageRef.current !== null) closeWindow();
+        })
+        .catch(() => {
+          /* Refused: no gesture, no permission, or no such window. The
+             corner window is already there. */
+        })
+        .finally(() => setPipPending(false));
+    } else if (prev === null && stageEl !== null && pip.isOpen) {
+      /* Arrived at the page: the room goes back into it, and closing needs
+         no gesture. Only on ARRIVAL — pressing pop-out while on the page
+         opens the window deliberately, and the stage does not change, so
+         that is left alone. */
+      closeWindow();
+    }
+  }, [session, stageEl, pip.isOpen, pip.supported, openWindow, closeWindow]);
 
   const docked = stageEl !== null && !pip.isOpen;
 
@@ -153,15 +252,46 @@ export function MeetingEngine() {
     };
     place();
 
+    /* Coalesce a scroll's burst of events into one placement per frame. */
+    let raf = 0;
+    const schedule = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        place();
+      });
+    };
+
     const ro = new ResizeObserver(place);
     ro.observe(stageEl);
     /* The stage moves down the document when something above it grows, which
        resizes neither the stage nor the window. */
     ro.observe(document.body);
     window.addEventListener("resize", place);
+    /**
+     * **Follow the stage on scroll, because the stage is `sticky`.**
+     *
+     * The docked box is `position: absolute` in DOCUMENT coordinates so ordinary
+     * scrolling moves it on the compositor with no JS — but the meeting page's
+     * stage is `position: sticky` (it pins the video while the rail's panels
+     * scroll past it — see `MeetingDetailArea`). A sticky element's document
+     * position CHANGES as it sticks, and a resize never reports that, so without
+     * this the box drifted off the stage while scrolling and only snapped back
+     * when some other event happened to re-measure it — opening the History
+     * panel being exactly such an event, and the jump this removes.
+     *
+     * It stays shear-free where it matters: while the stage is NOT stuck,
+     * `r.top + scrollY` is constant, so this writes the value the box already
+     * has and nothing moves. It does real work only in the stuck region, where
+     * following one frame behind is far better than not following at all.
+     * `capture` so a scroll on any container above the stage is caught too.
+     */
+    window.addEventListener("scroll", schedule, { passive: true, capture: true });
     return () => {
       ro.disconnect();
       window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", schedule, true);
+      if (raf) cancelAnimationFrame(raf);
     };
   }, [homeReady, docked, stageEl]);
 
@@ -189,23 +319,31 @@ export function MeetingEngine() {
   useLayoutEffect(() => {
     const home = homeRef.current;
     if (!home || docked || pip.isOpen) return;
-    home.style.position = "fixed";
-    home.style.width = `${FLOATING.width}px`;
-    home.style.height = `${FLOATING.height}px`;
-    if (dragPos) {
-      /* Clamped here as well as during the drag: the viewport may have shrunk
-         since — a resized window, a rotated phone — and a meeting parked off
-         the edge can only be recovered by reloading. */
-      const maxX = Math.max(0, window.innerWidth - FLOATING.width);
-      const maxY = Math.max(0, window.innerHeight - FLOATING.height);
-      home.style.left = `${Math.min(dragPos.x, maxX)}px`;
-      home.style.top = `${Math.min(dragPos.y, maxY)}px`;
-      home.style.bottom = "auto";
-    } else {
-      home.style.left = `${FLOATING.left}px`;
-      home.style.top = "auto";
-      home.style.bottom = FLOATING.bottom;
-    }
+    const place = () => {
+      const size = floatingSize();
+      home.style.position = "fixed";
+      home.style.width = `${size.width}px`;
+      home.style.height = `${size.height}px`;
+      if (dragPos) {
+        /* Clamped here as well as during the drag: the viewport may have
+           shrunk since — a resized window, a rotated phone — and a meeting
+           parked off the edge can only be recovered by reloading. */
+        const maxX = Math.max(0, window.innerWidth - size.width);
+        const maxY = Math.max(0, window.innerHeight - size.height);
+        home.style.left = `${Math.min(dragPos.x, maxX)}px`;
+        home.style.top = `${Math.min(dragPos.y, maxY)}px`;
+        home.style.bottom = "auto";
+      } else {
+        home.style.left = `${FLOATING.left}px`;
+        home.style.top = "auto";
+        home.style.bottom = FLOATING.bottom;
+      }
+    };
+    place();
+    /* A rotated phone changes what fits; nothing else in the dependency list
+       changes with it. */
+    window.addEventListener("resize", place);
+    return () => window.removeEventListener("resize", place);
   }, [homeReady, docked, pip.isOpen, dragPos]);
 
   /**
@@ -278,7 +416,12 @@ export function MeetingEngine() {
               ? "hidden"
               : docked
                 ? "pointer-events-auto z-30"
-                : "pointer-events-auto z-[70] overflow-hidden rounded-panel border border-white/15 shadow-[0_18px_48px_rgba(0,0,0,0.55)]"
+                : /* `invisible` rather than `hidden` while the real window is
+                     being opened: the box keeps its geometry, so nothing that
+                     watches the video's visibility is told it has gone. */
+                  `pointer-events-auto z-[70] overflow-hidden rounded-panel border border-white/15 shadow-[0_18px_48px_rgba(0,0,0,0.55)]${
+                    pipPending ? " invisible" : ""
+                  }`
           }
         />,
         document.body,
@@ -295,7 +438,47 @@ export function MeetingEngine() {
         */}
       {pip.container &&
         createPortal(
-          session.kind === "task" ? (
+          session.kind === "guest" ? (
+            /**
+             * **Keyed on the guest session, and only this branch is.**
+             *
+             * A guest who joins a second meeting link while their first call
+             * is still floating opens a NEW session under the same element
+             * type at the same position — which, unkeyed, would hand the
+             * running room new credentials and the running recorder a new
+             * meeting id, so the first meeting's audio went to the second. The
+             * key remounts: the old room unmounts (its recorder finalises on
+             * the way out) and the new one connects clean. Re-opening the SAME
+             * session — the guest page remounting under a live call — keeps
+             * the key, so nothing is torn down.
+             */
+            <GuestRoom
+              key={session.guestSessionId}
+              token={session.token}
+              url={session.url}
+              meetTitle={session.meetTitle}
+              camEnabled={session.camEnabled}
+              micEnabled={session.micEnabled}
+              camId={session.camId}
+              micId={session.micId}
+              meetId={session.meetId}
+              guestId={session.guestId}
+              guestSessionId={session.guestSessionId}
+              guestName={session.guestName}
+              compact={!docked}
+              onReturn={() => {
+                if (pip.isOpen) pip.close();
+                router.push(`/meetings/guest/${session.shareToken}`);
+              }}
+              onPopOut={pip.supported && !pip.isOpen ? openPip : undefined}
+              onDragHandle={!docked && !pip.isOpen ? onDragStart : undefined}
+              onLeave={(reason) => {
+                if (pip.isOpen) pip.close();
+                session.onLeave?.(reason);
+                close();
+              }}
+            />
+          ) : session.kind === "task" ? (
             <TaskRoom
               session={session}
               compact={!docked}
@@ -335,12 +518,12 @@ export function MeetingEngine() {
               }}
               onPopOut={pip.supported && !pip.isOpen ? openPip : undefined}
               onDragHandle={!docked && !pip.isOpen ? onDragStart : undefined}
-              onLeave={() => {
+              onLeave={(reason) => {
                 /* The window goes before the session: closing it moves the
                    container home, and a container still parented to a destroyed
                    document is one React would keep rendering into. */
                 if (pip.isOpen) pip.close();
-                session.onLeave?.();
+                session.onLeave?.(reason);
                 close();
               }}
             />

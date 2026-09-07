@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import {
   ConnectionQualityIndicator,
   ParticipantName,
@@ -7,13 +8,17 @@ import {
   VideoTrack,
   useMaybeTrackRefContext,
 } from "@livekit/components-react";
-import { Track } from "livekit-client";
+import { type Participant, Track } from "livekit-client";
 import { Avatar } from "@/components/ui/Avatar";
+import { Icon } from "@/components/ui/Icons";
 import { useQuery } from "@/lib/hooks/useRepository";
 import { useMaybeRoomSignals } from "./RoomSignals";
+import { useTileActions, type TileActions } from "./tileActions";
+import { TileMenuList } from "./TileMenu";
+import type { Employee } from "@/lib/domain";
 
 /**
- * What a tile shows when there is no camera: the person, not a grey outline.
+ * What a tile shows when there is no camera, PLUS the per-tile menu.
  *
  * ## Why this is passed as CHILDREN and not wrapped around anything
  *
@@ -21,34 +26,50 @@ import { useMaybeRoomSignals } from "./RoomSignals";
  * insides rather than layering over them, which is exactly the seam meant for
  * this. The tile itself stays the direct child of `GridLayout`, so its sizing
  * and the grid's are untouched. Wrapping the tile is what turned a live meeting
- * into a black rectangle; supplying its content does not.
+ * into a black rectangle; supplying its content does not — and because this IS
+ * the content, an absolutely-positioned overlay (the raised hand, and now the
+ * menu button) layers over the video without any of that danger.
  *
- * ## Why the grey outline was wrong
+ * ## The menu is ON the tile now
  *
- * Everybody joins with their camera off, so the default placeholder is what a
- * meeting looks like almost all of the time — and it is the same anonymous
- * figure for every participant. A room of four people was four identical grey
- * silhouettes distinguishable only by reading the name labels. The directory
- * already has their photographs.
+ * It used to be a strip of chips above the grid, because putting an overlay on
+ * the tile from OUTSIDE it is impossible (see `TileMenu`). From INSIDE the tile
+ * content it is ordinary: a hover button in the corner, and a right-click
+ * anywhere on the tile, both opening Pin / Hide / Silence — where Google Meet
+ * puts them and where people reach for them first. The stage still owns the
+ * pin/hide STATE; this reads and drives it through `useTileActions`.
  *
- * `Avatar` is the product's own, so a person looks the same here as in a task,
- * a message thread and the attendance panel — including the initials-with-a-hue
- * fallback for somebody who has never uploaded a picture, which is a great deal
- * more recognisable than a shared outline.
+ * ## `directory`
+ *
+ * The signed-in room draws profile pictures and names from the employee
+ * directory. A guest is not entitled to fetch it, so `directory={false}` skips
+ * that read entirely and falls back to LiveKit's published name and initials —
+ * which is the whole reason the guest room can now share this one component and
+ * get the same menu.
  */
 
-export function TileContent() {
+export function TileContent({ directory = true }: { directory?: boolean }) {
   const trackRef = useMaybeTrackRefContext();
   /* One read for the whole room, served from the query cache — every tile asks
-     the same question and `useQuery` dedupes it to a single fetch. */
-  const people = useQuery((r) => r.listEmployees(), []);
+     the same question and `useQuery` dedupes it to a single fetch. A guest room
+     asks for nothing: `directory` is false and the query resolves empty rather
+     than making a request a guest cannot make. */
+  const people = useQuery(
+    (r) => (directory ? r.listEmployees() : Promise.resolve<Employee[]>([])),
+    [directory],
+  );
   /* Optional: a tile can be rendered outside the signals provider (the lobby
      preview), and a missing hand is not a reason to fail to draw a person. */
   const signals = useMaybeRoomSignals();
+  /* Optional the same way: the lobby preview has no stage to pin on, so the menu
+     simply is not offered there. */
+  const actions = useTileActions();
 
   if (!trackRef) return null;
 
   const participant = trackRef.participant;
+  const key = `${participant.identity}:${trackRef.source}`;
+  const isScreen = trackRef.source === Track.Source.ScreenShare;
   /* A publication exists and is not muted — LiveKit reports a placeholder
      reference with no publication when the camera is off, which is the case
      this component is here for. */
@@ -92,6 +113,17 @@ export function TileContent() {
         </div>
       )}
 
+      {/* The per-tile menu — hover to reveal the button, or right-click the
+          tile. Only where there is a stage to act on (not the lobby preview). */}
+      {actions && (
+        <TileTileMenu
+          trackKey={key}
+          participant={participant}
+          isScreen={isScreen}
+          actions={actions}
+        />
+      )}
+
       {/* The furniture the default tile draws, kept: replacing the content
           means replacing all of it, and a tile with no name is worse than a
           grey outline with one. */}
@@ -119,6 +151,106 @@ export function TileContent() {
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * The hover/right-click control that sits over one tile.
+ *
+ * A full-tile overlay is the `group` for the hover, so moving over any part of
+ * the tile reveals the corner button; `onContextMenu` opens the same menu from
+ * a right-click anywhere on it. The overlay is transparent and the video under
+ * it is not interactive, so capturing the pointer here costs nothing. A pinned
+ * tile keeps a small pin marker so it reads as pinned once the button fades.
+ */
+function TileTileMenu({
+  trackKey,
+  participant,
+  isScreen,
+  actions,
+}: {
+  trackKey: string;
+  participant: Participant;
+  isScreen: boolean;
+  actions: TileActions;
+}) {
+  const [open, setOpen] = useState(false);
+  /* Just the button and the dropdown — NOT the whole tile. A click anywhere
+     outside THIS (including the rest of the tile) closes the menu; using the
+     full-tile overlay here was the bug that left it stuck open, because the
+     tile cell is large and clicking its empty space counted as "inside". */
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!menuRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("pointerdown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const isPinned = actions.pinnedKey === trackKey;
+  const isHidden = actions.hiddenKeys.has(trackKey);
+
+  return (
+    <div
+      className="group/tile absolute inset-0 z-20"
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setOpen(true);
+      }}
+    >
+      {/* The menu region — the button and its dropdown, together, so the
+          outside-click check has one thing to be "inside" of. */}
+      <div ref={menuRef} className="absolute top-1.5 right-1.5 z-30">
+        <button
+          type="button"
+          aria-label="Tile options"
+          aria-expanded={open}
+          title="Options"
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpen((o) => !o);
+          }}
+          /* 32px: on a phone this is pressed with a thumb, over video. */
+          className={`grid h-8 w-8 place-items-center rounded-full bg-black/55 text-white shadow transition-opacity hover:bg-black/75 ${
+            open ? "opacity-100" : "opacity-0 group-hover/tile:opacity-100 focus-visible:opacity-100"
+          }`}
+        >
+          <Icon.more className="h-4 w-4" />
+        </button>
+
+        {open && (
+          <div className="absolute top-9 right-0 w-56 overflow-hidden rounded-panel border border-white/10 bg-[var(--slab)] py-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)]">
+            <TileMenuList
+              trackKey={trackKey}
+              participant={participant}
+              isScreen={isScreen}
+              isPinned={isPinned}
+              isHidden={isHidden}
+              onPin={actions.onPin}
+              onHide={actions.onHide}
+              onClose={() => setOpen(false)}
+            />
+          </div>
+        )}
+      </div>
+
+      {/* A pinned tile shows it, even once the button has faded back out. */}
+      {isPinned && !open && (
+        <span className="pointer-events-none absolute top-1.5 left-1.5 z-10 grid h-6 w-6 place-items-center rounded-full bg-black/55 text-white opacity-0 group-hover/tile:opacity-100">
+          <Icon.pin className="h-3 w-3" />
+        </span>
+      )}
+    </div>
   );
 }
 

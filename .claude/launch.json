@@ -10,6 +10,17 @@
       ],
       "port": 3000,
       "autoPort": false
+    },
+    {
+      "name": "meeting-preview",
+      "runtimeExecutable": "powershell",
+      "runtimeArgs": [
+        "-NoProfile",
+        "-Command",
+        "Set-Location 'C:\\Users\\PRAMOD\\AppData\\Local\\Temp\\claude\\D--Cowork\\572ec68f-38f1-4ebb-828e-95002aa52264\\scratchpad\\preview'; npx next dev -p 3100"
+      ],
+      "port": 3100,
+      "autoPort": false
     }
   ]
 }

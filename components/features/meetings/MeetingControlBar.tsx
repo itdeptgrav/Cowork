@@ -1,9 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import {
   DisconnectButton,
   MediaDeviceMenu,
+  useMediaDeviceSelect,
   TrackToggle,
   useParticipants,
   useTrackToggle,
@@ -102,7 +109,11 @@ export function MeetingControlBar({
   };
 
   return (
-    <div className="relative flex shrink-0 items-center justify-center gap-1.5 px-2 py-2.5 sm:gap-2">
+    <div
+      className="relative flex shrink-0 items-center justify-center gap-1.5 px-2 py-2.5 sm:gap-2"
+      /* The bound every popover keeps itself inside — see `Popover`. */
+      data-control-row
+    >
       {/* ── Microphone ─────────────────────────────────────────────── */}
       <SplitControl
         deviceKind="audioinput"
@@ -175,7 +186,8 @@ export function MeetingControlBar({
                       sendReaction(emoji);
                       setPicker(false);
                     }}
-                    className="rounded-lg px-1.5 py-1 text-[19px] leading-none transition-transform hover:scale-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white/60"
+                    /* 36px squares: a reaction is tapped in a hurry. */
+                    className="grid h-9 w-9 place-items-center rounded-lg text-[19px] leading-none transition-transform hover:scale-125 focus-visible:outline focus-visible:outline-2 focus-visible:outline-white/60"
                   >
                     {emoji}
                   </button>
@@ -255,7 +267,18 @@ export function MeetingControlBar({
         </RoundButton>
         {overflow && (
           <Popover onClose={() => setOverflow(false)} label="More options">
-            <div className="flex w-max min-w-[190px] flex-col gap-0.5">
+            {/* Sized against the VIEWPORT, not against its content. A device
+                is named by its driver — “Speakers (Realtek(R) Audio)”,
+                “Headset Earphone (Jabra Evolve2 65)” — and `w-max` on a
+                375px phone let one of those push the whole menu off the side
+                of the screen, where the row that closes it went with it.
+                Names truncate instead; the full one is in `title`.
+
+                The height is capped for the same reason: eight audio devices
+                is ordinary on a docked laptop, and the menu opens UPWARDS
+                from the control bar, so an uncapped list runs off the top
+                past the meeting itself. */}
+            <div className="flex max-h-[min(60vh,26rem)] w-max min-w-[190px] max-w-[min(17rem,calc(100vw-2rem))] flex-col gap-0.5 overflow-y-auto overscroll-contain">
               {!showOnRow.share && (
                 <MenuRow
                   icon={<PresentIcon />}
@@ -291,7 +314,7 @@ export function MeetingControlBar({
                           sendReaction(emoji);
                           setOverflow(false);
                         }}
-                        className="rounded-lg px-1.5 py-1 text-[17px] leading-none transition-transform hover:scale-125"
+                        className="grid h-9 w-9 place-items-center rounded-lg text-[17px] leading-none transition-transform hover:scale-125"
                       >
                         {emoji}
                       </button>
@@ -312,16 +335,16 @@ export function MeetingControlBar({
               {compact && (
                 <>
                   <MenuSection label="Microphone">
-                    <MediaDeviceMenu kind="audioinput" />
+                    <DeviceOptions kind="audioinput" onPick={() => setOverflow(false)} />
                   </MenuSection>
                   <MenuSection label="Camera">
-                    <MediaDeviceMenu kind="videoinput" />
+                    <DeviceOptions kind="videoinput" onPick={() => setOverflow(false)} />
                   </MenuSection>
                 </>
               )}
               {canSelectSpeaker && (
                 <MenuSection label="Speaker">
-                  <MediaDeviceMenu kind="audiooutput" />
+                  <DeviceOptions kind="audiooutput" onPick={() => setOverflow(false)} />
                 </MenuSection>
               )}
               {!canSelectSpeaker && !compact && (
@@ -469,6 +492,46 @@ function Popover({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
+  /**
+   * **Kept inside the control row, whichever button it hangs from.**
+   *
+   * The menu is centred on its button, and the button that opens the overflow
+   * is the second-last in the row — so on a 375px phone the centred menu ran
+   * past the room's right edge, where the frame's `overflow-hidden` clipped it
+   * and the rows that close it went with it. Measured once it is on screen
+   * and nudged back inside the row with an 8px margin, in whichever direction
+   * it overflowed; a menu that already fits is not moved. A layout effect, so
+   * the nudge lands before the first paint rather than a frame after it.
+   */
+  const [shift, setShift] = useState(0);
+  /**
+   * And no taller than the room above the bar. The frame clips at its top
+   * edge exactly as it does at its sides, and the overflow menu — with the
+   * microphone, camera and speaker lists in it — is taller than a phone's
+   * 416px room, or the 232px corner window, leaves above the control bar. It
+   * scrolls inside that height instead of losing its first rows.
+   */
+  const [maxHeight, setMaxHeight] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    const row = el?.closest("[data-control-row]");
+    if (!el || !row) return;
+    const r = el.getBoundingClientRect();
+    const b = row.getBoundingClientRect();
+    const pad = 8;
+    let dx = 0;
+    if (r.right > b.right - pad) dx = b.right - pad - r.right;
+    if (r.left + dx < b.left + pad) dx = b.left + pad - r.left;
+    if (dx !== 0) setShift(dx);
+    /* The frame is the room's own `<section>` — the nearest one, in every
+       room this bar is mounted in. */
+    const frame = el.closest("section");
+    if (frame) {
+      const room = b.top - frame.getBoundingClientRect().top - pad * 2;
+      if (r.height > room) setMaxHeight(Math.max(120, Math.floor(room)));
+    }
+  }, []);
+
   return (
     <>
       <div className="fixed inset-0 z-30" aria-hidden onClick={onClose} />
@@ -476,7 +539,11 @@ function Popover({
         ref={ref}
         role="menu"
         aria-label={label}
-        className="absolute bottom-full left-1/2 z-40 mb-2 -translate-x-1/2 rounded-xl border border-white/15 bg-neutral-900/97 p-1.5 shadow-2xl backdrop-blur"
+        className="absolute bottom-full left-1/2 z-40 mb-2 overflow-y-auto overscroll-contain rounded-xl border border-white/15 bg-neutral-900/97 p-1.5 shadow-2xl backdrop-blur"
+        style={{
+          transform: `translateX(calc(-50% + ${shift}px))`,
+          maxHeight: maxHeight ?? undefined,
+        }}
       >
         {children}
       </div>
@@ -508,6 +575,86 @@ function MenuRow({
   );
 }
 
+/**
+ * The devices of one kind, listed INSIDE our own menu.
+ *
+ * ## What this replaces, and why
+ *
+ * These three sections each rendered LiveKit's `<MediaDeviceMenu>`, which is
+ * not a list — it is a BUTTON that opens a popup of its own. Nested inside the
+ * overflow menu that produced two nested popups: the trigger, squeezed to a
+ * 1.15rem stub by `.lk-cowork-device-menu .lk-button` (a rule written for the
+ * chevron beside the microphone, where a stub is right), and LiveKit's popup
+ * positioned against the wrong element. On screen that read as a large empty
+ * panel with a lone chevron in it, and the speakers were never visible at all.
+ *
+ * One class was doing two contradictory jobs — its own comment says the
+ * overflow trigger should be “a full-width row, not a chevron”, while the rule
+ * above it sets the width of a chevron. The chevron keeps that class where it
+ * is correct; the menu stops nesting a popup inside a popup and simply lists
+ * the devices.
+ *
+ * `useMediaDeviceSelect` is the same hook LiveKit builds its own menu on, so
+ * enumeration, permission handling and switching are unchanged — only the
+ * presentation is ours.
+ */
+function DeviceOptions({
+  kind,
+  onPick,
+}: {
+  kind: MediaDeviceKind;
+  onPick: () => void;
+}) {
+  const { devices, activeDeviceId, setActiveMediaDevice } = useMediaDeviceSelect({
+    kind,
+  });
+
+  /* Empty is a real state, not a bug: a browser that has not been granted the
+     microphone yet enumerates nothing, and so does a machine with no camera.
+     Rendering nothing would leave a section heading over a blank strip. */
+  if (devices.length === 0) {
+    return (
+      <p className="px-2 py-1 text-[11px] leading-snug text-white/55">
+        None found yet. Allow access in your browser, then reopen this menu.
+      </p>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-0.5" role="group">
+      {devices.map((d, i) => {
+        const active = d.deviceId === activeDeviceId;
+        /* A device with no label is one the browser will not name until
+           permission is granted. Numbering them keeps them distinguishable
+           instead of showing three identical blank rows. */
+        const name = d.label || `Device ${i + 1}`;
+        return (
+          <button
+            key={d.deviceId || `${kind}-${i}`}
+            type="button"
+            role="menuitemradio"
+            aria-checked={active}
+            title={name}
+            onClick={() => {
+              void setActiveMediaDevice(d.deviceId);
+              onPick();
+            }}
+            className={`flex w-full items-center gap-2.5 rounded-lg px-2 py-1.5 text-left text-[13px] transition-colors hover:bg-white/10 ${
+              active ? "text-white" : "text-white/90"
+            }`}
+          >
+            {/* The slot is always drawn, so the names stay on one left edge
+                whether or not a row is the active one. */}
+            <span className="grid h-4 w-4 shrink-0 place-items-center text-white/70">
+              {active ? <CheckIcon /> : null}
+            </span>
+            <span className="truncate">{name}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
 function MenuSection({
   label,
   children,
@@ -516,7 +663,13 @@ function MenuSection({
   children: ReactNode;
 }) {
   return (
-    <div className="lk-cowork-device-menu px-2 py-1.5">
+    /* No `lk-cowork-device-menu` here any more. That class exists to shrink a
+       LiveKit trigger to a 1.15rem chevron — correct beside the microphone,
+       and the reason this section used to render a stub button and an empty
+       floating panel instead of a list. The section renders its own rows now,
+       so carrying the class would only re-create the bug for whatever landed
+       inside it next. */
+    <div className="px-2 py-1.5">
       <p className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-white/45">
         {label}
       </p>
@@ -595,6 +748,16 @@ function SmileyIcon() {
       <circle cx="12" cy="12" r="9" />
       <path d="M8.5 14.2a4.2 4.2 0 0 0 7 0" />
       <path d="M9 9.5h.01M15 9.5h.01" strokeWidth={2.4} />
+    </svg>
+  );
+}
+
+/** The active device. Drawn, not a “✓” character: a glyph is a different
+    typeface on every machine and would not match the stroke beside it. */
+function CheckIcon() {
+  return (
+    <svg {...S}>
+      <path d="m4.5 12.5 5 5 10-11" />
     </svg>
   );
 }

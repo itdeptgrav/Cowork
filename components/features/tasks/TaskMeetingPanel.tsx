@@ -747,11 +747,15 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
             <button
               type="button"
               onClick={() => setMinimised((v) => !v)}
-              title={minimised ? "Bring the meeting back" : "Minimise to the corner"}
+              /* "A small window", not "the corner": in Chrome and Edge the
+                 engine now puts it straight into the browser's own
+                 picture-in-picture window over the desktop, and only falls
+                 back to the in-tab corner where it cannot. */
+              title={minimised ? "Bring the meeting back" : "Minimise to a small window"}
               aria-label={
                 minimised
                   ? "Bring the meeting back into the page"
-                  : "Minimise the meeting to the corner"
+                  : "Minimise the meeting to a small window"
               }
               aria-pressed={minimised}
               className="inline-flex items-center gap-1.5 rounded-control px-2.5 py-1.5 text-xs font-medium text-ink-muted transition-colors hover:bg-[var(--control)] hover:text-ink"
@@ -767,11 +771,14 @@ export function TaskMeetingPanel({ view }: { view: TaskView }) {
 
           {minimised ? (
             <p className="rounded-card border border-hairline px-4 py-6 text-center text-sm text-ink-muted">
-              The meeting is running in the corner. Press Maximise to bring it
-              back here.
+              The meeting is running in its own small window. Press Maximise
+              to bring it back here.
             </p>
           ) : (
-            <MeetingStage className="min-h-[22rem] w-full rounded-card sm:min-h-[26rem] deck:min-h-[420px]" />
+            /* Each step is capped to the screen's own height as well: a phone
+               held sideways is 375px tall, and a 416px room there put the
+               microphone and Leave below the fold. */
+            <MeetingStage className="min-h-[min(22rem,calc(100dvh-6rem))] w-full rounded-card sm:min-h-[min(26rem,calc(100dvh-6rem))] deck:min-h-[min(420px,calc(100dvh-6rem))]" />
           )}
         </div>
       )}

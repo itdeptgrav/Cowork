@@ -153,8 +153,10 @@ export function TaskRoom({
             onPointerDown={(e) => e.stopPropagation()}
             title="Open in a floating window"
             aria-label="Open the meeting in a floating window"
+            /* 32px in the corner window too — see the same button in
+               MeetingRoom. */
             className={`grid shrink-0 place-items-center rounded-full text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink ${
-              compact ? "h-6 w-6" : "h-9 w-9 sm:h-8 sm:w-8"
+              compact ? "h-8 w-8" : "h-9 w-9 sm:h-8 sm:w-8"
             }`}
           >
             <Icon.external className={compact ? "h-3.5 w-3.5" : "h-4 w-4"} />
@@ -171,7 +173,7 @@ export function TaskRoom({
                window actually wants. */
             title="Back to the task"
             aria-label="Back to the task"
-            className="inline-flex shrink-0 items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
+            className="inline-flex min-h-8 shrink-0 items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-medium text-slab-ink-muted transition-colors hover:bg-white/10 hover:text-slab-ink"
           >
             <Icon.chevronRight className="h-3 w-3" />
             Open

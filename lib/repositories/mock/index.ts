@@ -115,6 +115,7 @@ import type {
   MessageAttachment,
   MessageCard,
   MessageReply,
+  StoredMeetingMessage,
   MessageSearchHit,
   Notification,
   PriorityAcknowledgement,
@@ -9088,6 +9089,10 @@ export class MockRepository implements CoworkRepository {
    */
   #externalShares = new Map<string, ExternalShareInvite[]>();
 
+  /** Meeting chat, in memory, keyed by meeting id — the ledger the panel reads
+      back so a refresh does not lose the conversation. See the methods below. */
+  #meetingChat = new Map<string, StoredMeetingMessage[]>();
+
   async listExternalShares(
     kind: ExternalShareKind,
     id: string,
@@ -9855,6 +9860,63 @@ export class MockRepository implements CoworkRepository {
    * somebody confirm their audio really was saved. An empty list is the honest
    * answer here and renders as "no recordings", which is exactly true.
    */
+  /**
+   * Meeting chat, in memory.
+   *
+   * Implemented rather than omitted so the prototype demonstrates the same
+   * product: the panel checks for the method, and a store that lacked it
+   * would silently render an ephemeral chat while the real one persists —
+   * the kind of difference that is only discovered in a demo.
+   */
+  async listMeetingMessages(
+    meetingId: string,
+    opts?: { beforeMs?: number; afterMs?: number; limit?: number },
+  ): Promise<{ messages: StoredMeetingMessage[]; hasMore: boolean }> {
+    await delay(undefined);
+    const all = (this.#meetingChat.get(meetingId) ?? [])
+      .slice()
+      .sort((a, b) => a.createdAtMs - b.createdAtMs);
+    /* Inclusive, matching the engine — see the note on the interface. */
+    const within = all.filter(
+      (m) =>
+        (!opts?.beforeMs || m.createdAtMs <= opts.beforeMs) &&
+        (!opts?.afterMs || m.createdAtMs >= opts.afterMs),
+    );
+    const size = Math.min(Math.max(opts?.limit ?? 50, 1), 200);
+    const page = within.slice(-size);
+    return { messages: page, hasMore: within.length > page.length };
+  }
+
+  async recordMeetingMessage(input: {
+    meetingId: string;
+    messageId: string;
+    text: string;
+    attachments?: MessageAttachment[];
+  }): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const rows = this.#meetingChat.get(input.meetingId) ?? [];
+    /* Idempotent, exactly as the engine is: the same id twice is a retry or
+       an outbox replay, not a second message. */
+    if (rows.some((r) => r.messageId === input.messageId)) {
+      return { ok: true, data: undefined };
+    }
+    const meId = actingId();
+    const me = getStore().employees.find((e) => e.id === meId);
+    rows.push({
+      messageId: input.messageId,
+      senderId: String(meId),
+      senderName: me?.displayName ?? String(meId),
+      senderKind: "employee",
+      text: input.text,
+      attachments: input.attachments ?? [],
+      createdAt: now().toISOString(),
+      createdAtMs: now().getTime(),
+    });
+    this.#meetingChat.set(input.meetingId, rows);
+    return { ok: true, data: undefined };
+  }
+
   async listMeetingRecordings(meetingId: string): Promise<MeetingRecording[]> {
     void meetingId;
     return delay([]);

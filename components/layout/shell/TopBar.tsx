@@ -152,9 +152,12 @@ function ScorePill({
         </span>
       )}
       {data && (
+        /* The trend is the first thing to go on a phone: with the score
+           itself still showing, "(78%)" reads without its "↓15", while the
+           icon buttons beside it do not survive being squeezed. */
         <span
           data-figure
-          className={`text-xs ${active ? "opacity-70" : "text-ink-faint"}`}
+          className={`hidden text-xs sm:inline ${active ? "opacity-70" : "text-ink-faint"}`}
           aria-label={`${rising ? "up" : "down"} ${Math.abs(Math.round(data.delta))} points since the previous period`}
         >
           {rising ? "↑" : "↓"}
@@ -340,7 +343,11 @@ function NotificationBell({ unread }: { unread: number }) {
     <Link
       href="/notifications"
       aria-label={unread ? `Notifications, ${unread} unread` : "Notifications"}
-      className="relative grid h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink"
+      /* `min-w-8`: a flex item may shrink below its `w-8`, and on a 375px
+         phone this one was squeezed to 18px wide with the bell clipped. The
+         minimum stops that without making it an immovable group — the score
+         pill beside it is still the control that gives way. */
+      className="relative grid h-8 w-8 min-w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink"
     >
       <BellIcon />
       {unread > 0 && (
@@ -466,7 +473,7 @@ function SyncButton() {
       disabled={spinning}
       aria-label={spinning ? "Syncing" : "Sync — check for the latest"}
       title={spinning ? "Syncing…" : "Sync — check for the latest"}
-      className="grid h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink disabled:cursor-default disabled:text-ink-faint"
+      className="grid h-8 w-8 min-w-8 place-items-center rounded-full text-ink-muted transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] hover:text-ink disabled:cursor-default disabled:text-ink-faint"
     >
       {/* `motion-safe` so the rotation is dropped for anybody who has asked
           their system for reduced motion — the disabled state and the label
@@ -578,7 +585,10 @@ export function TopBar() {
               className="mr-3 flex shrink-0 items-center gap-2.5 rounded-full py-1.5"
             >
               <Mark className="h-5 w-5 text-ink" />
-              <span className="text-[17px] leading-none font-medium tracking-[-0.03em] text-ink">
+              {/* The mark alone under 400px. The word cost 62px on a row that
+                  a 375px phone could not fit with its status, score, sync,
+                  bell and menu — and the mark is the part people recognise. */}
+              <span className="hidden text-[17px] leading-none font-medium tracking-[-0.03em] text-ink min-[400px]:inline">
                 cowork
               </span>
             </Link>
@@ -682,7 +692,7 @@ export function TopBar() {
                 aria-expanded={menuOpen}
                 aria-controls={sheetId}
                 onClick={() => setMenuOpen((v) => !v)}
-                className="grid h-8 w-8 place-items-center rounded-full text-ink transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] deck:hidden"
+                className="grid h-8 w-8 min-w-8 place-items-center rounded-full text-ink transition-colors duration-[180ms] hover:bg-[var(--surface-sunken)] deck:hidden"
               >
                 <MenuIcon open={menuOpen} />
               </button>

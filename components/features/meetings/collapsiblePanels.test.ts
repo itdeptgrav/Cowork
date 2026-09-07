@@ -62,23 +62,34 @@ test("History's shut headline counts the changes", () => {
   assert.match(src, /"Nothing recorded\."/);
 });
 
-test("the two logs are grouped together, last", () => {
+test("the two logs are grouped together under their own heading", () => {
   const src = code(DETAIL);
   const heading = src.indexOf("<RailHeading>Files and history</RailHeading>");
   const recordings = src.indexOf("<RecordingsPanel");
-  const history = src.indexOf('<CollapsiblePanel\n            title="History"');
+  /* Matched by tag and prop, not by an exact indentation — where the panel
+     sits in the tree is layout's business, not this test's. */
+  const history = src.search(/<CollapsiblePanel\s+title="History"/);
   assert.ok(heading !== -1, "the group is unnamed");
   assert.ok(heading < recordings, "Recorded audio sits above its own heading");
   assert.ok(recordings < history, "the two logs are not adjacent");
 });
 
-test("the guest link moved up, out of the logs", () => {
-  /* It is about access to the meeting, not a record of it, and it is short. */
+test("the guest link is filed under About, not under the logs", () => {
+  /* It is about access to the meeting, not a record of it, and it is short.
+     Placement is checked by what it sits BETWEEN rather than by raw source
+     order: the logs and the guest link live in different columns now, so
+     "before the heading" no longer means anything. */
   const src = code(DETAIL);
-  const guest = src.indexOf('<Panel label="Guest link">');
+  const guest = src.search(/<Panel[^>]*label="Guest link"/);
+  const about = src.indexOf("<RailHeading>About this meeting</RailHeading>");
   const filesHeading = src.indexOf("<RailHeading>Files and history</RailHeading>");
-  assert.ok(guest !== -1 && filesHeading !== -1);
-  assert.ok(guest < filesHeading, "the guest link is still filed under the logs");
+  const history = src.search(/<CollapsiblePanel\s+title="History"/);
+  assert.ok(guest !== -1 && about !== -1 && filesHeading !== -1 && history !== -1);
+  assert.ok(
+    !(filesHeading < guest && guest < history),
+    "the guest link is filed under the logs",
+  );
+  assert.ok(about < guest, "the guest link does not follow the About heading");
 });
 
 test("the panels that answer at a glance stay open", () => {

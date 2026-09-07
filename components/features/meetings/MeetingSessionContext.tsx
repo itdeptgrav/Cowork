@@ -60,7 +60,7 @@ import type { Meeting } from "@/lib/domain";
  * `kind` is what the engine switches on, and what `TaskMeetingLifecycle`
  * watches for: only a task session has a heartbeat to keep beating.
  */
-export type MeetingSession = ScheduledSession | TaskSession;
+export type MeetingSession = ScheduledSession | TaskSession | GuestSession;
 
 export interface ScheduledSession {
   kind: "scheduled";
@@ -74,8 +74,11 @@ export interface ScheduledSession {
    * is mounted in the shell and has no idea which page — if any — is showing
    * the meeting. Hanging up from the floating window while the page is not
    * mounted simply means nobody is listening, which is correct.
+   *
+   * Carries WHY when the room knows: `"ended"` for the organiser's End for
+   * everyone, so the page can re-read the meeting at once and say so.
    */
-  onLeave?: () => void;
+  onLeave?: (reason?: LeaveReason) => void;
 }
 
 /**
@@ -120,6 +123,59 @@ export interface TaskSession {
   onConnected?: () => void;
   onLeave?: () => void;
 }
+
+/**
+ * A guest's meeting, held open by the shell for the same reason as the others.
+ *
+ * **Parity, by decision.** The guest room used to be a page: `LiveKitRoom`
+ * inside `GuestMeetingArea`, so any navigation — a link in the chat, the
+ * browser's Back — unmounted it and ended the guest's call with their half of
+ * the recording finalised mid-sentence, while the employee beside them kept
+ * theirs in a corner window. The owner chose the same engine for guests: the
+ * draggable floating window, the picture-in-picture window, a room that
+ * survives navigation.
+ *
+ * Everything a guest room needs to connect and to record is carried here,
+ * because the page that gathered it may be gone by the time the room is drawn:
+ * the credentials `guest-join` minted, the identity the recorder files under,
+ * and the lobby's device choices, which are where the room STARTS (see the
+ * note on `LiveKitRoom`'s `audio`/`video` in `GuestRoom`).
+ */
+export interface GuestSession {
+  kind: "guest";
+  /** The share token the guest arrived by — the route their page lives at. */
+  shareToken: string;
+  meetId: string;
+  meetTitle: string;
+  token: string;
+  url: string;
+  /** Minted at join; the recorder files this guest's audio under it. */
+  guestId: string;
+  /** Gates the guest audio and chat routes in place of an employee token. */
+  guestSessionId: string;
+  guestName: string;
+  micEnabled: boolean;
+  camEnabled: boolean;
+  micId: string;
+  camId: string;
+  /**
+   * What the guest's page wants to know when the room ends — and why. The
+   * page shows "This meeting has ended" for an organiser's End for everyone
+   * and returns to its lobby for a plain Leave.
+   */
+  onLeave?: (reason?: LeaveReason) => void;
+}
+
+/**
+ * Why a room closed, as far as the person in it is concerned.
+ *
+ * `"ended"` is the organiser's End for everyone (or a cancellation) reaching
+ * this browser, whichever way it arrived — the socket, or the LiveKit room
+ * being deleted underneath the call. `"left"` is the person's own Leave.
+ * Everything else — a connection that gave up — is `undefined`, so a page can
+ * tell "you were taken out" from "you chose to go".
+ */
+export type LeaveReason = "ended" | "left";
 
 interface MeetingSessionValue {
   /** The meeting in progress, or null. */
@@ -190,6 +246,17 @@ export function MeetingSessionProvider({ children }: { children: ReactNode }) {
           prev.roomName === next.roomName &&
           prev.displayName === next.displayName &&
           prev.isHost === next.isHost
+        )
+          return prev;
+      }
+      if (prev.kind === "guest" && next.kind === "guest") {
+        /* A guest's identity is the session `guest-join` minted: the same
+           session re-opened (the page remounting under a live call) keeps the
+           object; a fresh join is a different session and replaces it. */
+        if (
+          prev.guestSessionId === next.guestSessionId &&
+          prev.meetId === next.meetId &&
+          prev.shareToken === next.shareToken
         )
           return prev;
       }

@@ -92,7 +92,7 @@ import { actionableFor } from "../../rules/tasks/actionable.ts";
 import { validateProposedDeadline } from "../../rules/tasks/preAssignDeadline.ts";
 import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/dailyReport.ts";
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
-import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskEvent, TaskEventType, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
+import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, StoredMeetingMessage, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskEvent, TaskEventType, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
 import { notifyRepositoryChanged } from "../events.ts";
 import {
@@ -800,6 +800,31 @@ function taskIsWorkable(
       return sub.review.approved ? "approved" : "rework";
     },
   });
+}
+
+/**
+ * One raw meeting-chat row from the engine → a `StoredMeetingMessage`, or null
+ * if it carries no id. Defensive because it crosses the wire as JSON, and a
+ * malformed row must be dropped rather than poison the merge.
+ */
+function readStoredMeetingMessage(raw: unknown): StoredMeetingMessage | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const messageId = typeof r.messageId === "string" ? r.messageId : "";
+  if (!messageId) return null;
+  const atts = Array.isArray(r.attachments) ? r.attachments : [];
+  return {
+    messageId,
+    senderId: typeof r.senderId === "string" ? r.senderId : "",
+    senderName: typeof r.senderName === "string" ? r.senderName : "",
+    senderKind: r.senderKind === "guest" ? "guest" : "employee",
+    text: typeof r.text === "string" ? r.text : "",
+    attachments: atts.filter(
+      (a): a is MessageAttachment => !!a && typeof a === "object",
+    ),
+    createdAt: typeof r.createdAt === "string" ? r.createdAt : "",
+    createdAtMs: Number(r.createdAtMs) || 0,
+  };
 }
 
 export class LegacyRepository {
@@ -10231,6 +10256,86 @@ export class LegacyRepository {
    * size. A missing field is shown as unknown; it is never a reason to refuse
    * to list a file that exists.
    */
+  /**
+   * A page of stored meeting chat, oldest first.
+   *
+   * Cursors are INCLUSIVE on the engine, because a server timestamp is not
+   * unique and an exclusive cursor silently drops every row sharing the
+   * boundary instant. The overlap that produces is removed by `mergeChat`,
+   * which keys on message id.
+   *
+   * An engine that does not have the route yet answers 404, and this reports
+   * an empty page rather than throwing: chat is still delivered by the data
+   * channel, so the panel stays exactly as useful as it was before.
+   */
+  async listMeetingMessages(
+    meetingId: string,
+    opts?: { beforeMs?: number; afterMs?: number; limit?: number },
+  ): Promise<{ messages: StoredMeetingMessage[]; hasMore: boolean }> {
+    const token = await this.#token();
+    const r = await legacyFetch<{
+      messages?: unknown[];
+      hasMore?: boolean;
+    }>({
+      path: `/cowork/schedule-meet/${encodeURIComponent(meetingId)}/messages`,
+      token,
+      query: {
+        beforeMs: opts?.beforeMs || undefined,
+        afterMs: opts?.afterMs || undefined,
+        limit: opts?.limit || undefined,
+      },
+    });
+    if (!r.ok) return { messages: [], hasMore: false };
+
+    const rows = Array.isArray(r.data?.messages) ? r.data.messages : [];
+    return {
+      messages: rows.map((raw) => readStoredMeetingMessage(raw)).filter(
+        (m): m is StoredMeetingMessage => m !== null,
+      ),
+      hasMore: r.data?.hasMore === true,
+    };
+  }
+
+  /**
+   * Record a message the data channel has already delivered.
+   *
+   * Fire-and-forget from the caller's point of view — the message is already
+   * on everybody's screen — so a failure here is reported for a retry rather
+   * than surfaced as the send having failed, which it did not.
+   */
+  async recordMeetingMessage(input: {
+    meetingId: string;
+    messageId: string;
+    text: string;
+    attachments?: MessageAttachment[];
+  }): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ success?: boolean }>({
+      path: `/cowork/schedule-meet/${encodeURIComponent(input.meetingId)}/messages`,
+      method: "POST",
+      token,
+      body: {
+        messageId: input.messageId,
+        text: input.text,
+        attachments: (input.attachments ?? []).map((a) => ({
+          url: a.url,
+          name: a.name ?? null,
+          kind: a.kind,
+          sizeBytes: a.sizeBytes ?? null,
+          fileId: a.fileId ?? null,
+        })),
+      },
+    });
+    if (!r.ok) {
+      return {
+        ok: false,
+        code: "conflict",
+        message: r.error.message,
+      };
+    }
+    return { ok: true, data: undefined };
+  }
+
   async listMeetingRecordings(meetingId: string): Promise<MeetingRecording[]> {
     const token = await this.#token();
     const result = await listMeetingRecordingsHttp({

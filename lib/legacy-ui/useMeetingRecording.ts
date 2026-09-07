@@ -20,8 +20,10 @@ import {
   emitRecordingPause,
   emitRecordingResume,
   getCoworkSocket,
+  isFinishedMeetStatus,
   joinMeetingRoom,
   leaveMeetingRoom,
+  type MeetStatusSignal,
   type RecordingState,
   type UploadState,
 } from "./coworkSocket";
@@ -386,6 +388,20 @@ function sendKeepaliveFinalize(args: {
   }
 }
 
+/**
+ * The engine is already saving this recording — try again later, keep the marker.
+ *
+ * Its own type rather than a string match, because the whole point is that it
+ * must never be mistaken for "there was no audio": that is the reading which
+ * throws the retry away.
+ */
+class FinalizePending extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "FinalizePending";
+  }
+}
+
 /** Guards against two drains running at once, across every caller on the page. */
 let draining = false;
 
@@ -496,7 +512,22 @@ async function finalizeRecording(args: {
     headers,
     body: JSON.stringify(body),
   });
-  const data = (await res.json()) as FinalizeResult;
+  const data = (await res
+    .json()
+    .catch(() => ({}) as FinalizeResult & { pending?: boolean })) as
+    FinalizeResult & { pending?: boolean };
+  /**
+   * **"Somebody else is saving this" is not "there is nothing to save".**
+   *
+   * The engine answers 409 when another finalize holds this recording, or when
+   * the chunk directory is momentarily locked. It used to answer `skipped` for
+   * both, which reads as "no audio" — and the caller responds to that by
+   * DELETING the marker that drives the retry, so a failure in that other
+   * finalize became permanent and silent. Raised as its own error, the marker
+   * survives and the drain tries again.
+   */
+  if (res.status === 409 && data.pending)
+    throw new FinalizePending(data.error || "Already being saved");
   if (!res.ok) throw new Error(data.error || "Finalize failed");
   return data;
 }
@@ -511,6 +542,15 @@ export interface MeetingRecordingInput {
   isHost: boolean;
   /** Present for a guest — routes uploads to the no-auth guest endpoints. */
   guestSessionId?: string;
+  /**
+   * The organiser ended (or cancelled) this meeting for everyone.
+   *
+   * Called AFTER this person's own audio has been told to finalise — the hook
+   * does that itself on the same event, so a room that answers this by
+   * disconnecting cannot get ahead of the upload. The room is expected to
+   * leave; see `MeetingEndWatch`.
+   */
+  onMeetingEnded?: (signal: MeetStatusSignal) => void;
 }
 
 export function useMeetingRecording({
@@ -520,6 +560,7 @@ export function useMeetingRecording({
   firstName,
   isHost,
   guestSessionId,
+  onMeetingEnded,
 }: MeetingRecordingInput) {
   const [isRecording, setIsRecording] = useState(false);
   /**
@@ -574,6 +615,15 @@ export function useMeetingRecording({
    * why "was that recorded?" had no reliable answer.
    */
   const isPausedRef = useRef(false);
+  /**
+   * The recorder is being stopped, and its final blob is on its way.
+   *
+   * That blob is not live audio — it is everything already captured since the
+   * last one-second slice, handed back as the recorder shuts down — so it must
+   * reach the buffer even while muted or paused, which is exactly when the
+   * guard in `ondataavailable` would otherwise drop it.
+   */
+  const isStoppingRef = useRef(false);
   const [isPaused, setIsPaused] = useState(false);
   const pauseStartedAtRef = useRef<number | null>(null);
   /** Every paused stretch, so the file can be read against the meeting clock. */
@@ -587,11 +637,13 @@ export function useMeetingRecording({
   const employeeIdRef = useRef(employeeId);
   const employeeNameRef = useRef(employeeName);
   const guestSessionIdRef = useRef(guestSessionId);
+  const onMeetingEndedRef = useRef(onMeetingEnded);
   meetIdRef.current = meetId;
   firstNameRef.current = firstName;
   employeeIdRef.current = employeeId;
   employeeNameRef.current = employeeName;
   guestSessionIdRef.current = guestSessionId;
+  onMeetingEndedRef.current = onMeetingEnded;
 
   const broadcastStatus = useCallback((recordingState: RecordingState) => {
     if (!meetIdRef.current || !employeeIdRef.current) return;
@@ -907,12 +959,17 @@ export function useMeetingRecording({
         mimeTypeRef.current = mimeType;
         recorder.ondataavailable = (e) => {
           /* Paused audio is never kept. The recorder is paused too, so this
-             only matters where a browser does not implement pause. */
+             only matters where a browser does not implement pause.
+
+             `isStoppingRef` is the one exception, and it is not an exception to
+             the rule: the blob delivered as a recorder shuts down holds what it
+             captured BEFORE it was paused or muted, and dropping it threw away
+             the tail of every recording — the whole of a short one. */
           if (
             e.data &&
             e.data.size > 0 &&
-            !isPausedRef.current &&
-            !isMutedRef.current
+            (isStoppingRef.current ||
+              (!isPausedRef.current && !isMutedRef.current))
           )
             bufferedChunksRef.current.push(e.data);
         };
@@ -1011,15 +1068,47 @@ export function useMeetingRecording({
 
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") {
-      if (recorder.state === "paused") {
+      /**
+       * **Wait for the recorder to hand back its last blob before flushing.**
+       *
+       * `stop()` is asynchronous. The final `dataavailable` — everything
+       * encoded since the last one-second slice — is delivered on a later turn
+       * and the `stop` event after it, so flushing on the next line uploaded
+       * whatever had already arrived and threw the tail away. Stopping the
+       * microphone track on that same line made it worse: the track is the
+       * recorder's source, so killing it could cut the tail off before it was
+       * produced at all. On a recording short enough to fit inside one slice,
+       * that tail was the entire recording, and the meeting's Drive folder was
+       * created and left empty.
+       *
+       * The timeout is the escape hatch: a browser that never fires `stop`
+       * must not hold somebody in a meeting they have left.
+       */
+      isStoppingRef.current = true;
+      await new Promise<void>((resolve) => {
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          resolve();
+        };
+        recorder.addEventListener("stop", done, { once: true });
+        recorder.addEventListener("error", done, { once: true });
+        setTimeout(done, 2000);
         try {
-          recorder.resume();
+          /* Resumed only when the pause was the HOST's. Resuming a recorder
+             that is paused because this microphone is muted would capture a
+             sliver of audio somebody muted themselves to avoid. */
+          if (recorder.state === "paused" && !isMutedRef.current)
+            recorder.resume();
+          recorder.stop();
         } catch {
-          /* already stopping */
+          done();
         }
-      }
-      recorder.stop();
+      });
+      /* AFTER the final blob, never before — see above. */
       recorder.stream?.getTracks().forEach((t) => t.stop());
+      isStoppingRef.current = false;
     }
     mediaRecorderRef.current = null;
 
@@ -1076,7 +1165,13 @@ export function useMeetingRecording({
       await deleteSession(markerKey);
     } catch (e) {
       const msg = e instanceof Error ? e.message : "";
-      if (msg.includes("No audio") || msg.includes("skipped")) {
+      if (e instanceof FinalizePending) {
+        /* Another finalize holds this recording. The marker is deliberately
+           KEPT, so the drain finishes the job if that one does not — and no
+           alarm is raised, because nothing has gone wrong. */
+        myUploadStateRef.current = "uploading";
+        broadcastStatus("not_rec");
+      } else if (msg.includes("No audio") || msg.includes("skipped")) {
         /* The same fact arriving as an error rather than a result: there was
            nothing to upload. Not a failure to retry, and not a success. */
         setUploadDone(true);
@@ -1309,11 +1404,35 @@ export function useMeetingRecording({
       });
     };
 
+    /**
+     * **The organiser ended the meeting for everyone.**
+     *
+     * The engine emits this into the meeting's socket room — every browser in
+     * the call, guests included — the moment `setCoworkMeetStatus` writes a
+     * finished status, and then deletes the LiveKit room. Two things have to
+     * happen here, in this order: this person's audio is finalised to Drive,
+     * which nobody else can do for them (`/audio/finalize` takes the identity
+     * from the caller), and THEN the room is told, so it can disconnect. A
+     * room that left first would unmount this hook mid-upload; the order makes
+     * the finalise the thing the room waits behind rather than the thing it
+     * races.
+     *
+     * Only THIS meeting's signal: the socket also carries `meet_status` for
+     * every meeting a person is invited to, into their personal room.
+     */
+    const onMeetStatus = (p?: MeetStatusSignal) => {
+      if (!p || p.meetId !== meetId) return;
+      if (!isFinishedMeetStatus(p.status)) return;
+      void stopRecording();
+      onMeetingEndedRef.current?.(p);
+    };
+
     socket.on("recording_started", onStarted);
     socket.on("recording_stopped", onStopped);
     socket.on("recording_paused", onPaused);
     socket.on("recording_resumed", onResumed);
     socket.on("participant_status", onStatus);
+    socket.on("meet_status", onMeetStatus);
     joinMeetingRoom(meetId);
 
     let retries = 0;
@@ -1330,6 +1449,7 @@ export function useMeetingRecording({
       socket.off("recording_paused", onPaused);
       socket.off("recording_resumed", onResumed);
       socket.off("participant_status", onStatus);
+      socket.off("meet_status", onMeetStatus);
       leaveMeetingRoom(meetId);
     };
   }, [meetId, employeeId, startRecording, stopRecording, pauseRecording, resumeRecording]);

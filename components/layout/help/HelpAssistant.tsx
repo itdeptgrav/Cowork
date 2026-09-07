@@ -197,8 +197,21 @@ export function HelpAssistant() {
          * It moved up from the bottom, where three floating things were
          * competing for one edge — the music bar at bottom-left, the prototype
          * bar at bottom-centre and this at bottom-right.
+         *
+         * **And under 1520px it is back at the bottom-right — which none of
+         * those three ever occupied.** "Tucked under the bar" put it exactly
+         * where every page keeps its primary action: the title row's button
+         * sits at the right gutter, directly below the bar, and the launcher
+         * landed on top of it. On the meetings dashboard the "?" covered the
+         * "New" button at every width below 1520px, and on a 375px phone it
+         * covered most of it. The bottom-right corner has nothing in it: the
+         * music bar and the corner meeting window are bottom-LEFT, and the
+         * prototype bar is centred. From 1520px up nothing changes — beside
+         * the bar, on its centre line, as before. The panel opens upward from
+         * the bottom placement (`flex-col-reverse`), so the DOM order — the
+         * trigger before the panel it opens — holds in both.
          */
-        className="pointer-events-none fixed top-[calc(clamp(10px,1.6vw,16px)+60px)] right-[max(clamp(12px,3vw,32px),calc(50%-719px))] z-40 flex flex-col items-end gap-2 min-[1520px]:top-[calc(clamp(10px,1.6vw,16px)+10.5px)]"
+        className="pointer-events-none fixed right-[max(clamp(12px,3vw,32px),calc(50%-719px))] bottom-4 z-40 flex flex-col-reverse items-end gap-2 min-[1520px]:top-[calc(clamp(10px,1.6vw,16px)+10.5px)] min-[1520px]:bottom-auto min-[1520px]:flex-col"
       >
         {/* The trigger comes FIRST now, in the DOM as well as on screen. The
             panel used to sit above it and open upward; opening downward from the

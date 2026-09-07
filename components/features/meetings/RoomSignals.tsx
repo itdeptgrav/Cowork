@@ -116,7 +116,31 @@ export function RoomSignalsProvider({ children }: { children: ReactNode }) {
   const seqRef = useRef(0);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
-  const { send } = useDataChannel(TOPIC, (msg) => {
+  /**
+   * **`send` held in a ref, so the message handler can be memoised.**
+   *
+   * The handler needs `send` for one thing — answering a newcomer's `sync`
+   * with a raised hand — and `send` comes out of the very hook the handler
+   * is passed to. That circle is why the handler was written inline, and
+   * writing it inline is what broke reactions.
+   *
+   * `useDataChannel` memoises its whole data-channel setup on
+   * `[room, topic, onMessage]`. An inline arrow is a NEW onMessage on every
+   * render, so the handler was torn down and rebuilt on each one — and this
+   * provider re-renders constantly, because raising a hand and every arriving
+   * reaction are its own state. Two things follow, and both are the reported
+   * fault: an incoming message can land in the gap while the subscription is
+   * being rebuilt, and an outgoing `send` can be the one from a handler that
+   * is already being replaced. Your own reaction still appears because it is
+   * echoed locally on purpose, so the sender is the one person who cannot
+   * see that it never left.
+   *
+   * The refs above already exist for exactly this — the comment on them says
+   * the handler “is registered once”. It was not. Now it is.
+   */
+  const sendRef = useRef<SendData>(undefined);
+
+  const onSignal = useCallback((msg: { payload: Uint8Array; from?: { identity?: string; name?: string } }) => {
     let data: Payload;
     try {
       data = JSON.parse(new TextDecoder().decode(msg.payload)) as Payload;
@@ -163,10 +187,20 @@ export function RoomSignalsProvider({ children }: { children: ReactNode }) {
       /* Somebody just arrived. If MY hand is up, tell them — each raised hand
          answers for itself, so nobody has to be the authority on the room. */
       if (handsRef.current.has(meRef.current)) {
-        publish(send, { kind: "hand", up: true });
+        publish(sendRef.current, { kind: "hand", up: true });
       }
     }
-  });
+  }, []);
+
+  const { send } = useDataChannel(TOPIC, onSignal);
+  /* Assigned after commit rather than during render: a render can be thrown
+     away or replayed, and writing a ref during one is a side effect on a pass
+     that may never commit. Safe to be a tick late — the only thing that reads
+     it is the message handler, which cannot receive anything before the
+     channel it belongs to exists, and `publish` refuses an absent `send`. */
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
 
   /* Ask the room for its raised hands, once, on arrival. */
   const askedRef = useRef(false);
@@ -253,7 +287,14 @@ export function RoomSignalsProvider({ children }: { children: ReactNode }) {
    publish signature is a compile error here instead of a silent mismatch. */
 type SendData = ReturnType<typeof useDataChannel>["send"];
 
-function publish(send: SendData, data: Payload): void {
+/**
+ * `send` may be undefined, and the guard below already knew it.
+ *
+ * It is read from a ref now — see `sendRef` — so on the very first render, and
+ * for one tick after the room is replaced, there is genuinely nothing to send
+ * with. Typing it as always-present only moved that fact out of the type.
+ */
+function publish(send: SendData | undefined, data: Payload): void {
   if (!send) return;
   try {
     /* Reliable: a hand going up or down is a state change, and an unreliable

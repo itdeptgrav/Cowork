@@ -23,6 +23,24 @@ const WorkspaceShell = dynamic(() =>
 );
 
 /**
+ * The meeting engine for a guest, split the same way and for the same reason.
+ *
+ * A guest's room is held by the shell now, exactly as an employee's is — so it
+ * survives a link followed from the chat, or Back, as a floating window. The
+ * engine renders nothing until somebody joins, but it IMPORTS LiveKit, and this
+ * branch is shared with the sign-in page; a static import here would put the
+ * meeting stack back into the chunk `/signin` downloads. Mounted only on the
+ * public routes below, never on the auth ones.
+ */
+const GuestShellExtras = dynamic(
+  () =>
+    import("@/components/features/meetings/GuestShellExtras").then(
+      (m) => m.GuestShellExtras,
+    ),
+  { ssr: false },
+);
+
+/**
  * Which shell a route gets.
  *
  * The sign-in and sign-up routes are inside the application but outside the
@@ -119,6 +137,11 @@ export function ShellFrame({ children }: { children: ReactNode }) {
             somebody may be unable to get any further, and the reason this is
             mounted on BOTH branches rather than inside the workspace. */}
         <SupportShortcut />
+        {/* A guest's meeting, held above the router like an employee's. The
+            public prefixes are all the routes a guest can be on, so the room
+            follows them between a meeting link and a shared document; the
+            auth routes get nothing, and download nothing, for it. */}
+        {rendersWithoutSession(pathname) && <GuestShellExtras />}
       </SessionProvider>
     );
   }

@@ -63,21 +63,48 @@ export function PanelHead({
   aside,
   sub,
   className = "",
+  icon,
 }: {
   title: string;
   aside?: ReactNode;
   sub?: ReactNode;
   className?: string;
+  /**
+   * An icon well before the title, for a page whose panels answer different
+   * kinds of question and want telling apart at a glance. Optional and
+   * additive: without it the markup is exactly what every existing caller
+   * already renders.
+   */
+  icon?: ReactNode;
 }) {
   return (
     <div
       className={`mb-3 flex items-baseline justify-between gap-4 ${className}`}
     >
       <div className="min-w-0">
-        <h2 className="truncate text-[17px] leading-none font-medium tracking-[-0.02em] text-ink">
-          {title}
-        </h2>
-        {sub && <p className="mt-0.5 text-xs text-ink-faint">{sub}</p>}
+        {icon ? (
+          <div className="flex items-center gap-3">
+            <span
+              aria-hidden
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted"
+            >
+              {icon}
+            </span>
+            <div className="min-w-0">
+              <h2 className="truncate text-[17px] leading-none font-medium tracking-[-0.02em] text-ink">
+                {title}
+              </h2>
+              {sub && <p className="mt-0.5 text-xs text-ink-faint">{sub}</p>}
+            </div>
+          </div>
+        ) : (
+          <>
+            <h2 className="truncate text-[17px] leading-none font-medium tracking-[-0.02em] text-ink">
+              {title}
+            </h2>
+            {sub && <p className="mt-0.5 text-xs text-ink-faint">{sub}</p>}
+          </>
+        )}
       </div>
       {aside && <div className="shrink-0 text-xs text-ink-faint">{aside}</div>}
     </div>
@@ -387,7 +414,7 @@ export function Rows({
 
 /* ── Buttons ──────────────────────────────────────────────────────────────── */
 
-type ButtonTone = "primary" | "secondary" | "ghost" | "destructive";
+type ButtonTone = "primary" | "secondary" | "ghost" | "destructive" | "positive";
 
 export function Button({
   children,
@@ -424,6 +451,11 @@ export function Button({
     // read as a fifth channel colour.
     destructive:
       "bg-[color-mix(in_srgb,var(--state-overdue)_22%,transparent)] text-[var(--state-overdue-ink)] hover:bg-[color-mix(in_srgb,var(--state-overdue)_32%,transparent)] disabled:opacity-45",
+    // A "go" — the same tinted treatment as destructive, in the positive hue
+    // the Live chip already uses, so starting reads as the opposite of ending
+    // without adding a colour the page does not already speak.
+    positive:
+      "bg-[color-mix(in_srgb,var(--state-positive)_26%,transparent)] text-[var(--state-positive-ink)] hover:bg-[color-mix(in_srgb,var(--state-positive)_38%,transparent)] disabled:opacity-45",
   };
   return (
     <button

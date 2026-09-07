@@ -31,7 +31,7 @@ function code(path: string): string {
 }
 
 const ROOM = "components/features/meetings/MeetingRoom.tsx";
-const GUEST = "components/features/meetings/GuestMeetingArea.tsx";
+const GUEST = "components/features/meetings/GuestRoom.tsx";
 const SYNC = "components/features/meetings/DeviceIntentSync.tsx";
 const LIVEKIT = "node_modules/@livekit/components-react/dist/room-BC_ml4G1.mjs";
 

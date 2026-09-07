@@ -11,8 +11,9 @@ import { readFileSync } from "node:fs";
  * There are three rooms — scheduled, task and guest — and they have drifted
  * before. Pinning, the per-tile menu, profile pictures and the reconnect fix
  * all landed in the scheduled room and left the task room drawing a bare grid,
- * which is why `RoomInterior` exists at all. Live captions are still only in
- * the scheduled room today for exactly that reason.
+ * which is why `RoomInterior` exists at all. Live captions were removed from
+ * the room entirely at the owner's request; the after-meeting transcript
+ * lives in the details rail and comes from the Drive audio.
  *
  * So these do not assert "chat exists". They assert it is mounted in the shared
  * place, because a feature added to one room is a feature two thirds of the
@@ -70,7 +71,7 @@ test("the guest room gets the same in-call features, on its own stage", () => {
    * So this asserts the shared BEHAVIOUR reaches them, not that the layouts
    * were merged.
    */
-  const guest = code("components/features/meetings/GuestMeetingArea.tsx");
+  const guest = code("components/features/meetings/GuestRoom.tsx");
   assert.match(guest, /<RoomSignalsProvider>/);
   assert.match(guest, /<RoomOverlays \/>/);
   assert.match(guest, /<RoomSidePanel/);
@@ -199,7 +200,27 @@ test("the toggles are still LiveKit's, only their appearance is ours", () => {
   assert.match(BAR, /<TrackToggle/);
   assert.match(BAR, /showIcon=\{false\}/);
   assert.match(BAR, /useTrackToggle\(\{ source: Track\.Source\.Microphone \}\)/);
-  assert.match(BAR, /<MediaDeviceMenu kind="audioinput"/);
+  /**
+   * Device enumeration and switching stay LiveKit's — but through EITHER of its
+   * two surfaces, which is what changed.
+   *
+   * The chevron beside the microphone still mounts `MediaDeviceMenu`, because
+   * there a trigger-that-opens-a-popup is exactly right. The overflow menu now
+   * uses `useMediaDeviceSelect`, the same hook LiveKit builds that component
+   * on: nesting the component there rendered a popup inside a popup, and what
+   * a person saw was an empty panel with a stub chevron and no speakers in it.
+   *
+   * So the rule this guards is not "the component is present". It is that
+   * nobody hand-rolls device handling — which is what the last assertion says.
+   */
+  assert.match(BAR, /<MediaDeviceMenu kind=\{deviceKind\}/);
+  assert.match(BAR, /useMediaDeviceSelect\(\{/);
+  assert.match(BAR, /setActiveMediaDevice\(/);
+  assert.doesNotMatch(
+    BAR,
+    /enumerateDevices/,
+    "the bar has grown its own device enumeration instead of using LiveKit's",
+  );
   assert.match(BAR, /<DisconnectButton/, "Leave is no longer LiveKit's disconnect");
   assert.doesNotMatch(
     BAR,

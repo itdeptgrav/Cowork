@@ -3,15 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import {
   CarouselLayout,
-  FocusLayout,
   FocusLayoutContainer,
   GridLayout,
   ParticipantTile,
   useTracks,
 } from "@livekit/components-react";
 import { Track } from "livekit-client";
-import { TileControls } from "./TileMenu";
 import { TileContent } from "./TileContent";
+import { TileActionsProvider, type TileActions } from "./tileActions";
 
 /**
  * Moved here from `MeetingRoom` so a task's meeting gets it too.
@@ -52,8 +51,17 @@ import { TileContent } from "./TileContent";
  */
 /* No `compact` flag any more: the per-tile menu is the only control on the
    stage and it fits at every size, so the corner window draws exactly what the
-   page does. */
-export function RoomStage() {
+   page does.
+
+   `directory` is the ONE difference between the signed-in and guest rooms.
+   `TileContent` reads the employee directory to draw profile pictures and
+   names — a request a guest is not entitled to make — so a guest tile stays
+   LiveKit's own default content (video + the name the participant published).
+   Everything else on this stage, the per-tile menu included, works off LiveKit
+   tracks and participant names, so pinning, hiding and silencing are the same
+   on both sides. Before this, the guest room drew its own bare grid with no
+   menu at all. */
+export function RoomStage({ directory = true }: { directory?: boolean }) {
   const tracks = useTracks(
     [
       { source: Track.Source.Camera, withPlaceholder: true },
@@ -105,29 +113,41 @@ export function RoomStage() {
   );
   const others = pinned ? visible.filter((t) => keyOf(t) !== pinnedKey) : [];
 
+  /* The per-track template the layouts clone. BOTH rooms draw `TileContent`
+     now — it carries the on-tile menu — and `directory` is the only difference:
+     the signed-in room fetches profile pictures and names, the guest room keeps
+     LiveKit's own so it never asks for a directory it cannot read. */
+  const tile = (
+    <ParticipantTile>
+      <TileContent directory={directory} />
+    </ParticipantTile>
+  );
+
+  /* The pin/hide state lives here (one tile pinned decides grid-versus-focus)
+     but is DRIVEN from each tile's own menu, so it is handed down by context. */
+  const tileActions: TileActions = {
+    pinnedKey,
+    onPin: (k) => {
+      autoPinnedRef.current = null;
+      setPinnedKey(k);
+    },
+    hiddenKeys,
+    onHide: (k, hidden) =>
+      setHiddenKeys((prev) => {
+        const next = new Set(prev);
+        if (hidden) next.add(k);
+        else next.delete(k);
+        return next;
+      }),
+  };
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      {/* Above the grid, never inside it: see TileControls for why an overlay
-          on the tile itself cannot work. */}
-      <TileControls
-        tracks={tracks}
-        keyOf={keyOf}
-        pinnedKey={pinnedKey}
-        onPin={(k) => {
-          autoPinnedRef.current = null;
-          setPinnedKey(k);
-        }}
-        hiddenKeys={hiddenKeys}
-        onHide={(k, hidden) =>
-          setHiddenKeys((prev) => {
-            const next = new Set(prev);
-            if (hidden) next.add(k);
-            else next.delete(k);
-            return next;
-          })
-        }
-      />
-      <div className="relative min-h-0 flex-1 p-2">
+    <TileActionsProvider value={tileActions}>
+      <div className="flex min-h-0 flex-1 flex-col">
+        {/* The per-tile menu lives ON each tile now (see TileContent's hover
+            button and right-click). The strip of chips that used to sit above
+            the grid is gone — the control is now where the face is. */}
+        <div className="relative min-h-0 flex-1 p-2">
       {/**
        * **The carousel comes FIRST and the focus second.** That is the
        * container's contract, not a style choice: it "expects two children — a
@@ -142,18 +162,18 @@ export function RoomStage() {
        */}
       {pinned ? (
         <FocusLayoutContainer className="h-full">
-          <CarouselLayout tracks={others}>
-            <ParticipantTile>
-              <TileContent />
-            </ParticipantTile>
-          </CarouselLayout>
-          <FocusLayout trackRef={pinned} />
+          <CarouselLayout tracks={others}>{tile}</CarouselLayout>
+          {/* The large tile is OUR ParticipantTile, not LiveKit's bare
+              FocusLayout — so the pinned face keeps its on-tile menu and can be
+              unpinned from itself. FocusLayout is only a thin wrapper around
+              exactly this ParticipantTile, so the container sizes it the same. */}
+          <ParticipantTile trackRef={pinned}>
+            <TileContent directory={directory} />
+          </ParticipantTile>
         </FocusLayoutContainer>
       ) : (
         <GridLayout tracks={visible} className="h-full">
-          <ParticipantTile>
-            <TileContent />
-          </ParticipantTile>
+          {tile}
         </GridLayout>
       )}
 
@@ -176,6 +196,7 @@ export function RoomStage() {
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </TileActionsProvider>
   );
 }

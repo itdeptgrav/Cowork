@@ -161,12 +161,55 @@ function RoomInteriorBody({
     <>
       <MuteBridge onMuteChange={onMuteChange} />
 
-      <div className="flex min-h-0 flex-1 flex-col">
-        {/* `relative` so the banner, the reaction overlay and the shortcut
-            toast position against the stage rather than the page. */}
-        <div className="relative flex min-h-0 flex-1 flex-col">
-          <RoomStage />
-          <RoomOverlays />
+      {/**
+       * **The room's own width decides its layout, not the screen's.**
+       *
+       * `@container` makes this a container-query root. The same room is
+       * drawn at ~830px docked on a desk, ~350px docked on a phone, and 340px
+       * in the corner window on that very desk — and only the first has room
+       * for a chat column beside the video. A viewport breakpoint answered the
+       * wrong question: on a 1440px screen the 340px corner window still took
+       * the side-by-side layout, so the panel sat beside a window it could not
+       * fit in, off the frame's edge and clipped. Pressing Chat drew nothing.
+       * `RoomSidePanel` reads this container instead and lays itself OVER the
+       * stage when the room is narrow.
+       */}
+      <div className="@container flex min-h-0 min-w-0 flex-1 flex-col">
+        {/* The stage row: the picture, and beside it or over it the side panel
+            and the room's own `aside`. `relative` on the row is what the panel
+            overlays on a narrow room; `relative` on the inner wrapper is what
+            the banner, the reaction overlay and the shortcut toast position
+            against. */}
+        <div className="relative flex min-h-0 flex-1">
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+            <RoomStage />
+            <RoomOverlays />
+          </div>
+
+          {/**
+           * The side panel, and the room's own `aside` beside it.
+           *
+           * They are separate slots on purpose: `aside` is the scheduled
+           * room's transcript, which its owner decides to show, while this one
+           * is opened by whoever is in the room. Putting chat inside `aside`
+           * would mean the task and guest rooms — which pass no `aside` —
+           * could never have it, which is exactly the split that left live
+           * captions in one room type out of three.
+           */}
+          <RoomSidePanel
+            panel={panel}
+            onClose={() => setPanel(null)}
+            isHost={isHost}
+            /* A scheduled meeting's own id persists its chat; a task room's
+               `meet-task-…` name is refused by the ledger and stays live-only. */
+            meetId={meetId}
+            /* A signed-in reader may have the directory, so people appear under
+               their workspace names and photographs rather than their LiveKit
+               identity. */
+            withDirectory
+          />
+
+          {aside}
         </div>
 
         {/**
@@ -184,6 +227,11 @@ function RoomInteriorBody({
          * rule, and `compact` now moves the less-used controls into the
          * overflow menu rather than shrinking everything until nothing can be
          * hit.
+         *
+         * It spans the whole room — under the side panel as well as under the
+         * stage — which is the shape the guest room has always had, and the
+         * one that lets the panel sit over the stage on a narrow room without
+         * covering the microphone and Leave.
          */}
         <div className="shrink-0 border-t border-white/10">
           <MeetingControlBar
@@ -217,28 +265,6 @@ function RoomInteriorBody({
 
         {footer}
       </div>
-
-      {/**
-       * The side panel, and the room's own `aside` beside it.
-       *
-       * They are separate slots on purpose: `aside` is the scheduled room's
-       * transcript, which its owner decides to show, while this one is opened
-       * by whoever is in the room. Putting chat inside `aside` would mean the
-       * task and guest rooms — which pass no `aside` — could never have it,
-       * which is exactly the split that left live captions in one room type
-       * out of three.
-       */}
-      <RoomSidePanel
-        panel={panel}
-        onClose={() => setPanel(null)}
-        isHost={isHost}
-        /* A signed-in reader may have the directory, so people appear under
-           their workspace names and photographs rather than their LiveKit
-           identity. */
-        withDirectory
-      />
-
-      {aside}
     </>
   );
 }
@@ -250,7 +276,18 @@ function RoomInteriorBody({
  * meeting records now too, and it needs the same rule — muting stops the
  * recording as well as the room.
  */
-function MuteBridge({
+/**
+ * Reports the local microphone state upward.
+ *
+ * Exported because the GUEST room needs exactly this and had nothing: its
+ * recorder was never told about muting, so it recorded no speech intervals —
+ * and those are what the summary uses to order who spoke when. A guest was
+ * therefore present in the audio and absent from the ordering.
+ *
+ * One implementation rather than two, so the two rooms cannot drift on what
+ * muting means to a recording.
+ */
+export function MuteBridge({
   onMuteChange,
 }: {
   onMuteChange: (muted: boolean) => void;

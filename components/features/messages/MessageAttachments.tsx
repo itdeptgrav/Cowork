@@ -524,8 +524,24 @@ export function MessageAttachments({
      * and a thread with any image in it keeps the old behaviour exactly.
      */
     <span
-      className={`flex max-w-full flex-col gap-1.5 ${
-        images.length > 0 ? "w-[200px]" : "w-[19rem]"
+      /**
+       * **A maximum, not a fixed width — and `max-w-full` alone could not do it.**
+       *
+       * The bubble around this is shrink-to-fit, so a percentage cap resolves
+       * against a width the child is itself deciding. `max-w-full` therefore
+       * never bit, and a definite `w-[19rem]` (304px) simply overflowed its
+       * parent. That is invisible in the Messages thread, which is wider than
+       * the card — and broke the MEETING chat, whose side panel is 300px: the
+       * card pushed the list wider than the column, and every right-aligned
+       * message slid out of sight past the edge.
+       *
+       * `w-full` gives the card a shrinkable basis, so it takes
+       * `min(the cap, whatever the column actually offers)`. A wide thread is
+       * unchanged — the cap is smaller than the space, so the card is still the
+       * readable width a document needs — and a narrow one fits.
+       */
+      className={`flex w-full flex-col gap-1.5 ${
+        images.length > 0 ? "max-w-[200px]" : "max-w-[19rem]"
       }`}
     >
       {images.length > 0 && (

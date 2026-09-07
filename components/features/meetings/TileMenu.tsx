@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { RemoteParticipant, Track } from "livekit-client";
+import { type Participant, RemoteParticipant, Track } from "livekit-client";
 import type { TrackReferenceOrPlaceholder } from "@livekit/components-core";
 import { Icon } from "@/components/ui/Icons";
 
@@ -94,7 +94,6 @@ export function TileControls({
         const isPinned = pinnedKey === key;
         const isHidden = hiddenKeys.has(key);
         const isScreen = t.source === Track.Source.ScreenShare;
-        const remote = p instanceof RemoteParticipant ? p : null;
         const label = `${p.name || p.identity}${isScreen ? " — screen" : ""}`;
 
         return (
@@ -118,44 +117,76 @@ export function TileControls({
 
             {openKey === key && (
               <div className="absolute top-full left-0 z-30 mt-1 w-56 overflow-hidden rounded-panel border border-white/10 bg-[var(--slab)] py-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)]">
-                <MenuItem
-                  icon={<Icon.pin className="h-3.5 w-3.5" />}
-                  label={isPinned ? "Unpin" : "Pin to the screen"}
-                  detail={
-                    isPinned
-                      ? "Back to the equal grid"
-                      : "Show this one large. Only on your screen."
-                  }
-                  onClick={() => {
-                    onPin(isPinned ? null : key);
-                    setOpenKey(null);
-                  }}
+                <TileMenuList
+                  trackKey={key}
+                  participant={p}
+                  isScreen={isScreen}
+                  isPinned={isPinned}
+                  isHidden={isHidden}
+                  onPin={onPin}
+                  onHide={onHide}
+                  onClose={() => setOpenKey(null)}
                 />
-                <MenuItem
-                  icon={<Icon.close className="h-3.5 w-3.5" />}
-                  label={isHidden ? "Show this tile" : "Hide this tile"}
-                  detail={
-                    isHidden
-                      ? "Put it back in your grid"
-                      : "Off your grid only. They stay in the meeting and you still hear them."
-                  }
-                  onClick={() => {
-                    onHide(key, !isHidden);
-                    setOpenKey(null);
-                  }}
-                />
-                {/* Absent rather than disabled where it cannot work: there is no
-                    volume to change on your own tile, and a screen share's audio
-                    is a different track from the person's microphone. */}
-                {remote && !isScreen && (
-                  <SilenceItem participant={remote} onDone={() => setOpenKey(null)} />
-                )}
               </div>
             )}
           </div>
         );
       })}
     </div>
+  );
+}
+
+/**
+ * The Pin / Hide / Silence items for ONE participant.
+ *
+ * Extracted so the same menu can be reached two ways: from the strip above the
+ * grid (kept), and from a control ON the tile — a hover button and a right-click
+ * — which is where Google Meet puts it and where people look for it first. Every
+ * expression that decides what an item DOES stays here, so the one file owns
+ * "what the menu does" whichever surface opened it.
+ */
+export function TileMenuList({
+  trackKey,
+  participant,
+  isScreen,
+  isPinned,
+  isHidden,
+  onPin,
+  onHide,
+  onClose,
+}: {
+  trackKey: string;
+  participant: Participant;
+  isScreen: boolean;
+  isPinned: boolean;
+  isHidden: boolean;
+  onPin: (key: string | null) => void;
+  onHide: (key: string, hidden: boolean) => void;
+  onClose: () => void;
+}) {
+  const remote = participant instanceof RemoteParticipant ? participant : null;
+  return (
+    <>
+      <MenuItem
+        icon={<Icon.pin className="h-3.5 w-3.5" />}
+        label={isPinned ? "Unpin" : "Pin to the screen"}
+        detail={
+          isPinned
+            ? "Back to the equal grid"
+            : "Show this one large. Only on your screen."
+        }
+        onClick={() => {
+          onPin(isPinned ? null : trackKey);
+          onClose();
+        }}
+      />
+      {/* Absent rather than disabled where it cannot work: there is no volume to
+          change on your own tile, and a screen share's audio is a different
+          track from the person's microphone. */}
+      {remote && !isScreen && (
+        <SilenceItem participant={remote} onDone={onClose} />
+      )}
+    </>
   );
 }
 

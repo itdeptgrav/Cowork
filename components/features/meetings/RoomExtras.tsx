@@ -70,32 +70,76 @@ export function RoomSidePanel({
   onClose,
   isHost,
   withDirectory,
+  meetId,
+  guestSessionId,
 }: {
   panel: SidePanelTab;
   onClose: () => void;
   isHost: boolean;
   withDirectory: boolean;
+  /** The meeting this room belongs to, so chat can save and read history. A
+      task room's `meet-task-…` name is fine — the ledger refuses it and chat
+      stays live-only. */
+  meetId?: string;
+  /** Present in the guest room only: reaches the chat ledger through the
+      guest-session routes rather than a signed-in token. */
+  guestSessionId?: string;
 }) {
   if (panel === null) return null;
 
   return (
-    <div className="flex w-full shrink-0 flex-col border-t border-white/10 bg-black/30 md:h-auto md:w-[300px] md:border-l md:border-t-0">
-      <div className="flex shrink-0 items-center justify-between border-b border-white/10 px-3 py-2">
+    /**
+     * **Over the stage on a narrow room, beside it on a wide one — and it is
+     * the ROOM's width that decides, through the `@container` root each room
+     * mounts around its stage row.**
+     *
+     * This used to be a viewport rule (`md:`), which put the 340px corner
+     * window on a desktop screen into the side-by-side layout: a 340px panel
+     * beside a 340px window, off the frame's edge, clipped by its
+     * `overflow-hidden`. Pressing Chat drew nothing, and the stage shrank to
+     * make room for a panel nobody could see. A docked room on a phone had the
+     * same fault for the same reason.
+     *
+     * Below 40rem of room width the panel lays itself over the stage — the
+     * whole stage, not a strip under it, because a 416px room on a phone split
+     * two ways leaves a chat with three lines and a composer. The control bar
+     * stays out from under it (it is outside this row), so the microphone and
+     * Leave are never covered; the × brings the picture back. From 40rem the
+     * panel is the 340px column it always was.
+     *
+     * A touch wider than the roster needs, so a shared file's card is readable
+     * rather than clipped. `min-w-0` so the declared width is the width it
+     * gets: as a flex item it defaults to `min-width: auto`, which lets a wide
+     * child — a file card, a composer that will not shrink — push it past
+     * 340px and over the stage beside it.
+     */
+    <div className="absolute inset-0 z-20 flex w-full min-w-0 shrink-0 flex-col overflow-hidden bg-neutral-950/92 backdrop-blur-sm @min-[40rem]:static @min-[40rem]:inset-auto @min-[40rem]:z-auto @min-[40rem]:h-auto @min-[40rem]:w-[340px] @min-[40rem]:border-l @min-[40rem]:border-white/10 @min-[40rem]:bg-black/30 @min-[40rem]:backdrop-blur-none">
+      <div className="flex shrink-0 items-center justify-between border-b border-white/10 py-1.5 pr-1.5 pl-3">
         <h2 className="text-[12px] font-semibold uppercase tracking-wide text-white/70">
           {panel === "chat" ? "Chat" : "People"}
         </h2>
+        {/* 32px — a thumb-sized target. This was a bare glyph 23px wide, which
+            on a phone is the one control that puts the picture back and the
+            hardest one on the panel to hit. */}
         <button
           type="button"
           onClick={onClose}
           aria-label={`Close ${panel === "chat" ? "chat" : "people"}`}
-          className="rounded-md px-1.5 py-0.5 text-[16px] leading-none text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+          className="grid h-8 w-8 shrink-0 place-items-center rounded-full text-[18px] leading-none text-white/60 transition-colors hover:bg-white/10 hover:text-white"
         >
           ×
         </button>
       </div>
-      <div className="min-h-0 flex-1">
+      {/* A flex column, and the chat and the roster are `flex-1` inside it
+          rather than `h-full`. The panel takes its height by STRETCHING in the
+          stage row, and Chrome does not treat that height as definite enough
+          for a percentage two levels down — so `h-full` resolved to nothing,
+          the message list grew to its content, and in a phone held sideways
+          the composer sat 74px below the panel and under the control bar.
+          Flexing needs no definiteness; it just fills. */}
+      <div className="flex min-h-0 flex-1 flex-col">
         {panel === "chat" ? (
-          <MeetingChat />
+          <MeetingChat meetId={meetId} guestSessionId={guestSessionId} />
         ) : withDirectory ? (
           <DirectoryRoster isHost={isHost} />
         ) : (

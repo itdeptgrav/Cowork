@@ -195,3 +195,45 @@ test("progress and satisfaction are separate methods on the interface", () => {
   assert.match(t, /setRequirementProgress\(input: \{/);
   assert.match(t, /setRequirementSatisfied\(/);
 });
+
+/* ── The receiver does not rewrite what "done" means ───────────────────────── */
+
+test("edit and remove are offered to the ASSIGNER, never the receiver", () => {
+  /**
+   * Reported: Rakesh assigns a task to Pramod, and Pramod's side showed the
+   * pencil and the cross on every requirement.
+   *
+   * The panel already computed the right gate — `mayEditRequirements`, which is
+   * `view.assigner?.id === me` — and the note above it spells out why: the
+   * engine's `edit-details` refuses anybody but `task.assignedBy` once a task
+   * has left draft, so those controls could only ever 403 for an assignee. But
+   * the ROW rendered them behind `mayDelegate`, which is `isOwner ||
+   * isAssignee`. Adding a requirement was gated correctly; editing one was not.
+   *
+   * A requirement is the assigner's statement of what finished means. The
+   * person carrying the task may break it into subtasks — that is `mayDelegate`
+   * and is untouched — but may not rewrite it.
+   */
+  const src = readFileSync("components/features/tasks/ProjectPanel.tsx", "utf8");
+
+  /* The gate itself still reads the assigner of record. */
+  assert.match(src, /const mayEditRequirements = !!me && view\.assigner\?\.id === me;/);
+
+  /* Both requirement-editing surfaces use it. */
+  const rowAt = src.indexOf("r.ownership !== \"delegated\" &&");
+  assert.ok(rowAt > 0, "the per-row controls were removed");
+  const before = src.slice(Math.max(0, rowAt - 400), rowAt);
+  assert.match(
+    before,
+    /\{mayEditRequirements &&/,
+    "the per-row edit/remove is not gated on the assigner",
+  );
+  assert.doesNotMatch(
+    before,
+    /\{mayDelegate &&/,
+    "the per-row edit/remove is back on mayDelegate — the receiver can edit again",
+  );
+
+  /* And breaking work down stays with whoever carries it. */
+  assert.match(src, /const mayDelegate = isOwner \|\| isAssignee;/);
+});

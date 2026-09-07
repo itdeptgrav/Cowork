@@ -100,7 +100,8 @@ export function ParticipantRoster({
   const raised = rows.filter((r) => r.handUp).length;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    /* `flex-1`, not `h-full` — the same reason as MeetingChat's root. */
+    <div className="flex min-h-0 flex-1 flex-col">
       <div className="shrink-0 border-b border-white/10 p-2">
         <label className="sr-only" htmlFor="roster-search">
           Search participants

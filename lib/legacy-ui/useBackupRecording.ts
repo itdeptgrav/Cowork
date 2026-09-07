@@ -126,7 +126,24 @@ export function useBackupRecording({
     } catch {
       /* already gone */
     }
-    backups.current.delete(identity);
+    /**
+     * **Kept, not deleted — the copy is the whole point.**
+     *
+     * This used to drop the entry, so anybody who left before the host did
+     * had their backup thrown away at the moment it became the only copy that
+     * might be needed: the person who closed the laptop mid-meeting, whose
+     * own upload is exactly the one that fails. And End for everyone now
+     * disconnects EVERY participant at once, before the host's room closes —
+     * so deleting here would have emptied the map right before `offerBackups`
+     * read it, and the safety net would never have caught anything on the one
+     * exit where everybody's browser is finalising at the same time.
+     *
+     * The recorder is stopped, so nothing more is captured, and the bytes
+     * stay counted against the cap because they are still held. A person who
+     * rejoins is not started again (`startOne` keeps the first stretch): the
+     * server's claim is one file per person, and their own recorder covers
+     * the rest as it always did.
+     */
   }, []);
 
   const startOne = useCallback(

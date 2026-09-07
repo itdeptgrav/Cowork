@@ -102,6 +102,7 @@ import type {
   MeetingEvent,
   MeetingParticipant,
   MeetingRecording,
+  StoredMeetingMessage,
   Message,
   MessageAttachment,
   MessageCard,
@@ -2825,6 +2826,43 @@ export interface CoworkRepository {
    * not a failure to report as one.
    */
   listMeetingRecordings(meetingId: string): Promise<MeetingRecording[]>;
+
+  /**
+   * The durable ledger under meeting chat.
+   *
+   * **Delivery is not this.** A meeting message is delivered by LiveKit's
+   * data channel — instantly, for guests too, reconnecting on its own — and
+   * that does not change. These store what was said so a refresh does not
+   * lose it and somebody joining late can read back. If they are missing or
+   * failing, chat still works exactly as it did before they existed.
+   *
+   * OPTIONAL, like every capability a backend may not have: the panel checks
+   * for the method and simply stays ephemeral without it, rather than
+   * offering history it cannot fetch.
+   *
+   * `meetingId` must be a `cowork_scheduled_meets` DOCUMENT id. A task
+   * room's LiveKit name (`meet-task-<taskId>`) is a different id space and is
+   * refused by the engine — see `coworkMeetingChat.service.js`.
+   */
+  listMeetingMessages?(
+    meetingId: string,
+    opts?: { beforeMs?: number; afterMs?: number; limit?: number },
+  ): Promise<{ messages: StoredMeetingMessage[]; hasMore: boolean }>;
+
+  /**
+   * Record one message that has already been sent on the data channel.
+   *
+   * `messageId` is the id LiveKit's `send()` returned, so the message has ONE
+   * identity on both transports. Calling this twice with the same id is
+   * expected — a retry, or an outbox draining after a reconnect — and answers
+   * success with the row already stored rather than writing a second one.
+   */
+  recordMeetingMessage?(input: {
+    meetingId: string;
+    messageId: string;
+    text: string;
+    attachments?: MessageAttachment[];
+  }): Promise<ActionResult<void>>;
   listMeetingEvents(meetingId: string): Promise<MeetingEvent[]>;
   setMeetingStatus(
     meetingId: string,

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { Avatar, AvatarStack } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import { Breadcrumb, WorkspaceHead } from "@/components/ui/Workspace";
@@ -19,6 +19,7 @@ import {
   QueryError,
 } from "@/components/ui/Primitives";
 import { MeetingLobby } from "@/components/features/meetings/MeetingLobby";
+import { EmployeePicker } from "@/components/features/meetings/EmployeePicker";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDate, formatDateTime } from "@/lib/utils/format";
 import type { Meeting } from "@/lib/domain";
@@ -356,8 +357,57 @@ export function MeetingDetail({ meetingId }: { meetingId: string }) {
  *     Now the lobby opens beside the form with the camera preview already
  *     running, and Join goes straight in.
  */
-export function NewMeetingForm() {
-  const [title, setTitle] = useState("");
+/** The three ways to make a meeting, matching the "New" menu on the dashboard.
+ *  `scheduled` picks a time; `instant` and `link` start now — the difference is
+ *  only what the result leads with: the camera lobby to join, or the link to
+ *  share. Every path lands on the same lobby, so "instant" is a one-field
+ *  version of the same form, not a separate flow. */
+export type MeetingMode = "instant" | "scheduled" | "link";
+
+const MEETING_MODE: Record<
+  MeetingMode,
+  {
+    crumb: string;
+    heading: string;
+    sub: string;
+    cta: string;
+    pending: string;
+    needsTime: boolean;
+    defaultTitle: string;
+  }
+> = {
+  instant: {
+    crumb: "Instant meeting",
+    heading: "Start an instant meeting",
+    sub: "It begins now. Invite people here, then step into the camera preview and join.",
+    cta: "Start meeting",
+    pending: "Starting…",
+    needsTime: false,
+    defaultTitle: "Instant meeting",
+  },
+  scheduled: {
+    crumb: "Schedule",
+    heading: "Schedule a meeting",
+    sub: "Pick a time and who is coming. Everyone invited sees it in their Meetings.",
+    cta: "Schedule",
+    pending: "Scheduling…",
+    needsTime: true,
+    defaultTitle: "",
+  },
+  link: {
+    crumb: "Guest link",
+    heading: "Create a meeting to share",
+    sub: "Make the meeting now and share its link — with people inside CoWork, or, with a guest link, anyone outside it.",
+    cta: "Create meeting",
+    pending: "Creating…",
+    needsTime: false,
+    defaultTitle: "",
+  },
+};
+
+export function NewMeetingForm({ mode = "scheduled" }: { mode?: MeetingMode }) {
+  const meta = MEETING_MODE[mode];
+  const [title, setTitle] = useState(meta.defaultTitle);
   const [description, setDescription] = useState("");
   const [participantIds, setParticipantIds] = useState<string[]>([]);
   const [startsAt, setStartsAt] = useState("");
@@ -381,14 +431,15 @@ export function NewMeetingForm() {
     : participantIds;
 
   useEffect(() => {
-    if (startsAt) return;
-    /* The next half hour, local. A fixed date in the source was shipping a
-       default that had already passed.
+    /* Only a scheduled meeting needs a default time; instant and link start
+       "now" at create time. The next half hour, local — a fixed date in the
+       source was shipping a default that had already passed.
 
        Deferred to the next frame rather than set in the effect body — the same
        reason `ThemeContext` defers its own sync. This reads an external system
        (the wall clock) that the server cannot agree with, and setting it
        synchronously cascades a render. */
+    if (!meta.needsTime || startsAt) return;
     const frame = requestAnimationFrame(() => {
       const d = new Date(Date.now() + 30 * 60_000);
       d.setSeconds(0, 0);
@@ -399,32 +450,53 @@ export function NewMeetingForm() {
       );
     });
     return () => cancelAnimationFrame(frame);
-  }, [startsAt]);
+  }, [startsAt, meta.needsTime]);
 
-  const [create, state] = useAction((r) =>
-    r.createMeeting({
-      title,
+  const [create, state] = useAction((r) => {
+    /* Instant and link start the moment the button is pressed; scheduled uses
+       the chosen time. Booked for an hour either way. */
+    const start = meta.needsTime && startsAt ? new Date(startsAt) : new Date();
+    return r.createMeeting({
+      title: title.trim(),
       description: description || null,
       participantIds: effectiveParticipantIds,
-      startsAt: new Date(startsAt).toISOString(),
-      endsAt: new Date(new Date(startsAt).getTime() + 3600_000).toISOString(),
-    }),
-  );
+      startsAt: start.toISOString(),
+      endsAt: new Date(start.getTime() + 3600_000).toISOString(),
+    });
+  });
 
-  /* Everybody except the organiser, who is rendered separately and fixed. */
-  const others = (people.data ?? []).filter((p) => p.id !== myId);
+  const canSubmit =
+    Boolean(title.trim()) && (!meta.needsTime || Boolean(startsAt));
 
   return (
     <>
       <Breadcrumb
         items={[
           { label: "Meetings", href: "/meetings" },
-          { label: created ? created.title : "Schedule" },
+          { label: created ? created.title : meta.crumb },
         ]}
       />
-      <h1 className="mt-2 mb-4 text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
-        {created ? "Ready when you are" : "Schedule a meeting"}
-      </h1>
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-[clamp(1.375rem,2vw,1.75rem)] leading-none font-light tracking-[-0.03em] text-ink">
+          {created ? "Ready when you are" : meta.heading}
+        </h1>
+        {/* The meeting's state, up where the eye lands first — a scheduled
+            meeting should read as BOOKED, not as a call in progress. */}
+        {created && (
+          <Chip tone="positive">
+            <Icon.calendar
+              className="mr-1 inline-block h-3 w-3 align-[-1px]"
+              aria-hidden
+            />
+            {created.status.charAt(0).toUpperCase() + created.status.slice(1)}
+          </Chip>
+        )}
+      </div>
+      <p className="mt-1.5 mb-6 max-w-[560px] text-sm text-ink-muted">
+        {created
+          ? "Join from the camera preview, or share the link so others can too."
+          : meta.sub}
+      </p>
 
       {/* The lobby takes a column of its own from the deck breakpoint up, and
           stacks beneath the form below it — a camera preview squeezed into a
@@ -432,96 +504,119 @@ export function NewMeetingForm() {
       <div
         className={
           created
-            ? "grid max-w-[1080px] items-start gap-4 deck:grid-cols-[minmax(0,1fr)_minmax(360px,420px)]"
+            ? "grid max-w-[1160px] items-start gap-5 deck:grid-cols-[minmax(0,1fr)_minmax(400px,480px)]"
             : "max-w-[720px]"
         }
       >
-        <Panel>
-          <Field
-            label="Title"
-            required
-            error={state.errorField === "title" ? state.error : null}
-          >
-            <Input
-              value={title}
-              disabled={Boolean(created)}
-              onChange={(e) => setTitle(e.target.value)}
-            />
-          </Field>
-          <Field label="Agenda" className="mt-3">
-            <Textarea
-              rows={3}
-              value={description}
-              disabled={Boolean(created)}
-              onChange={(e) => setDescription(e.target.value)}
-            />
-          </Field>
-          <Field
-            label="Starts"
-            required
-            className="mt-3"
-            error={state.errorField === "startsAt" ? state.error : null}
-          >
-            <Input
-              type="datetime-local"
-              value={startsAt}
-              disabled={Boolean(created)}
-              onChange={(e) => setStartsAt(e.target.value)}
-            />
-          </Field>
+        {created ? (
+          /* Once made, the meeting is READ BACK rather than shown as a form
+             with its fields switched off — see CreatedSummary. */
+          <CreatedSummary
+            meeting={created}
+            othersCount={participantIds.length}
+            onCreateAnother={() => {
+              /* Not a reset of the same form: a second meeting is a second
+                 meeting, and leaving the first one's lobby on screen while
+                 typing the next one's title is two meetings in one place. */
+              setCreated(null);
+              setTitle(meta.defaultTitle);
+              setDescription("");
+              setParticipantIds([]);
+            }}
+          />
+        ) : (
+        /* One card, two questions, one action.
 
-          <div className="mt-3">
-            <span className="mb-1.5 block text-sm font-medium text-ink">
-              Participants
-            </span>
-            <div className="flex flex-wrap gap-1.5">
-              {/* The organiser, fixed. Rendered as a chip rather than a
-                  disabled button so it never reads as something that failed
-                  to switch on. */}
-              {me.data && (
-                <span
-                  className="rounded-full bg-ink px-2.5 py-1 text-sm text-[var(--body-bg)]"
-                  title="You are always in a meeting you call"
-                >
-                  {me.data.displayName}
-                  <span className="ml-1.5 opacity-60">you</span>
-                </span>
-              )}
-              {others.map((p) => {
-                const on = participantIds.includes(p.id);
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    aria-pressed={on}
-                    disabled={Boolean(created)}
-                    onClick={() =>
-                      setParticipantIds((c) =>
-                        c.includes(p.id)
-                          ? c.filter((x) => x !== p.id)
-                          : [...c, p.id],
-                      )
-                    }
-                    className={`rounded-full px-2.5 py-1 text-sm transition-colors disabled:opacity-50 ${
-                      on
-                        ? "bg-ink text-[var(--body-bg)]"
-                        : "bg-[var(--control)] text-ink-muted"
-                    }`}
-                  >
-                    {p.displayName}
-                  </button>
-                );
-              })}
-            </div>
+           This used to stack five things at one uniform spacing, so a title
+           field and the whole invite list read as equals and the primary
+           button floated loose at the bottom. Now the card has a shape: WHAT
+           the meeting is — title, agenda, when — as one tight group; WHO is
+           coming as a second, set off by a rule with real air around it (the
+           same hairline-divided region NewProjectForm uses); and the action
+           anchored in a footer of its own. Same fields, same copy, same button:
+           the change is grouping and rhythm, nothing else. */
+        <Panel padded={false} label={meta.heading}>
+          <div className="space-y-4 px-5 py-5 sm:px-6 sm:py-6">
+            <Field
+              label="Title"
+              required
+              error={state.errorField === "title" ? state.error : null}
+            >
+              <Input
+                value={title}
+                disabled={Boolean(created)}
+                onChange={(e) => setTitle(e.target.value)}
+              />
+            </Field>
+            <Field label="Agenda">
+              <Textarea
+                rows={3}
+                value={description}
+                disabled={Boolean(created)}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+            </Field>
+            {meta.needsTime && (
+              <Field
+                label="Starts"
+                required
+                error={state.errorField === "startsAt" ? state.error : null}
+              >
+                {/* The native picker glyph is a browser surface the design did
+                    not draw. Muted until hovered, and given a pointer, so it
+                    reads as the control it is rather than a stray icon. */}
+                <Input
+                  type="datetime-local"
+                  value={startsAt}
+                  disabled={Boolean(created)}
+                  onChange={(e) => setStartsAt(e.target.value)}
+                  className="[&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:transition-opacity hover:[&::-webkit-calendar-picker-indicator]:opacity-100"
+                />
+              </Field>
+            )}
           </div>
 
-          {state.error && !state.errorField && (
-            <div className="mt-3">
-              <InlineError message={state.error} code={state.errorCode} />
+          {/* Who is coming — the second question, kept apart from the first. */}
+          <div className="border-t border-hairline px-5 py-5 sm:px-6 sm:py-6">
+            <div className="mb-2.5 flex items-baseline justify-between gap-3">
+              <span className="text-sm font-medium text-ink">Invite people</span>
+              <span className="text-[11px] text-ink-faint">
+                {participantIds.length
+                  ? `${participantIds.length + 1} in this meeting`
+                  : "just you so far"}
+              </span>
             </div>
-          )}
+            {created ? (
+              <p className="text-sm text-ink-muted">
+                Invited: you
+                {participantIds.length
+                  ? ` and ${participantIds.length} other${participantIds.length === 1 ? "" : "s"}`
+                  : ""}
+                . Add more from the meeting page.
+              </p>
+            ) : (
+              /* A searchable LIST, not a wall of chips — see EmployeePicker. The
+                 organiser is fixed at the top and always in. */
+              <EmployeePicker
+                people={people.data ?? []}
+                selected={participantIds}
+                onToggle={(id) =>
+                  setParticipantIds((c) =>
+                    c.includes(id) ? c.filter((x) => x !== id) : [...c, id],
+                  )
+                }
+                fixedId={myId}
+              />
+            )}
+            {state.error && !state.errorField && (
+              <div className="mt-4">
+                <InlineError message={state.error} code={state.errorCode} />
+              </div>
+            )}
+          </div>
 
-          <div className="mt-4 flex flex-wrap justify-end gap-2">
+          {/* The action, anchored to the card rather than floating in it. */}
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-hairline px-5 py-3.5 sm:px-6 sm:py-4">
             {created ? (
               /* Not a reset of the same form: a second meeting is a second
                  meeting, and leaving the first one's lobby on screen while
@@ -529,28 +624,32 @@ export function NewMeetingForm() {
               <Button
                 onClick={() => {
                   setCreated(null);
-                  setTitle("");
+                  setTitle(meta.defaultTitle);
                   setDescription("");
                   setParticipantIds([]);
                 }}
               >
-                Schedule another
+                Create another
               </Button>
             ) : (
-              <Button loading={state.isPending}
+              <Button
+                loading={state.isPending}
                 tone="primary"
-                disabled={state.isPending || !title.trim() || !startsAt}
+                disabled={state.isPending || !canSubmit}
                 onClick={async () => {
                   const r = await create();
                   if (r.ok) setCreated(r.data);
                 }}
               >
-                {state.isPending ? "Scheduling…" : "Schedule"}
+                {state.isPending ? meta.pending : meta.cta}
               </Button>
             )}
           </div>
         </Panel>
+        )}
 
+        {/* The guest link — how people OUTSIDE CoWork get in — now lives
+            inside the lobby under "Or", so one card holds both ways in. */}
         {created && (
           <MeetingLobby
             meeting={created}
@@ -560,6 +659,144 @@ export function NewMeetingForm() {
         )}
       </div>
     </>
+  );
+}
+
+/**
+ * The meeting, read back — the created state's left column.
+ *
+ * A form whose fields are merely disabled reads as a form that has stopped
+ * working. What you have after scheduling is a BOOKING, and a booking is read,
+ * not edited: the title, the agenda, when it starts, who is coming — each in
+ * its own card, in the order the form asked for them, so the eye confirms what
+ * it just typed. No pencil on the rows, deliberately: the meeting page does not
+ * offer editing yet, and an edit affordance that leads nowhere is worse than
+ * none. When it does, that is where a pencil belongs.
+ */
+function CreatedSummary({
+  meeting,
+  othersCount,
+  onCreateAnother,
+}: {
+  meeting: Meeting;
+  /** Invitees besides the organiser — the same count the form kept. */
+  othersCount: number;
+  onCreateAnother: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-4">
+      <Panel padded={false} label="Meeting details">
+        <SummaryHead
+          icon={<Icon.meeting className="h-4 w-4" />}
+          title="Meeting details"
+        />
+        <dl className="divide-y divide-hairline border-t border-hairline">
+          <SummaryRow label="Title" value={meeting.title} />
+          <SummaryRow
+            label="Agenda"
+            value={meeting.description || "No agenda set."}
+            muted={!meeting.description}
+          />
+        </dl>
+      </Panel>
+
+      <Panel padded={false} label="Starts">
+        <SummaryHead
+          icon={<Icon.calendar className="h-4 w-4" />}
+          title="Starts"
+        />
+        <div className="px-5 pb-5">
+          <div className="flex items-center gap-3 rounded-inset border border-hairline bg-[var(--surface-sunken)] px-4 py-3">
+            <Icon.calendar className="h-4 w-4 shrink-0 text-ink-faint" aria-hidden />
+            <span className="text-sm text-ink">
+              {formatDateTime(meeting.startsAt)}
+            </span>
+          </div>
+        </div>
+      </Panel>
+
+      <Panel padded={false} label="Invite people">
+        <SummaryHead
+          icon={<Icon.team className="h-4 w-4" />}
+          title="Invite people"
+          aside={
+            <Chip tone="neutral">
+              <Icon.team
+                className="mr-1 inline-block h-3 w-3 align-[-1px]"
+                aria-hidden
+              />
+              {othersCount
+                ? `${othersCount + 1} in this meeting`
+                : "just you so far"}
+            </Chip>
+          }
+        />
+        <p className="px-5 pb-5 text-sm text-ink-muted">
+          Invited: you
+          {othersCount
+            ? ` and ${othersCount} other${othersCount === 1 ? "" : "s"}`
+            : ""}
+          . Add more from the meeting page.
+        </p>
+      </Panel>
+
+      <Button onClick={onCreateAnother} className="min-h-12 w-full">
+        <Icon.plus className="mr-2 h-4 w-4" aria-hidden />
+        Create another meeting
+      </Button>
+    </div>
+  );
+}
+
+/** A summary card's heading: an icon well and the title, with an optional
+    aside on the right — the same heading scale every panel in the app uses. */
+function SummaryHead({
+  icon,
+  title,
+  aside,
+}: {
+  icon: ReactNode;
+  title: string;
+  aside?: ReactNode;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-5 pb-4">
+      <div className="flex items-center gap-3">
+        <span
+          aria-hidden
+          className="grid h-9 w-9 shrink-0 place-items-center rounded-inset bg-[var(--control)] text-ink-muted"
+        >
+          {icon}
+        </span>
+        <h2 className="text-[17px] font-medium leading-none tracking-[-0.02em] text-ink">
+          {title}
+        </h2>
+      </div>
+      {aside}
+    </div>
+  );
+}
+
+/** One fact of the booking: what it is, and what was entered. */
+function SummaryRow({
+  label,
+  value,
+  muted = false,
+}: {
+  label: string;
+  value: string;
+  /** For a value that is really an absence — "No agenda set." */
+  muted?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline gap-6 px-5 py-3.5">
+      <dt className="w-20 shrink-0 text-sm text-ink-muted">{label}</dt>
+      <dd
+        className={`min-w-0 flex-1 text-sm ${muted ? "text-ink-faint" : "text-ink"}`}
+      >
+        {value}
+      </dd>
+    </div>
   );
 }
 
