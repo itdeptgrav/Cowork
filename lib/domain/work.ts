@@ -340,6 +340,28 @@ export type MessageCard =
     };
 
 /**
+ * The unfurled preview of a URL found in a message's text — a title,
+ * description, image and favicon read off the page's own metadata by the
+ * engine (never the browser: most third-party pages block a cross-origin
+ * fetch, so this cannot be done client-side). Additive, the same way `card`
+ * is: a message written before previews existed, or whose link had nothing
+ * worth showing, simply has none. See `lib/rules/messages/linkPreview.ts`.
+ */
+export interface LinkPreview {
+  /** The URL exactly as it appeared in the message text. */
+  url: string;
+  /** Where it resolved to after redirects, when that differs from `url`. */
+  finalUrl?: string | null;
+  /** The bare host, `www.` stripped — shown even when nothing else is. */
+  domain: string;
+  title?: string | null;
+  description?: string | null;
+  image?: string | null;
+  favicon?: string | null;
+  siteName?: string | null;
+}
+
+/**
  * The message a reply quotes, denormalised onto the reply itself.
  *
  * Carries the quoted sender and a snippet of text so the quote renders without a
@@ -429,6 +451,13 @@ export interface Message {
    * additive — most messages have none. See `MessageCard`.
    */
   card?: MessageCard;
+  /**
+   * The unfurled preview of the first link in `text`, where the engine found
+   * one worth showing. Optional and additive — most messages have none, and
+   * a message written before previews existed simply has none. See
+   * `LinkPreview`.
+   */
+  linkPreview?: LinkPreview | null;
   /**
    * Emoji reactions: each emoji to the people who chose it. One reaction per
    * person per message — picking a second emoji replaces the first, the rule

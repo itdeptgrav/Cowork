@@ -42,7 +42,9 @@ test("the domain grows one discriminated card union on both message types", () =
 });
 
 test("both send methods take an optional card and both are card-only friendly", () => {
-  assert.match(TYPES, /card\?: MessageCard,\s*\): Promise<ActionResult<Message>>/);
+  /* `linkPreview?` now trails `card?` on the message signature only — task
+     chat has no link-preview support yet, so its trailing param is unchanged. */
+  assert.match(TYPES, /card\?: MessageCard,\s*linkPreview\?: LinkPreview,\s*\): Promise<ActionResult<Message>>/);
   assert.match(TYPES, /card\?: MessageCard,\s*\): Promise<ActionResult<TaskChatMessage>>/);
   /* The empty-message guard must let a card stand in for text on both paths. */
   assert.match(MOCK, /if \(!text\.trim\(\) && media\.length === 0 && !card\)/);

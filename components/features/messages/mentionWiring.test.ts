@@ -28,9 +28,14 @@ test("both message types carry an optional mentionIds", () => {
 });
 
 test("both send methods accept mentionIds, and the mock stores them", () => {
-  /* `card?` now follows `mentionIds?` on both signatures — assert both trailing
-     params are present before the return type. */
-  assert.match(TYPES, /mentionIds\?: EmployeeId\[\],\s*card\?: MessageCard,\s*\): Promise<ActionResult<Message>>/);
+  /* `card?` follows `mentionIds?` on both signatures; the message signature
+     alone then adds `linkPreview?` after that — task chat has no link-preview
+     support yet, so its trailing param is unchanged. Assert every trailing
+     param is present before the return type. */
+  assert.match(
+    TYPES,
+    /mentionIds\?: EmployeeId\[\],\s*card\?: MessageCard,\s*linkPreview\?: LinkPreview,\s*\): Promise<ActionResult<Message>>/,
+  );
   assert.match(TYPES, /mentionIds\?: EmployeeId\[\],\s*card\?: MessageCard,\s*\): Promise<ActionResult<TaskChatMessage>>/);
   /* Mock stores it, minus the sender, only when there are any. */
   assert.match(MOCK, /const mentions = \[\.\.\.new Set\(mentionIds \?\? \[\]\)\]\.filter\(\(id\) => id !== actingId\(\)\)/);

@@ -34,6 +34,9 @@ import { TaskChatBrief } from "./TaskChatBrief";
 import { VoiceRecorder } from "./VoiceRecorder";
 import { CardComposer } from "./CardComposer";
 import { MessageCardView } from "./MessageCardView";
+import { LinkPreviewCard, LinkPreviewSkeleton } from "./LinkPreviewCard";
+import { firstUrl, hasPreviewContent } from "@/lib/rules/messages/linkPreview";
+import type { LinkPreview } from "@/lib/domain";
 import { useMentions } from "./MentionInput";
 import { mentionTokensFor } from "./MessageText";
 import { mentionSegments } from "@/lib/rules/messages/mentions";
@@ -989,6 +992,67 @@ function Thread({
   }, [messageNotice]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const editing = editingId !== null;
+  /**
+   * ## The composer's link preview
+   *
+   * `detectedUrl` is the first link in the draft — cheap and pure, so it is
+   * computed on every render rather than mirrored into its own state. The
+   * fetched preview and its loading flag DO need state, because getting one
+   * is an async side effect (see the `useEffect` below): `linkPreview` holds
+   * the last one that resolved, `linkPreviewLoading` is true while a fetch
+   * for the CURRENT `detectedUrl` is in flight. `linkPreviewRemovedFor` remembers
+   * a URL the reader explicitly removed the card for with the × button, so
+   * retyping around it — or simply continuing to type — does not bring the
+   * same card back; changing the link itself (a different URL) does, since
+   * it no longer matches what was dismissed.
+   *
+   * None of this ever blocks `submit()`: it sends with whatever `linkPreview`
+   * holds at that instant, including `null` while a fetch is still running.
+   */
+  const detectedUrl = editing ? null : firstUrl(text);
+  const [linkPreview, setLinkPreview] = useState<LinkPreview | null>(null);
+  const [linkPreviewLoading, setLinkPreviewLoading] = useState(false);
+  const [linkPreviewRemovedFor, setLinkPreviewRemovedFor] = useState<string | null>(null);
+  /** Guards a slow fetch for a URL the reader has since edited away from —
+   *  only the response matching the most recently started fetch is applied. */
+  const linkPreviewSeq = useRef(0);
+  useEffect(() => {
+    const url = detectedUrl && detectedUrl !== linkPreviewRemovedFor ? detectedUrl : null;
+    if (!url || !repo.fetchLinkPreview) {
+      /* Deferred rather than called here directly: setting state synchronously
+         in an effect body is the pattern the React Compiler flags (it wants
+         setState reserved for actual asynchronous reactions — a callback, not
+         the effect's own first pass), so every branch below runs its state
+         updates from inside a timer instead. */
+      const id = setTimeout(() => {
+        setLinkPreview(null);
+        setLinkPreviewLoading(false);
+      }, 0);
+      return () => clearTimeout(id);
+    }
+    const seq = ++linkPreviewSeq.current;
+    const fetchPreview = repo.fetchLinkPreview;
+    /* Debounced: a URL is usually typed or pasted a character at a time (or
+       arrives mid-paste as part of a longer string), and fetching after every
+       one of those would be a request per keystroke for no benefit — nobody
+       is reading a preview that appears and is immediately replaced. */
+    const timer = setTimeout(() => {
+      setLinkPreview(null);
+      setLinkPreviewLoading(true);
+      void fetchPreview(url)
+        .then((result) => {
+          if (linkPreviewSeq.current !== seq) return; // superseded by a newer link
+          setLinkPreviewLoading(false);
+          setLinkPreview(result && hasPreviewContent(result) ? result : null);
+        })
+        .catch(() => {
+          if (linkPreviewSeq.current !== seq) return;
+          setLinkPreviewLoading(false);
+          setLinkPreview(null);
+        });
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [detectedUrl, linkPreviewRemovedFor, repo]);
   /* In-conversation search: the bar under the header, the star filter inside
      it, and which match is current. The position is stored WITH the query it
      was reached in (`searchNav`), so typing on simply reads as "not yet
@@ -1185,6 +1249,8 @@ function Thread({
       pending.length ? pending : undefined,
       replyingTo,
       mentions.mentionIds(),
+      undefined,
+      linkPreview ?? undefined,
     ),
   );
   const [saveEdit, editState] = useAction((r) =>
@@ -1600,6 +1666,9 @@ function Thread({
       setPending([]);
       setReplyingTo(null);
       setUploadError(null);
+      setLinkPreview(null);
+      setLinkPreviewLoading(false);
+      setLinkPreviewRemovedFor(null);
       mentions.reset();
       /* The message has gone. Files that never uploaded were never part of it,
          so holding a retry offer for them beside an empty composer would invite
@@ -2704,6 +2773,19 @@ function Thread({
             </button>
           </div>
         )}
+        {!editing && (linkPreview || linkPreviewLoading) && (
+          <div className="mb-2">
+            {linkPreview ? (
+              <LinkPreviewCard preview={linkPreview} onRemove={() => setLinkPreviewRemovedFor(linkPreview.url)} />
+            ) : (
+              <LinkPreviewSkeleton
+                onRemove={() => {
+                  if (detectedUrl) setLinkPreviewRemovedFor(detectedUrl);
+                }}
+              />
+            )}
+          </div>
+        )}
         {pending.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-2">
             {pending.map((a, i) => (
@@ -3423,6 +3505,7 @@ function MessageList({
                           )}
                     </span>
                   )}
+                  {!deleted && m.linkPreview && <LinkPreviewCard preview={m.linkPreview} mine={mine} />}
                 </span>
 
                 {/* Reactions and the viewer's star, floating half over the

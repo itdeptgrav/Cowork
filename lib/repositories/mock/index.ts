@@ -105,6 +105,7 @@ import type {
   MailFolder,
   MailMessage,
   MailParty,
+  LinkPreview,
   MailThread,
   MailTransport,
   Meeting,
@@ -8088,6 +8089,7 @@ export class MockRepository implements CoworkRepository {
     replyTo?: MessageReply | null,
     mentionIds?: EmployeeId[],
     card?: MessageCard,
+    linkPreview?: LinkPreview,
   ): Promise<ActionResult<Message>> {
     const g = guard();
     if (g) return g;
@@ -8114,6 +8116,7 @@ export class MockRepository implements CoworkRepository {
       readBy: [actingId()],
       ...(mentions.length ? { mentionIds: mentions } : {}),
       ...(card ? { card } : {}),
+      ...(linkPreview ? { linkPreview } : {}),
     };
     s.messages.push(m);
     const c = s.conversations.find((x) => x.id === conversationId);

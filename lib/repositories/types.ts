@@ -104,6 +104,7 @@ import type {
   MeetingParticipant,
   MeetingRecording,
   StoredMeetingMessage,
+  LinkPreview,
   Message,
   MessageAttachment,
   MessageCard,
@@ -2340,7 +2341,25 @@ export interface CoworkRepository {
     /** A shared location, contact or poll carried by this message. A card-only
      *  send is valid with empty text and no attachments. See `MessageCard`. */
     card?: MessageCard,
+    /** The unfurled preview of the first link in `text`, where the composer
+     *  fetched one worth showing before sending. Optional, like every chat
+     *  extra: a message sent without one (or by a backend that never fetches
+     *  one) simply carries none, and still linkifies its URL as plain text.
+     *  See `LinkPreview`. */
+    linkPreview?: LinkPreview,
   ): Promise<ActionResult<Message>>;
+  /**
+   * Unfurl a URL for the composer's link-preview card — title, description,
+   * image and favicon, whatever the page publishes. Optional: the in-memory
+   * prototype has no server to fetch through, so it simply offers none, and
+   * the composer shows no preview UI when this is absent — the same
+   * "optional chat extra" convention as `toggleMessageReaction`.
+   *
+   * Returns `null` for anything that could not be unfurled (an invalid URL,
+   * an unreachable site, a blocked host) rather than rejecting — a broken
+   * link is not a failed call, it is a call that found nothing to show.
+   */
+  fetchLinkPreview?(url: string): Promise<LinkPreview | null>;
   /** Edit the text of your own message. Re-stamps it as edited. */
   editMessage(
     conversationId: string,

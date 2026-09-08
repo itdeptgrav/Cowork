@@ -17,6 +17,7 @@
  */
 import type {
   Conversation,
+  LinkPreview,
   Message,
   MessageAttachment,
   MessageCard,
@@ -26,6 +27,7 @@ import type {
 import { driveFileIdFrom } from "../../rules/media/driveUrls.ts";
 import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
 import { readMessageCard, messageCardForWrite } from "../../rules/messages/card.ts";
+import { readLinkPreview, linkPreviewForWrite } from "../../rules/messages/linkPreview.ts";
 
 export const DM_COLLECTION = "cowork_direct_messages";
 export const GROUP_COLLECTION = "cowork_groups";
@@ -192,6 +194,7 @@ export function readMessageDoc(
   const reply = readReply(d.replyTo);
   const mentions = strArray(d.mentionIds);
   const card = readMessageCard(d.card);
+  const linkPreview = readLinkPreview(d.linkPreview);
   return {
     id: typeof d.messageId === "string" ? d.messageId : id,
     conversationId,
@@ -210,6 +213,7 @@ export function readMessageDoc(
     starredBy: strArray(d.starredBy),
     ...(mentions.length ? { mentionIds: mentions } : {}),
     ...(card ? { card } : {}),
+    ...(linkPreview ? { linkPreview } : {}),
   };
 }
 
@@ -395,6 +399,9 @@ export function messageWriteBody(input: {
   mentionIds?: string[];
   /** A shared location, contact or poll, written only when present. */
   card?: MessageCard;
+  /** The unfurled preview of the message's first link, written only when
+   *  the engine found one worth showing. */
+  linkPreview?: LinkPreview;
 }): Record<string, unknown> {
   const attachments = input.attachments ?? [];
   const messageType = attachments.length ? attachments[0].kind : "text";
@@ -415,6 +422,9 @@ export function messageWriteBody(input: {
   }
   if (input.card) {
     body.card = messageCardForWrite(input.card);
+  }
+  if (input.linkPreview) {
+    body.linkPreview = linkPreviewForWrite(input.linkPreview);
   }
   if (input.replyTo) {
     /* The quote is denormalised and capped, exactly as the old app wrote it, so

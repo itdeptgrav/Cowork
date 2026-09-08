@@ -127,7 +127,7 @@ export function RequirementEtPrompt({
           {summary}
         </p>
         <p className="mt-1 text-[13px] leading-relaxed text-ink-muted">
-          How should the ET hours be adjusted?
+          How should the estimate be adjusted?
         </p>
 
         {/* Two buttons rather than a select: there are exactly two answers, and

@@ -1,4 +1,4 @@
-import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, Meeting, Message, MessageAttachment, MessageCard, MessageReply, MessageSearchHit, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
+import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, LinkPreview, Meeting, Message, MessageAttachment, MessageCard, MessageReply, MessageSearchHit, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import type { MindMapExtras } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
 import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
@@ -235,6 +235,7 @@ import {
 } from "../../rules/messages/card.ts";
 import { matchesQuery } from "../../rules/messages/globalSearch.ts";
 import { attachmentKind } from "../../rules/messages/attachmentKind.ts";
+import { readLinkPreview } from "../../rules/messages/linkPreview.ts";
 import { readTaskChatMessage } from "./taskChat.ts";
 import { reactionChanges } from "../../rules/messages/reactions.ts";
 import { withPin, withoutPin } from "../../rules/messages/pins.ts";
@@ -15937,6 +15938,7 @@ export class LegacyRepository {
     replyTo?: MessageReply | null,
     mentionIds?: EmployeeId[],
     card?: MessageCard,
+    linkPreview?: LinkPreview,
   ): Promise<ActionResult<Message>> {
     const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
     if (!me)
@@ -15980,6 +15982,7 @@ export class LegacyRepository {
           replyTo: replyTo ?? null,
           mentionIds: (mentionIds ?? []).filter((id) => id !== me),
           card,
+          linkPreview,
         }),
         createdAt: serverTimestamp(),
       });
@@ -16072,6 +16075,37 @@ export class LegacyRepository {
         message: "The message could not be sent.",
       };
     }
+  }
+
+  /**
+   * Unfurl a URL for the composer's link-preview card.
+   *
+   * Goes through the engine (`GET /cowork/link-preview`), not the browser —
+   * almost no third-party site sends the CORS headers that would let a page
+   * be fetched cross-origin from here, and fetching arbitrary external URLs
+   * safely (following redirects without landing on an internal address) is
+   * exactly the kind of thing that belongs server-side. `null` covers every
+   * way this can come back empty: signed out, the network call itself
+   * failing, and the engine's own `{ ok: false }` for a bad or unreachable
+   * URL — the composer treats all three the same way, by showing no card.
+   */
+  async fetchLinkPreview(url: string): Promise<LinkPreview | null> {
+    const token = await this.#ctx.getToken();
+    if (!token) return null;
+    const result = await legacyFetch<Record<string, unknown>>({
+      path: "/cowork/link-preview",
+      query: { url },
+      token,
+      /* This is fetched as the reader types, sometimes several times a
+         minute — a shorter timeout than the 20s default keeps a slow or
+         hanging site from leaving the composer "loading" long after
+         anybody would still be waiting on it. */
+      timeoutMs: 8000,
+    });
+    if (!result.ok) return null;
+    const body = result.data;
+    if (!body || typeof body !== "object" || body.ok !== true) return null;
+    return readLinkPreview(body) ?? null;
   }
 
   /**
