@@ -168,7 +168,11 @@ test("the card loses its rounded corners on the full screen", () => {
      screen itself. */
   const src = code(ROOM);
   assert.doesNotMatch(src, /fixed inset-0 flex h-full w-full[^"]*rounded-card/);
-  assert.match(src, /relative flex h-full min-h-\[520px\][^"]*rounded-card/);
+  /* `min-h-0`, not the old `min-h-[520px]`: the engine hands the frame a box
+     of an exact size now, and a minimum of its own ran 104px past a short
+     stage and over the panel beneath it. What this test is actually about is
+     unchanged — docked keeps the rounded card, full screen does not. */
+  assert.match(src, /relative flex h-full min-h-0[^"]*rounded-card/);
 });
 
 test("expand and collapse are distinct from the pop-out arrow", () => {
