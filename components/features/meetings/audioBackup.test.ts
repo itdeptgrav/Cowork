@@ -110,7 +110,13 @@ test("the server checks AGAIN before writing", { skip: SKIP_ENGINE }, () => {
      the minutes after — a slow connection, or the drain on another page. */
   const src = backendSource(ROUTES);
   const finalize = src.slice(src.indexOf('"/audio/backup-finalize"'));
-  assert.match(finalize, /realRecordingExists/, "finalize trusts the old claim");
+  /* The re-read is `existingRecordings` now — one query answering both "is
+     their own recording here?" and "is a backup already here?", because both
+     are asked at this point and the rows are the same rows. The rule this
+     test protects is unchanged: finalize must look again rather than trust
+     the claim it took when the meeting ended. */
+  assert.match(finalize, /await existingRecordings\(meetId, forEmployeeId\)/, "finalize trusts the old claim");
+  assert.match(finalize, /if \(already\.real\)/);
   assert.match(finalize, /backup discarded/);
 });
 
@@ -118,7 +124,10 @@ test("a backup row never counts as the real recording", { skip: SKIP_ENGINE }, (
   /* Otherwise a backup would satisfy the check that decides whether a backup
      is needed, and the second one would never be rescued. */
   const src = backendSource(ROUTES);
-  assert.match(src, /d\.data\(\)\.isBackup !== true/);
+  assert.match(src, /real: rows\.some\(\(r\) => r\.isBackup !== true\)/);
+  /* The other half of the same read, and the reason it exists: a backup that
+     is already filed must block a SECOND backup of the same voice. */
+  assert.match(src, /backup: rows\.some\(\(r\) => r\.isBackup === true\)/);
 });
 
 /* ------------------------------------------------------------ 3. the caps */

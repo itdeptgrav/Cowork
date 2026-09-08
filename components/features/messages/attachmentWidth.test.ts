@@ -123,9 +123,13 @@ test("the narrowest of them is the meeting panel, and it is narrower than the ol
   /* 340px, less ~44px of list and bubble padding, against a 304px card. The arithmetic that caused the report, kept
      here so a future width change has to face it. */
   const extras = code("components/features/meetings/RoomExtras.tsx");
+  /* A CONTAINER query now (`@min-[40rem]:`) rather than a viewport one: the
+     panel sits inside a room that is a page, a 340px corner window or a
+     picture-in-picture document, so what matters is the room's width and not
+     the screen's. The 340px the arithmetic below depends on is unchanged. */
   assert.match(
     extras,
-    /md:w-\[340px\]/,
+    /@min-\[40rem\]:w-\[340px\]/,
     "the panel width moved; re-check the card cap against it",
   );
 });

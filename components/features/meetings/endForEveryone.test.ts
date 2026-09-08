@@ -183,8 +183,12 @@ test("the host's backup copies survive everybody leaving at once", () => {
   const body = stopOne.slice(0, stopOne.indexOf("}, []);"));
   assert.doesNotMatch(body, /backups\.current\.delete\(/, "a leaver's backup is thrown away again");
   assert.match(body, /b\.recorder\.stop\(\)/, "the recorder is no longer stopped on leave");
-  /* The offer still runs when the host's room closes, over whatever is held. */
-  assert.match(backup, /void offerBackups\(\);/);
+  /* The offer still runs when the host's room closes, over whatever is held —
+     `offerBackups` is now two steps, because capture must stop at once while
+     the OFFER waits out `OFFER_GRACE_MS` for the participants' own uploads to
+     land. Both halves still see everything the leavers left behind. */
+  assert.match(backup, /const entries = drainBackups\(\);/);
+  assert.match(backup, /setTimeout\(\(\) => void uploadBackups\(entries, meet\), OFFER_GRACE_MS\)/);
   assert.match(backup, /\.on\(RoomEvent\.ParticipantDisconnected, onLeft\)/);
 });
 

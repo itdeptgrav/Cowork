@@ -327,9 +327,20 @@ test("nothing said while paused OR muted is captured", () => {
    *
    * Both conditions, because they are different facts. A mute says "this is not
    * for the meeting"; a pause says "the room is not being recorded".
+   *
+   * **`isStoppingRef` is the one exception, and it is not an exception to the
+   * rule.** The blob a recorder hands back as it shuts down holds what it
+   * captured BEFORE the pause or the mute; dropping it threw away the tail of
+   * every recording, and the whole of one short enough to fit inside a single
+   * one-second slice. It is let through only while `stopRecording` is waiting
+   * for that final blob, and the flag is cleared immediately after.
    */
-  const guard = /e\.data\.size > 0 &&\s*!isPausedRef\.current &&\s*!isMutedRef\.current/;
+  const guard =
+    /e\.data\.size > 0 &&\s*\(isStoppingRef\.current \|\|\s*\(!isPausedRef\.current && !isMutedRef\.current\)\)/;
   assert.match(HOOK_CODE, guard);
+  /* The exception is bounded: set only around the stop, never left on. */
+  assert.match(HOOK_CODE, /isStoppingRef\.current = true;/);
+  assert.match(HOOK_CODE, /isStoppingRef\.current = false;/);
 });
 
 test("the paused stretches travel with the upload and survive a reload", () => {

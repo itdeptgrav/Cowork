@@ -55,15 +55,27 @@ test("neither room keeps a private copy of the grid", () => {
       `${path} has its own grid again`,
     );
   }
-  assert.match(code(STAGE), /export function RoomStage\(\)/);
+  /* It takes a `directory` prop now — the guest room mounts the same stage
+     with `directory={false}`, because a guest may not read the employee
+     directory. Still ONE stage, which is what this asserts. */
+  assert.match(code(STAGE), /export function RoomStage\(/);
 });
 
 test("the shared stage carries pinning, the tile menu and the avatars", () => {
   /* The three the task room never had. */
   const src = code(STAGE);
   assert.match(src, /<FocusLayoutContainer/, "pinning");
-  assert.match(src, /<TileControls/, "the per-tile menu");
   assert.match(src, /<TileContent/, "profile pictures instead of grey outlines");
+  /* The per-tile menu moved INSIDE the tile: `TileContent` draws it from the
+     hover corner and the right-click, over the actions the stage provides.
+     Asserted where it now lives rather than as a sibling of the grid — the
+     rule is that every room gets it, not which element renders it. */
+  assert.match(src, /<TileActionsProvider/, "the per-tile menu has no actions to drive it");
+  assert.match(
+    code("components/features/meetings/TileContent.tsx"),
+    /TileMenuList/,
+    "the per-tile menu",
+  );
 });
 
 test("the shared interior carries the control bar and the reconnect fix", () => {
@@ -117,9 +129,13 @@ test("the task room's height is a ladder, not one desk measurement", () => {
   /* On the STAGE the page publishes now — the room fills whatever box the
      engine gives it, so the ladder lives where the box is decided. */
   const src = code(TASK);
+  /* Each rung is ALSO capped to the screen's own height, the same way the
+     scheduled room's is: a phone held sideways is 375px tall, and a 420px room
+     there put the microphone and Leave below the fold — the ladder solving one
+     axis while breaking the other. */
   assert.match(
     src,
-    /min-h-\[22rem\][^"]*sm:min-h-\[26rem\][^"]*deck:min-h-\[420px\]/,
+    /min-h-\[min\(22rem,calc\(100dvh-6rem\)\)\][^"]*sm:min-h-\[min\(26rem,calc\(100dvh-6rem\)\)\][^"]*deck:min-h-\[min\(420px,calc\(100dvh-6rem\)\)\]/,
   );
 });
 

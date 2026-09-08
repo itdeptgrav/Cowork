@@ -82,8 +82,14 @@ test("the room's height is a ladder, not one desk measurement", () => {
   /* And the frame the engine draws into that box must not carry a minimum of
      its own: `min-h-[520px]` on the frame ran 104px past a 416px stage and
      over the Participants panel underneath it, at every width below deck. */
-  const frame = code(ROOM).slice(code(ROOM).indexOf("slab slab-flat relative flex h-full"));
-  assert.match(frame.slice(0, 200), /h-full min-h-0 flex-col/, "the frame has a minimum height of its own again");
+  /* Anchored on the DOCKED branch specifically. `indexOf` on the shorter
+     prefix found the compact one first — `relative flex h-full flex-col`, the
+     corner window, which correctly has no `min-h-0` — so this asserted
+     against the wrong string and failed over code that was right. */
+  const room = code(ROOM);
+  const at = room.indexOf("slab slab-flat relative flex h-full min-h-0");
+  assert.ok(at > 0, "the docked frame's classes moved");
+  assert.match(room.slice(at, at + 200), /h-full min-h-0 flex-col/, "the frame has a minimum height of its own again");
 });
 
 test("a narrow screen gets the compact control bar, not only the corner window", () => {
@@ -136,9 +142,14 @@ test("the bar never grows a second row", () => {
   const bar = code("components/features/meetings/MeetingControlBar.tsx");
   /* Scoped to the ROW's own container. `flex-wrap` elsewhere in the file is
      the reaction grid inside the overflow menu, which should wrap. */
-  const row = bar.slice(bar.indexOf('<div className="relative flex shrink-0'));
-  const rowClass = row.slice(0, row.indexOf(">"));
-  assert.ok(rowClass.length > 0, "the control row's container moved");
+  /* Anchored on the class string alone. The element was reformatted so its
+     `className` sits on its own line, and `'<div className="…'` then matched
+     nothing — `indexOf` returned -1, the slice came back empty, and the test
+     failed for a line break rather than for a second row. */
+  const OPEN = 'className="relative flex shrink-0';
+  const at = bar.indexOf(OPEN);
+  assert.ok(at > 0, "the control row's container moved");
+  const rowClass = bar.slice(at + 'className="'.length, bar.indexOf('"', at + OPEN.length));
   assert.doesNotMatch(
     rowClass,
     /flex-wrap/,
