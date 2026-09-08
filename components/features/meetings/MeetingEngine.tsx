@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { useMeetingSession } from "./MeetingSessionContext";
@@ -116,10 +116,32 @@ export function MeetingEngine() {
   const { open: openWindow, close: closeWindow } = pip;
 
   const openPip = useCallback(() => {
+    /* A deliberate press of the pop-out button — see `autoOpenedRef` below,
+       which this is NOT: that button is only reachable while the tab is
+       visible, which is exactly the case this leaves alone. */
+    autoOpenedRef.current = false;
     void openWindow(PIP_SIZE).catch(() => {
       /* Refused — no permission, or the window was blocked. The in-tab
          floating presentation is already on screen, so there is nothing to
          report and nothing lost. */
+    });
+  }, [openWindow]);
+
+  /**
+   * Whether the CURRENTLY OPEN window was opened by the browser's own
+   * auto-PiP trigger, rather than by pressing pop-out.
+   *
+   * Only that one kind gets folded back in on its own, by the effect below.
+   * Told apart at the moment each opens: the browser invokes
+   * `enterpictureinpicture` only while the tab IS hidden, and the pop-out
+   * button can only be pressed while it is not — so which function ran is
+   * itself the answer, with nothing to race.
+   */
+  const autoOpenedRef = useRef(false);
+  const autoOpenPip = useCallback(() => {
+    autoOpenedRef.current = true;
+    void openWindow(PIP_SIZE).catch(() => {
+      autoOpenedRef.current = false;
     });
   }, [openWindow]);
 
@@ -135,8 +157,49 @@ export function MeetingEngine() {
           : session.kind === "guest"
             ? session.meetTitle
             : session.meeting.title,
-    onEnter: openPip,
+    onEnter: autoOpenPip,
   });
+
+  /**
+   * Fold the meeting back in when you return to its own tab.
+   *
+   * ## The gap this closes
+   *
+   * `useAutoPip` opens the real window on a `visibilitychange` this component
+   * never otherwise sees: the TAB going to the background, not the meeting's
+   * PAGE going away. Switching tabs and switching back does not unmount
+   * anything — the stage this page published stays mounted throughout — so
+   * the OTHER close trigger below, which watches `stageEl` go from mounted to
+   * unmounted and back, never fires: it has nothing to transition FROM. The
+   * window opened on its own and had nothing wired to close it on its own,
+   * so returning to the exact tab the meeting is on left a live call sitting
+   * in a floating window right next to the page that was meant to show it
+   * docked.
+   *
+   * ## Why a deliberate pop-out is left alone
+   *
+   * Somebody who pressed the button while looking straight at the docked room
+   * meant the window to float, and the next ordinary alt-tab must not undo
+   * that choice for them. `autoOpenedRef` is what tells the two apart —
+   * see its own note.
+   *
+   * `stageEl !== null` is the other half of the guard: this only folds the
+   * window in once the reader is actually back on a page that wants the room
+   * docked. Returning to an unrelated tab with the meeting still auto-floated
+   * behind it is exactly the case this feature exists for, and is untouched.
+   */
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const onVisible = () => {
+      if (document.hidden) return;
+      if (!autoOpenedRef.current) return;
+      if (!pip.isOpen || stageEl === null) return;
+      autoOpenedRef.current = false;
+      closeWindow();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [pip.isOpen, stageEl, closeWindow]);
 
   /**
    * Leaving the page puts the meeting STRAIGHT into the real window.

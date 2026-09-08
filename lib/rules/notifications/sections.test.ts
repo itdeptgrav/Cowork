@@ -87,7 +87,16 @@ test("every event the engine emits is counted somewhere", (t) => {
      not the same word. `group_member_added` is what the client asks for and
      `group_added` is what lands in the inbox, and it is the latter the badge
      filters on. */
-  const BACKEND =
+  /* `process.env.COWORK_BACKEND` first, then the standard workspace layout,
+     then this machine's own absolute path as a last resort. Was hardcoded to
+     that last one alone, so this quietly skipped on every other checkout.
+     See `cowork-source-text-tests-hazard`. */
+  const BACKEND = [
+    process.env.COWORK_BACKEND &&
+      `${process.env.COWORK_BACKEND}/routes/task_routes/coworkEvents.routes.js`,
+    "../grav-backend/routes/task_routes/coworkEvents.routes.js",
+    "D:/GRAV_Project/grav-cms-backend/routes/task_routes/coworkEvents.routes.js",
+  ].find((p): p is string => Boolean(p) && existsSync(p as string)) ??
     "D:/GRAV_Project/grav-cms-backend/routes/task_routes/coworkEvents.routes.js";
   if (!existsSync(BACKEND)) {
     t.skip("grav-cms-backend is not checked out beside this repository");

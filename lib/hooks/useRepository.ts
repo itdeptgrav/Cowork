@@ -32,6 +32,7 @@ import {
   subscribeToStaleData,
 } from "@/lib/repositories/events";
 import type { ActionResult, CoworkRepository } from "@/lib/repositories";
+import { dedupeInFlight } from "@/lib/utils/dedupeInFlight";
 
 /**
  * Module-level in-flight request deduplication.
@@ -586,8 +587,30 @@ export function useAction<TArgs extends unknown[], TData>(
     runRef.current = run;
   });
 
-  const execute = useCallback(
-    async (...args: TArgs) => {
+  /**
+   * Wrapped ONCE with `dedupeInFlight`, so a second call arriving while the
+   * first is still awaiting `runRef.current(...)` never reaches it — it gets
+   * the first call's own promise back instead.
+   *
+   * This is what actually stops a double-submit. `disabled={state.isPending}`
+   * on the button is still correct to have — it is the visible feedback, and
+   * what a person sees when they try a second, deliberate click — but the
+   * state it reads is set by `setState` a line below, which does not reach the
+   * DOM until React's next commit. A second click landing in that gap runs the
+   * handler while the button still LOOKS enabled, and nothing that checks
+   * `state.isPending` can close a gap measured in render timing. `dedupeInFlight`
+   * guards with a plain variable, set before any `await` and before any
+   * `setState`, so there is no gap left for a second click to land in.
+   *
+   * Built once via a lazy ref rather than `useCallback` deps, because the
+   * function identity has to be the dedup boundary: a NEW wrapper on every
+   * render would carry no memory of the previous call being in flight.
+   */
+  const executeRef = useRef<
+    ((...args: TArgs) => Promise<ActionResult<TData>>) | null
+  >(null);
+  if (executeRef.current === null) {
+    executeRef.current = dedupeInFlight(async (...args: TArgs) => {
       setState({ ...IDLE, isPending: true });
       try {
         const result = await runRef.current(getRepository(), ...args);
@@ -616,11 +639,11 @@ export function useAction<TArgs extends unknown[], TData>(
         });
         return { ok: false as const, code: "conflict" as const, message };
       }
-    },
-    /* Genuinely stable: the only thing that varies between renders is reached
-       through `runRef`, so there is nothing here to depend on. */
-    [],
-  );
+    });
+  }
+  /* Genuinely stable across renders, same as the `useCallback([])` this
+     replaced: it is set once, on the first render, and never reassigned. */
+  const execute = executeRef.current;
 
   const reset = useCallback(() => setState(IDLE), []);
 

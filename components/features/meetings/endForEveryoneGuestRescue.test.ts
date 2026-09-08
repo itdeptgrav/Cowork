@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * Two bugs that already existed, made load-bearing by "End for everyone".
@@ -33,17 +34,23 @@ function code(path: string): string {
 }
 
 const GUEST = code("components/features/meetings/GuestMeetingArea.tsx");
-const LIVEKIT = code(
-  "D:/GRAV_Project/grav-cms-backend/routes/task_routes/livekit.routes.js",
-);
-const SERVICE = readFileSync(
-  "D:/GRAV_Project/grav-cms-backend/services/cowork.service.js",
-  "utf8",
-);
+/* Resolved per-machine, and CRLF-normalised, by `backendSource` — this file
+   hardcoded `D:/GRAV_Project/...`, so every assertion below threw ENOENT on
+   any other checkout and reported as a broken test rather than a missing
+   engine. See `cowork-source-text-tests-hazard`. */
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
+const LIVEKIT = backendAvailable()
+  ? backendSource("routes/task_routes/livekit.routes.js")
+  : "";
+const SERVICE = backendAvailable()
+  ? backendSource("services/cowork.service.js")
+  : "";
 
 /* ── canJoin ─────────────────────────────────────────────────────────────── */
 
-test("a finished meeting cannot be joined, whichever way it finished", () => {
+test("a finished meeting cannot be joined, whichever way it finished", { skip: SKIP_ENGINE }, () => {
   assert.match(
     LIVEKIT,
     /\["completed", "cancelled", "archived", "ended"\]\.includes\(meet\.status\)/,
@@ -51,7 +58,7 @@ test("a finished meeting cannot be joined, whichever way it finished", () => {
   assert.match(LIVEKIT, /canJoin: meet\.publicShareEnabled === true && !finished/);
 });
 
-test("the dead check is gone", () => {
+test("the dead check is gone", { skip: SKIP_ENGINE }, () => {
   /* `"ended"` is not written by the status route, so this compared every
      meeting against a value it could never hold. */
   assert.doesNotMatch(
@@ -61,7 +68,7 @@ test("the dead check is gone", () => {
   );
 });
 
-test("the statuses it refuses are the ones the product actually writes", () => {
+test("the statuses it refuses are the ones the product actually writes", { skip: SKIP_ENGINE }, () => {
   /* Pinned against the engine's own list so the two cannot drift: if a
      terminal status is added there and not here, the link reopens. */
   const list = SERVICE.match(/MEET_STATUSES = \[([^\]]*)\]/);
@@ -72,7 +79,7 @@ test("the statuses it refuses are the ones the product actually writes", () => {
   assert.doesNotMatch(list[1], /"ended"/, "ended became a real status — reread canJoin");
 });
 
-test("the legacy cancel flag is honoured, not only the status", () => {
+test("the legacy cancel flag is honoured, not only the status", { skip: SKIP_ENGINE }, () => {
   /* The older application sets `isCancelled`; `setCoworkMeetStatus` keeps the
      two in step for exactly this reason. Reading one and not the other lets a
      legacy-cancelled meeting stay joinable. */

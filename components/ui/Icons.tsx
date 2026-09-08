@@ -188,6 +188,41 @@ export const Icon = {
       <path d="M8 4.8V8l2.2 1.5" />
     </S>
   ),
+  /**
+   * OFFLINE — a presence dot struck through.
+   *
+   * The dot is the same shape as the "● Online" indicator in the top bar;
+   * striking it is the same convention as the muted-microphone glyph, so
+   * "presence, but crossed out" reads the same way everywhere it appears.
+   */
+  offline: (p: P) => (
+    <S {...p}>
+      <circle cx="8" cy="8" r="3.4" />
+      <path d="M3.4 3.4l9.2 9.2" />
+    </S>
+  ),
+  /** BREAK — a cup with steam. */
+  break: (p: P) => (
+    <S {...p}>
+      <path d="M3.4 6.6h7v3.4a3.5 3.5 0 0 1-3.5 3.5h0a3.5 3.5 0 0 1-3.5-3.5V6.6z" />
+      <path d="M10.4 7.2h1a1.7 1.7 0 0 1 0 3.4h-1" />
+      <path d="M5.6 2.4c-.5.5-.5 1 0 1.5M8 2.4c-.5.5-.5 1 0 1.5" />
+    </S>
+  ),
+  /** EMERGENCY — a marked triangle. */
+  emergency: (p: P) => (
+    <S {...p}>
+      <path d="M8 2.6 14 12.8H2z" />
+      <path d="M8 6.6v3M8 11.1v.01" />
+    </S>
+  ),
+  /** EXTENSION — an edge pulled outward. */
+  extension: (p: P) => (
+    <S {...p}>
+      <path d="M2.6 8h4.4M9 8h4.4" />
+      <path d="M4.6 5.8 2.4 8l2.2 2.2M11.4 5.8 13.6 8l-2.2 2.2" />
+    </S>
+  ),
   play: (p: P) => (
     <S {...p}>
       <path d="M5.4 3.6l6.6 4.4-6.6 4.4z" />

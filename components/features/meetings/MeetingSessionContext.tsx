@@ -5,6 +5,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -209,7 +210,64 @@ export function MeetingSessionProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<MeetingSession | null>(null);
   const [stageEl, setStageElState] = useState<HTMLElement | null>(null);
 
-  const open = useCallback((next: MeetingSession) => {
+  /**
+   * The callbacks of whichever page is showing the meeting RIGHT NOW.
+   *
+   * ## The bug this exists for: pressing Leave did not leave
+   *
+   * `open` below deliberately keeps the PREVIOUS session object when the
+   * meeting has not changed, so the shell is not re-rendered several times a
+   * minute — see its own note. What that also kept was the previous object's
+   * `onLeave`, and a page is not a fact about a meeting: it is a component
+   * instance, and it is unmounted every time you navigate away.
+   *
+   * The whole point of this engine is that navigating away does NOT end the
+   * meeting, so this is the ordinary path, not an edge case: open the meeting,
+   * go and look at something else (the room floats), come back (it docks
+   * again). Coming back mounts a NEW `MeetingDetailArea` — new `left` state,
+   * new `setLeft` — which re-opens the same meeting and has its `onLeave`
+   * quietly discarded in favour of the dead one belonging to the instance that
+   * no longer exists.
+   *
+   * Pressing Leave then ran that dead callback: `setLeft(true)` on an unmounted
+   * component is silently ignored, so the page never learned it was out and
+   * went on rendering its stage and its "you are in this meeting" state. The
+   * room DID disconnect — `close()` on the next line still ran — and then the
+   * page's own effect, which opens a session whenever `left` is false, put the
+   * reader straight back into the call. Which is exactly the report: the Leave
+   * button visibly does nothing except make the meeting reappear.
+   *
+   * So the callbacks are recorded here, off the session object, on EVERY open —
+   * including the ones that keep the previous object — and the object carries
+   * stable forwarders that read this. Identity stays put for the shell; the
+   * callbacks are always the live page's.
+   */
+  const liveRef = useRef<{
+    onLeave?: (reason?: LeaveReason) => void;
+    onConnected?: () => void;
+  }>({});
+
+  /* Stable for the provider's life, so the object comparison in `open` never
+     sees a callback change and the shell is not re-rendered for one. */
+  const forwardLeave = useCallback((reason?: LeaveReason) => {
+    liveRef.current.onLeave?.(reason);
+  }, []);
+  const forwardConnected = useCallback(() => {
+    liveRef.current.onConnected?.();
+  }, []);
+
+  const open = useCallback((incoming: MeetingSession) => {
+    /* Recorded before the comparison below, and regardless of its outcome:
+       "the same meeting" and "the same page instance" are different questions,
+       and it is the second one that decides whose Leave this is. */
+    liveRef.current = {
+      onLeave: incoming.onLeave,
+      onConnected: incoming.kind === "task" ? incoming.onConnected : undefined,
+    };
+    const next: MeetingSession =
+      incoming.kind === "task"
+        ? { ...incoming, onLeave: forwardLeave, onConnected: forwardConnected }
+        : { ...incoming, onLeave: forwardLeave };
     setSession((prev) => {
       /**
        * **Re-opening the same meeting keeps the same session object.**
@@ -262,13 +320,34 @@ export function MeetingSessionProvider({ children }: { children: ReactNode }) {
       }
       return next;
     });
-  }, []);
+  }, [forwardLeave, forwardConnected]);
 
   const close = useCallback(() => {
     setSession(null);
-    /* Cleared with the session, not left behind: a stale stage would park the
-       next meeting over wherever the last one happened to be drawn. */
-    setStageElState(null);
+    /* Nothing is listening for this meeting's end any more. */
+    liveRef.current = {};
+    /**
+     * **The stage is deliberately NOT cleared here.**
+     *
+     * It used to be, "so a stale stage would not park the next meeting over
+     * wherever the last one happened to be drawn" — but a stage cannot go
+     * stale that way. `MeetingStage` publishes its element when it mounts and
+     * clears it when it unmounts, so the only way one outlives its page is if
+     * something ELSE nulls it while that page is still on screen. Which is
+     * what this line did.
+     *
+     * And it could not be undone: `MeetingStage`'s effect runs once, on mount,
+     * so a stage cleared out from under a page that is still rendering it is
+     * never re-published. The context then believes nobody is showing the
+     * meeting for as long as the reader stays on the page — so the next
+     * session opened drew itself in the little floating window, over a page
+     * whose meeting area sat empty. That is the blank rectangle and the
+     * floating box in the report.
+     *
+     * The stage belongs to whichever page is publishing it, and its mount and
+     * unmount are the whole of that story. Closing a session is not an event
+     * in it.
+     */
   }, []);
 
   /* An element reference — stable by nature, so this fires when a page mounts

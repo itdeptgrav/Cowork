@@ -18,7 +18,17 @@ import { test } from "node:test";
  * given.
  */
 
-const BACKEND =
+/* `process.env.COWORK_BACKEND` first, then the standard workspace layout
+   (the engine a sibling of this repo), then this machine's own absolute
+   path — kept as a last resort since a colleague's `.env` may still name it.
+   Was hardcoded to that last one alone, so this test quietly skipped on every
+   other checkout it was meant to guard. See `cowork-source-text-tests-hazard`. */
+const BACKEND = [
+  process.env.COWORK_BACKEND &&
+    `${process.env.COWORK_BACKEND}/routes/task_routes/coworkEvents.routes.js`,
+  "../grav-backend/routes/task_routes/coworkEvents.routes.js",
+  "D:/GRAV_Project/grav-cms-backend/routes/task_routes/coworkEvents.routes.js",
+].find((p): p is string => Boolean(p) && existsSync(p as string)) ??
   "D:/GRAV_Project/grav-cms-backend/routes/task_routes/coworkEvents.routes.js";
 
 function kindsSent(): string[] {

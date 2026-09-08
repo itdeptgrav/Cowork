@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * The in-room live-caption rail and its CC button are gone — by decision.
@@ -68,18 +69,28 @@ test("the after-meeting transcript in the details rail is untouched", () => {
   assert.match(DETAIL, /import \{ VerbatimTranscriptPanel \}/);
 });
 
-test("that transcript is generated from the audio, not from the live rail", () => {
-  /* The proof the removal is safe: the surviving transcript reads a different
-     collection through a different route, produced by Gemini from Drive. */
-  const media = code("lib/legacy/meetingMedia.ts");
-  assert.match(media, /\/cowork\/audio\/transcript\//);
-  const summary = readFileSync(
-    "D:/GRAV_Project/grav-cms-backend/routes/task_routes/meetingSummary.routes.js",
-    "utf8",
-  );
-  assert.match(summary, /"meeting_transcripts_gemini"/);
-  assert.doesNotMatch(summary, /"meeting_transcripts"\b/, "the summary reads the live rail");
-});
+test(
+  "that transcript is generated from the audio, not from the live rail",
+  {
+    skip: backendAvailable()
+      ? false
+      : "the engine checkout was not found — set COWORK_BACKEND",
+  },
+  () => {
+    /* The proof the removal is safe: the surviving transcript reads a
+       different collection through a different route, produced by Gemini
+       from Drive. Resolved per-machine, and CRLF-normalised, by
+       `backendSource` — this hardcoded `D:/GRAV_Project/...`, so it threw
+       ENOENT on any other checkout. See `cowork-source-text-tests-hazard`. */
+    const media = code("lib/legacy/meetingMedia.ts");
+    assert.match(media, /\/cowork\/audio\/transcript\//);
+    const summary = backendSource(
+      "routes/task_routes/meetingSummary.routes.js",
+    );
+    assert.match(summary, /"meeting_transcripts_gemini"/);
+    assert.doesNotMatch(summary, /"meeting_transcripts"\b/, "the summary reads the live rail");
+  },
+);
 
 /* ── the help corpus, per CLAUDE.md ──────────────────────────────────────── */
 

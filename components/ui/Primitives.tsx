@@ -160,10 +160,35 @@ export function Chip({
   );
 }
 
-/** Chip on a dark slab. */
-export function SlabChip({ children }: { children: ReactNode }) {
+/**
+ * Chip on a dark slab.
+ *
+ * A separate component from `Chip` rather than one more of its tones, because
+ * `Chip`'s tones are tuned against the ordinary page background —
+ * `--state-positive-ink` and friends are chosen for contrast on the near-white
+ * surface every other chip sits on. A meeting room's header is near-black, and
+ * `<Chip tone="positive">` there rendered a pill with no legible text: the
+ * ink was correct for a background this component never has. `SlabChip`'s own
+ * tones are literal colours chosen against THIS surface, the same way the rest
+ * of the room (`RoomShortcuts`, `MeetingToolbar`) already picks its tones —
+ * `emerald`/`amber` on a translucent fill — rather than reaching for tokens
+ * meant for daylight.
+ */
+export function SlabChip({
+  children,
+  tone = "neutral",
+}: {
+  children: ReactNode;
+  tone?: "neutral" | "positive";
+}) {
+  const tones: Record<string, string> = {
+    neutral: "bg-white/10 text-slab-ink",
+    positive: "bg-emerald-400/20 text-emerald-300",
+  };
   return (
-    <span className="inline-flex shrink-0 items-center rounded-full bg-white/10 px-3.5 py-1.5 text-xs text-slab-ink">
+    <span
+      className={`inline-flex shrink-0 items-center rounded-full px-3.5 py-1.5 text-xs ${tones[tone]}`}
+    >
       {children}
     </span>
   );

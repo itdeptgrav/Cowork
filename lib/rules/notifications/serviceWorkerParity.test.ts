@@ -194,16 +194,33 @@ test("the engine sends an event id for the tag to key on", () => {
   /* The worker's exact tag is only as good as the payload: without an id per
      event it falls back to the entity, and two notifications about one task
      would still collapse. Both engine notify helpers must send it. */
-  for (const f of [
-    "D:/GRAV_Project/grav-cms-backend/services/taskForward.service.js",
-    "D:/GRAV_Project/grav-cms-backend/routes/task_routes/taskForward.js",
+  /* `process.env.COWORK_BACKEND` first, then the standard workspace layout,
+     then this machine's own absolute path as a last resort. Both were
+     hardcoded to that last one alone, so the `catch` below silently skipped
+     both on every other checkout — reporting this test as PASSED while
+     checking nothing at all. See `cowork-source-text-tests-hazard`. */
+  const backendRoots = [
+    process.env.COWORK_BACKEND,
+    "../grav-backend",
+    "D:/GRAV_Project/grav-cms-backend",
+  ].filter((d): d is string => Boolean(d));
+  for (const rel of [
+    "services/taskForward.service.js",
+    "routes/task_routes/taskForward.js",
   ]) {
-    let src: string;
-    try {
-      src = readFileSync(f, "utf8");
-    } catch {
-      continue; /* The engine is a separate checkout; skip where it is absent. */
+    let src: string | null = null;
+    let f = rel;
+    for (const root of backendRoots) {
+      const candidate = `${root}/${rel}`;
+      try {
+        src = readFileSync(candidate, "utf8");
+        f = candidate;
+        break;
+      } catch {
+        /* Not this root — try the next one. */
+      }
     }
+    if (src === null) continue; /* The engine is a separate checkout; skip where it is absent. */
     assert.match(src, /notificationId: eventId/, `${f} does not send an event id`);
     assert.match(src, /const eventId =/, `${f} references an id it never declares`);
   }

@@ -5,6 +5,8 @@ import {
   NOTHING_REASON,
   copyPlan,
   firstImage,
+  firstLinkable,
+  shareableLink,
 } from "./copyMessage.ts";
 import type { MessageAttachment } from "@/lib/domain";
 
@@ -67,23 +69,85 @@ test("the label names what will actually be copied", () => {
   assert.equal(copyPlan({ text: "a" }).label, "Copy text");
 });
 
-/* ── What is still refused, and why the sentence changed ──────────────────── */
+/* ── A document or a video copies its LINK ────────────────────────────────── */
 
-test("a document or a video alone is not copyable", () => {
-  /* Neither has a clipboard representation that survives a paste. A filename
-     pasted where somebody expected a file is the outcome worth avoiding. */
+test("a document or a video alone offers Copy link, not a refusal", () => {
+  /**
+   * **The reported fault.** Neither has a clipboard representation that
+   * survives a paste as a FILE — a filename pasted where somebody expected the
+   * PDF itself is the outcome worth avoiding, and that refusal stands. But the
+   * message still opens somewhere, and an address is nothing more than a
+   * string: every clipboard implementation accepts `writeText`, so there was
+   * never a reason to refuse the whole action.
+   */
   for (const only of [DOCUMENT, CLIP]) {
     const plan = copyPlan({ text: "", attachments: [only] });
-    assert.equal(plan.disabled, true);
-    assert.equal(plan.reason, NOTHING_REASON);
+    assert.equal(plan.disabled, false);
+    assert.equal(plan.reason, null);
+    assert.equal(plan.label, "Copy link");
+    assert.equal(plan.text, null);
+    assert.equal(plan.image, null);
+    assert.equal(plan.link, `https://drive.google.com/file/d/${only.name}/view`);
   }
 });
 
-test("the refusal names the image as well as the text", () => {
-  /* The old sentence mentioned only text, which read as a bug on a message
-     that plainly had a picture in it. */
-  assert.match(NOTHING_REASON, /image/);
-  assert.match(NOTHING_REASON, /text/);
+test("a voice note and a plain file copy their link too", () => {
+  /* Not only the two named in the report — every non-picture kind. */
+  for (const kind of ["voice", "file"] as const) {
+    const plan = copyPlan({ text: "", attachments: [attach(kind, "note")] });
+    assert.equal(plan.disabled, false);
+    assert.equal(plan.label, "Copy link");
+  }
+});
+
+test("a picture still wins over a file beside it", () => {
+  /* Matches `firstImage`'s own priority: a screenshot IS the message, and a
+     link to it on Drive would be a worse copy of the same thing. */
+  const plan = copyPlan({ text: "", attachments: [DOCUMENT, PICTURE] });
+  assert.equal(plan.label, "Copy image");
+  assert.equal(plan.image, PICTURE);
+  assert.equal(plan.link, null);
+});
+
+test("text with a file still copies just the text, unchanged", () => {
+  /* The already-working case. A caption is not silently extended with a link
+     it never used to carry. */
+  const plan = copyPlan({ text: "here's the file", attachments: [DOCUMENT] });
+  assert.equal(plan.label, "Copy text");
+  assert.equal(plan.text, "here's the file");
+  assert.equal(plan.link, null);
+});
+
+test("the link matches where the attachment itself opens", () => {
+  /* `shareableLink` mirrors `mediaOpenUrl` in MessageAttachments.tsx — a copied
+     link and a clicked attachment must go to the same place. */
+  assert.equal(
+    shareableLink({ fileId: "abc123", url: "https://cloudinary.example/x" }),
+    "https://drive.google.com/file/d/abc123/view",
+  );
+  /* No recognisable id: the stored URL, exactly as `mediaOpenUrl` falls back. */
+  assert.equal(
+    shareableLink({ fileId: null, url: "https://cdn.example/clip.mp4" }),
+    "https://cdn.example/clip.mp4",
+  );
+  assert.equal(shareableLink({ fileId: null, url: "" }), null);
+});
+
+test("the first linkable attachment is the one at the top of the bubble", () => {
+  assert.equal(firstLinkable([DOCUMENT, CLIP]), DOCUMENT);
+  assert.equal(firstLinkable([PICTURE, DOCUMENT]), DOCUMENT);
+  assert.equal(firstLinkable([PICTURE]), null);
+  assert.equal(firstLinkable(undefined), null);
+  assert.equal(firstLinkable([]), null);
+});
+
+/* ── What is still refused ─────────────────────────────────────────────────── */
+
+test("a genuinely empty message is still refused", () => {
+  /* No words, no picture, no attachment at all — nothing left to fall back to. */
+  const plan = copyPlan({ text: "", attachments: [] });
+  assert.equal(plan.disabled, true);
+  assert.equal(plan.reason, NOTHING_REASON);
 });
 
 test("an empty message is refused rather than clearing the clipboard", () => {

@@ -4,8 +4,10 @@ import {
   budgetHistoryView,
   creditCause,
   deadlineMoveEntries,
+  deadlineTimelineChains,
   type BudgetCredit,
   type DeadlineMove,
+  type DeadlineMoveEntry,
 } from "./budgetHistory.ts";
 
 const credit = (over: Partial<BudgetCredit> = {}): BudgetCredit => ({
@@ -245,4 +247,85 @@ test("budget credits and deadline moves stay separate", () => {
   const view = budgetHistoryView({ givenSecs: 3600, currentSecs: 3600, credits: [] });
   assert.equal(view.entries.length, 0, "a deadline move leaked into the credits");
   assert.equal(deadlineMoveEntries([move()]).length, 1);
+});
+
+/* ── deadlineTimelineChains ───────────────────────────────────────────────── */
+
+function entry(over: Partial<DeadlineMoveEntry> = {}): DeadlineMoveEntry {
+  const base = move(over);
+  return {
+    ...base,
+    deltaSecs: Math.round(
+      (Date.parse(base.toIso) - Date.parse(base.fromIso)) / 1000,
+    ),
+    label: "Deadline moved later",
+    ...over,
+  };
+}
+
+test("two moves that actually connect become one staircase", () => {
+  /* The exact shape in the report: one deadline moved by an offline credit,
+     then moved again by a break credit, the second picking up exactly where
+     the first left off. */
+  const a = entry({
+    id: "a",
+    fromIso: "2026-08-24T08:24:00.000Z", // 13:54 IST
+    toIso: "2026-08-24T09:33:00.000Z", // 15:03 IST
+  });
+  const b = entry({
+    id: "b",
+    fromIso: "2026-08-24T09:33:00.000Z", // 15:03 IST — picks up exactly here
+    toIso: "2026-08-24T10:08:00.000Z", // 15:38 IST
+  });
+  const chains = deadlineTimelineChains([a, b]);
+  assert.equal(chains.length, 1, "two connected moves were drawn as two staircases");
+  assert.deepEqual(chains[0].moves.map((m) => m.id), ["a", "b"]);
+});
+
+test("moves that do NOT actually connect are never claimed to", () => {
+  /* Something moved the deadline between these two credited moves that this
+     record does not explain — a manual edit, a path #compensateOneDeadline
+     does not read from. Drawing one continuous line through the gap would
+     assert a connection the data does not have. */
+  const a = entry({ id: "a", fromIso: "2026-08-24T08:24:00.000Z", toIso: "2026-08-24T09:33:00.000Z" });
+  const b = entry({ id: "b", fromIso: "2026-08-24T10:00:00.000Z", toIso: "2026-08-24T10:35:00.000Z" });
+  const chains = deadlineTimelineChains([a, b]);
+  assert.equal(chains.length, 2, "a gap between two moves was silently bridged");
+  assert.deepEqual(chains[0].moves.map((m) => m.id), ["a"]);
+  assert.deepEqual(chains[1].moves.map((m) => m.id), ["b"]);
+});
+
+test("a single move is its own one-step chain", () => {
+  const chains = deadlineTimelineChains([entry({ id: "solo" })]);
+  assert.equal(chains.length, 1);
+  assert.equal(chains[0].moves.length, 1);
+});
+
+test("no moves at all is no chains, not an error", () => {
+  assert.deepEqual(deadlineTimelineChains([]), []);
+});
+
+test("three moves in a row stay one chain, not one per pair", () => {
+  const a = entry({ id: "a", fromIso: "2026-08-24T08:00:00.000Z", toIso: "2026-08-24T08:30:00.000Z" });
+  const b = entry({ id: "b", fromIso: "2026-08-24T08:30:00.000Z", toIso: "2026-08-24T09:00:00.000Z" });
+  const c = entry({ id: "c", fromIso: "2026-08-24T09:00:00.000Z", toIso: "2026-08-24T09:15:00.000Z" });
+  const chains = deadlineTimelineChains([a, b, c]);
+  assert.equal(chains.length, 1);
+  assert.deepEqual(chains[0].moves.map((m) => m.id), ["a", "b", "c"]);
+});
+
+test("connection is judged on the real instant, not the string", () => {
+  /* Two ISO strings for the same instant, written with a different offset, are
+     the same moment and must still be recognised as connected. */
+  const a = entry({
+    id: "a",
+    fromIso: "2026-08-24T08:24:00.000Z",
+    toIso: "2026-08-24T09:33:00.000Z",
+  });
+  const b = entry({
+    id: "b",
+    fromIso: "2026-08-24T15:03:00.000+05:30", // same instant as a's toIso
+    toIso: "2026-08-24T15:38:00.000+05:30",
+  });
+  assert.equal(deadlineTimelineChains([a, b]).length, 1);
 });
