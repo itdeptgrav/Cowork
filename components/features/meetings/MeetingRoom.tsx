@@ -7,7 +7,7 @@ import { DisconnectReason } from "livekit-client";
 import "@livekit/components-styles";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
-import { Chip, InlineError } from "@/components/ui/Primitives";
+import { InlineError, SlabChip } from "@/components/ui/Primitives";
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { useFullscreen } from "@/lib/legacy-ui/useFullscreen";
 import { useMeetingRecording } from "@/lib/legacy-ui/useMeetingRecording";
@@ -91,6 +91,23 @@ export function MeetingRoom({
     null,
   );
   const [error, setError] = useState<string | null>(null);
+  /**
+   * **Stable, or the room never stops reconnecting.**
+   *
+   * `LiveKitRoom`'s own connect effect lists `onError` in its dependency array
+   * with no guard against identity churn — unlike `connectOptions`, which it
+   * compares by `JSON.stringify`. An inline arrow here is a new function on
+   * every render of this component, so every re-render — a chat message
+   * arriving, a reaction, the drag position moving — re-ran that effect and
+   * called `room.connect()` again. Harmless while already connected, since
+   * LiveKit no-ops that case, but the moment Leave disconnects the room, the
+   * very next incidental re-render before this component unmounts calls
+   * `connect()` on a room that was just told to hang up, and it reconnects —
+   * the same interface coming back, which reads as Leave not working.
+   * `useCallback` keeps the reference stable across renders, so the effect
+   * only re-fires when the connection itself actually changes.
+   */
+  const onRoomError = useCallback((e: Error) => setError(e.message), []);
 
   /**
    * The organiser ended the meeting for everyone.
@@ -297,7 +314,7 @@ export function MeetingRoom({
                 : undefined,
           );
         }}
-        onError={(e) => setError(e.message)}
+        onError={onRoomError}
       >
         {/* Takes this browser out once the meeting has been ended for
             everyone; draws nothing. */}
@@ -553,9 +570,25 @@ function RoomFrame({
           </button>
         )}
         {!compact && (
-          <Chip tone={meeting.status === "live" ? "positive" : "neutral"}>
-            {meeting.status === "waiting" ? "waiting room" : meeting.status}
-          </Chip>
+          /**
+           * `SlabChip`, not `Chip` — this header sits on the room's own
+           * near-black surface, and `Chip`'s tones are tuned for the ordinary
+           * page background. `Chip tone="positive"` here rendered a solid pill
+           * with no legible text: the right shape, the wrong ink for where it
+           * actually sat. Same dot-and-label shape `MeetingMasthead` uses for
+           * the identical status outside the room, so "live" reads the same
+           * whether you are looking at the room or the page around it.
+           */
+          <SlabChip tone={meeting.status === "live" ? "positive" : "neutral"}>
+            <span
+              aria-hidden
+              className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-current align-middle"
+            />
+            {meeting.status === "waiting"
+              ? "Waiting room"
+              : meeting.status.charAt(0).toUpperCase() +
+                meeting.status.slice(1)}
+          </SlabChip>
         )}
       </header>
       {children}

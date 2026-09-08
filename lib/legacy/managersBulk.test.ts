@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * The reporting tree, asked for once instead of once per person.
@@ -25,7 +26,12 @@ function code(path: string): string {
 
 const HIERARCHY = "lib/legacy/hierarchy.ts";
 const REPO = "lib/repositories/legacy/index.ts";
-const ROUTE = "D:/GRAV_Project/grav-cms-backend/routes/task_routes/cowork.js";
+/* Resolved per-machine, and CRLF-normalised, by `backendSource` — this
+   hardcoded `D:/GRAV_Project/...`, so every read below threw ENOENT on any
+   other checkout. See `cowork-source-text-tests-hazard`. */
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
 
 /* ─────────────────────────────── one request ────────────────────────────── */
 
@@ -85,7 +91,7 @@ test("somebody missing from the reply still gets an entry", () => {
   );
 });
 
-test("a named but unlinkable manager survives the bulk path", () => {
+test("a named but unlinkable manager survives the bulk path", { skip: SKIP_ENGINE }, () => {
   /**
    * The engine falls back to a bare `managerName` when the reference is
    * missing, returning an empty `biometricId`. That is NOT the same as having
@@ -93,16 +99,16 @@ test("a named but unlinkable manager survives the bulk path", () => {
    * who somebody reports to. Collapsing the two would silently empty those
    * lines.
    */
-  const route = readFileSync(ROUTE, "utf8");
+  const route = backendSource("routes/task_routes/cowork.js");
   const fn = route.slice(route.indexOf("function _managerShape"));
   assert.match(fn.slice(0, 1400), /if \(side && side\.managerName\)/);
   assert.match(fn.slice(0, 1400), /biometricId: ""/);
 });
 
-test("the bulk route reports the same per-manager fields as the single one", () => {
+test("the bulk route reports the same per-manager fields as the single one", { skip: SKIP_ENGINE }, () => {
   /* Two shapes for one answer is how the tree comes to differ depending on
      which path filled it. */
-  const route = readFileSync(ROUTE, "utf8");
+  const route = backendSource("routes/task_routes/cowork.js");
   const fn = route.slice(route.indexOf("function _managerShape"), route.indexOf("router.get(\n  \"/employee/my-managers-bulk\""));
   for (const field of [
     "name",
@@ -119,8 +125,8 @@ test("the bulk route reports the same per-manager fields as the single one", () 
 
 /* ────────────────────────── nothing else moved ──────────────────────────── */
 
-test("the single-employee route is untouched", () => {
-  const route = readFileSync(ROUTE, "utf8");
+test("the single-employee route is untouched", { skip: SKIP_ENGINE }, () => {
+  const route = backendSource("routes/task_routes/cowork.js");
   assert.match(route, /router\.get\("\/employee\/my-managers\/:employeeId"/);
   assert.match(route, /console\.error\("\[my-managers\]", e\.message\)/);
 });
@@ -134,8 +140,8 @@ test("the cache stamp and its expiry are unchanged", () => {
   assert.match(src, /return buildReportingTree\(answers\);/);
 });
 
-test("the bulk route answers with an ETag, like its neighbour", () => {
-  const route = readFileSync(ROUTE, "utf8");
+test("the bulk route answers with an ETag, like its neighbour", { skip: SKIP_ENGINE }, () => {
+  const route = backendSource("routes/task_routes/cowork.js");
   const handler = route.slice(route.indexOf('"/employee/my-managers-bulk"'));
   assert.match(
     handler.slice(0, 2000),

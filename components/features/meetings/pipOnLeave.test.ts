@@ -44,9 +44,28 @@ test("it rides the click that navigated, not a visibility change", () => {
   /* `requestWindow()` needs a user gesture; a visibility handler is not one and
      throws NotAllowedError. The click that left the page is one, and it stays
      usable for a few seconds — the stage unmounts well inside that. */
-  assert.doesNotMatch(ENGINE, /visibilitychange/);
+  assert.doesNotMatch(leaving(), /visibilitychange/, "the leaving transition started listening for tab visibility");
   /* Before the first paint, so the corner window never shows a frame first. */
   assert.match(leaving(), /useLayoutEffect\(/);
+  /**
+   * A SEPARATE `visibilitychange` listener exists elsewhere in this file, for
+   * a different bug: Chrome's own auto-PiP trigger fires on the TAB going
+   * background, which does not unmount the stage the way leaving the PAGE
+   * does — so the window it opens had nothing wired to fold it back in on
+   * return. That listener only CLOSES a window already open; it must never
+   * be the thing that OPENS one, or it inherits the exact NotAllowedError
+   * this test exists to keep out of the leaving transition.
+   */
+  const visibilityBlocks = [...ENGINE.matchAll(/addEventListener\("visibilitychange"/g)];
+  assert.equal(visibilityBlocks.length, 1, "more than one visibilitychange listener appeared");
+  const at = ENGINE.indexOf('addEventListener("visibilitychange"');
+  const handler = ENGINE.slice(ENGINE.lastIndexOf("useEffect(() => {", at), at);
+  assert.doesNotMatch(
+    handler,
+    /openWindow\(|requestWindow\(|openPip\(|autoOpenPip\(/,
+    "a visibilitychange handler asks for the real window, which needs a gesture it does not have",
+  );
+  assert.match(handler, /closeWindow\(\)/, "the fold-back-in effect no longer closes the window");
 });
 
 test("a refusal leaves the corner window, and nothing else changes", () => {

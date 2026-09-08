@@ -103,7 +103,7 @@ async function asPng(blob: Blob): Promise<Blob> {
 }
 
 export type CopyOutcome =
-  | { ok: true; copied: "text" | "image" | "both" }
+  | { ok: true; copied: "text" | "image" | "both" | "link" }
   | { ok: false; message: string };
 
 /**
@@ -115,10 +115,11 @@ export type CopyOutcome =
  * carry the picture. Shared by both threads so the two never word it
  * differently for the same action.
  */
-export const COPIED_NOTICE: Record<"text" | "image" | "both", string> = {
+export const COPIED_NOTICE: Record<"text" | "image" | "both" | "link", string> = {
   text: "Message copied.",
   image: "Image copied.",
   both: "Message and image copied.",
+  link: "Link copied.",
 };
 
 /**
@@ -131,6 +132,19 @@ export async function runCopyPlan(
 ): Promise<CopyOutcome> {
   if (plan.disabled) {
     return { ok: false, message: plan.reason ?? "There is nothing to copy." };
+  }
+
+  /* A file that is not a picture: `writeText` alone, exactly like the
+     text-only path below, since a URL is nothing more than a string every
+     clipboard implementation accepts. Checked first because `plan.link` and
+     `plan.text`/`plan.image` are never both set — see `copyPlan`. */
+  if (plan.link) {
+    try {
+      await navigator.clipboard.writeText(plan.link);
+      return { ok: true, copied: "link" };
+    } catch {
+      return { ok: false, message: clipboardRefused() };
+    }
   }
 
   const text = plan.text;

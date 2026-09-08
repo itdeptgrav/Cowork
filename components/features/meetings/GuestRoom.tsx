@@ -98,6 +98,22 @@ export function GuestRoom({
   onDragHandle?: (e: React.PointerEvent) => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  /**
+   * **Stable, or the room never stops reconnecting.**
+   *
+   * `LiveKitRoom`'s own connect effect lists `onError` in its dependency array
+   * with no guard against identity churn — unlike `connectOptions`, which it
+   * compares by `JSON.stringify`. An inline arrow here is a new function on
+   * every render of this component, so every re-render — a chat message
+   * arriving, a reaction, the drag position moving — re-ran that effect and
+   * called `room.connect()` again. Harmless while already connected, since
+   * LiveKit no-ops that case, but the moment Leave disconnects the room, the
+   * very next incidental re-render before this component unmounts calls
+   * `connect()` on a room that was just told to hang up, and it reconnects.
+   * `useCallback` keeps the reference stable across renders, so the effect
+   * only re-fires when the connection itself actually changes.
+   */
+  const onRoomError = useCallback((e: Error) => setError(e.message), []);
 
   /**
    * The organiser ended the meeting for everyone.
@@ -362,7 +378,7 @@ export function GuestRoom({
                   : undefined,
             );
           }}
-          onError={(e) => setError(e.message)}
+          onError={onRoomError}
         >
           {/**
            * **A guest gets the same in-call features as everybody else.**

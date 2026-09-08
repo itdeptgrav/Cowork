@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createRequire } from "node:module";
 
 /**
@@ -33,16 +33,33 @@ import { createRequire } from "node:module";
 const BACKEND =
   [
     process.env.COWORK_BACKEND,
+    /* The standard workspace layout: `GRAV_PROJECT/{Cowork,grav-backend}`,
+       the engine a sibling of this repo. Listed first among the guesses
+       because it is the only one here that is not somebody's own laptop —
+       see `lib/legacy/backendSource.ts`, which this file predates and
+       duplicates rather than imports (its own tests need the PATHS, not the
+       stripped content that helper returns).
+
+       Resolved to an ABSOLUTE path immediately, not kept as the relative
+       string. `readFileSync`/`statSync` below resolve a relative path against
+       `process.cwd()` and were content with it; `createRequire(...)(RULES)`
+       further down resolves one against THIS FILE's own directory instead —
+       two different bases for the one string, and "../grav-backend" is a
+       different real directory under each. `resolve()` fixes the answer once,
+       here, before either kind of use sees it. */
+    "../grav-backend",
     "D:/GRAV_Project/grav-cms-backend",
     "/Users/risheeray/Documents/cowork-old-backend",
-  ].find((dir) => {
-    if (!dir) return false;
-    try {
-      return statSync(join(dir, "services/coworkAttachmentRules.js")).isFile();
-    } catch {
-      return false;
-    }
-  }) ?? "/Users/risheeray/Documents/cowork-old-backend";
+  ]
+    .map((dir) => (dir ? resolve(dir) : dir))
+    .find((dir) => {
+      if (!dir) return false;
+      try {
+        return statSync(join(dir, "services/coworkAttachmentRules.js")).isFile();
+      } catch {
+        return false;
+      }
+    }) ?? resolve("/Users/risheeray/Documents/cowork-old-backend");
 const SERVICE = join(BACKEND, "services/coworkAttachment.service.js");
 /* The validation half, dependency-free so it can be driven without a
    credential — which is the point of it being a separate module. */

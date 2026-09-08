@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * Pressing Stop has to put the audio in Drive.
@@ -36,7 +37,12 @@ import { readFileSync } from "node:fs";
  * upload fail on its first attempt.
  */
 
-const BE = "D:/GRAV_Project/grav-cms-backend/";
+/* Resolved per-machine, and CRLF-normalised, by `backendSource` — this file
+   hardcoded `D:/GRAV_Project/...`, so every assertion below threw ENOENT on
+   any other checkout. See `cowork-source-text-tests-hazard`. */
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
 
 function code(path: string): string {
   return readFileSync(path, "utf8")
@@ -46,7 +52,9 @@ function code(path: string): string {
 }
 
 const HOOK = code("lib/legacy-ui/useMeetingRecording.ts");
-const AUDIO = code(BE + "routes/task_routes/audioRecording.routes.js");
+const AUDIO = backendAvailable()
+  ? backendSource("routes/task_routes/audioRecording.routes.js")
+  : "";
 
 /* ── 1 · the browser keeps the tail ──────────────────────────────────────── */
 
@@ -90,7 +98,7 @@ test("muting still means not recorded — a muted recorder is not resumed to sto
 
 /* ── 2 · a failed claim never destroys audio ─────────────────────────────── */
 
-test("the claim tells absence, lock and failure apart", () => {
+test("the claim tells absence, lock and failure apart", { skip: SKIP_ENGINE }, () => {
   const claim = AUDIO.slice(AUDIO.indexOf("async function claimChunks("));
   const body = claim.slice(0, claim.indexOf("\n}\n"));
   assert.match(body, /if \(e\.code === "ENOENT"\) return \{ empty: true \}/);
@@ -99,7 +107,7 @@ test("the claim tells absence, lock and failure apart", () => {
   assert.match(body, /CLAIM_LOCK_RETRIES/, "a Windows lock is not retried");
 });
 
-test("nothing on the failed-claim path deletes a chunk", () => {
+test("nothing on the failed-claim path deletes a chunk", { skip: SKIP_ENGINE }, () => {
   const claim = AUDIO.slice(AUDIO.indexOf("async function claimChunks("));
   const body = claim.slice(0, claim.indexOf("\n}\n"));
   assert.doesNotMatch(body, /cleanupChunkDir|rmSync/, "a claim that cannot be taken deletes the audio");
@@ -108,7 +116,7 @@ test("nothing on the failed-claim path deletes a chunk", () => {
   assert.doesNotMatch(held.slice(0, 400), /cleanupChunkDir/);
 });
 
-test("a held recording is answered as retryable, never as “no audio”", () => {
+test("a held recording is answered as retryable, never as “no audio”", { skip: SKIP_ENGINE }, () => {
   assert.match(AUDIO, /res\.status\(409\)\.json\(\{\s*success: false,\s*pending: true,/);
   const held = AUDIO.slice(AUDIO.indexOf("if (claim.held) {"));
   assert.doesNotMatch(held.slice(0, 400), /skipped: true/, "held is reported as skipped again");
@@ -126,7 +134,7 @@ test("the browser keeps its retry marker when the engine says pending", () => {
 
 /* ── 3 · a failed upload gives the audio back ────────────────────────────── */
 
-test("the restore merges into the live directory instead of giving up on it", () => {
+test("the restore merges into the live directory instead of giving up on it", { skip: SKIP_ENGINE }, () => {
   const restore = AUDIO.slice(AUDIO.indexOf("if (claimedDir && fs.existsSync(claimedDir)"));
   assert.match(restore.slice(0, 400), /const moved = moveChunksInto\(claimedDir, live\)/);
   assert.doesNotMatch(
@@ -136,21 +144,21 @@ test("the restore merges into the live directory instead of giving up on it", ()
   );
 });
 
-test("a chunk already present is dropped rather than duplicated on merge", () => {
+test("a chunk already present is dropped rather than duplicated on merge", { skip: SKIP_ENGINE }, () => {
   /* Chunks are keyed by index, which is what makes merging safe — and what
      stops a restore turning one recording into two. */
   const move = AUDIO.slice(AUDIO.indexOf("function moveChunksInto("));
   assert.match(move.slice(0, 700), /if \(fs\.existsSync\(to\)\) fs\.rmSync\(from, \{ force: true \}\)/);
 });
 
-test("audio abandoned by a dead finalize is re-adopted, not stepped over", () => {
+test("audio abandoned by a dead finalize is re-adopted, not stepped over", { skip: SKIP_ENGINE }, () => {
   assert.match(AUDIO, /function staleClaims\(meetId, employeeId\)/);
   assert.match(AUDIO, /STALE_CLAIM_MS/);
   const claim = AUDIO.slice(AUDIO.indexOf("async function claimChunks("));
   assert.match(claim.slice(0, 900), /for \(const abandoned of staleClaims\(meetId, employeeId\)\)/);
 });
 
-test("a cleanup fault after a successful upload cannot report failure", () => {
+test("a cleanup fault after a successful upload cannot report failure", { skip: SKIP_ENGINE }, () => {
   /* The row is written, so the recording IS saved — but the tidy-up sat inside
      the route's own try, so an `rmSync` refused by Windows threw after a
      successful upload, the catch answered 500, and the browser's retry
@@ -164,7 +172,7 @@ test("a cleanup fault after a successful upload cannot report failure", () => {
 
 /* ── 4 · Drive's own back-pressure is retried ────────────────────────────── */
 
-test("a rate-limited or reset upload is retried rather than failed outright", () => {
+test("a rate-limited or reset upload is retried rather than failed outright", { skip: SKIP_ENGINE }, () => {
   /* Everybody finalizes at the same instant — that is what Stop does — so
      several uploads reach Drive together and it answers 429 or 403. */
   const t = AUDIO.slice(AUDIO.indexOf("const isTransient ="));
@@ -183,7 +191,7 @@ test("a rate-limited or reset upload is retried rather than failed outright", ()
 
 /* ── what must not have changed ──────────────────────────────────────────── */
 
-test("the claim is still a claim — one finalize merges a recording, not two", () => {
+test("the claim is still a claim — one finalize merges a recording, not two", { skip: SKIP_ENGINE }, () => {
   /* The duplicate-file fault this lock was built for (M058: three files, one
      voice) must not come back while fixing the loss. */
   const claim = AUDIO.slice(AUDIO.indexOf("async function claimChunks("));
@@ -191,7 +199,7 @@ test("the claim is still a claim — one finalize merges a recording, not two", 
   assert.match(AUDIO, /const chunkDir = claim\.dir;\s*claimedDir = chunkDir;/);
 });
 
-test("an empty recording is still reported as skipped, and still cleans up", () => {
+test("an empty recording is still reported as skipped, and still cleans up", { skip: SKIP_ENGINE }, () => {
   assert.match(AUDIO, /if \(claim\.empty\) \{/);
   assert.match(AUDIO, /message: "Already finalized, or no audio captured"/);
   assert.match(AUDIO, /if \(!chunkFiles\.length \|\| totalBytes === 0\) \{/);

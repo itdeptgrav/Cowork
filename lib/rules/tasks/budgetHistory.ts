@@ -81,6 +81,20 @@ export const CREDIT_CAUSE_LABEL: Record<CreditCause, string> = {
   other: "Credited",
 };
 
+/**
+ * The same cause, as one word — for the deadline timeline's connecting
+ * segment, where `CREDIT_CAUSE_LABEL`'s full sentence would not fit beside an
+ * icon and a duration.
+ */
+export const CREDIT_CAUSE_SHORT_LABEL: Record<CreditCause, string> = {
+  break: "Break",
+  offline: "Offline",
+  emergency: "Emergency",
+  meeting: "Meeting",
+  extension: "Extension",
+  other: "Credited",
+};
+
 /** One row of the history, ready to render. */
 export interface BudgetHistoryEntry {
   id: string;
@@ -245,4 +259,56 @@ export function deadlineMoveEntries(
     })
     .filter((m): m is DeadlineMoveEntry => m !== null)
     .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+}
+
+/* ── Deadline timeline ────────────────────────────────────────────────────── */
+
+/**
+ * A staircase of deadline moves, rendered as a connected timeline.
+ *
+ * ## What is real, and the one thing that is deliberately NOT here
+ *
+ * Every instant on a `DeadlineTimelineChain` is one of `fromIso`/`toIso` off a
+ * `DeadlineMove` record — nothing here computes, guesses or interpolates a
+ * time. What it does NOT carry, because the record never carries it: the clock
+ * window somebody was actually offline or on a break for. `#compensateOneDeadline`
+ * writes `previousDeadline`/`proposedDeadline` — the DEADLINE's own before and
+ * after — and a text `reason` such as "Time credited back — offline 69m". The
+ * offline span's own start and end are used once, in memory, to compute the
+ * credited minutes, and are never written to Firestore. A row showing "11:42 →
+ * 12:50" would be a real-looking number invented for the screen, which is worse
+ * than the row not existing — see the module header on why an unreconciled
+ * figure here is treated as a fault rather than a rounding choice.
+ *
+ * ## Why moves are grouped into chains rather than assumed to connect
+ *
+ * `#compensateOneDeadline` reads the task's CURRENT stored deadline as
+ * `previousDeadline` before writing the new one, so in the ordinary case one
+ * move's `toIso` is byte-for-byte the next move's `fromIso` — a genuine
+ * staircase. Nothing GUARANTEES that: a deadline edited by a path this
+ * function does not read from would break the chain without either record
+ * saying so. Asserting continuity that is not actually there is exactly the
+ * failure this avoids, so two moves are only drawn as one connected line when
+ * their instants actually match; otherwise they are two separate staircases,
+ * each still fully truthful about itself.
+ */
+export interface DeadlineTimelineChain {
+  /** Oldest first, already connected: chain[i].toIso === chain[i+1].fromIso. */
+  moves: DeadlineMoveEntry[];
+}
+
+export function deadlineTimelineChains(
+  moves: readonly DeadlineMoveEntry[],
+): DeadlineTimelineChain[] {
+  const chains: DeadlineTimelineChain[] = [];
+  for (const m of moves) {
+    const last = chains[chains.length - 1];
+    const prev = last?.moves[last.moves.length - 1];
+    if (prev && Date.parse(prev.toIso) === Date.parse(m.fromIso)) {
+      last.moves.push(m);
+    } else {
+      chains.push({ moves: [m] });
+    }
+  }
+  return chains;
 }

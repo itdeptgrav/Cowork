@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { BACKEND, backendAvailable } from "@/lib/legacy/backendSource";
 
 /**
  * The ledger under the meeting-chat data channel.
@@ -21,13 +23,30 @@ import { readFileSync } from "node:fs";
  *   · a retention sweep that reaches the company's DM and group messages
  */
 
-const SERVICE_PATH =
-  "D:/GRAV_Project/grav-cms-backend/services/coworkMeetingChat.service.js";
-const ROUTES_PATH =
-  "D:/GRAV_Project/grav-cms-backend/routes/task_routes/cowork.js";
+/* Resolved per-machine by `backendSource`'s own `BACKEND` — this hardcoded
+   `D:/GRAV_Project/...`, so every read below threw ENOENT on any other
+   checkout. See `cowork-source-text-tests-hazard`.
+
+   Read directly here rather than through `backendSource()` itself: that
+   helper strips comments, and `SERVICE_RAW` below is sliced and RUN — a
+   comment containing something that looks like code, or a stray `/*` inside
+   a string or regex literal, must not silently rewrite the function this
+   lifts out. CRLF is still normalised, since every search below is written
+   against `\n`. */
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
+const SERVICE_PATH = BACKEND
+  ? join(BACKEND, "services/coworkMeetingChat.service.js")
+  : "";
+const ROUTES_PATH = BACKEND
+  ? join(BACKEND, "routes/task_routes/cowork.js")
+  : "";
 
 /** RAW source, for lifting a function out and running it. */
-const SERVICE_RAW = readFileSync(SERVICE_PATH, "utf8");
+const SERVICE_RAW = BACKEND
+  ? readFileSync(SERVICE_PATH, "utf8").replace(/\r\n/g, "\n")
+  : "";
 
 /**
  * Comments stripped, for every assertion ABOUT the source.
@@ -45,7 +64,9 @@ function code(src: string): string {
 }
 
 const SERVICE = code(SERVICE_RAW);
-const ROUTES = code(readFileSync(ROUTES_PATH, "utf8"));
+const ROUTES = BACKEND
+  ? code(readFileSync(ROUTES_PATH, "utf8").replace(/\r\n/g, "\n"))
+  : "";
 
 /** Lift one pure function out of the service and run it. The service itself
     cannot be imported — it pulls in firebase-admin and a live connection. */
@@ -62,7 +83,7 @@ function lift(name: string): (...args: unknown[]) => unknown {
 
 /* ── The id space that must never be written ─────────────────────────────── */
 
-test("a task room's derived name is refused as a meeting id", () => {
+test("a task room's derived name is refused as a meeting id", { skip: SKIP_ENGINE }, () => {
   /**
    * `TaskRoom` names its LiveKit room `meet-task-<taskId>`. `MeetingRoom`
    * passes a real document id. Firestore creates a subcollection under a
@@ -75,7 +96,7 @@ test("a task room's derived name is refused as a meeting id", () => {
   assert.equal(isRoomName("meet-anything"), true);
 });
 
-test("a real meeting id is not mistaken for a room name", () => {
+test("a real meeting id is not mistaken for a room name", { skip: SKIP_ENGINE }, () => {
   const isRoomName = lift("isRoomName") as (x: unknown) => boolean;
   for (const id of ["mt_8f2a91", "MEET123", "abc-meet-1", ""]) {
     assert.equal(isRoomName(id), false, `${id} was refused`);
@@ -86,7 +107,7 @@ test("a real meeting id is not mistaken for a room name", () => {
 
 /* ── Who may read and write ──────────────────────────────────────────────── */
 
-test("the organiser and the named participants, and nobody else", () => {
+test("the organiser and the named participants, and nobody else", { skip: SKIP_ENGINE }, () => {
   const isMember = lift("isMember") as (m: unknown, e: unknown) => boolean;
   const meet = { createdBy: "GR0001", participants: ["GR0002", "GR0003"] };
 
@@ -95,7 +116,7 @@ test("the organiser and the named participants, and nobody else", () => {
   assert.equal(isMember(meet, "GR0009"), false, "a stranger was let in");
 });
 
-test("membership reads the field the meeting document actually has", () => {
+test("membership reads the field the meeting document actually has", { skip: SKIP_ENGINE }, () => {
   /**
    * The design said `participantIds`. The document written by
    * `createCoworkMeet` carries `participants`. Reading the wrong name would
@@ -106,20 +127,20 @@ test("membership reads the field the meeting document actually has", () => {
   assert.doesNotMatch(SERVICE, /meet\.participantIds/);
 });
 
-test("a meeting with no participant list still admits its organiser", () => {
+test("a meeting with no participant list still admits its organiser", { skip: SKIP_ENGINE }, () => {
   const isMember = lift("isMember") as (m: unknown, e: unknown) => boolean;
   assert.equal(isMember({ createdBy: "GR0001" }, "GR0001"), true);
   assert.equal(isMember({ createdBy: "GR0001" }, "GR0002"), false);
 });
 
-test("nothing is a member of nothing", () => {
+test("nothing is a member of nothing", { skip: SKIP_ENGINE }, () => {
   const isMember = lift("isMember") as (m: unknown, e: unknown) => boolean;
   assert.equal(isMember(null, "GR0001"), false);
   assert.equal(isMember({ createdBy: "GR0001" }, ""), false);
   assert.equal(isMember({ createdBy: "GR0001" }, null), false);
 });
 
-test("ids are compared as strings, so a numeric id still matches", () => {
+test("ids are compared as strings, so a numeric id still matches", { skip: SKIP_ENGINE }, () => {
   const isMember = lift("isMember") as (m: unknown, e: unknown) => boolean;
   assert.equal(isMember({ createdBy: 1001, participants: [] }, "1001"), true);
   assert.equal(isMember({ createdBy: "x", participants: [1002] }, 1002), true);
@@ -127,7 +148,7 @@ test("ids are compared as strings, so a numeric id still matches", () => {
 
 /* ── Which meetings take new messages ────────────────────────────────────── */
 
-test("a cancelled meeting reads as cancelled however it was cancelled", () => {
+test("a cancelled meeting reads as cancelled however it was cancelled", { skip: SKIP_ENGINE }, () => {
   /* The document carries BOTH `isCancelled` and `status`, and the legacy app
      sets the boolean. Reading only `status` would let a cancelled meeting
      accept messages. */
@@ -137,7 +158,7 @@ test("a cancelled meeting reads as cancelled however it was cancelled", () => {
   assert.equal(statusOf({}), "scheduled", "an old meeting has no status field");
 });
 
-test("only a meeting still in play takes new messages", () => {
+test("only a meeting still in play takes new messages", { skip: SKIP_ENGINE }, () => {
   /* Reading history is deliberately NOT gated this way — the whole point of
      storing it is to be able to read it afterwards. */
   const list = SERVICE.match(/WRITABLE_STATUSES = \[([^\]]*)\]/);
@@ -153,7 +174,7 @@ test("only a meeting still in play takes new messages", () => {
 
 /* ── Duplicate prevention ────────────────────────────────────────────────── */
 
-test("a replayed message answers with the stored row, not a second one", () => {
+test("a replayed message answers with the stored row, not a second one", { skip: SKIP_ENGINE }, () => {
   /**
    * The document id is the sender's LiveKit stream id, so a message has one
    * identity on both transports. That is what lets an offline outbox replay
@@ -165,7 +186,7 @@ test("a replayed message answers with the stored row, not a second one", () => {
   assert.match(ROUTES, /duplicate: result\.duplicate/);
 });
 
-test("a duplicate is answered 200, not an error", () => {
+test("a duplicate is answered 200, not an error", { skip: SKIP_ENGINE }, () => {
   /* A retry that already succeeded is a client behaving correctly. Answering
      an error would make it look broken and invite a third attempt. */
   const post = ROUTES.slice(ROUTES.indexOf('"/schedule-meet/:meetId/messages",', ROUTES.indexOf("router.post")));
@@ -175,13 +196,13 @@ test("a duplicate is answered 200, not an error", () => {
 
 /* ── Retention, and the query that must never be written ─────────────────── */
 
-test("retention is stamped per row and summarised on the parent", () => {
+test("retention is stamped per row and summarised on the parent", { skip: SKIP_ENGINE }, () => {
   assert.match(SERVICE, /deleteAtMs/);
   assert.match(SERVICE, /chatOldestDeleteAtMs/);
   assert.match(SERVICE, /RETENTION_MS = 90 \* 24 \* 60 \* 60 \* 1000/);
 });
 
-test("the sweep can never be a collectionGroup query over messages", () => {
+test("the sweep can never be a collectionGroup query over messages", { skip: SKIP_ENGINE }, () => {
   /**
    * The one that would be catastrophic. DM and group threads live in
    * subcollections named `messages`
@@ -194,7 +215,7 @@ test("the sweep can never be a collectionGroup query over messages", () => {
   assert.doesNotMatch(ROUTES, /collectionGroup\(\s*["']messages["']\s*\)/);
 });
 
-test("the parent is updated, never re-set", () => {
+test("the parent is updated, never re-set", { skip: SKIP_ENGINE }, () => {
   /* `cowork_scheduled_meets/{meetId}` is mirrored wholesale into Realtime
      Database and read by the live legacy app, so a whole-document write would
      clobber concurrent edits. */
@@ -205,7 +226,7 @@ test("the parent is updated, never re-set", () => {
 
 /* ── Pagination ──────────────────────────────────────────────────────────── */
 
-test("cursors are inclusive, because a server timestamp is not unique", () => {
+test("cursors are inclusive, because a server timestamp is not unique", { skip: SKIP_ENGINE }, () => {
   /**
    * Two messages milliseconds apart can share one `serverTimestamp()`. An
    * exclusive cursor silently drops every row on the boundary instant — a
@@ -215,12 +236,12 @@ test("cursors are inclusive, because a server timestamp is not unique", () => {
   assert.match(SERVICE, /"createdAt", ">=",/);
 });
 
-test("one extra row answers whether there is another page", () => {
+test("one extra row answers whether there is another page", { skip: SKIP_ENGINE }, () => {
   assert.match(SERVICE, /limit\(size \+ 1\)/);
   assert.match(SERVICE, /hasMore: snap\.docs\.length > size/);
 });
 
-test("a page is returned oldest-first, which is how a thread reads", () => {
+test("a page is returned oldest-first, which is how a thread reads", { skip: SKIP_ENGINE }, () => {
   /* The query runs descending so a page taken without a cursor is the most
      RECENT one; the rows are then reversed for rendering. */
   assert.match(SERVICE, /orderBy\("createdAt", "desc"\)/);
@@ -229,7 +250,7 @@ test("a page is returned oldest-first, which is how a thread reads", () => {
 
 /* ── The route does not copy the hole beside it ──────────────────────────── */
 
-test("both chat routes check membership, unlike their neighbours", () => {
+test("both chat routes check membership, unlike their neighbours", { skip: SKIP_ENGINE }, () => {
   /**
    * The meeting read routes carry only `verifyCoworkToken +
    * verifyEmployeeToken` and no membership check — any signed-in employee can
@@ -248,7 +269,7 @@ test("both chat routes check membership, unlike their neighbours", () => {
   }
 });
 
-test("a missing meeting is a 404, and a stranger a 403", () => {
+test("a missing meeting is a 404, and a stranger a 403", { skip: SKIP_ENGINE }, () => {
   assert.match(ROUTES, /status\(404\)[\s\S]{0,60}Meeting not found/);
   assert.match(ROUTES, /NOT_A_PARTICIPANT/);
 });

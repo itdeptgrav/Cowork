@@ -50,6 +50,23 @@ export function TaskRoom({
   onLeave: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
+  /**
+   * **Stable, or the room never stops reconnecting.**
+   *
+   * `LiveKitRoom` re-runs its own connect effect whenever `onError` changes
+   * identity — see its source: the effect that calls `room.connect()` lists it
+   * in its dependency array with no guard, unlike `connectOptions`, which is
+   * compared by `JSON.stringify`. An inline arrow here is a new function on
+   * every render of this component, so every re-render — a chat message
+   * arriving, a reaction, the drag position moving — called `room.connect()`
+   * again. Harmless while already connected, since LiveKit no-ops that case,
+   * but the moment Leave disconnects the room, the very next incidental
+   * re-render before this component unmounts calls `connect()` on a room that
+   * was just told to hang up, and it reconnects. `useCallback` keeps the
+   * reference the same across renders, so the effect only re-fires when the
+   * connection itself actually changes.
+   */
+  const onRoomError = useCallback((e: Error) => setError(e.message), []);
 
   const recording = useMeetingRecording({
     meetId: session.roomName,
@@ -198,7 +215,7 @@ export function TaskRoom({
            would never settle. */
         onConnected={() => session.onConnected?.()}
         onDisconnected={onLeave}
-        onError={(e) => setError(e.message)}
+        onError={onRoomError}
       >
         <RoomInterior
           meetId={session.roomName}

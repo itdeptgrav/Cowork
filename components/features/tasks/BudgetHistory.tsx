@@ -5,9 +5,15 @@ import { useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDurationTimer } from "@/lib/utils/format";
 import {
   budgetHistoryView,
+  creditCause,
+  CREDIT_CAUSE_SHORT_LABEL,
   deadlineMoveEntries,
+  deadlineTimelineChains,
+  type CreditCause,
+  type DeadlineMoveEntry,
 } from "@/lib/rules/tasks/budgetHistory";
 import { referenceTimes } from "@/lib/rules/tasks/deadlineOrigin";
+import { Icon } from "@/components/ui/Icons";
 import type { TaskId } from "@/lib/domain";
 
 /**
@@ -210,40 +216,7 @@ export function BudgetHistory({
                * LATER IN THE DAY. Interleaving them would make the panel
                * ambiguous in exactly the place it is read for certainty.
                */}
-              {moves.length > 0 && (
-                <div className="mt-3 border-t border-hairline pt-2.5">
-                  <p className="mb-1.5 text-[11px] font-medium text-ink-muted">
-                    Deadline changes
-                  </p>
-                  {moves.map((m) => (
-                    <div key={m.id} className="mt-1.5 first:mt-0">
-                      <Row
-                        label={m.label}
-                        value={`${m.deltaSecs > 0 ? "+" : "−"} ${formatDurationTimer(
-                          Math.abs(m.deltaSecs),
-                        )}`}
-                      />
-                      <p className="text-[11px] leading-relaxed text-ink-faint">
-                        {/* The engine's own sentence, exactly as it does for a
-                            credit above — it names the cause ("Offline",
-                            "Break", a meeting) more precisely than any label
-                            written here could. */}
-                        {m.reason ||
-                          (m.automatic
-                            ? "Applied automatically."
-                            : "Approved change.")}
-                        {" · "}
-                        <span data-figure>{formatDateTime(m.fromIso)}</span>
-                        {" → "}
-                        <span data-figure>{formatDateTime(m.toIso)}</span>
-                      </p>
-                      <p className="text-[11px] text-ink-faint/80">
-                        Recorded <span data-figure>{formatDateTime(m.at)}</span>
-                      </p>
-                    </div>
-                  ))}
-                </div>
-              )}
+              {moves.length > 0 && <DeadlineTimeline moves={moves} />}
             </>
           )}
         </div>
@@ -276,6 +249,150 @@ function Row({
       >
         {value}
       </span>
+    </div>
+  );
+}
+
+/** One glyph per cause — the same classification the credits list above uses. */
+const CAUSE_ICON: Record<CreditCause, keyof typeof Icon> = {
+  break: "break",
+  offline: "offline",
+  emergency: "emergency",
+  meeting: "meeting",
+  extension: "extension",
+  /* No cause the engine's own wording matches — the clock is what every node
+     in this timeline already uses, so an unclassified segment reads as
+     "something moved the deadline" rather than claiming a cause it does not
+     have. */
+  other: "clock",
+};
+
+/**
+ * The deadline's own history, as a connected staircase.
+ *
+ * ## Replaces a flat list with the shape the reader is actually looking for
+ *
+ * Each move used to print on its own — a label, a signed duration, a sentence,
+ * a recorded-at stamp — with no visual link to the move beside it. Reading
+ * "the deadline moved from 13:54, and, separately, it moved to 15:38" left the
+ * arithmetic to the reader. A staircase reads it in the order it happened:
+ * where the deadline started, what pushed it, where it landed — and the next
+ * push starts exactly where the last one left off, because it did.
+ *
+ * ## What is on it, and the one thing that deliberately is not
+ *
+ * Every date on the rail is `fromIso`/`toIso` off the engine's own
+ * `DeadlineMove` record. What is NOT here: the actual clock window somebody
+ * was offline or on a break for. That is never written anywhere — see
+ * `deadlineTimelineChains` — so rather than print a time that looks exact and
+ * is not, the segment says what the record actually proves: the cause, the
+ * credited duration, and when it was recorded.
+ */
+function DeadlineTimeline({ moves }: { moves: readonly DeadlineMoveEntry[] }) {
+  const chains = deadlineTimelineChains(moves);
+  const lastChainIdx = chains.length - 1;
+
+  return (
+    <div className="mt-3 border-t border-hairline pt-2.5">
+      <p className="mb-2 text-[11px] font-medium text-ink-muted">
+        Deadline changes
+      </p>
+      <div className="space-y-3">
+        {chains.map((chain, ci) => {
+          const lastMoveIdx = chain.moves.length - 1;
+          return (
+            <div key={chain.moves[0].id} className="relative">
+              {/* One rule per chain, running from the first node's centre to
+                  the last's. Nodes and the cause icon both sit in a 16px rail
+                  that centres them on this same x-position, so the line
+                  passes cleanly behind whichever is drawn there. */}
+              <div
+                aria-hidden
+                className="absolute left-2 top-2 bottom-2 w-px bg-hairline"
+              />
+              <ol className="relative">
+                {chain.moves.map((m, i) => (
+                  <li key={m.id}>
+                    {i === 0 && (
+                      <DeadlineNode
+                        at={m.fromIso}
+                        label={ci === 0 ? "Original deadline" : undefined}
+                      />
+                    )}
+                    <DeadlineSegment move={m} />
+                    <DeadlineNode
+                      at={m.toIso}
+                      label={
+                        ci === lastChainIdx && i === lastMoveIdx
+                          ? "Current deadline"
+                          : undefined
+                      }
+                    />
+                  </li>
+                ))}
+              </ol>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/** One point on the rail: a date the deadline actually held. */
+function DeadlineNode({ at, label }: { at: string; label?: string }) {
+  return (
+    <div className="relative flex items-center gap-2.5 py-1">
+      <span className="grid h-4 w-4 shrink-0 place-items-center">
+        <span
+          className="h-2 w-2 rounded-full bg-ink-muted shadow-[0_0_0_3px_var(--surface-sunken)]"
+          aria-hidden
+        />
+      </span>
+      <p className="text-[11px] leading-tight">
+        {label && <span className="font-medium text-ink">{label}</span>}
+        {label && <br />}
+        <span
+          data-figure
+          className={label ? "text-ink-muted" : "text-ink"}
+        >
+          {formatDateTime(at)}
+        </span>
+      </p>
+    </div>
+  );
+}
+
+/** One push on the rail: what moved the deadline, and by how much. */
+function DeadlineSegment({ move: m }: { move: DeadlineMoveEntry }) {
+  const cause = creditCause(m.reason || "");
+  const later = m.deltaSecs > 0;
+  const CauseIcon = Icon[CAUSE_ICON[cause]];
+
+  return (
+    <div className="relative flex gap-2.5 py-1">
+      <span className="grid h-4 w-4 shrink-0 place-items-center bg-[var(--surface-sunken)]">
+        <CauseIcon className="h-3.5 w-3.5 text-ink-faint" />
+      </span>
+      <div className="min-w-0 flex-1 pb-1">
+        <div className="flex items-baseline justify-between gap-3">
+          <span className="text-[11px] font-medium text-ink-muted">
+            {CREDIT_CAUSE_SHORT_LABEL[cause]}
+          </span>
+          <span data-figure className="shrink-0 text-[11px] text-ink-muted">
+            {later ? "+" : "−"} {formatDurationTimer(Math.abs(m.deltaSecs))}
+          </span>
+        </div>
+        <p className="text-[11px] leading-relaxed text-ink-faint">
+          {/* The engine's own sentence — it names the cause and the minutes
+              more precisely than the short label above can. */}
+          {m.reason ||
+            (m.automatic ? "Applied automatically." : "Approved change.")}
+        </p>
+        <p className="text-[11px] text-ink-faint/80">
+          Recorded <span data-figure>{formatDateTime(m.at)}</span>
+        </p>
+      </div>
     </div>
   );
 }

@@ -202,14 +202,37 @@ function TileTileMenu({
 
   return (
     <div
-      className="group/tile absolute inset-0 z-20"
+      /**
+       * `[container-type:inline-size]` HERE, on the box that spans the whole
+       * tile — not on `menuRef` below, which stays deliberately small (just the
+       * button and its dropdown) so the outside-click check keeps working. See
+       * the note on `menuRef` for the bug that guards against.
+       *
+       * This is what the dropdown's width is measured against: `cqw` below
+       * resolves to a percentage of THIS box, i.e. the tile's own rendered
+       * width, whatever that is. A camera tile is usually wide enough that the
+       * cap never bites; a small thumbnail in a carousel strip — the one shape
+       * this room's own layout produces, in `RoomStage`'s side strip when
+       * somebody is sharing their screen — can be under 150px, and a fixed
+       * `w-56` (224px) menu anchored to its corner ran 70-plus pixels past the
+       * tile's own left edge. A meeting room clips its overflow (the floating
+       * window, the guest room, full screen all set it), so that overrun was
+       * not merely off the tile — it was invisible, and only the slice still
+       * inside the clip painted. That is the two-line fragment cut off
+       * mid-word ("Pin to the screen" arriving on screen as "e screen").
+       */
+      className="group/tile absolute inset-0 z-20 [container-type:inline-size]"
       onContextMenu={(e) => {
         e.preventDefault();
         setOpen(true);
       }}
     >
       {/* The menu region — the button and its dropdown, together, so the
-          outside-click check has one thing to be "inside" of. */}
+          outside-click check has one thing to be "inside" of. Deliberately NOT
+          sized to the tile (see the container above): widening this to make
+          percentage math easier was tried and is the bug `menuRef`'s own note
+          already warns about — every click on the tile's empty space would
+          again read as "inside the menu". */}
       <div ref={menuRef} className="absolute top-1.5 right-1.5 z-30">
         <button
           type="button"
@@ -229,7 +252,15 @@ function TileTileMenu({
         </button>
 
         {open && (
-          <div className="absolute top-9 right-0 w-56 overflow-hidden rounded-panel border border-white/10 bg-[var(--slab)] py-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)]">
+          <div
+            /* Never wider than the tile it sits on, with a little room on
+               each side for the button's own inset — `100cqw` reads the tile's
+               width from the container above, not this element's own (which
+               would just be circular: the menu has no size of its own to
+               measure). Below `14rem` of tile width it shrinks to fit rather
+               than running past the edge and being clipped away. */
+            className="absolute top-9 right-1.5 w-[min(14rem,calc(100cqw-0.75rem))] overflow-hidden rounded-panel border border-white/10 bg-[var(--slab)] py-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)]"
+          >
             <TileMenuList
               trackKey={trackKey}
               participant={participant}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Avatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
@@ -152,6 +152,40 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
   useEffect(() => {
     if (left) closeMeeting();
   }, [left, closeMeeting]);
+
+  /**
+   * The room going away IS leaving, whoever noticed it first.
+   *
+   * The effect above opens a session whenever `left` is false, and `left` is
+   * set by a callback carried on the session. That is one link too many for
+   * something this consequential: if the callback ever fails to reach THIS
+   * component — and it did, when the shell kept a callback belonging to an
+   * earlier instance of this page (see `MeetingSessionContext`'s note) —
+   * `left` stays false, the effect above sees a meeting with no session, and
+   * puts the reader straight back into the call they just hung up. Pressing
+   * Leave then looks like it does nothing at all.
+   *
+   * So the room disappearing is read directly, as state, rather than waited
+   * for as a message. `hadSession` is what makes it a TRANSITION: this page
+   * opens with no session and must not read that as having left, and it must
+   * not fight the ordinary case of a session it has not opened yet.
+   *
+   * A refusal — the organiser ending the meeting — also closes the session,
+   * and this marks that as left too. Harmless: the render below shows
+   * `RoomClosed` for a refusal in preference to the left card, so the reason
+   * somebody sees is still the real one.
+   */
+  const hadSession = useRef(false);
+  const engineSession = meetingSession.session;
+  useEffect(() => {
+    if (engineSession) {
+      hadSession.current = true;
+      return;
+    }
+    if (!hadSession.current) return;
+    hadSession.current = false;
+    setLeft(true);
+  }, [engineSession]);
 
   if (meeting.isLoading || viewer.isLoading) return <SkeletonRows rows={8} />;
   if (meeting.error)

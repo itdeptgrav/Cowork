@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * A guest reads everything said before they joined — by decision.
@@ -25,10 +26,18 @@ function code(path: string): string {
 
 const CHAT = code("components/features/meetings/MeetingChat.tsx");
 const LEDGER = code("lib/legacy-ui/meetingChatLedger.ts");
-const ROUTES = code("D:/GRAV_Project/grav-cms-backend/routes/task_routes/cowork.js");
-const SERVICE = code(
-  "D:/GRAV_Project/grav-cms-backend/services/coworkMeetingChat.service.js",
-);
+/* Resolved per-machine, and CRLF-normalised, by `backendSource` — these
+   hardcoded `D:/GRAV_Project/...`, so every assertion below threw ENOENT on
+   any other checkout. See `cowork-source-text-tests-hazard`. */
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
+const ROUTES = backendAvailable()
+  ? backendSource("routes/task_routes/cowork.js")
+  : "";
+const SERVICE = backendAvailable()
+  ? backendSource("services/coworkMeetingChat.service.js")
+  : "";
 
 /* ── the panel ───────────────────────────────────────────────────────────── */
 
@@ -64,7 +73,7 @@ test("the guest ledger forwards only the cursors it is asked for", () => {
 
 /* ── the route ───────────────────────────────────────────────────────────── */
 
-test("the guest route reads the same ledger with the same cursors, and takes nothing from the session", () => {
+test("the guest route reads the same ledger with the same cursors, and takes nothing from the session", { skip: SKIP_ENGINE }, () => {
   const m = /router\.get\(\s*"\/schedule-meet\/:meetId\/guest-messages",/.exec(ROUTES);
   assert.ok(m, "the guest GET route moved");
   const start = m.index;
@@ -86,14 +95,14 @@ test("the guest route reads the same ledger with the same cursors, and takes not
   );
 });
 
-test("the employee and guest routes read one collection", () => {
+test("the employee and guest routes read one collection", { skip: SKIP_ENGINE }, () => {
   const reads = ROUTES.match(/meetChat\.listMeetingMessages\(/g) ?? [];
   assert.ok(reads.length >= 2, "the guest route reads somewhere else");
 });
 
 /* ── the service ─────────────────────────────────────────────────────────── */
 
-test("the service applies a lower bound only when a caller asks for one", () => {
+test("the service applies a lower bound only when a caller asks for one", { skip: SKIP_ENGINE }, () => {
   const list = SERVICE.slice(SERVICE.indexOf("async function listMeetingMessages"));
   const body = list.slice(0, list.indexOf("\n}\n") + 1);
   assert.match(body, /if \(Number\.isFinite\(Number\(afterMs\)\) && Number\(afterMs\) > 0\) \{/);

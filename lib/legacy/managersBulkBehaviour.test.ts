@@ -1,12 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { BACKEND, backendAvailable } from "@/lib/legacy/backendSource";
 
 import {
   buildReportingTree,
   readAllManagers,
   type LegacyManagers,
 } from "./hierarchy.ts";
+
+/* Resolved per-machine by `backendSource`'s own `BACKEND` — this file
+   hardcoded `D:/GRAV_Project/...` twice, so both reads threw ENOENT on any
+   other checkout. See `cowork-source-text-tests-hazard`.
+
+   Read raw here rather than through `backendSource()` itself: that helper
+   strips comments, and this source is sliced and RUN via `new Function` — a
+   comment must not silently rewrite the function being lifted out. CRLF is
+   still normalised, since the slice below is bounded by a `\n` search. */
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
+function readRoute(): string {
+  return readFileSync(
+    join(BACKEND ?? "", "routes/task_routes/cowork.js"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
+}
 
 /**
  * Does the bulk path actually produce the same tree? — RUN, not read.
@@ -162,17 +182,14 @@ test("a row missing one side reads as no manager on that side", () => {
 
 /* ──────────────── the engine's own shaping, executed ────────────────────── */
 
-test("the backend builds each manager exactly as the single route does", () => {
+test("the backend builds each manager exactly as the single route does", { skip: SKIP_ENGINE }, () => {
   /**
    * `_managerShape` lives inside an Express router that cannot be imported here
    * — it pulls in mongoose models and a live connection. So the function's real
    * source is lifted out of the deployed file and RUN, which tests the code
    * that will actually answer rather than a copy of it.
    */
-  const route = readFileSync(
-    "D:/GRAV_Project/grav-cms-backend/routes/task_routes/cowork.js",
-    "utf8",
-  );
+  const route = readRoute();
   const at = route.indexOf("function _managerShape");
   assert.ok(at > 0, "the bulk shaper is gone");
   const end = route.indexOf("\nrouter.get(", at);
@@ -227,11 +244,8 @@ test("the backend builds each manager exactly as the single route does", () => {
   assert.equal(shape(undefined), null);
 });
 
-test("a linked manager with no name parts falls back to the stored name", () => {
-  const route = readFileSync(
-    "D:/GRAV_Project/grav-cms-backend/routes/task_routes/cowork.js",
-    "utf8",
-  );
+test("a linked manager with no name parts falls back to the stored name", { skip: SKIP_ENGINE }, () => {
+  const route = readRoute();
   const at = route.indexOf("function _managerShape");
   const src = route.slice(at, route.indexOf("\nrouter.get(", at));
   const shape = new Function(`${src}; return _managerShape;`)() as (

@@ -149,3 +149,24 @@ test("a message that is only a picture can be copied", () => {
   assert.equal(plan.disabled, false);
   assert.equal(plan.label, "Copy image");
 });
+
+test("a message that is only a PDF can be copied too, as a link", () => {
+  /* The report this fixed: a PDF, a video or a voice note left Copy greyed out
+     entirely, on both sides of this menu — the same rule wired here for the
+     conversation thread governs the task thread's copy too. */
+  const plan = copyPlan({
+    text: "",
+    attachments: [
+      {
+        url: "https://drive.google.com/file/d/spec/view",
+        kind: "pdf",
+        name: "spec.pdf",
+        sizeBytes: 10240,
+        durationSecs: null,
+        fileId: "spec",
+      },
+    ],
+  });
+  assert.equal(plan.disabled, false);
+  assert.equal(plan.label, "Copy link");
+});

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
+import { backendAvailable, backendSource } from "@/lib/legacy/backendSource";
 
 /**
  * End for everyone: everyone leaves, and everyone's audio is saved first.
@@ -30,8 +31,6 @@ import { readFileSync } from "node:fs";
  * the guests are.
  */
 
-const BE = "D:/GRAV_Project/grav-cms-backend/";
-
 function code(path: string): string {
   return readFileSync(path, "utf8")
     .replace(/\r\n/g, "\n")
@@ -39,9 +38,19 @@ function code(path: string): string {
     .replace(/^\s*\/\/.*$/gm, "");
 }
 
-const SOCKET_INST = code(BE + "config/socketInstance.js");
-const SERVICE = code(BE + "services/cowork.service.js");
-const SERVER = code(BE + "server.js");
+/* Backend paths resolved per-machine, and CRLF-normalised, by `backendSource`
+   — this file hardcoded `D:/GRAV_Project/...`, so every assertion below threw
+   ENOENT on any other checkout. See `cowork-source-text-tests-hazard`. */
+function beCode(rel: string): string {
+  return backendAvailable() ? backendSource(rel) : "";
+}
+const SKIP_ENGINE = backendAvailable()
+  ? false
+  : "the engine checkout was not found — set COWORK_BACKEND";
+
+const SOCKET_INST = beCode("config/socketInstance.js");
+const SERVICE = beCode("services/cowork.service.js");
+const SERVER = beCode("server.js");
 const HOOK = code("lib/legacy-ui/useMeetingRecording.ts");
 const SOCK = code("lib/legacy-ui/coworkSocket.ts");
 const ROOM = code("components/features/meetings/MeetingRoom.tsx");
@@ -58,7 +67,7 @@ const END_BLOCK = SERVICE.slice(
 
 /* ── the engine ──────────────────────────────────────────────────────────── */
 
-test("ending a meeting is announced in the meeting's socket room, where the guests are", () => {
+test("ending a meeting is announced in the meeting's socket room, where the guests are", { skip: SKIP_ENGINE }, () => {
   assert.ok(END_BLOCK.length > 100, "the End for everyone block left setCoworkMeetStatus");
   const b = END_BLOCK.slice(0, 1400);
   assert.match(b, /const room = `meeting_\$\{meetId\}`/);
@@ -67,7 +76,7 @@ test("ending a meeting is announced in the meeting's socket room, where the gues
   assert.match(b, /endedByName: employeeName \|\| ""/);
 });
 
-test("the audio is told to finalise before the room is taken down", () => {
+test("the audio is told to finalise before the room is taken down", { skip: SKIP_ENGINE }, () => {
   const stop = END_BLOCK.indexOf('"recording_stopped"');
   const status = END_BLOCK.indexOf('"meet_status", signal');
   const tear = END_BLOCK.indexOf("await _tearDownMeetingRoom(meet)");
@@ -77,7 +86,7 @@ test("the audio is told to finalise before the room is taken down", () => {
   );
 });
 
-test("the LiveKit room is deleted, with the credentials the token route signs with", () => {
+test("the LiveKit room is deleted, with the credentials the token route signs with", { skip: SKIP_ENGINE }, () => {
   assert.match(SERVICE, /async function _tearDownMeetingRoom\(meet\)/);
   assert.match(SERVICE, /new RoomServiceClient\(url, key, secret\)\.deleteRoom\(roomName\)/);
   assert.match(SERVICE, /process\.env\.LIVEKIT_URL/);
@@ -89,7 +98,7 @@ test("the LiveKit room is deleted, with the credentials the token route signs wi
   assert.match(token, /MEET_LIVEKIT/);
 });
 
-test("a finished meeting's live recording is forgotten, so nobody is replayed into it", () => {
+test("a finished meeting's live recording is forgotten, so nobody is replayed into it", { skip: SKIP_ENGINE }, () => {
   assert.match(SERVICE, /socket\.clearActiveRecording\(meetId\)/);
   assert.match(SOCKET_INST, /clearActiveRecording: \(meetId\) =>/);
   assert.match(
@@ -98,7 +107,7 @@ test("a finished meeting's live recording is forgotten, so nobody is replayed in
   );
 });
 
-test("a socket rejoining a finished meeting is told it is over", () => {
+test("a socket rejoining a finished meeting is told it is over", { skip: SKIP_ENGINE }, () => {
   assert.match(SERVICE, /socket\.markMeetingEnded\(meetId, signal\)/);
   assert.match(
     SERVER,
@@ -107,7 +116,7 @@ test("a socket rejoining a finished meeting is told it is over", () => {
   assert.match(SOCKET_INST, /ENDED_TTL_MS/, "the ended list is unbounded");
 });
 
-test("the room emit does not depend on the never-called init", () => {
+test("the room emit does not depend on the never-called init", { skip: SKIP_ENGINE }, () => {
   /* `socketInstance.init(io)` is called nowhere in the engine — server.js
      publishes the server with `app.set("io", io)` and the routes read that.
      So `emitTo` / `emitToMany` reach nobody today, and this path must not
@@ -132,9 +141,9 @@ test("every recorder finalises on meet_status, then tells its room", () => {
   assert.match(HOOK, /onMeetingEnded\?: \(signal: MeetStatusSignal\) => void;/);
 });
 
-test("the finished statuses match canJoin's", () => {
+test("the finished statuses match canJoin's", { skip: SKIP_ENGINE }, () => {
   assert.match(SOCK, /FINISHED_MEET_STATUSES = \["completed", "cancelled", "archived", "ended"\]/);
-  const livekit = code(BE + "routes/task_routes/livekit.routes.js");
+  const livekit = beCode("routes/task_routes/livekit.routes.js");
   assert.match(livekit, /\["completed", "cancelled", "archived", "ended"\]\.includes\(meet\.status\)/);
 });
 

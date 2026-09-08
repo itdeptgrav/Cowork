@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { PreJoin } from "@livekit/components-react";
 import "@livekit/components-styles";
-import { Button, Chip, InlineError } from "@/components/ui/Primitives";
+import { Button, InlineError, SlabChip } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
 import { PublicLinkPanel } from "./PublicLinkPanel";
 import { useAction } from "@/lib/hooks/useRepository";
@@ -88,13 +88,18 @@ export function MeetingLobby({
             {formatDateTime(meeting.startsAt)}
           </span>
         </span>
-        <Chip tone="positive">
+        {/* `SlabChip`, not `Chip` — the lobby sits on the same dark surface as
+            the room itself, and `Chip`'s tones are tuned for the page's normal
+            near-white background. `Chip tone="positive"` here rendered a
+            solid pill with no legible text: the right shape, the wrong ink for
+            where it actually sat. */}
+        <SlabChip tone="positive">
           <Icon.calendar
             className="mr-1 inline-block h-3 w-3 align-[-1px]"
             aria-hidden
           />
           Scheduled
-        </Chip>
+        </SlabChip>
       </header>
 
       {/* PreJoin brings its own controls and its own join button, so the only
