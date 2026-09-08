@@ -4,6 +4,7 @@ import {
   addCriterion,
   commitCriterion,
   removeCriterion,
+  subtaskCriteria,
 } from "./criteria.ts";
 
 const LIST = ["wwwww", "ssss", "fffff"];
@@ -89,4 +90,73 @@ test("adding ignores blank input", () => {
 test("an out-of-range removal is a no-op, not a corrupted list", () => {
   assert.deepEqual(removeCriterion(LIST, 9, 1).list, LIST);
   assert.equal(removeCriterion(LIST, 9, 1).editingIndex, 1);
+});
+
+/* ── What a subtask is created with ───────────────────────────────────────── */
+
+/**
+ * A subtask claims one of its parent's completion requirements, and that claim
+ * is the reason it exists. It used to be carried only as a link on the parent,
+ * so the child was created with just the criteria typed into its own form: the
+ * person doing it saw two criteria, and the thing they were actually
+ * answerable for appeared nowhere on their task.
+ */
+
+test("the claimed requirement is a criterion on the subtask, ahead of the typed ones", () => {
+  assert.deepEqual(
+    subtaskCriteria(["meeting system need to complete"], ["need to do 1", "need to do 2"]),
+    ["meeting system need to complete", "need to do 1", "need to do 2"],
+  );
+});
+
+test("several claimed requirements all come through, in the parent's order", () => {
+  assert.deepEqual(
+    subtaskCriteria(["first", "second"], ["typed"]),
+    ["first", "second", "typed"],
+  );
+});
+
+test("claiming nothing leaves the typed list exactly as it was", () => {
+  /* An ordinary task in a project claims no requirement, and must be created
+     with what was typed and nothing else. */
+  assert.deepEqual(subtaskCriteria([], ["a", "b"]), ["a", "b"]);
+  assert.deepEqual(subtaskCriteria([], []), []);
+});
+
+test("typing the claimed requirement out again makes one criterion, not two", () => {
+  /* Two identical rows is two things for a reviewer to tick for one promise.
+     Matched without regard to case or surrounding space, because that is the
+     same sentence however it was retyped. */
+  assert.deepEqual(
+    subtaskCriteria(["Check the tariff tables"], ["  check the TARIFF tables  ", "and file it"]),
+    ["Check the tariff tables", "and file it"],
+  );
+});
+
+test("the parent's own spelling is the one kept", () => {
+  /* The inherited row is first, so it wins the de-duplication — the criterion
+     reads as the requirement it answers, not as somebody's paraphrase. */
+  assert.deepEqual(subtaskCriteria(["Ship IT"], ["ship it"]), ["Ship IT"]);
+});
+
+test("blank and whitespace-only entries are dropped from either side", () => {
+  assert.deepEqual(subtaskCriteria(["  ", "real"], ["", "  ", "typed"]), [
+    "real",
+    "typed",
+  ]);
+});
+
+test("a repeat WITHIN the typed list collapses too", () => {
+  assert.deepEqual(subtaskCriteria([], ["same", "SAME", "other"]), [
+    "same",
+    "other",
+  ]);
+});
+
+test("neither input list is mutated", () => {
+  const inherited = ["a"];
+  const typed = ["b"];
+  subtaskCriteria(inherited, typed);
+  assert.deepEqual(inherited, ["a"]);
+  assert.deepEqual(typed, ["b"]);
 });
