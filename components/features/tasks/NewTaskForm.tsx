@@ -26,6 +26,13 @@ import {
   pendingMessage,
   requirementCoverage,
 } from "@/lib/rules/tasks/requirementCoverage";
+import { ActionWait } from "@/components/ui/ActionWait";
+import {
+  createStageLabel,
+  createWaitNote,
+  type CreateStage,
+} from "@/lib/rules/tasks/createProgress";
+import { uploadAll } from "@/lib/utils/uploadAll";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import {
@@ -182,6 +189,18 @@ export function NewTaskForm({
      up before the task exists. */
   const [stagedFiles, setStagedFiles] = useState<File[]>([]);
   const [uploadFailures, setUploadFailures] = useState<string[]>([]);
+  /**
+   * Which part of the create is running.
+   *
+   * `useAction` only knows about the first of the three — once `createTask`
+   * answers, its `isPending` goes false while the outputs and the files are
+   * still going up. The button un-spun and re-enabled itself in the middle of
+   * its own handler, which is both a lie about what is happening and an open
+   * door to a second task landing on top of the first. This state covers the
+   * WHOLE press, and it is what the label, the busy ring, the disabled gate
+   * and the waiting line all read.
+   */
+  const [stage, setStage] = useState<CreateStage | null>(null);
   const repo = useRepo();
   const [description, setDescription] = useState("");
   /** Just the tag — see `Task.isImportant`. Nothing reads it but the label. */
@@ -1879,13 +1898,28 @@ export function NewTaskForm({
             </p>
           )}
 
+          {/* What the wait is, once it has become one. Creating a task is
+              genuinely three round trips in an order the permission model
+              forces, so this names the one that is running rather than leaving
+              a spinner to stand for all of them — see `createProgress.ts`. */}
+          <ActionWait
+            pending={stage !== null}
+            note={
+              stage
+                ? createWaitNote(stage, stagedFiles.length, outputDrafts.length)
+                : ""
+            }
+            className="mb-2 text-right"
+          />
+
           <div className="flex justify-end gap-2">
             <Button onClick={() => router.back()}>Cancel</Button>
-            <Button loading={state.isPending}
+            <Button loading={state.isPending || stage !== null}
               data-help="task-create-submit"
               tone="primary"
               disabled={
                 state.isPending ||
+                stage !== null ||
                 !title.trim() ||
                 hasForbidden ||
                 needsAssignee ||
@@ -1926,49 +1960,61 @@ export function NewTaskForm({
                 (isSubtask && claims.length === 0)
               }
               onClick={async () => {
+                setStage("task");
                 const r = await create();
-                if (!r.ok) return;
-                /* Outputs, once there is a task to hang them on. A failure here
-                   does NOT discard the task — it is already real, and losing it
-                   over a second write would be worse than the person adding the
-                   outputs again on its own page. */
-                if (outputDrafts.length) {
-                  await repo.setOutputs({
-                    taskId: r.data.id,
-                    outputs: outputDrafts.map((o) => ({
-                      label: o.label,
-                      needsOutputIds: o.needsOutputId ? [o.needsOutputId] : [],
-                    })),
-                  });
+                if (!r.ok) {
+                  setStage(null);
+                  return;
                 }
+
                 /*
-                 * Files go up AFTER the task exists.
+                 * Outputs and files, together.
                  *
-                 * The engine checks permission against the task, so an upload
-                 * before there is one has nothing to check and is refused. That
-                 * inverts the obvious order — upload then create — but it is the
-                 * order the permission model allows, and it means a file can
-                 * never be stored against a task that failed to be created.
+                 * Both hang off a task that now exists and neither reads what
+                 * the other writes, so they were two waits stacked on one
+                 * press for no reason but the order they were written in.
                  *
-                 * A failed upload does NOT fail the task: the task is already
-                 * real and discarding it would lose the work. The person is told
-                 * which files did not make it and can add them on the task.
+                 * Files go up AFTER the task for a reason that is not
+                 * negotiable: the engine checks permission against the task,
+                 * so an upload before there is one has nothing to check and is
+                 * refused. That inverts the obvious order — upload, then
+                 * create — but it is the order the permission model allows,
+                 * and it means a file can never be stored against a task that
+                 * failed to be created.
+                 *
+                 * Neither can fail the task. It is already real, and throwing
+                 * it away over a second write would lose the work; the person
+                 * is told which files did not make it and can add them on the
+                 * task itself.
                  */
-                const failed: string[] = [];
-                for (const file of stagedFiles) {
-                  const up = await repo.uploadAttachment({
-                    file,
-                    entityType: "task",
-                    entityId: r.data.id,
-                  });
-                  if (!up.ok) failed.push(file.name);
-                }
+                setStage("extras");
+                const [, failed] = await Promise.all([
+                  outputDrafts.length
+                    ? repo.setOutputs({
+                        taskId: r.data.id,
+                        outputs: outputDrafts.map((o) => ({
+                          label: o.label,
+                          needsOutputIds: o.needsOutputId
+                            ? [o.needsOutputId]
+                            : [],
+                        })),
+                      })
+                    : null,
+                  uploadAll(stagedFiles, (file) =>
+                    repo.uploadAttachment({
+                      file,
+                      entityType: "task",
+                      entityId: r.data.id,
+                    }),
+                  ),
+                ]);
                 if (failed.length) setUploadFailures(failed);
+                setStage("opening");
                 router.push(`/tasks/${r.data.id}`);
               }}
             >
-              {state.isPending
-                ? "Creating…"
+              {stage
+                ? createStageLabel(stage)
                 : isSubtask
                   ? "Create subtask"
                   : "Create task"}

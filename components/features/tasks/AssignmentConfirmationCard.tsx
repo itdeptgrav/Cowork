@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ActionWait } from "@/components/ui/ActionWait";
 import {
   Button,
   Field,
@@ -225,6 +226,7 @@ export function AssignmentConfirmationCard({
               Ask for different terms
             </Button>
           )}
+          <ActionWait pending={busy} className="basis-full" />
         </div>
       )}
     </Panel>

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ActionWait } from "@/components/ui/ActionWait";
 import { mayReview } from "@/lib/rules/tasks/reviewChain";
 import {
   Button,
@@ -778,6 +779,9 @@ export function ReviewDecisionBox({
                     : "Reject"}
             </Button>
           </div>
+          {/* The wait, named. The comment on the spinner above says what the
+              route does; this says it to the person doing the waiting. */}
+          <ActionWait pending={state.isPending} className="mt-2 text-right" />
     </>
   );
 

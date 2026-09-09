@@ -11,6 +11,8 @@ import {
   Textarea,
 } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
+import { ActionWait } from "@/components/ui/ActionWait";
+import { uploadAll } from "@/lib/utils/uploadAll";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import {
   EntityAttachments,
@@ -123,6 +125,15 @@ export function SubmissionPanel({
 
   const [filing, setFiling] = useState(false);
   const [fileError, setFileError] = useState<string | null>(null);
+  /**
+   * The whole press, not just the engine call.
+   *
+   * `submit()`'s own `isPending` drops the moment the submission lands, while
+   * the files it carries are still going up — so the button un-spun and let
+   * itself be pressed again halfway through its own handler. This covers the
+   * handler end to end.
+   */
+  const [sending, setSending] = useState(false);
 
   /**
    * A daily report needs its supporting documents; a submission does not.
@@ -467,52 +478,80 @@ export function SubmissionPanel({
                 </Button>
               </>
             )}
-            <Button loading={state.isPending}
+            <Button loading={state.isPending || sending}
               data-help="task-submit-work-button"
               tone="primary"
-              disabled={state.isPending || !message.trim()}
+              disabled={state.isPending || sending || !message.trim()}
               onClick={async () => {
-                const r = await submit();
-                if (!r.ok) return;
+                setSending(true);
+                try {
+                  const r = await submit();
+                  if (!r.ok) return;
 
-                /*
-                 * Files follow the submission, for the same reason task files
-                 * follow the task: there is nothing to attach to until it
-                 * exists. The newest submission is re-read rather than assumed,
-                 * because the engine assigns the id.
-                 *
-                 * A failed upload does NOT undo the submission — the work is
-                 * already with the reviewer, and retracting it would be worse
-                 * than a missing file the person can still add.
-                 */
-                if (staged.length > 0) {
-                  const fresh = await repo.listSubmissions(taskId);
-                  const target = fresh[0]?.id ?? null;
-                  const failed: string[] = [];
-                  for (const file of staged) {
-                    if (!target) {
-                      failed.push(file.name);
-                      continue;
-                    }
-                    const up = await repo.uploadAttachment({
-                      file,
-                      entityType: "submission",
-                      entityId: target,
-                    });
-                    if (!up.ok) failed.push(file.name);
+                  /*
+                   * Files follow the submission, for the same reason task files
+                   * follow the task: there is nothing to attach to until it
+                   * exists. The newest submission is re-read rather than assumed,
+                   * because the engine assigns the id.
+                   *
+                   * A failed upload does NOT undo the submission — the work is
+                   * already with the reviewer, and retracting it would be worse
+                   * than a missing file the person can still add.
+                   */
+                  if (staged.length > 0) {
+                    const fresh = await repo.listSubmissions(taskId);
+                    const target = fresh[0]?.id ?? null;
+                    setUploadFailures(
+                      target
+                        ? /* Together rather than one after another: each is an
+                             independent write against a submission that already
+                             exists, so the loop this replaced paid the whole
+                             round trip once per file while the reviewer's copy
+                             sat half-sent. See `uploadAll`. */
+                          await uploadAll(staged, (file) =>
+                            repo.uploadAttachment({
+                              file,
+                              entityType: "submission",
+                              entityId: target,
+                            }),
+                          )
+                        : /* No submission to hang them on, so every one of them
+                             failed — named, which is the same answer the
+                             per-file path gives. */
+                          staged.map((file) => file.name),
+                    );
                   }
-                  setUploadFailures(failed);
-                }
 
-                setMessage("");
-                setFiles([]);
-                setStaged([]);
-                onChange();
+                  setMessage("");
+                  setFiles([]);
+                  setStaged([]);
+                  onChange();
+                } finally {
+                  setSending(false);
+                }
               }}
             >
-              {state.isPending ? "Submitting…" : "Submit for review"}
+              {state.isPending
+                ? "Submitting…"
+                : sending
+                  ? "Attaching…"
+                  : "Submit for review"}
             </Button>
           </div>
+          {/* Why it is taking a moment. Submitting is not a save: the engine
+              writes it, posts it into the task chat, notifies the reviewer and
+              renumbers the queues before it replies — and after that the files
+              still have to go up, which cannot start until the submission
+              exists to check permission against. */}
+          <ActionWait
+            pending={state.isPending || sending}
+            note={
+              !state.isPending && sending && staged.length > 0
+                ? `The submission is with your reviewer — sending ${staged.length === 1 ? "1 file" : `${staged.length} files`}.`
+                : undefined
+            }
+            className="mt-2 text-right"
+          />
         </Panel>
       ) : (
         <Panel>
