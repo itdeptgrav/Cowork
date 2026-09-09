@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { ActionWait } from "@/components/ui/ActionWait";
 import { Button, Field, InlineError, Panel } from "@/components/ui/Primitives";
 import { useAction } from "@/lib/hooks/useRepository";
 import type { Approval, Employee, Task } from "@/lib/domain";
@@ -193,6 +194,7 @@ export function ApprovalActionCard({
           >
             Refuse
           </Button>
+          <ActionWait pending={state.isPending} className="basis-full" />
           {/* No third option. The engine's endpoint takes `approved` as a
               boolean and a rejection reason — there is no send-back, and a
               button that quietly refused instead would be worse than its

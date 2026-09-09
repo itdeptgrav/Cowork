@@ -392,10 +392,18 @@ test("the submission id is read back, never assumed", () => {
 
 test("a failed upload does not retract the submission", () => {
   /* The work is already with the reviewer; retracting it would be worse than a
-     missing file the person can still add. */
+     missing file the person can still add.
+
+     Re-anchored when the serial upload loop became a batch (`uploadAll`): this
+     asserted the name of the local the loop accumulated into, which is a
+     spelling rather than the rule. What matters is that the failures are
+     RECORDED and named, and that nothing undoes the submission on the way. */
   const src = code(SUBMISSION);
   assert.match(src, /did not upload/);
-  assert.match(src, /setUploadFailures\(failed\)/);
+  assert.match(src, /setUploadFailures\(/);
+  const handler = src.slice(src.indexOf("const r = await submit()"));
+  for (const undo of ["retract", "deleteSubmission", "cancelSubmission"])
+    assert.ok(!handler.includes(undo), `the handler ${undo}s on a bad file`);
 });
 
 test("submitting without files still works", () => {

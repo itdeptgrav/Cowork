@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { AttachmentMeta } from "@/lib/legacy/attachments";
 import type { CoworkRepository, TaskView } from "@/lib/repositories";
@@ -83,6 +84,14 @@ const GLYPH_TYPE: Partial<Record<FileKind, string>> = {
  * already true; collecting them into one list is what makes it worth saying, so
  * every link-access row is marked and the note under the list explains it once.
  */
+
+/**
+ * How many files the Overview shows before sending the reader to the tab.
+ *
+ * Four is a glance — enough to see what kind of task this is and to recognise
+ * the file you came for — without the summary turning into the list it links to.
+ */
+const OVERVIEW_FILES = 4;
 
 /* ── Fetch ────────────────────────────────────────────────────────────────── */
 
@@ -340,6 +349,79 @@ function FileRow({ file }: { file: TaskFile }) {
 }
 
 /* ── The tab ──────────────────────────────────────────────────────────────── */
+
+/**
+ * The task's files, on the Overview — the few most recent, and a way to the rest.
+ *
+ * ## Why the Overview carries them at all
+ *
+ * Files were reachable only from their own tab, and they are the thing most
+ * readers of a task actually came for: the brief says what the work is, the
+ * files ARE the work. Somebody opening a task to look at what was attached had
+ * to know a tab existed and go to it.
+ *
+ * ## Why it is not the panel below
+ *
+ * That one is the place you WORK with files — search, filter by origin and by
+ * kind, upload reference material, read the note about which of them are
+ * link-shared. None of that belongs on a summary, and a second copy of it
+ * would be two implementations of one list.
+ *
+ * So this shares everything that matters and owns none of it: the same
+ * `collect` read (identical fetcher and deps, so the two never both fetch),
+ * the same `sortTaskFiles` order, the same `FileRow`. What it adds is a limit
+ * and a door.
+ *
+ * Silent when there are none. An empty panel on a summary is a row of furniture
+ * for a fact the reader can already see — the tab is on screen either way.
+ */
+export function TaskFilesOverview({ view }: { view: TaskView }) {
+  const taskId = view.task.id;
+  const { data, isLoading } = useQuery(
+    (r) => collect(r, taskId),
+    [taskId, view.task.updatedAt],
+  );
+
+  const all = useMemo(() => sortTaskFiles(data?.files ?? []), [data]);
+
+  /* Nothing at all until it knows: a "no files" line that turns into four
+     files a moment later is worse than a beat of silence. */
+  if (isLoading || all.length === 0) return null;
+
+  const shown = all.slice(0, OVERVIEW_FILES);
+  const rest = all.length - shown.length;
+
+  return (
+    <Panel>
+      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <h2 className="text-sm font-medium text-ink">Files</h2>
+        <Link
+          href={`/tasks/${encodeURIComponent(taskId)}/files`}
+          className="text-[13px] text-ink-muted underline decoration-hairline underline-offset-4 transition-colors hover:text-ink"
+        >
+          {rest > 0 ? (
+            <>
+              All <span data-figure>{all.length}</span> files
+            </>
+          ) : (
+            "Open Files"
+          )}
+        </Link>
+      </div>
+      <ul className="mt-3 space-y-1.5">
+        {shown.map((f) => (
+          <FileRow key={f.key} file={f} />
+        ))}
+      </ul>
+      {rest > 0 && (
+        <p className="mt-2 text-[11px] text-ink-faint">
+          <span data-figure>{rest}</span> more on the Files tab, where they can
+          be searched and filtered.
+        </p>
+      )}
+    </Panel>
+  );
+}
 
 export function TaskFilesPanel({ view }: { view: TaskView }) {
   const taskId = view.task.id;

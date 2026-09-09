@@ -31,7 +31,8 @@ import { DeadlineRevisionCard } from "./DeadlineRevisionCard";
 import { ExtensionTimeline } from "./ExtensionTimeline";
 import { CounterDeadlineCard } from "./CounterDeadlineCard";
 import { ReworkPanel } from "./ReworkPanel";
-import { TaskFilesPanel } from "./TaskFilesPanel";
+import { TaskFilesOverview, TaskFilesPanel } from "./TaskFilesPanel";
+import { ActionWait } from "@/components/ui/ActionWait";
 import { FeasibilityPreview } from "./FeasibilityPreview";
 /* `ExpectedCompletion` is no longer rendered here — the facts panel names the
    deadline itself now, see the Deadline fact below. The component is kept and
@@ -534,6 +535,15 @@ export function TaskDetail({
             />
           )}
 
+          {/* **The files, right after what the work IS.**
+              They were reachable only from their own tab, and they are what
+              most readers open a task for: the brief says what the work is,
+              the files are the work. The few most recent, and a door to the
+              rest — the searching, filtering and uploading stay on the tab,
+              which is where somebody goes to WORK with files rather than to
+              see what is here. Renders nothing on a task with none. */}
+          {tab === "overview" && <TaskFilesOverview view={v} />}
+
           {/* **The deadline and its negotiation, straight after the brief.**
               These five carry the whole time conversation — the hours stepper,
               the date counter-offer, and whose move it is — and they sat below
@@ -1009,6 +1019,7 @@ function NextActionCard({
                 <Button
                   tone="primary"
                   size="sm"
+                  loading={decideState.isPending}
                   disabled={pending}
                   onClick={async () => {
                     const r = await decide(mineApproval.id, "approved");
@@ -1020,6 +1031,7 @@ function NextActionCard({
                 </Button>
                 <Button
                   size="sm"
+                  loading={decideState.isPending}
                   disabled={pending}
                   onClick={async () => {
                     const r = await decide(mineApproval.id, "rejected");
@@ -1047,6 +1059,7 @@ function NextActionCard({
               <Button
                 tone="primary"
                 size="sm"
+                loading={startState.isPending}
                 disabled={pending}
                 onClick={async () => {
                   const r = await start();
@@ -1071,6 +1084,9 @@ function NextActionCard({
                 <Link href={action.href!}>Go</Link>
               </Button>
             )}
+            {/* One line for the whole card: approve, reject and start all go
+                through the same engine route and wait on the same work. */}
+            <ActionWait pending={pending} className="basis-full" />
           </div>
         )}
       </div>
