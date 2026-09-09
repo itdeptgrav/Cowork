@@ -210,6 +210,12 @@ export function maxAgeMs(cacheControl: string | null): number {
 /** Test seam. */
 export function resetCertificateCache(): void {
   cache = null;
+  /* Everything DERIVED from those certificates goes with them — the imported
+     keys and the signature verdicts reached with them. A test that swaps
+     Google's certificates and re-verifies the same token must get a real
+     answer, not the one reached under the old key. */
+  keysByCertificate.clear();
+  signatureVerdicts.clear();
 }
 
 /* ── Full verification ────────────────────────────────────────────────────── */
@@ -262,15 +268,84 @@ export async function verifyIdToken(input: {
   const pem = certificates[kid];
   if (!pem) return { ok: false, reason: "unknown_key" };
 
-  const key = await importCertificate(pem);
-  const valid = await crypto.subtle.verify(
-    "RSASSA-PKCS1-v1_5",
-    key,
-    decoded.signature as BufferSource,
-    new TextEncoder().encode(decoded.signed) as BufferSource,
-  );
+  /**
+   * **The signature answer for a given token never changes, so it is asked
+   * once.**
+   *
+   * This runs in the proxy, on every request it matches — which is every page,
+   * every RSC payload the router fetches on a navigation, and every link the
+   * router prefetches. Each one re-parsed an X.509 certificate, re-imported a
+   * public key and re-verified the same RSA signature over the same bytes, to
+   * reach the answer it had already reached moments earlier.
+   *
+   * A token's signature is a fact about that exact string and the key that
+   * signed it, so it is cached under both. What is NOT cached is the claims
+   * check above — that depends on the clock and on the caller's leeway, and it
+   * has already run before this point on every call. Expiry therefore behaves
+   * exactly as it did: a token that ages out is refused by `checkClaims`
+   * whether or not its signature is remembered.
+   */
+  const cacheKey = `${kid}.${input.token}`;
+  const remembered = signatureVerdicts.get(cacheKey);
+  const valid =
+    remembered ?? (await verifySignature(pem, decoded.signature, decoded.signed));
+  if (remembered === undefined) rememberSignature(cacheKey, valid);
 
   return valid ? claims : { ok: false, reason: "bad_signature" };
+}
+
+/**
+ * Verified signatures, by key id and token.
+ *
+ * Tiny and bounded: a browser holds ONE session token at a time, and it is
+ * replaced roughly hourly. A handful of entries covers a signed-in tab, a
+ * second tab and the token either side of a refresh; anything beyond that is a
+ * token nobody is using any more.
+ */
+const signatureVerdicts = new Map<string, boolean>();
+const SIGNATURE_CACHE_LIMIT = 8;
+
+function rememberSignature(key: string, valid: boolean): void {
+  signatureVerdicts.set(key, valid);
+  while (signatureVerdicts.size > SIGNATURE_CACHE_LIMIT) {
+    const oldest = signatureVerdicts.keys().next();
+    if (oldest.done) break;
+    signatureVerdicts.delete(oldest.value);
+  }
+}
+
+/**
+ * Imported keys, by the certificate they came from.
+ *
+ * Keyed on the PEM rather than on the key id, so a rotation that reused an id
+ * could not be answered with the key it replaced.
+ */
+const keysByCertificate = new Map<string, Promise<CryptoKey>>();
+
+async function verifySignature(
+  pem: string,
+  signature: Uint8Array,
+  signed: string,
+): Promise<boolean> {
+  let key = keysByCertificate.get(pem);
+  if (!key) {
+    key = importCertificate(pem);
+    /* The PROMISE is stored, so requests arriving together import once. A
+       failure is not kept — the next caller should get a real attempt. */
+    key.catch(() => keysByCertificate.delete(pem));
+    keysByCertificate.set(pem, key);
+    while (keysByCertificate.size > SIGNATURE_CACHE_LIMIT) {
+      const oldest = keysByCertificate.keys().next();
+      if (oldest.done) break;
+      keysByCertificate.delete(oldest.value);
+    }
+  }
+  return crypto.subtle.verify(
+    "RSASSA-PKCS1-v1_5",
+    await key,
+    signature as BufferSource,
+    new TextEncoder().encode(signed) as BufferSource,
+  );
 }
 
 /**

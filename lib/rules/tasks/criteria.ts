@@ -80,3 +80,45 @@ export function addCriterion(
   const next = draft.trim();
   return next ? [...list, next] : [...list];
 }
+
+/**
+ * The acceptance criteria a SUBTASK is created with: what it inherits from the
+ * parent, then what was typed for it.
+ *
+ * ## Why the claimed requirement belongs in the list
+ *
+ * A subtask claims one of its parent's completion requirements — that claim is
+ * the reason it exists, and closing it is the one thing the subtask is
+ * definitely for. It was carried only as a link on the parent, so the child was
+ * created with just the criteria typed into its own form and its reviewer read
+ * a list that never mentioned the work's actual purpose. The person doing it
+ * saw two criteria; the thing they were answerable for was a third that
+ * appeared nowhere on their task.
+ *
+ * ## Inherited first
+ *
+ * It is the requirement the subtask was raised to satisfy, so it is the first
+ * thing a reviewer should read. What was typed in the form is additional to it,
+ * and follows.
+ *
+ * Blank entries are dropped and repeats are collapsed case-insensitively:
+ * somebody who types the parent's requirement out again meant one criterion,
+ * not two identical rows for the reviewer to tick separately. The FIRST
+ * spelling of a repeat is the one kept, so the parent's own wording survives.
+ */
+export function subtaskCriteria(
+  inherited: readonly string[],
+  typed: readonly string[],
+): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of [...inherited, ...typed]) {
+    const value = String(raw ?? "").trim();
+    if (!value) continue;
+    const key = value.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(value);
+  }
+  return out;
+}

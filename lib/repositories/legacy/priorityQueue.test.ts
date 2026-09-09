@@ -40,11 +40,18 @@ test("the moved task is spliced in at the requested rank", () => {
   assert.match(fn.slice(0, 2500), /Math\.min\(without\.length, rank - 1\)/);
 });
 
+/**
+ * These three read the QUEUE READ itself, which now lives in
+ * `#readActiveQueueOf`. `#activeQueueOf` in front of it is a few lines of
+ * in-flight deduplication — the same read asked for twice while the first is
+ * still running is answered once — and holds none of the rules below.
+ */
+
 test("only active tasks are renumbered", () => {
   /* A closed task keeps the rank it finished with. Pulling it into the
      renumbering would rewrite history to make room for live work. */
   const src = code(REPO);
-  const fn = src.slice(src.indexOf("async #activeQueueOf("));
+  const fn = src.slice(src.indexOf("async #readActiveQueueOf("));
   assert.match(fn.slice(0, 1800), /activeQueuePositions\(/);
 });
 
@@ -53,7 +60,7 @@ test("the queue is read by assignee, not from the viewer's own list", () => {
      manager sets a report's priority, and the viewer-scoped queries would
      return the manager's own tasks. */
   const src = code(REPO);
-  const fn = src.slice(src.indexOf("async #activeQueueOf("));
+  const fn = src.slice(src.indexOf("async #readActiveQueueOf("));
   assert.match(fn.slice(0, 1800), /array-contains", employeeId/);
 });
 
@@ -62,10 +69,25 @@ test("a closed task is never appended into a live queue", () => {
      "was P1" treatment exists to avoid. */
   const src = code(REPO);
   const fn = src.slice(
-    src.indexOf("async #activeQueueOf("),
+    src.indexOf("async #readActiveQueueOf("),
     src.indexOf("#clampRank"),
   );
   assert.equal(/mustInclude/.test(fn), false);
+});
+
+test("the dedup in front of it shares only a read still in flight", () => {
+  /* A time window here would be a cache, and a cached queue is the ordering
+     somebody had BEFORE the drag they just made. The entry is dropped however
+     the read ends, so the next caller always starts a fresh one. */
+  const src = code(REPO);
+  const fn = src.slice(
+    src.indexOf("async #activeQueueOf("),
+    src.indexOf("async #readActiveQueueOf("),
+  );
+  assert.match(fn, /const running = this\.#queueInFlight\.get\(employeeId\);/);
+  assert.match(fn, /if \(running\) return running;/);
+  assert.match(fn, /\.finally\(\(\) => this\.#queueInFlight\.delete\(employeeId\)\)/);
+  assert.doesNotMatch(fn, /Date\.now\(\)/, "a time window turns the dedup into a cache");
 });
 
 /* ── Case 5: one task reads the same to everybody ─────────────────────────── */

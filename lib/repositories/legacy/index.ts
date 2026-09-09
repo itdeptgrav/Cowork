@@ -95,7 +95,7 @@ import { istDayKey, isReportPending, workedToday } from "../../rules/tasks/daily
 import { emergencyRequestRefusal } from "../../rules/tasks/emergency.ts";
 import type { CascadeOrderEntry, CoworkDocument, CoworkDocumentBody, DocumentKind, DocumentPageSetup, DocumentRole, DocumentSummary, MindMapDetail, MindMapRecord, MindMapRole, MindMapSummary, MindNode, WorkloadFlow, BlockedDate, DailyReport, DeadlineExtension, DeadlineProposal, Department, EmergencyRequest, MeetingEvent, MeetingParticipant, MeetingRecording, StoredMeetingMessage, PriorityAcknowledgement, PriorityCascade, PriorityChange, PriorityConflict, Project, ProjectId, ProjectStatus, ReportAttachment, ReworkRequest, Task, TaskChatMessage, TaskEvent, TaskEventType, TaskId, TaskReview, TaskSubmission, TimerSession, WorkCommit } from "@/lib/domain";
 import type { LegacyResult } from "../../legacy/envelope";
-import { notifyRepositoryChanged } from "../events.ts";
+import { notifyRepositoryChanged, publishPreload } from "../events.ts";
 import {
   confirmTask as confirmTaskRequest,
   counterDeadline,
@@ -833,6 +833,19 @@ function readStoredMeetingMessage(raw: unknown): StoredMeetingMessage | null {
   };
 }
 
+/**
+ * One person's derived queue: the order their work is actually in, the dates
+ * that go with it, and their separate sequence among work not yet accepted.
+ *
+ * A named type rather than an inline one purely so the field that holds it
+ * fits on a line — see `#queueInFlight`.
+ */
+type ActiveQueue = {
+  order: string[];
+  dueDates: Map<string, string>;
+  provisionalPositions: Map<string, number>;
+};
+
 export class LegacyRepository {
   /* Per-viewer, and static so it survives the repository instances a render
      creates. Only a round-trip saver — the engine decides what is written. */
@@ -1255,9 +1268,95 @@ export class LegacyRepository {
    * returns. Sorting and pagination likewise. That is honest about where the
    * work happens and keeps the engine's contract untouched.
    */
+  /**
+   * The extension decisions waiting on one person, as two sets of task ids.
+   *
+   * Lifted out of `listTasks` so it can be STARTED before the task documents
+   * are read rather than after everything else is done: both queries are keyed
+   * on `approverId` alone and need nothing the rest of the method produces.
+   * The behaviour is unchanged — same collections, same statuses, same
+   * tolerance of failure.
+   *
+   * Empty sets rather than a throw when it cannot be read: the list still
+   * renders, just without the decision flags, which is what the caller's own
+   * `catch` did.
+   */
+  async #extensionDecisionsFor(viewerId: string): Promise<{
+    budgetToDecide: Set<string>;
+    deadlineToDecide: Set<string>;
+  }> {
+    const empty = {
+      budgetToDecide: new Set<string>(),
+      deadlineToDecide: new Set<string>(),
+    };
+    const me = viewerId ? String(viewerId) : "";
+    if (!me) return empty;
+    try {
+      const { collection, getDocs, query, where } = await import(
+        "firebase/firestore"
+      );
+      const { legacyDb } = await import("../../legacy/firebase.ts");
+      const pendingFor = async (name: string): Promise<Set<string>> => {
+        const snap = await getDocs(
+          query(collection(legacyDb(), name), where("approverId", "==", me)),
+        );
+        return new Set(
+          snap.docs
+            .map((d) => d.data() as Record<string, unknown>)
+            .filter(
+              (x) => x.status === "pending" || x.status === "counter_proposed",
+            )
+            .map((x) => String(x.taskId)),
+        );
+      };
+      const [budgetToDecide, deadlineToDecide] = await Promise.all([
+        pendingFor("cowork_task_budget_extensions"),
+        pendingFor("cowork_task_deadline_extensions"),
+      ]);
+      return { budgetToDecide, deadlineToDecide };
+    } catch (e) {
+      console.error("[listTasks] extension-decision flags:", e);
+      return empty;
+    }
+  }
+
   async listTasks(q: TaskQuery): Promise<Page<TaskView>> {
-    const employeesById = await this.#employeesById();
+    /**
+     * **The three independent reads are started together.**
+     *
+     * They were awaited one after another — the directory, then the task
+     * documents, then the output index — and none of them needs anything the
+     * others return: the directory is keyed on nothing, the documents on the
+     * viewer's id, and the index on the viewer's token. So the page waited for
+     * the sum of three round trips to answer a question that only ever needed
+     * the longest of them. The output index is the one that hurts, because it
+     * is an HTTP call to the engine rather than a Firestore read, and it sat
+     * behind everything else purely because of where it was written.
+     *
+     * Started here, awaited exactly where they were before. Nothing about what
+     * is fetched, or what is done with it, changes — only how much of it is in
+     * flight at once.
+     *
+     * The bare `.catch` on each is not error handling: it marks the promise as
+     * handled so starting it early cannot raise an unhandled rejection in the
+     * window before it is awaited. The `await` below still sees the original
+     * promise and still throws exactly as it did.
+     */
+    const directoryRead = this.#employeesById();
     const viewerId = String(this.#ctx.employeeId);
+    const documentsRead = this.#taskDocuments(viewerId);
+    const outputIndexRead = this.#outputIndex();
+    /* The extension decisions waiting on this person. Two queries keyed on the
+       viewer alone — they need nothing from the task documents, and used to be
+       the LAST thing the method did, so the page waited for them after
+       everything else had already been fetched and assembled. */
+    const extensionDecisionsRead = this.#extensionDecisionsFor(viewerId);
+    directoryRead.catch(() => {});
+    documentsRead.catch(() => {});
+    outputIndexRead.catch(() => {});
+    extensionDecisionsRead.catch(() => {});
+
+    const employeesById = await directoryRead;
     const nowMs = Date.now();
 
     /* Read the SAME documents, with the SAME role-dependent queries, as
@@ -1274,7 +1373,7 @@ export class LegacyRepository {
        One-shot `getDocs` rather than a live listener: `listTasks` is a promise,
        and `useQuery` re-runs it whenever a mutation invalidates. The live
        version is `useCoworkTaskList`, for surfaces that want push. */
-    const docs = await this.#taskDocuments(viewerId);
+    const docs = await documentsRead;
     let legacyTasks = docs
       .map((raw) => readTask(raw))
       .filter((t): t is NonNullable<typeof t> => t !== null)
@@ -1442,8 +1541,12 @@ export class LegacyRepository {
      */
     /* Once for the whole page, and BEFORE the queue is built: workability is a
        sort key, so the entries need it. Each row needs the index too, and forty
-       rows fetching it separately would be forty round trips for one screen. */
-    const outputIndex = await this.#outputIndex();
+       rows fetching it separately would be forty round trips for one screen.
+
+       Started at the top of the method rather than here — it needs nothing from
+       the documents, so waiting until this line to ASK for it made the page pay
+       for it end to end. It is awaited in the same place it always was. */
+    const outputIndex = await outputIndexRead;
 
     const myQueueEntries = legacyTasks
       /* `holdersOf`, not `assigneeIds`: a cross-department task waiting at
@@ -1888,32 +1991,17 @@ export class LegacyRepository {
      *
      * Filtered by `approverId`, so a task is flagged only for the person the
      * record actually routed to — under cross-department rules that is the
-     * assignee's primary manager, not the creator. */
+     * assignee's primary manager, not the creator.
+     *
+     * The two queries are STARTED at the top of the method — they are keyed on
+     * the viewer alone, so waiting until here to ask for them made the page pay
+     * for them after everything else had already been fetched and assembled.
+     * They are awaited here, where they always were, and still applied only to
+     * a non-empty list. */
     try {
-      const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
-      if (me && views.length) {
-        const { collection, getDocs, query, where } = await import(
-          "firebase/firestore"
-        );
-        const { legacyDb } = await import("../../legacy/firebase.ts");
-        const pendingFor = async (name: string): Promise<Set<string>> => {
-          const snap = await getDocs(
-            query(collection(legacyDb(), name), where("approverId", "==", me)),
-          );
-          return new Set(
-            snap.docs
-              .map((d) => d.data() as Record<string, unknown>)
-              .filter(
-                (x) =>
-                  x.status === "pending" || x.status === "counter_proposed",
-              )
-              .map((x) => String(x.taskId)),
-          );
-        };
-        const [budgetToDecide, deadlineToDecide] = await Promise.all([
-          pendingFor("cowork_task_budget_extensions"),
-          pendingFor("cowork_task_deadline_extensions"),
-        ]);
+      if (views.length) {
+        const { budgetToDecide, deadlineToDecide } =
+          await extensionDecisionsRead;
         if (budgetToDecide.size || deadlineToDecide.size) {
           for (const v of views) {
             const id = String(v.task.id);
@@ -2183,6 +2271,21 @@ export class LegacyRepository {
        too, but only for documents matching this viewer's watched queries —
        a task created into a department gate has no assignees and matches
        none of them, so without this the creator would see nothing happen. */
+    /**
+     * **Hand the read-back over before asking everyone to look again.**
+     *
+     * `#readTaskView` above has just produced exactly what the task page's own
+     * `getTask` is about to ask for, and the bump on the next line is what
+     * sends it asking. Without this the same chain of reads ran twice for one
+     * press — once here to answer the caller, once there to redraw the page —
+     * and the second one is the wait somebody sees after pressing Approve or
+     * Submit.
+     *
+     * The copy handed over is read AFTER the write landed, so it is the
+     * freshest answer available; the query layer serves it once and drops it.
+     * `[taskId]` is the dependency list `TaskDetail` passes.
+     */
+    publishPreload("getTask", [taskId], view);
     notifyRepositoryChanged();
     /* The `Task`, not the `TaskView` wrapping it. `NewTaskForm` navigates to
        `/tasks/${r.data.id}` on success, and a `TaskView` has no `id` — it has
@@ -2209,17 +2312,31 @@ export class LegacyRepository {
     for (const a of view.assignments) affected.add(String(a.employeeId));
     for (const p of view.pendingAssignees) affected.add(String(p.id));
 
-    for (const employeeId of affected) {
-      try {
-        await this.normalizePriorities(employeeId as EmployeeId);
-      } catch (error) {
-        /* Reported for a developer, not to the caller: their change landed. */
-        console.error(
-          `[normalizeAfterWrite] ${employeeId}'s queue could not be renumbered:`,
-          error,
-        );
-      }
-    }
+    /**
+     * **Together, because they are independent — as the note above says.**
+     *
+     * This awaited one person at a time, so a task with three holders paid
+     * three round trips in series on the critical path of every approve,
+     * submit, start, reject and create. A rank is per person and moving one
+     * task cannot renumber somebody else's day, so nothing here reads what the
+     * previous iteration wrote.
+     *
+     * The per-employee `try` stays exactly where it was, so one queue failing
+     * still costs only that queue — `Promise.all` never sees a rejection.
+     */
+    await Promise.all(
+      [...affected].map(async (employeeId) => {
+        try {
+          await this.normalizePriorities(employeeId as EmployeeId);
+        } catch (error) {
+          /* Reported for a developer, not to the caller: their change landed. */
+          console.error(
+            `[normalizeAfterWrite] ${employeeId}'s queue could not be renumbered:`,
+            error,
+          );
+        }
+      }),
+    );
   }
 
   /**
@@ -2233,6 +2350,23 @@ export class LegacyRepository {
     taskId: string,
     preloaded?: { parent?: LegacyTask | null; parentSubtasks?: LegacyTask[] },
   ): Promise<TaskView | null> {
+    /**
+     * The directory needs nothing from this task, so it is asked for FIRST and
+     * awaited last.
+     *
+     * Every action on a task ends here — `#afterWrite` reads the view back
+     * before it answers, and the page then reads it again — so the hops this
+     * method makes are the wait between pressing Approve, Submit or Create and
+     * the screen changing. They ran in series: the task document, then its
+     * children, then its parent, then the queue, then this. Only this one had
+     * no reason to be in the queue at all.
+     *
+     * The bare `.catch` marks it handled so starting it early cannot raise an
+     * unhandled rejection before it is awaited; the `await` below still sees
+     * the original promise and still behaves exactly as it did.
+     */
+    const directoryRead = this.#employeesById();
+    directoryRead.catch(() => {});
     const legacy = await this.#taskDoc(taskId);
     if (!legacy) return null;
     const viewerId = String(this.#ctx.employeeId);
@@ -2341,7 +2475,7 @@ export class LegacyRepository {
      * manager owns "how many hours does this person get". Only the second is a
      * decision about an individual's work, and the endpoint now agrees.
      */
-    const employeesById = await this.#employeesById();
+    const employeesById = await directoryRead;
     let budgetOwner: Employee | null = null;
     if (legacy.isSelfAssigned) {
       /* On a self task the budget's approver is the assignee's MANAGER — the
@@ -8475,8 +8609,25 @@ export class LegacyRepository {
     const viewerId = String(this.#ctx.employeeId);
     const page = await this.listTasks({ scope: "all", limit: 200 });
     const out: ActionableItem[] = [];
-    for (const raw of page.items) {
-      const view = await this.#withLatestSubmission(raw);
+    /**
+     * **The submissions are fetched together, not one after another.**
+     *
+     * `#withLatestSubmission` is a network read for any task in review, and
+     * this awaited each one INSIDE the loop — so the inbox cost one full
+     * round trip per submission, in series, before the page could draw. That
+     * is the tab badge on every visit to Tasks, so everybody paid it whether
+     * or not they opened the inbox.
+     *
+     * `Promise.all` keeps the order — it resolves positionally — so the list
+     * below is built from exactly the same views in exactly the same sequence
+     * as before. Nothing about what is fetched changed; only how many trips
+     * are in flight at once. Tasks that are not in review short-circuit inside
+     * `#withLatestSubmission` and cost nothing either way.
+     */
+    const views = await Promise.all(
+      page.items.map((raw) => this.#withLatestSubmission(raw)),
+    );
+    for (const view of views) {
       const verdict = actionableFor(view, viewerId);
       if (!verdict) continue;
       /**
@@ -11585,12 +11736,52 @@ export class LegacyRepository {
     }
   }
 
+  /**
+   * One person's queue, fetched once while a read of it is already in flight.
+   *
+   * **This is the largest read behind the Tasks page.** `listTasks` calls it
+   * once per OTHER subject in the list so every row can carry its own owner's
+   * queue position, and each call is two whole-collection Firestore queries —
+   * so a manager looking at twenty people paid forty queries, and paid them
+   * again for every list running concurrently on the same page. Nothing
+   * collapsed them: the promise was per call, not per person.
+   *
+   * **In-flight only, with no time window at all.** A `Map` entry lives from
+   * the moment the read starts until it settles, and is then dropped — so the
+   * only thing ever shared is a read that had not finished yet, which every
+   * caller was already waiting on the same answer for. Nothing is served from
+   * a previous render, so a queue that has just been reordered is re-read in
+   * full on the very next call. That is the difference between deduplicating
+   * work and caching an answer, and only the first is safe here: a stale
+   * ordering would show somebody the priorities they had before the drag they
+   * just made.
+   */
+  #queueInFlight = new Map<string, Promise<ActiveQueue>>();
+
   async #activeQueueOf(employeeId: string): Promise<{
     order: string[];
     dueDates: Map<string, string>;
     /* This same person's position among work not yet accepted or
        budget-settled — its own independent sequence. See
        `TaskAssignment.provisionalPosition`. */
+    provisionalPositions: Map<string, number>;
+  }> {
+    const running = this.#queueInFlight.get(employeeId);
+    if (running) return running;
+    const pending = this.#readActiveQueueOf(employeeId);
+    this.#queueInFlight.set(employeeId, pending);
+    /* Dropped however it ends, so a failure is not shared with the next caller
+       either — theirs is a fresh attempt. `finally` rather than `then`, and the
+       rejection is re-handled by the caller's own catch. */
+    void pending
+      .finally(() => this.#queueInFlight.delete(employeeId))
+      .catch(() => {});
+    return pending;
+  }
+
+  async #readActiveQueueOf(employeeId: string): Promise<{
+    order: string[];
+    dueDates: Map<string, string>;
     provisionalPositions: Map<string, number>;
   }> {
     const { collection, getDocs, query, where } = await import(
@@ -14117,11 +14308,23 @@ export class LegacyRepository {
       path: "/api/cowork/mrf/",
       token,
     });
-    const requests = r.ok
-      ? (r.data.mrfs ?? [])
-          .map((m) => this.#readMrf(m))
-          .filter((m): m is MrfRequest => m !== null)
-      : [];
+    /**
+     * **A failed read is RAISED, not turned into an empty list.**
+     *
+     * This answered a refused or unreachable request with `[]`, which the page
+     * then drew as four zeroes and "no requests yet" — a confident, wrong
+     * answer that is indistinguishable from having none. Somebody whose
+     * requests exist was told they do not.
+     *
+     * The same rule `#taskDocuments` already follows, and for the same reason:
+     * the message the engine sent back is worth far more on screen than
+     * silence. `useQuery` turns a rejection into the error state the page
+     * renders.
+     */
+    if (!r.ok) throw new Error(r.error.message);
+    const requests = (r.data.mrfs ?? [])
+      .map((m) => this.#readMrf(m))
+      .filter((m): m is MrfRequest => m !== null);
     return { requests, stats: mrfStats(requests) };
   }
 
@@ -14141,17 +14344,18 @@ export class LegacyRepository {
       query: { status: legacyStatus },
       token,
     });
-    const requests = r.ok
-      ? (r.data.mrfs ?? [])
-          .map((m) => this.#readMrf(m))
-          .filter((m): m is MrfRequest => m !== null)
-      : [];
+    /* Raised rather than emptied — see `listMyMrfs`. An approver shown an
+       empty queue believes there is nothing waiting on them. */
+    if (!r.ok) throw new Error(r.error.message);
+    const requests = (r.data.mrfs ?? [])
+      .map((m) => this.#readMrf(m))
+      .filter((m): m is MrfRequest => m !== null);
     /* The counts come from the server, not from `requests`. That list is one
        page of the queue, already narrowed to `legacyStatus` — counting it
        would make the tiles and the tab badge describe the page rather than the
        queue. `readMrfApprovalStats` explains the failure modes; the fallback
        keeps an older backend approximately right rather than empty. */
-    const served = r.ok ? readMrfApprovalStats(r.data.stats) : null;
+    const served = readMrfApprovalStats(r.data.stats);
     return { requests, stats: served ?? mrfApprovalStats(requests) };
   }
 
@@ -14164,12 +14368,38 @@ export class LegacyRepository {
     return r.ok && r.data.mrf ? this.#readMrf(r.data.mrf) : null;
   }
 
+  /**
+   * A fresh key for one user-initiated write.
+   *
+   * Every inventory mutation goes through the store-purchase middleware, which
+   * REFUSES a request that carries no `Idempotency-Key` — "This action needs an
+   * Idempotency-Key header so a retry cannot repeat it". Nothing here sent one,
+   * so creating a material request, approving one, rejecting one, cancelling
+   * one and writing to its chat were all refused before they reached a handler.
+   *
+   * One key per press, not per record. The header's job is that RETRYING a
+   * single action cannot perform it twice; two deliberate presses are two
+   * actions and must both land. A key derived from the record would instead
+   * make the second press a replay of the first — or a 409, since the engine
+   * refuses a reused key whose payload has changed — which is a rule nobody
+   * asked for. Double-submit is already closed on the client by `useAction`.
+   *
+   * `randomUUID` is present in every browser this runs in and in Node 19+; the
+   * fallback is for neither, and only has to be unique, not unguessable.
+   */
+  #idempotencyKey(): string {
+    const c = globalThis.crypto;
+    if (c && typeof c.randomUUID === "function") return c.randomUUID();
+    return `k-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+
   async createMrf(input: NewMrfInput): Promise<ActionResult<MrfRequest>> {
     const token = await this.#token();
     const r = await legacyFetch<{ mrf?: Record<string, unknown> }>({
       path: "/api/cowork/mrf/",
       method: "POST",
       token,
+      idempotencyKey: this.#idempotencyKey(),
       body: {
         requestType: input.requestType.toUpperCase(),
         priority: (input.priority ?? "normal").toUpperCase(),
@@ -14212,6 +14442,7 @@ export class LegacyRepository {
       path: `/api/cowork/mrf/${encodeURIComponent(id)}/cancel`,
       method: "PATCH",
       token,
+      idempotencyKey: this.#idempotencyKey(),
       body: { cancellationNote: note ?? "" },
     });
     if (!r.ok) return { ok: false, code: "offline", message: r.error.message };
@@ -14240,6 +14471,7 @@ export class LegacyRepository {
       path,
       method: "PATCH",
       token,
+      idempotencyKey: this.#idempotencyKey(),
       body: decision.approve
         ? { itemDecisions, note: decision.note ?? "" }
         : { note: decision.note ?? "" },
@@ -14293,6 +14525,7 @@ export class LegacyRepository {
       path: `/api/cowork/mrf/${encodeURIComponent(id)}/chat`,
       method: "POST",
       token,
+      idempotencyKey: this.#idempotencyKey(),
       body: { body },
     });
     if (!r.ok) return { ok: false, code: "offline", message: r.error.message };
@@ -15820,12 +16053,55 @@ export class LegacyRepository {
    *  `cowork_direct_messages`; anything else is a group. One read, so a group id
    *  and a direct pair can never be confused — with a `"_"` id treated as direct
    *  for the first message of a thread whose parent doc has not landed yet. */
+  /**
+   * Which collection a conversation lives in — asked once per conversation, for
+   * the life of the tab.
+   *
+   * **This was a whole Firestore round trip in front of every message
+   * operation.** `listMessages` cannot query until it knows the collection, so
+   * opening a chat was two reads in SERIES — identify the thread, then fetch
+   * it — and the first of them answered a question that cannot change: a
+   * conversation does not move between the DM and group collections. Sending,
+   * editing and marking read paid it too. Switching between two chats paid it
+   * again on every switch, both ways.
+   *
+   * Static, so it survives the repository instances a render creates, and
+   * unbounded on purpose: it holds one short string per conversation the reader
+   * has actually opened.
+   *
+   * Only a settled ANSWER is kept. The `catch` below falls through to a guess
+   * from the id's shape, which is a fallback for an unreachable database rather
+   * than a fact about the conversation — remembering it would pin a guess made
+   * during a blip for the rest of the session.
+   */
+  static #conversationCollectionById = new Map<string, string>();
+
   async #conversationCollection(conversationId: string): Promise<string> {
+    const known =
+      LegacyRepository.#conversationCollectionById.get(conversationId);
+    if (known) return known;
     try {
       const { doc, getDoc } = await import("firebase/firestore");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const dm = await getDoc(doc(legacyDb(), DM_COLLECTION, conversationId));
-      if (dm.exists()) return DM_COLLECTION;
+      /**
+       * Both outcomes are settled, and BOTH keep the original answer.
+       *
+       * A found document is a DM. A read that succeeded and found none falls
+       * through to the same id-shape rule as before — deliberately, and not to
+       * `GROUP_COLLECTION`: a DM's row is created by its first message, so a
+       * conversation opened before anybody has said anything has no document
+       * yet, and a DM id is `[a, b].sort().join("_")`, which is what the shape
+       * test reads. Answering "group" for it would write the first message
+       * into the wrong collection.
+       */
+      const answer = dm.exists()
+        ? DM_COLLECTION
+        : conversationId.includes("_")
+          ? DM_COLLECTION
+          : GROUP_COLLECTION;
+      LegacyRepository.#conversationCollectionById.set(conversationId, answer);
+      return answer;
     } catch {
       /* fall through to the id-shape guess */
     }

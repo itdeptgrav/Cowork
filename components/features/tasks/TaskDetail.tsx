@@ -7,9 +7,10 @@ import {
   rankTitle,
 } from "@/lib/rules/tasks/priorityDisplay";
 import { isBudgetSettled } from "@/lib/rules/tasks/activeQueue";
+import { forgetTasks, recentTask, rememberTask } from "./recentTasks";
 import { isProjectContainer } from "@/lib/rules/tasks/completion";
 import { deadlineOrigin, formatWindow } from "@/lib/rules/tasks/deadlineOrigin";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TimerControl } from "./TimerControl";
 import { statusMeta, nextAction } from "./statusMeta";
 import { meetingFirstHint } from "@/lib/rules/meetings/meetingFirst";
@@ -64,7 +65,7 @@ import {
   Meter,
   Panel,
   ProvisionalBadge,
-  SkeletonRows,
+  SkeletonDetail,
 } from "@/components/ui/Primitives";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions } from "@/lib/hooks/usePermissions";
@@ -118,6 +119,27 @@ export function TaskDetail({
     [taskId],
   );
   const subtasks = useQuery((r) => r.getSubtasks(taskId), [taskId]);
+  /**
+   * The task this page was last showing, drawn while the new read is in flight.
+   *
+   * Every tab is its own route, so switching one unmounts this component and
+   * `getTask` starts from nothing — and the loading branch below replaced the
+   * whole page, including the title and the tab bar the reader had just
+   * clicked. With the task already in hand only the new tab's own contents are
+   * still loading, which is what a tab switch should look like.
+   *
+   * Read once per task, not per render: `recentTask` is a plain lookup, but
+   * pinning it to `taskId` keeps the value stable for everything below that
+   * compares by identity. See `recentTasks` for why this cannot go stale.
+   */
+  const seed = useMemo(() => recentTask(taskId), [taskId]);
+  useEffect(() => {
+    if (data) rememberTask(taskId, data);
+  }, [taskId, data]);
+  /* One person's page. Signing somebody else in must not hand them the task the
+     previous session was reading, even for the moment before the read lands. */
+  useEffect(() => () => forgetTasks(), [me]);
+  const view = data ?? seed;
   const repo = useRepo();
   /**
    * What is new on each tab, and when this viewer last looked.
@@ -168,13 +190,22 @@ export function TaskDetail({
   const prioViewer = useQuery((r) => r.getViewer(), []);
   const mayChangePriority =
     reorderableAssignees({
-      assignees: data?.assignees ?? [],
+      assignees: view?.assignees ?? [],
       actorId: prioViewer.data?.employeeId ?? "",
       actorHasManager: prioViewer.data?.hasManager ?? true,
       canReorder: (id) => prioPerms.can("task.priority.change", id),
     }).length > 0;
 
-  if (isLoading) return <SkeletonRows rows={10} />;
+  /* The shape of the page that is coming — a title, its facts, the panels and
+     the rail — rather than ten list rows standing where none of them appear.
+     See `SkeletonDetail`. */
+  /* Placeholders only when there is genuinely nothing to draw. A task this
+     browser has already shown is drawn from what it last showed while the read
+     that replaces it is in flight, so moving between tabs keeps the title, the
+     chips and the tab bar on screen and shimmers only what the new tab is
+     still fetching. See `recentTasks`. */
+  if (isLoading && !view)
+    return <SkeletonDetail rail={tab === "overview"} panels={2} />;
   /* A failed read is NOT a missing task.
      `unavailable` means the repository has no path to this yet; `error` means
      the request went wrong. Either one rendered as "it may have been deleted"
@@ -198,14 +229,14 @@ export function TaskDetail({
   }
   /* Only now, with the request completed and no error, does absent mean
      absent. */
-  if (!data)
+  if (!view)
     return (
       <Panel>
         <ErrorState title="Task not found" body="It may have been deleted." />
       </Panel>
     );
 
-  const v = data;
+  const v = view;
   const meta = statusMeta(v);
   const action = nextAction(v, me ?? "");
 

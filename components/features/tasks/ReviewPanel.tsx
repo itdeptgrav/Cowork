@@ -10,6 +10,7 @@ import {
   Panel,
   PermissionDenied,
   ProvisionalBadge,
+  Segmented,
   SkeletonRows,
   Textarea,
 } from "@/components/ui/Primitives";
@@ -50,6 +51,53 @@ import type { ReviewDecision, TaskSubmission } from "@/lib/domain";
  * panel can never sit on a decision it offers no way to reach.
  */
 const OFFER_REJECTION = false;
+
+/**
+ * The three decisions, and what each one costs and does.
+ *
+ * One table rather than three blocks of markup, because the reviewer reads
+ * these as a set: the cost belongs ON the option so it is legible before the
+ * choice, and the sentence belongs UNDER the chosen one so it explains a
+ * decision instead of competing with the alternative. Written once here, so the
+ * control and the line beneath it cannot come to say different things.
+ *
+ * `rejected` stays in the table while `OFFER_REJECTION` is false — hidden, not
+ * removed, which is the whole of the 16 Aug 2026 decision. Flipping the flag
+ * restores the option with its copy intact and nothing else to write.
+ *
+ * The rework sentence changed with the rule on 16 Aug 2026 — see
+ * `reworkDeadline`. It read "Time left at submission is re-granted", which is
+ * the rule that was replaced: copy restating a rule is a second place that rule
+ * lives, and this one told reviewers they handed back the leftover while the
+ * engine granted a fresh hour.
+ */
+const DECISIONS: {
+  id: ReviewDecision;
+  label: string;
+  /** Shown on the option itself. Empty where a decision costs nothing. */
+  cost: string;
+  /** Shown under the row, for the chosen decision only. */
+  consequence: string;
+}[] = [
+  {
+    id: "approved",
+    label: "Approve",
+    cost: "",
+    consequence: "Closes the task and settles its score. No deduction.",
+  },
+  {
+    id: "rework",
+    label: "Rework",
+    cost: `−${REWORK_DEDUCTION}`,
+    consequence: `Back to in progress, and −${REWORK_DEDUCTION} per occurrence — a confirmed rule. Gets back the time it had left at submission, if it was handed in on time.`,
+  },
+  {
+    id: "rejected",
+    label: "Reject",
+    cost: `−${PROVISIONAL_RULES.rejectionDeduction.value}`,
+    consequence: `Records an adverse review; resubmission stays possible. The −${PROVISIONAL_RULES.rejectionDeduction.value} is a placeholder pending an owner decision.`,
+  },
+];
 
 /**
  * Review: approve, rework or reject.
@@ -256,49 +304,6 @@ export function ReviewPanel({
   );
 }
 
-function Choice({
-  active,
-  onClick,
-  title,
-  body,
-  impact,
-  tone,
-  confirmed = false,
-}: {
-  id: string;
-  active: boolean;
-  onClick: () => void;
-  title: string;
-  body: string;
-  impact: string;
-  tone: "positive" | "rework" | "overdue";
-  confirmed?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`rounded-inset px-3 py-2.5 text-left transition-colors ${
-        active
-          ? "bg-[var(--control-active)] shadow-[inset_0_0_0_1.5px_var(--color-ink)]"
-          : "bg-[var(--surface-sunken)] hover:bg-[var(--control)]"
-      }`}
-    >
-      <span className="flex items-center gap-1.5">
-        <span className="text-sm font-medium text-ink">{title}</span>
-      </span>
-      <span className="mt-1 block text-[11px] text-ink-faint">{body}</span>
-      <span className="mt-2 flex items-center gap-1">
-        <Chip tone={tone}>{impact}</Chip>
-        {confirmed && (
-          <span className="text-[11px] text-ink-faint">confirmed</span>
-        )}
-      </span>
-    </button>
-  );
-}
-
 /**
  * The decision itself: Approve or Rework, its consequences, and the note.
  *
@@ -404,8 +409,55 @@ export function ReviewDecisionBox({
   );
   const rejectionRule = PROVISIONAL_RULES.rejectionDeduction;
 
+  /**
+   * Who handed this in, when, and whether it arrived on time.
+   *
+   * **Only in the thread.** On the task page the panel above this already
+   * carries it — the submitter's own header, the attempt and the Late chip —
+   * and saying it twice on one screen is the kind of duplication that makes a
+   * reader distrust both copies. In a chat there is no such header: the
+   * decision arrived with no statement of what was being decided, and lateness
+   * in particular is not a detail — it decides whether a rework hands back the
+   * time this person had left.
+   */
+  const submitter =
+    view.assignees.find((a) => a.id === submission.submittedById)
+      ?.displayName ?? null;
+
   const body = (
     <>
+          {compact && (
+            <div className="mb-3 flex flex-wrap items-baseline gap-x-2 gap-y-1 text-[13px] text-ink-muted">
+              <span className="text-ink">
+                {submitter ? `${submitter} submitted` : "Submitted"}
+              </span>
+              <span aria-hidden className="text-ink-faint">
+                ·
+              </span>
+              <span>{formatDateTime(submission.submittedAt)}</span>
+              <span aria-hidden className="text-ink-faint">
+                ·
+              </span>
+              {submission.wasLate ? (
+                <span className="text-[var(--state-overdue-ink)]">
+                  handed in late
+                </span>
+              ) : (
+                <span>on time</span>
+              )}
+              {submission.attempt > 1 && (
+                <>
+                  <span aria-hidden className="text-ink-faint">
+                    ·
+                  </span>
+                  <span>
+                    attempt <span data-figure>{submission.attempt}</span>
+                  </span>
+                </>
+              )}
+            </div>
+          )}
+
           <h2 className="text-sm font-medium text-ink">Your decision</h2>
 
           {/**
@@ -462,45 +514,39 @@ export function ReviewDecisionBox({
             </div>
           )}
 
-          <div
-            className={`mt-3 grid gap-2 ${OFFER_REJECTION ? "sm:grid-cols-3" : "sm:grid-cols-2"}`}
-          >
-            <Choice
-              id="approved"
-              active={decision === "approved"}
-              onClick={() => setDecision("approved")}
-              title="Approve"
-              body="Closes the task and settles its score."
-              impact="No deduction"
-              tone="positive"
+          {/**
+           * **One row to choose with, one line to explain the choice.**
+           *
+           * This was three-in-a-row cards, each carrying a title, a full
+           * sentence and a chip. In a task thread — a column, not a page — that
+           * is two tall blocks of prose to read before making a choice between
+           * two words, and the reviewer had to read the consequences of the
+           * option they were NOT taking to find the one they were.
+           *
+           * The same control the rest of the product uses for "which of these",
+           * then the consequence of the SELECTED decision underneath. Nothing is
+           * hidden that a reviewer needs: the cost of each option is on its own
+           * button, so it is legible before the choice, and the sentence follows
+           * the choice rather than competing with it. Selecting decides nothing
+           * on its own — the submit button below is the irreversible step.
+           */}
+          <div className="mt-3">
+            <Segmented
+              label="Your decision"
+              size="sm"
+              value={decision}
+              onChange={(next: ReviewDecision) => setDecision(next)}
+              options={DECISIONS.filter(
+                (d) => d.id !== "rejected" || OFFER_REJECTION,
+              ).map((d) => ({
+                id: d.id,
+                label: d.cost ? `${d.label} · ${d.cost}` : d.label,
+                hint: d.consequence,
+              }))}
             />
-            {/* `body` changed with the rule on 16 Aug 2026 — see
-                `reworkDeadline`. It still read "Time left at submission is
-                re-granted", which is the rule that was replaced: copy restating
-                a rule is a second place that rule lives, and this one was
-                telling reviewers they handed back the leftover while the engine
-                granted a fresh hour. */}
-            <Choice
-              id="rework"
-              active={decision === "rework"}
-              onClick={() => setDecision("rework")}
-              title="Rework"
-              body="Back to in progress. Gets back the time it had left at submission, if it was handed in on time."
-              impact={`−${REWORK_DEDUCTION} per occurrence`}
-              tone="rework"
-              confirmed
-            />
-            {OFFER_REJECTION && (
-              <Choice
-                id="rejected"
-                active={decision === "rejected"}
-                onClick={() => setDecision("rejected")}
-                title="Reject"
-                body="Records an adverse review. Resubmission stays possible."
-                impact={`−${rejectionRule.value} placeholder`}
-                tone="overdue"
-              />
-            )}
+            <p className="mt-2 text-[13px] leading-relaxed text-ink-muted">
+              {DECISIONS.find((d) => d.id === decision)?.consequence}
+            </p>
           </div>
 
           {/* Either kind of requirement makes this worth showing. Gating on the

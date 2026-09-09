@@ -153,6 +153,17 @@ const ACCOUNT_SCOPED_KEYS = [
 ] as const;
 
 /**
+ * Keys that belong to a person but are stored one-per-viewer, so they cannot be
+ * named up front.
+ *
+ * `cowork.tasks.defaultScope.<employeeId>` is the Tasks page's remembered
+ * landing tab — see `lib/rules/tasks/scopePreference.ts`. It is as
+ * person-scoped as the lens above; it simply carries the id in the key, so it
+ * is cleared by prefix rather than by name.
+ */
+const ACCOUNT_SCOPED_PREFIXES = ["cowork.tasks.defaultScope."] as const;
+
+/**
  * Forget the person, keep the machine.
  *
  * Called on sign-out, and on any resolution where the signed-in uid is not the
@@ -162,6 +173,16 @@ export function forgetAccountScopedState(extraKeys: readonly string[] = []): voi
   try {
     for (const key of [...ACCOUNT_SCOPED_KEYS, ...extraKeys])
       window.localStorage.removeItem(key);
+    /* The per-viewer ones, which cannot be listed by name. Collected before
+       removing: `key(i)` is a live index into the store, so deleting while
+       walking it skips entries. */
+    const prefixed: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i += 1) {
+      const key = window.localStorage.key(i);
+      if (key && ACCOUNT_SCOPED_PREFIXES.some((p) => key.startsWith(p)))
+        prefixed.push(key);
+    }
+    for (const key of prefixed) window.localStorage.removeItem(key);
   } catch {
     /* Storage disabled. Nothing here is required for correctness of the new
        session — it is the OLD one's residue — so failing to clear it must not

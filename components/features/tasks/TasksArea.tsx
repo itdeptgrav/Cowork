@@ -3,7 +3,7 @@
 import { isActivePriorityTask } from "@/lib/rules/tasks/activeQueue";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ApprovalKind } from "@/lib/domain";
 import type { TaskView } from "@/lib/repositories";
 import { TaskTable } from "./TaskTable";
@@ -25,8 +25,14 @@ import {
 } from "@/components/ui/Primitives";
 import type { SubmissionTiming } from "@/lib/rules/tasks/submissionTiming";
 import { useQuery } from "@/lib/hooks/useRepository";
-import { usePermissions } from "@/lib/hooks/usePermissions";
+import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import type { TaskScope } from "@/lib/repositories";
+import {
+  openingScope,
+  readStoredScope,
+  shouldOfferDefault,
+  taskScopeKey,
+} from "@/lib/rules/tasks/scopePreference";
 
 /**
  * The Tasks workspace.
@@ -55,6 +61,18 @@ export function TasksArea() {
      broken rather than as moved. */
   const requested = params.get("view") ?? "overview";
   const view = VIEWS.includes(requested) ? requested : "overview";
+  /**
+   * Whether this person's `task.view` reaches past themselves.
+   *
+   * Declared here, above the counts, because those counts now ask for a scope
+   * only where the row that shows it exists — see the note on `team` below.
+   * `scopeFor` answers null until the permission read lands, so this is false
+   * for the first beat and the counts it gates simply start a moment later.
+   */
+  const hasTeam =
+    viewScope === "direct_reports" ||
+    viewScope === "hierarchy" ||
+    viewScope === "organisation";
   /* No "Needs you" pill here any more. Everything waiting on this person lives
      in the action inbox, and showing the same rows in both places taught people
      to check one and distrust the other. Tasks answers "what is the state of
@@ -73,31 +91,66 @@ export function TasksArea() {
    */
   const [scopeChoice, setScopeChoice] = useState<TaskScope | null>(null);
   const [layout, setLayout] = useState<"list" | "board">("list");
+  /**
+   * The scope this person has chosen to OPEN on, read once after mount.
+   *
+   * Read in an effect rather than in a lazy initialiser: `localStorage` does
+   * not exist while this renders on the server, and seeding it on the client
+   * only would make the first client render disagree with the server's —
+   * a hydration mismatch on the one control the whole page is keyed to.
+   */
+  const [storedScope, setStoredScope] = useState<TaskScope | null>(null);
+  /* Scopes they have said "not now" to. Held for the visit, so declining is
+     not a decision they have to keep making every time they toggle. */
+  const [declined, setDeclined] = useState<TaskScope[]>([]);
+  const viewerId = useViewerId();
+  useEffect(() => {
+    if (!viewerId) return;
+    try {
+      setStoredScope(
+        readStoredScope(window.localStorage.getItem(taskScopeKey(viewerId))),
+      );
+    } catch {
+      /* Storage disabled. The default stands, which is the answer this page is
+         built to be correct with anyway. */
+    }
+  }, [viewerId]);
 
   const mine = useQuery(
     (r) => r.listTasks({ scope: "mine" }).then((p) => p.total),
     [],
   );
+  /**
+   * **Each count is fetched only where it is shown.**
+   *
+   * All six ran on every load of every tab, and three of them were rendered
+   * nowhere at all — `self_assigned` and `submitted` were read into variables
+   * the markup never mentions, and `assigned_out` and `all` belong to scope
+   * rows most viewers never see. That was four whole task lists fetched over
+   * the network, and thrown away, before the page could draw; every one of
+   * them ran again on every write, because `listTasks` is invalidated by any
+   * mutation.
+   *
+   * The hooks stay where they are and stay unconditional — what changes is
+   * whether the fetcher asks the repository anything. `Promise.resolve(null)`
+   * is the same shape the rest of this codebase uses for a query that has
+   * nothing to ask yet, and it costs no round trip.
+   */
   const team = useQuery(
-    (r) => r.listTasks({ scope: "team" }).then((p) => p.total),
-    [],
+    (r) =>
+      hasTeam
+        ? r.listTasks({ scope: "team" }).then((p) => p.total)
+        : Promise.resolve(null),
+    [hasTeam],
   );
-  /* These two counted the two scopes the filter no longer offers. They are left
-     in place, and reporting as unused, on purpose: this pass moves and prunes
-     markup and is not permitted to add, remove or reorder a hook, because the
-     source-reading tests assert on where hooks sit. Removing them is a separate,
-     deliberate change — see the note beside `scopeOptions`. */
+  /* Offered to people WITHOUT a team — a manager's My team already carries the
+     work they sent out. */
   const out = useQuery(
-    (r) => r.listTasks({ scope: "assigned_out" }).then((p) => p.total),
-    [],
-  );
-  const selfAssigned = useQuery(
-    (r) => r.listTasks({ scope: "self_assigned" }).then((p) => p.total),
-    [],
-  );
-  const submitted = useQuery(
-    (r) => r.listTasks({ scope: "submitted" }).then((p) => p.total),
-    [],
+    (r) =>
+      hasTeam
+        ? Promise.resolve(null)
+        : r.listTasks({ scope: "assigned_out" }).then((p) => p.total),
+    [hasTeam],
   );
   /* The badge counts the SAME list the tab renders. It used to count
      `listReviewQueue`, which is submission reviews only — so an approval
@@ -159,9 +212,13 @@ export function TasksArea() {
       : []),
   ];
 
+  /* Organisation scope only, so for almost everybody this asks for nothing. */
   const all = useQuery(
-    (r) => r.listTasks({ scope: "all" }).then((p) => p.total),
-    [],
+    (r) =>
+      viewScope === "organisation"
+        ? r.listTasks({ scope: "all" }).then((p) => p.total)
+        : Promise.resolve(null),
+    [viewScope],
   );
 
   /**
@@ -183,26 +240,23 @@ export function TasksArea() {
    * "Everyone" is kept. It is organisation-scope only, so it is absent for
    * almost everybody and was not on the row this replaces.
    */
-  const hasTeam =
-    viewScope === "direct_reports" ||
-    viewScope === "hierarchy" ||
-    viewScope === "organisation";
 
   /**
-   * **My team is where a manager's page opens.**
+   * **The page opens on My tasks, unless this person has said otherwise.**
+   * OWNER DECISION, 9 Sep 2026 — reversing "a manager opens on My team".
    *
-   * Their own queue is the smaller question — a manager wants to see what the
-   * team is carrying, and had to press My team to get there every time. Anyone
-   * without a team has no My team tab to open on, so they still land on My
-   * tasks; the default follows the tabs that exist rather than naming a scope
-   * that would resolve to nothing.
+   * That default was reasonable for the LIST and wrong for everything else,
+   * because the same scope feeds the Overview: `team` deliberately drops a task
+   * whose only holder is the viewer (`teamScopeKeeps`), so a manager's own work
+   * was missing from their own summary. Pressing My tasks fixed it and kept it
+   * fixed — this component does not unmount between tabs — which is exactly how
+   * it was reported: "it is not showing in the overview, and after I open My
+   * tasks it shows".
    *
-   * Derived, never written into state: `hasTeam` is false until the permission
-   * read lands, so writing it would either flash the wrong tab or need an
-   * effect that fights the reader's first click.
+   * So the default is the scope that is never empty for a reason you have to
+   * know a rule to understand, and opening somewhere else is a choice this
+   * person makes and keeps — see `scopePreference`.
    */
-  const scope: TaskScope = scopeChoice ?? (hasTeam ? "team" : "mine");
-
   const scopeOptions = [
     { id: "mine" as const, label: "My tasks", count: mine.data ?? undefined },
     ...(hasTeam
@@ -247,6 +301,29 @@ export function TasksArea() {
   ];
 
   /**
+   * **The page opens on My tasks, unless this person has said otherwise.**
+   * OWNER DECISION, 9 Sep 2026 — reversing "a manager opens on My team".
+   *
+   * That default was reasonable for the LIST and wrong for everything else,
+   * because the same scope feeds the Overview: `team` deliberately drops a task
+   * whose only holder is the viewer (`teamScopeKeeps`), so a manager's own work
+   * was missing from their own summary. Pressing My tasks fixed it and kept it
+   * fixed — this component does not unmount between tabs — which is exactly how
+   * it was reported: "it is not showing in the overview, and after I go to My
+   * tasks it shows".
+   *
+   * So the default is the one scope that is never empty for a reason you would
+   * have to know a rule to understand, and opening anywhere else is a choice
+   * this person makes and keeps — see `scopePreference`.
+   */
+  const offeredScopes = scopeOptions.map((o) => o.id as TaskScope);
+  const scope: TaskScope = openingScope({
+    chosenThisVisit: scopeChoice,
+    stored: storedScope,
+    offered: offeredScopes,
+  });
+
+  /**
    * The scope switch, built here and rendered DOWN in the list's own toolbar.
    *
    * It sat on the tab row, one line above the filter beside it — two controls
@@ -259,14 +336,22 @@ export function TasksArea() {
    * of them without the other losing it. It is handed to the table as a node
    * and rendered above the board, which has no toolbar of its own.
    */
+  /**
+   * Shown on the Overview as well as the list.
+   *
+   * The Overview's own note has always said the switch belongs there too —
+   * without it that page is locked to whatever scope is set, with nothing on
+   * screen saying which. It rendered `{scopeControl}` into an empty div,
+   * because this was gated on the list. It is the same control either way.
+   */
   const scopeControl =
-    view === "tasks" ? (
+    view === "tasks" || view === "overview" ? (
       <Segmented
         data-help="task-scope-switch"
         label="Task scope"
         size="sm"
         value={scope}
-        onChange={setScopeChoice}
+        onChange={(next) => setScopeChoice(next)}
         /* Scopes appear only where the viewer's `task.view` actually reaches.
            An individual contributor sees "Mine" and "Assigned out"; a manager
            gains "My team"; only organisation scope gains "Everyone". Offering a
@@ -275,6 +360,73 @@ export function TasksArea() {
         options={scopeOptions}
       />
     ) : null;
+
+  /**
+   * "Open here next time?" — asked once, where the choice was made.
+   *
+   * Only when the answer would change something: the scope just chosen is not
+   * the one this page already opens on. Declining is remembered for the visit,
+   * so toggling back and forth does not ask again — a question that returns
+   * every time is one people learn to click past without reading.
+   */
+  const offerDefault =
+    scopeChoice !== null &&
+    shouldOfferDefault({
+      chosen: scopeChoice,
+      stored: storedScope,
+      offered: offeredScopes,
+      declined,
+    });
+  const chosenLabel =
+    scopeOptions.find((o) => o.id === scopeChoice)?.label ?? "this";
+
+  const defaultPrompt =
+    offerDefault && scopeChoice ? (
+        <div className="mb-2 flex flex-wrap items-center gap-2 rounded-inset bg-[var(--surface-sunken)] px-3 py-2">
+          <span className="text-[12px] text-ink-muted">
+            Open Tasks on “{chosenLabel}” next time?
+          </span>
+          <Button
+            size="sm"
+            tone="secondary"
+            onClick={() => {
+              setStoredScope(scopeChoice);
+              if (viewerId) {
+                try {
+                  window.localStorage.setItem(
+                    taskScopeKey(viewerId),
+                    scopeChoice,
+                  );
+                } catch {
+                  /* Storage refused — a private window, or it is disabled. The
+                     choice still holds for this visit; only remembering it for
+                     the next one is lost, and that is not worth an error. */
+                }
+              }
+            }}
+          >
+            Yes, remember it
+          </Button>
+          <Button
+            size="sm"
+            tone="ghost"
+            onClick={() => setDeclined((d) => [...d, scopeChoice])}
+          >
+            Not now
+          </Button>
+        </div>
+    ) : null;
+
+  /* The switch and the question together, for the two places that have no
+     toolbar of their own to put the switch in. */
+  const scopeRow = (
+    <>
+      <div className="mb-2 flex flex-wrap items-center gap-1.5">
+        {scopeControl}
+      </div>
+      {defaultPrompt}
+    </>
+  );
 
   return (
     <>
@@ -328,24 +480,25 @@ export function TasksArea() {
            Overview simply did not, which read as "the Overview cannot show what
            I gave to others". Same placement the board uses. */
         <>
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            {scopeControl}
-          </div>
+          {scopeRow}
           <TasksOverview scope={scope} />
         </>
       )}
       {view === "tasks" &&
         (layout === "list" ? (
-          <TaskTable scope={scope} scopeControl={scopeControl} />
+          <>
+            {/* The switch itself rides in the table's own toolbar, so only the
+                "open here next time?" line needs a place of its own. */}
+            {defaultPrompt}
+            <TaskTable scope={scope} scopeControl={scopeControl} />
+          </>
         ) : (
           /* The board has no toolbar row of its own and its loading, error and
              empty branches return before any chrome — so the control is placed
              around it rather than inside it. A scope you cannot leave because
              it happens to be empty is the state that would create. */
           <>
-            <div className="mb-2 flex flex-wrap items-center gap-1.5">
-              {scopeControl}
-            </div>
+            {scopeRow}
             <TaskBoard scope={scope} />
           </>
         ))}

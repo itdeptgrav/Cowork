@@ -42,6 +42,22 @@ export interface LegacyRequest {
   envelopeKey?: string;
   /** Firebase ID token. Absent means the call goes out unauthenticated. */
   token?: string | null;
+  /**
+   * Sent as `Idempotency-Key`, for the routes that require one.
+   *
+   * The store-purchase middleware every inventory write goes through
+   * (`Middlewear/storePurchaseTenant.js`) refuses a mutation that carries no
+   * key — "This action needs an Idempotency-Key header so a retry cannot repeat
+   * it" — and there was no way to send one from here, so every MRF create,
+   * approval, rejection, cancellation and chat message was refused before it
+   * reached a handler.
+   *
+   * One key per user-initiated action, generated at the call site. The header
+   * exists so that RETRYING one action cannot perform it twice; two separate
+   * presses are two actions and get two keys. Guarding against a double press
+   * is a different job, and `useAction` already does it.
+   */
+  idempotencyKey?: string;
   signal?: AbortSignal;
   /** Override the default 20s timeout for calls that are expected to be slow. */
   timeoutMs?: number;
@@ -137,6 +153,7 @@ export async function legacyFetch<T>(
   const headers: Record<string, string> = { Accept: "application/json" };
   if (request.token) headers.Authorization = `Bearer ${request.token}`;
   if (request.body !== undefined) headers["Content-Type"] = "application/json";
+  if (request.idempotencyKey) headers["Idempotency-Key"] = request.idempotencyKey;
 
   /**
    * **Every request is bounded, because none of them was.**

@@ -87,6 +87,52 @@ export function invalidateQueries(...methods: string[]): void {
   for (const l of staleListeners) l(methods);
 }
 
+/**
+ * A read the writer already performed, handed to the query cache.
+ *
+ * **The round trip this removes.** Every task mutation reads the whole task
+ * view back before it answers — `#afterWrite` needs it to return the record and
+ * to renumber the affected queues — and then the version bump on the next line
+ * makes the page fetch that same task again, from scratch. Two full read chains
+ * for one press, the second of them asking a question the first had just
+ * answered.
+ *
+ * This is the seam that lets the first answer serve the second read. It is not
+ * a cache with a lifetime: `useRepository` keeps it for one hand-off, checks it
+ * is seconds old, serves it once and deletes it. What is handed over is the
+ * freshest possible copy — read after the write landed — so there is no window
+ * in which it can be wrong.
+ *
+ * The signal goes through this module rather than the repository importing the
+ * hook, for the same reason every other cache signal does: the repository
+ * announces what happened, and the query layer decides what to do about it.
+ */
+const preloadListeners = new Set<
+  (methodName: string, deps: unknown[], data: unknown) => void
+>();
+
+/** Subscribe to "here is an answer you are about to ask for". */
+export function subscribeToPreload(
+  listener: (methodName: string, deps: unknown[], data: unknown) => void,
+): () => void {
+  preloadListeners.add(listener);
+  return () => preloadListeners.delete(listener);
+}
+
+/**
+ * Publish a read the caller has just performed.
+ *
+ * Call it BEFORE `notifyRepositoryChanged`, so the answer is waiting when the
+ * bump sends every query looking.
+ */
+export function publishPreload(
+  methodName: string,
+  deps: unknown[],
+  data: unknown,
+): void {
+  for (const l of preloadListeners) l(methodName, deps, data);
+}
+
 const purgeAllListeners = new Set<() => void>();
 
 /** Subscribe to "throw away every cached read". Only the query cache listens. */

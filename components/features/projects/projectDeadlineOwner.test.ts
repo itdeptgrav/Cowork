@@ -86,30 +86,53 @@ test("hasTimer stays false, or the deadline would be discarded", () => {
   assert.match(src.slice(at, at + 2500), /hasTimer: false,/);
 });
 
-/* ── The cap now reaches tasks inside a project ───────────────────────────── */
+/* ── The creation form no longer caps by the parent's deadline ────────────── */
 
-test("a parent deadline caps a task in a PROJECT as well as a subtask", () => {
-  /* Before this, `isSubtask` excluded folders — correctly, since a project had
-     no date that could be breached. */
-  assert.match(
-    code(TASK_FORM),
-    /const capApplies =\s*isSubtask \|\|\s*\(parent\?\.task\.isFolder === true && parentDueAtMs !== null\);/,
+/**
+ * **OWNER DECISION, 8 Sep 2026 — the creation-time half of the cap is gone.**
+ *
+ * These three tests previously pinned the opposite: that `capApplies` reached
+ * a task inside a project, that a project with no deadline capped nothing, and
+ * that the Create button obeyed the verdict. The rule they protected is the
+ * one that was reversed, so they are rewritten rather than deleted — a removed
+ * test says nothing about why, and the next person to read `subtaskDeadlineCap`
+ * would reasonably wire it back into this form.
+ *
+ * What was wrong with it: inside a reporting line no deadline is typed. A
+ * budget is entered and the date is derived at acceptance, so the form judged
+ * a QUEUE PROJECTION — how long until this assignee, with everything already
+ * ahead of them, would finish. A few hours of work behind a busy queue projects
+ * past almost any near date, so Create went dead over a date that did not exist
+ * yet. The rule module is untouched and still owns the extension path.
+ */
+
+test("the creation form does not judge a child against its parent's deadline", () => {
+  const src = code(TASK_FORM);
+  assert.doesNotMatch(src, /capApplies/, "the creation-time cap is back");
+  assert.doesNotMatch(src, /capVerdict/, "the creation-time cap is back");
+  assert.doesNotMatch(
+    src,
+    /subtaskDeadlineCap|capRefusal/,
+    "the form imports the cap rule again — it is the extension path's, not this form's",
   );
 });
 
-test("a project with NO deadline caps nothing", () => {
-  /* `parentDueAtMs !== null` is the clause that makes it so: without a project
-     deadline the task is bounded only by its assignee's own queue, which is
-     the behaviour that already existed. */
+test("nothing in the create button gates on a parent deadline", () => {
+  /* The disabled expression is where the refusal actually bit. Whatever else it
+     grows, it must not grow this back. */
   const src = code(TASK_FORM);
-  const at = src.indexOf("const capApplies =");
-  assert.match(src.slice(at, at + 200), /parentDueAtMs !== null/);
+  const at = src.indexOf("disabled={");
+  assert.ok(at > 0, "the create button's disabled expression moved");
+  assert.doesNotMatch(src.slice(at), /capVerdict|capApplies|parentDueAtMs/);
 });
 
-test("the cap decides what is judged, and the create button obeys it", () => {
-  const src = code(TASK_FORM);
-  assert.match(src, /const proposedDueAtMs = !capApplies/, "the judged instant still gates on isSubtask");
-  assert.match(src, /!capVerdict\.allowed \|\|/, "the create button no longer honours the cap");
+test("the rule module itself is left intact for the extension path", () => {
+  /* Removing the form's use of it is not removing the rule: `capRaiseOffer` is
+     what an approver is shown when granting an extension would breach a parent,
+     and that is untouched. */
+  const src = code(CAP);
+  assert.match(src, /export function subtaskDeadlineCap\(/);
+  assert.match(src, /export function capRaiseOffer\(/);
 });
 
 test("isSubtask is left alone", () => {

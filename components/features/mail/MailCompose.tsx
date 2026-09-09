@@ -476,7 +476,12 @@ export function MailCompose({
                 onChange={(e) => setSubject(e.target.value)}
                 className="pr-9"
               />
-              <div className="absolute top-1/2 right-1.5 -translate-y-1/2">
+              {/* `inset-y-0` with flex centring, NOT `top-1/2 -translate-y-1/2`: a
+                  transform creates a STACKING CONTEXT, and the panel this button
+                  opens is `absolute z-50` inside it — so its z-index could not
+                  escape a 24px box and the field below painted over the open
+                  popover. Same position, no new context. */}
+              <div className="absolute inset-y-0 right-1.5 flex items-center">
                 <AiTextAssistButton
                   value={subject}
                   onApply={setSubject}

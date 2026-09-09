@@ -15,6 +15,7 @@ import {
   Panel,
   ProvisionalBadge,
   Select,
+  SkeletonRows,
   Textarea,
 } from "@/components/ui/Primitives";
 import {
@@ -25,16 +26,12 @@ import {
   pendingMessage,
   requirementCoverage,
 } from "@/lib/rules/tasks/requirementCoverage";
-import {
-  capRefusal,
-  subtaskDeadlineCap,
-} from "@/lib/rules/tasks/subtaskDeadlineCap";
-import { formatDateTime } from "@/lib/utils/format";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import { usePermissions, useViewerId } from "@/lib/hooks/usePermissions";
 import {
   commitCriterion,
   removeCriterion,
+  subtaskCriteria,
 } from "@/lib/rules/tasks/criteria";
 import {
   assignmentGate,
@@ -413,49 +410,45 @@ export function NewTaskForm({
   const coverage = requirementCoverage(parent?.completion.requirements ?? []);
   const duplicates = duplicateClaims(claims, coverage);
   const stillPending = pendingAfter(claims, coverage);
+  /**
+   * The claimed requirements in the PARENT's own words.
+   *
+   * `claims` holds ids, which is what the engine links by; this is the same set
+   * as text, because that is what an acceptance criterion is. Read off the
+   * parent rather than remembered when the row was pressed, so a requirement
+   * reworded on the parent while this form is open goes in as it now reads.
+   */
+  const claimedRequirementTexts = (parent?.completion.requirements ?? [])
+    .filter((r) => claims.includes(r.requirement.id))
+    .map((r) => r.requirement.text);
+  /**
+   * What the subtask is actually created with: the requirement it was raised to
+   * close, followed by whatever was typed for it here. See `subtaskCriteria`.
+   */
+  const subtaskRequirements = subtaskCriteria(
+    claimedRequirementTexts,
+    requirements,
+  );
   const [goalId, setGoalId] = useState("");
   /**
-   * **A subtask may not be due after its project.** OWNER DECISION, 16 Aug 2026.
+   * **This form no longer caps a child's time by its parent's deadline.**
+   * OWNER DECISION, 8 Sep 2026 — reversing the creation-time half of the
+   * 16 Aug 2026 cap.
    *
-   * Checked here as a courtesy and enforced again at acceptance — see
-   * `subtaskDeadlineCap`. Only one of the two shapes can be checked exactly:
+   * What stood here refused to create the task at all, and the common case it
+   * refused was not a late promise. Inside a reporting line no date is typed:
+   * a budget is entered and the deadline is DERIVED at acceptance, so the form
+   * stood in a queue projection — how long until this assignee, with everything
+   * already ahead of them, would finish. Four hours of work behind a busy queue
+   * projects past almost any near date, so the button went dead over a figure
+   * nobody had chosen and that no date had yet been set from. A guess is not
+   * grounds for a refusal.
    *
-   *  · **A typed date** (cross-department) is the real deadline, so this is the
-   *    whole answer and the form refuses outright.
-   *  · **A budget** (inside a reporting line) has no date yet — the deadline is
-   *    derived at acceptance from when the assignee first comes online. So the
-   *    queue projection stands in, and the wording says "would". It is a
-   *    warning worth having and not a guarantee, which is why the engine checks
-   *    again with the real date.
+   * Nothing else changed. `subtaskDeadlineCap` and `capRaiseOffer` are
+   * untouched and still own the extension path, and the engine still answers
+   * `AFTER_PARENT_DEADLINE` where it applies — this only stops the creation
+   * form pre-empting a date that does not exist yet.
    */
-  const parentDueAtMs = parent?.task.deadline.dueAt
-    ? Date.parse(parent.task.deadline.dueAt)
-    : null;
-  /**
-   * Whether a parent's deadline constrains this task at all.
-   *
-   * Two shapes reach the cap, and they arrive by different routes:
-   *
-   *  · **A subtask**, which has always been capped by its parent task —
-   *    OWNER DECISION, 16 Aug 2026, `subtaskDeadlineCap`.
-   *  · **A task inside a PROJECT that carries its own deadline.** This is new,
-   *    and it could not exist before: a project had no date of its own, so
-   *    `isSubtask` excluding folders excluded nothing that could be breached.
-   *    Now that a project may be given one, work underneath it must fit — a
-   *    part due after the whole is a promise nobody can keep.
-   *
-   * `isSubtask` is deliberately left alone. It governs the subtask CHROME —
-   * the requirement picker, the claim rules — none of which applies to a task
-   * sitting in a folder, and widening it would put that whole apparatus on a
-   * form that has no business showing it.
-   *
-   * A project WITHOUT a deadline yields null here and therefore no cap, which
-   * is precisely the existing behaviour: the task is bounded by its assignee's
-   * own queue and nothing else.
-   */
-  const capApplies =
-    isSubtask ||
-    (parent?.task.isFolder === true && parentDueAtMs !== null);
   /**
    * C2 · the share of the company's goal points this task claims.
    *
@@ -579,45 +572,6 @@ export function NewTaskForm({
   const mode = relationship.deadlineMode;
   const relationCopy = RELATIONSHIP_COPY[relationship.relation];
 
-  /**
-   * The projected finish for a budgeted subtask — see `parentDueAtMs` above.
-   *
-   * `taskId` is deliberately omitted: this task does not exist yet, and the
-   * projection is a question about the ASSIGNEE's queue, not about a document.
-   * Skipped entirely unless it can answer anything — no parent deadline to
-   * breach, no assignee to schedule against, or a typed date already known.
-   */
-  const projection = useQuery(
-    (r) =>
-      capApplies && mode === "timer" && parentDueAtMs !== null && assignees[0]
-        ? r.previewDeadlineFeasibility({
-            employeeId: assignees[0],
-            estimatedWorkSeconds: budgetSecs,
-            committedDeadline: parent?.task.deadline.dueAt ?? null,
-          })
-        : Promise.resolve(null),
-    [capApplies, mode, parentDueAtMs, assignees[0], budgetSecs],
-  );
-
-  /* The instant being judged: the typed date where there is one, otherwise the
-     projected finish. Null when neither is known, which the cap reads as "no
-     evidence of a breach" rather than as a breach. */
-  const proposedDueAtMs = !capApplies
-    ? null
-    : mode === "fixed"
-      ? Date.parse(fixedDueAt)
-      : projection.data?.estimatedCompletionTime
-        ? Date.parse(projection.data.estimatedCompletionTime)
-        : null;
-  const capVerdict = subtaskDeadlineCap({ parentDueAtMs, proposedDueAtMs });
-  const capMessage = capRefusal({
-    verdict: capVerdict,
-    parentLabel: parent?.task.deadline.dueAt
-      ? formatDateTime(parent.task.deadline.dueAt)
-      : "",
-    projected: mode !== "fixed",
-  });
-
   /* Which approval this assignment will need, from the same resolver the
      repository routes it with. Shown before anything is saved — legacy created
      the task and let the gate appear afterwards, so the assigner had no idea
@@ -691,12 +645,12 @@ export function NewTaskForm({
           description: description || null,
           assigneeIds: effectiveAssignees,
           satisfiesRequirementIds: claims,
-          /* The child's OWN acceptance criteria, which this call left out — so
-             criteria typed into the subtask form were dropped while the same
-             field on an ordinary task saved. Two different things: `claims`
-             names the PARENT's requirements this child closes; these are what
-             has to be true before the child itself is done. */
-          requirements,
+          /* The child's acceptance criteria: the parent requirements it claims,
+             then whatever was typed here — see `subtaskCriteria`. `claims`
+             still names those requirements by id, which is what the parent
+             links by; this is the same promise written where the person doing
+             the subtask and the person reviewing it will actually read it. */
+          requirements: subtaskRequirements,
           fixedDueAt:
             mode === "fixed" ? isoFromLocal(fixedDueAt) : null,
           senderWindowSecs: mode === "timer" ? budgetSecs : null,
@@ -759,6 +713,35 @@ export function NewTaskForm({
 
   const isMulti = assignees.length > 1;
 
+  /**
+   * **Nothing is drawn until the parent has been read.**
+   *
+   * Which form this IS depends on the parent: breaking a task down asks which
+   * completion requirement the child closes and shows no type picker, while a
+   * task filed in a project is an ordinary new task. `isSubtask` cannot answer
+   * that until `getTask` returns, and it deliberately reads false in the
+   * meantime — so the whole plain form, type picker and all, was rendered for
+   * as long as that read took and then replaced with the subtask form once it
+   * landed. Two different pages for one click, and the first one was wrong.
+   *
+   * Waiting is the honest answer to a question we cannot answer yet. It costs
+   * the same time either way; what it stops is that time being spent showing
+   * somebody a form they did not ask for, with fields they are about to lose.
+   *
+   * Only on the FIRST read: `useQuery` reports `isLoading` for that alone and
+   * keeps the last answer on screen through any later revalidation, so this
+   * cannot blank a form somebody is halfway through filling in.
+   */
+  if (presetParentTaskId && parentView.isLoading) {
+    return (
+      <>
+        <Breadcrumb items={[{ label: "Tasks", href: "/tasks?view=tasks" }]} />
+        <div className="mt-4">
+          <SkeletonRows rows={6} />
+        </div>
+      </>
+    );
+  }
 
   return (
     <>
@@ -988,7 +971,12 @@ export function NewTaskForm({
                   data-help="task-title-field"
                   className="pr-9"
                 />
-                <div className="absolute top-1/2 right-1.5 -translate-y-1/2">
+                {/* `inset-y-0` with flex centring, NOT `top-1/2 -translate-y-1/2`: a
+                    transform creates a STACKING CONTEXT, and the panel this button
+                    opens is `absolute z-50` inside it — so its z-index could not
+                    escape a 24px box and the field below painted over the open
+                    popover. Same position, no new context. */}
+                <div className="absolute inset-y-0 right-1.5 flex items-center">
                   <AiTextAssistButton
                     value={title}
                     onApply={setTitle}
@@ -1046,6 +1034,32 @@ export function NewTaskForm({
               <span className="mb-1.5 block text-sm font-medium text-ink">
                 Acceptance criteria
               </span>
+              {/* **The claimed requirements are saved as criteria too, so say
+                  so here.** They are the reason the subtask exists and they go
+                  on it ahead of anything typed below — see `subtaskCriteria`.
+                  Listing them read-only rather than as editable rows: removing
+                  one here would contradict the claim made above, which is the
+                  chooser's decision to change, not this list's. */}
+              {isSubtask && claimedRequirementTexts.length > 0 && (
+                <div className="mb-2">
+                  <p className="mb-1 text-[11px] text-ink-faint">
+                    From the requirement
+                    {claimedRequirementTexts.length === 1 ? "" : "s"} this
+                    subtask closes — saved with it:
+                  </p>
+                  <ul className="space-y-1">
+                    {claimedRequirementTexts.map((text) => (
+                      <li
+                        key={text}
+                        className="flex items-start gap-2 text-sm text-ink-muted"
+                      >
+                        <Icon.check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                        <span className="min-w-0 flex-1">{text}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {requirements.length > 0 && (
                 <ul className="mb-2 space-y-1">
                   {requirements.map((r, i) =>
@@ -1125,7 +1139,12 @@ export function NewTaskForm({
                       }
                     }}
                   />
-                  <div className="absolute top-1/2 right-1.5 -translate-y-1/2">
+                  {/* `inset-y-0` with flex centring, NOT `top-1/2 -translate-y-1/2`: a
+                      transform creates a STACKING CONTEXT, and the panel this button
+                      opens is `absolute z-50` inside it — so its z-index could not
+                      escape a 24px box and the field below painted over the open
+                      popover. Same position, no new context. */}
+                  <div className="absolute inset-y-0 right-1.5 flex items-center">
                     <AiTextAssistButton
                       value={reqDraft}
                       onApply={setReqDraft}
@@ -1700,16 +1719,6 @@ export function NewTaskForm({
                     </Field>
                   )}
 
-                  {/* **The project's deadline is a ceiling.** Shown against the
-                      control that breaches it, so the fix is in reach — and the
-                      Create button is disabled while it stands, because the
-                      owner asked for the invalid deadline to be prevented and
-                      not merely flagged. */}
-                  {capMessage && (
-                    <p className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3 py-2 text-[11px] leading-relaxed text-[var(--state-rework-ink)]">
-                      {capMessage}
-                    </p>
-                  )}
                 </>
               )}
           </Panel>
@@ -1885,11 +1894,6 @@ export function NewTaskForm({
                    actually submit from — and a task created with no date on
                    the one mode that is defined by its date is not a task. */
                 (mode === "fixed" && !fixedDueAt) ||
-                /* A subtask due after its project is prevented, not merely
-                   warned about — see `subtaskDeadlineCap`. The engine refuses
-                   it too; this saves the round trip and keeps the reason beside
-                   the control that caused it. */
-                !capVerdict.allowed ||
                 (GRAMMAR_GATE_BLOCKS_CREATION && !grammarChecked) ||
                 /**
                  * A goal must claim a share, and it must fit the pool.
