@@ -291,3 +291,154 @@ test("the agreed window wins over the assignor's offer", () => {
     0,
   );
 });
+
+/* ── The head is a task too: nothing is due before it existed ──────────────── */
+
+test("promoting a task raised this afternoon does not date it this morning", () => {
+  /**
+   * **T254, reported.** Raised 15:48 with a three-hour budget, swapped to P1,
+   * and the chain wrote 12:30 — three hours BEFORE the task existed. It arrived
+   * overdue and its timer blocked on the spot.
+   *
+   * The clamp lived in an `else`, so it applied to every task except the head —
+   * and the head is the only position where `queueStartMs` can precede the task,
+   * because that number is a set of MINIMA across the queue. Promote a
+   * late-raised task and it inherited the queue's morning start.
+   */
+  const morning = T0; // 09:30
+  const afternoon = T0 + 6 * HOUR * 1000; // 15:30
+  const moved = chainDeadlines({
+    queue: [
+      task({ taskId: "late", createdAtMs: afternoon, deadlineWindowSecs: 3 * HOUR }),
+      task({ taskId: "old", createdAtMs: morning }),
+    ],
+    anchorMs: morning,
+    addWorkingSecs: plainAdd,
+  });
+
+  assert.equal(
+    moved[0].startsAt,
+    new Date(afternoon).toISOString(),
+    "the head was scheduled before it existed",
+  );
+  assert.equal(moved[0].dueDate, new Date(afternoon + 3 * HOUR * 1000).toISOString());
+  /* And the one behind it still chains off that finish. */
+  assert.equal(moved[1].startsAt, moved[0].dueDate);
+});
+
+test("a head raised BEFORE the queue start still anchors at the queue start", () => {
+  /* The clamp only ever moves an anchor later. A task that existed before the
+     office opened must not drag the queue back to its own creation. */
+  const moved = chainDeadlines({
+    queue: [task({ taskId: "old", createdAtMs: T0 - 5 * HOUR * 1000 })],
+    anchorMs: T0,
+    addWorkingSecs: plainAdd,
+  });
+  assert.equal(moved[0].startsAt, new Date(T0).toISOString());
+});
+
+/* ── The field the documents actually carry ────────────────────────────────── */
+
+test("createdAtISO and createdAt are read, not just createdAtMs", () => {
+  /**
+   * No task document has a `createdAtMs` — all 63 live tasks carry `createdAt`
+   * and `createdAtISO`, and every caller spreads the raw document. Reading one
+   * undeclared name meant this clamp answered null everywhere and silently did
+   * nothing, for every task, for as long as it has existed. The engine reads
+   * `createdAtISO ?? createdAt`; so does this now.
+   */
+  const afternoon = T0 + 6 * HOUR * 1000;
+  const iso = new Date(afternoon).toISOString();
+
+  for (const shape of [
+    { createdAtISO: iso },
+    { createdAt: iso },
+    { createdAt: { _seconds: Math.floor(afternoon / 1000) } },
+    { createdAtMs: afternoon },
+  ]) {
+    const moved = chainDeadlines({
+      queue: [task({ taskId: "h", ...(shape as Partial<QueueTask>) })],
+      anchorMs: T0,
+      addWorkingSecs: plainAdd,
+    });
+    assert.equal(
+      moved[0].startsAt,
+      iso,
+      `not clamped from ${Object.keys(shape)[0]}`,
+    );
+  }
+});
+
+test("createdAtMs still wins where a caller supplies all of them", () => {
+  /* The order is `createdAtMs ?? createdAtISO ?? createdAt`, so a caller that
+     already resolved the instant is not second-guessed. */
+  const a = T0 + 6 * HOUR * 1000;
+  const b = T0 + 2 * HOUR * 1000;
+  const moved = chainDeadlines({
+    queue: [
+      task({
+        taskId: "h",
+        createdAtMs: a,
+        createdAtISO: new Date(b).toISOString(),
+        createdAt: new Date(b).toISOString(),
+      }),
+    ],
+    anchorMs: T0,
+    addWorkingSecs: plainAdd,
+  });
+  assert.equal(moved[0].startsAt, new Date(a).toISOString());
+});
+
+/* ── The invariant the clamp must not break ────────────────────────────────── */
+
+test("swapping two ranks swaps their dates rather than dragging the queue", () => {
+  /**
+   * The reason the note above `queueStartMs` refuses to read the LEADER's
+   * `clockStartsAt`: that stamp encodes queue position, so feeding it back in
+   * moves the whole chain on every reorder. `createdAtMs` carries no such
+   * feedback — when a task was raised is fixed — so clamping on it per task,
+   * head included, must leave this property intact.
+   */
+  const made = T0 - HOUR * 1000; // both raised before the queue starts
+  const first = chainDeadlines({
+    queue: [
+      task({ taskId: "p1", createdAtMs: made }),
+      task({ taskId: "p2", createdAtMs: made }),
+    ],
+    anchorMs: T0,
+    addWorkingSecs: plainAdd,
+  });
+  const swapped = chainDeadlines({
+    queue: [
+      task({ taskId: "p2", createdAtMs: made }),
+      task({ taskId: "p1", createdAtMs: made }),
+    ],
+    anchorMs: T0,
+    addWorkingSecs: plainAdd,
+  });
+
+  /* The two SLOTS keep their dates; the tasks exchange them. */
+  assert.equal(first[0].dueDate, swapped[0].dueDate);
+  assert.equal(first[1].dueDate, swapped[1].dueDate);
+  assert.equal(first[0].taskId, "p1");
+  assert.equal(swapped[0].taskId, "p2");
+});
+
+test("a queue of tasks all raised late starts at the earliest of them", () => {
+  /* Every task clamps individually, so a queue raised entirely this afternoon
+     begins when its own head was raised — not at an opening nobody was there
+     for. */
+  const h = T0 + 6 * HOUR * 1000;
+  const moved = chainDeadlines({
+    queue: [
+      task({ taskId: "a", createdAtMs: h }),
+      task({ taskId: "b", createdAtMs: h + 600_000 }),
+    ],
+    anchorMs: T0,
+    addWorkingSecs: plainAdd,
+  });
+  assert.equal(moved[0].startsAt, new Date(h).toISOString());
+  /* b was raised while a was still running, so it waits for a rather than for
+     its own creation. */
+  assert.equal(moved[1].startsAt, moved[0].dueDate);
+});

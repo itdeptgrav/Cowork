@@ -86,6 +86,18 @@ export interface QueueTask {
    */
   createdAtMs?: unknown;
   /**
+   * The two names a task document ACTUALLY carries for the same instant.
+   *
+   * `createdAtMs` was the only one declared, and no document has that field —
+   * every caller spreads the raw document, so the read answered null for all 63
+   * live tasks and every "this did not exist yet" clamp silently did nothing.
+   * The engine reads `createdAtISO ?? createdAt`; both are declared here so the
+   * type stops understating what a caller can supply, and the rule resolves all
+   * three in that order.
+   */
+  createdAtISO?: unknown;
+  createdAt?: unknown;
+  /**
    * When the clock on this task actually starts — its budget's own origin.
    *
    * **A task cannot be due before its clock starts**, which is the same rule as
@@ -398,7 +410,10 @@ export function chainDeadlines(input: {
    * applying writes another is worse than either date alone.
    */
   const createdTimes = input.queue
-    .map((t) => startedAtMs(t.createdAtMs))
+    /* Same three names, same order — see `QueueTask.createdAtISO`. Reading
+       `createdAtMs` alone made this list EMPTY for every real queue, so the
+       floor it feeds fell back to the office opening. */
+    .map((t) => startedAtMs(t.createdAtMs ?? t.createdAtISO ?? t.createdAt))
     .filter((n): n is number => n !== null);
   /**
    * **And floored at the person's clock as well as at the earliest task.**
@@ -508,11 +523,21 @@ export function chainDeadlines(input: {
      * P3 is the case this line exists for: the queue was free at 12:30, but the
      * work did not exist yet.
      */
+    /**
+     * The field name is resolved the way the ENGINE resolves it. Firestore
+     * documents carry `createdAt` and `createdAtISO`; not one of them has a
+     * `createdAtMs`, so reading that name alone answered null for every real
+     * task and the clamp below silently never fired — see
+     * `officeDeadline.service.js`, which reads `createdAtISO ?? createdAt`.
+     */
+    const createdMs = startedAtMs(
+      task.createdAtMs ?? task.createdAtISO ?? task.createdAt,
+    );
+
     if (isHead) {
       /* The queue's own start, not this task's. See `queueStartMs` above. */
       anchorMs = queueStartMs;
     } else {
-      const createdMs = startedAtMs(task.createdAtMs);
       if (createdMs !== null && createdMs > anchorMs) anchorMs = createdMs;
     }
 
@@ -532,7 +557,36 @@ export function chainDeadlines(input: {
      */
     const occupies =
       input.budget === "full" ? windowSecs : remainingWorkSecs(task);
-    const dueDate = input.addWorkingSecs(anchorMs, occupies);
+    let dueDate = input.addWorkingSecs(anchorMs, occupies);
+
+    /**
+     * **A task may start before it existed. It may never be DUE before it did.**
+     *
+     * The head takes `queueStartMs`, one shared number that does not move with
+     * whichever task leads — OWNER RULE, 21 Aug 2026, and the reason the whole
+     * chain does not slide every time somebody reorders. Its stated cost is
+     * that a task raised after the queue began is charged from that start and
+     * "leading it does not buy that hour back". That trade-off is kept exactly:
+     * the tests holding it pass unchanged, because in every one of them the
+     * head still finishes AT or AFTER the moment it was raised.
+     *
+     * What the trade-off cannot justify is a deadline that had already passed
+     * before the work was written. Reported as T254: raised 15:48 with three
+     * hours, swapped to P1, and the chain wrote 12:30 — three hours before the
+     * task existed. It arrived overdue, its timer blocked immediately, and no
+     * amount of working could have met it.
+     *
+     * So the floor is the narrowest one that forbids the impossible and leaves
+     * the deliberate cost untouched: only where the finish would fall BEFORE
+     * the task was raised is the head re-anchored on its own creation. Charging
+     * somebody from a moment they were available is a judgement; charging them
+     * for hours that had already passed is arithmetic nobody can satisfy.
+     */
+    if (isHead && createdMs !== null && Date.parse(dueDate) < createdMs) {
+      anchorMs = createdMs;
+      dueDate = input.addWorkingSecs(anchorMs, occupies);
+    }
+
     /* Only once a task has actually been scheduled — a zero-window task is
        skipped above and does not consume the head position. */
     isHead = false;
