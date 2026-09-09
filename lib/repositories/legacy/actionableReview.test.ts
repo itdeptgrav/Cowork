@@ -41,8 +41,18 @@ const RULE = code("lib/rules/tasks/actionable.ts");
 test("the inbox hydrates each task before asking whether it is actionable", () => {
   const at = REPO.indexOf("async listActionable()");
   assert.ok(at > 0, "listActionable moved");
-  const body = REPO.slice(at, at + 700);
-  assert.match(body, /const view = await this\.#withLatestSubmission\(raw\)/);
+  const body = REPO.slice(at, at + 900);
+  /* Hydrated for EVERY task, and now all at once rather than one await per
+     task inside the loop — the round trips are concurrent, the views are the
+     same views, and `Promise.all` resolves positionally so the order the rows
+     are built in is unchanged. What this test protects is that `actionableFor`
+     is never asked about an unhydrated task, which is as true of the batch as
+     it was of the loop. */
+  assert.match(
+    body,
+    /await Promise\.all\(\s*page\.items\.map\(\(raw\) => this\.#withLatestSubmission\(raw\)\),\s*\)/,
+  );
+  assert.match(body, /for \(const view of views\)/);
   assert.match(body, /actionableFor\(view, viewerId\)/);
   /* The hydrated view is what goes into the row, so the screen it opens and
      the row that offered it describe the same submission. */

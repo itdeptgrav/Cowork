@@ -196,8 +196,10 @@ function methodBody(src: string, name: string): string {
 const REPO = "lib/repositories/legacy/index.ts";
 
 test("another person's queue is workability-aware, like their own", () => {
-  const fn = methodBody(code(REPO), "#activeQueueOf");
-  assert.notEqual(fn, "", "#activeQueueOf not found — has it been renamed?");
+  /* The read itself. `#activeQueueOf` in front of it only deduplicates a read
+     already in flight and holds none of this. */
+  const fn = methodBody(code(REPO), "#readActiveQueueOf");
+  assert.notEqual(fn, "", "#readActiveQueueOf not found — has it been renamed?");
   assert.match(fn, /isWorkable: taskIsWorkable\(/);
 });
 

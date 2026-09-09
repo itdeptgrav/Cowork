@@ -91,25 +91,57 @@ test("switching to My tasks cannot leave a hidden person filter applied", () => 
   assert.match(src, /personFilterOffered && personId &&/);
 });
 
-test("the page opens on My team for anybody who has one", () => {
+/**
+ * **OWNER DECISION, 9 Sep 2026 — the page opens on My tasks, for everybody.**
+ *
+ * This used to pin the opposite: anybody with a team opened on My team. That
+ * was reasonable for the LIST and wrong for everything else, because the same
+ * scope feeds the Overview and `team` deliberately drops a task whose only
+ * holder is the viewer (`teamScopeKeeps`). A manager's own work was therefore
+ * missing from their own summary until they pressed My tasks — after which it
+ * appeared and stayed, because `TasksArea` does not unmount between tabs.
+ *
+ * The test is rewritten rather than deleted: a removed assertion says nothing
+ * about why, and the reasoning for the old default still reads persuasively.
+ */
+
+test("the page opens on My tasks, whoever is reading it", () => {
   const src = code(AREA);
-  /* Derived, not written into state: `hasTeam` is false until the permission
-     read lands, so storing it would flash the wrong tab. */
   assert.match(
     src,
-    /const scope: TaskScope = scopeChoice \?\? \(hasTeam \? "team" : "mine"\);/,
+    /const scope: TaskScope = openingScope\(\{\s*chosenThisVisit: scopeChoice,\s*stored: storedScope,\s*offered: offeredScopes,\s*\}\);/,
+  );
+  /* The default itself lives in the rule, not in a ternary here. */
+  const rule = code("lib/rules/tasks/scopePreference.ts");
+  assert.match(rule, /export const DEFAULT_TASK_SCOPE: TaskScope = "mine";/);
+  assert.doesNotMatch(
+    src,
+    /scopeChoice \?\? \(hasTeam \? "team" : "mine"\)/,
+    "the manager default is back, and the Overview will hide their own work again",
   );
   assert.match(src, /useState<TaskScope \| null>\(null\)/);
   /* Choosing anything stops the deriving and holds what was chosen. */
-  assert.match(src, /onChange=\{setScopeChoice\}/);
+  assert.match(src, /onChange=\{\(next\) => setScopeChoice\(next\)\}/);
 });
 
-test("somebody with no team still opens on My tasks", () => {
-  /* The default follows the tabs that exist rather than naming a scope that
-     would resolve to nothing. */
+test("a remembered choice is what it opens on instead", () => {
+  /* Per person, not per machine, and read after mount rather than during
+     render — `localStorage` does not exist on the server. */
   const src = code(AREA);
-  const at = src.indexOf("const scope: TaskScope =");
-  assert.ok(at > src.indexOf("const hasTeam ="), "scope derives after hasTeam");
+  assert.match(src, /readStoredScope\(window\.localStorage\.getItem\(taskScopeKey\(viewerId\)\)\)/);
+  assert.match(src, /window\.localStorage\.setItem\(\s*taskScopeKey\(viewerId\),/);
+  const rule = code("lib/rules/tasks/scopePreference.ts");
+  assert.match(rule, /export const TASK_SCOPE_KEY_PREFIX = "cowork\.tasks\.defaultScope\.";/);
+  /* Signing in as somebody else must not inherit their landing tab. */
+  const session = code("lib/auth/sessionCache.ts");
+  assert.match(session, /ACCOUNT_SCOPED_PREFIXES = \["cowork\.tasks\.defaultScope\."\]/);
+});
+
+test("a scope this viewer is no longer offered falls back to the default", () => {
+  /* A manager who loses their team must not open on a tab that is not there. */
+  const rule = code("lib/rules/tasks/scopePreference.ts");
+  assert.match(rule, /if \(input\.stored && input\.offered\.includes\(input\.stored\)\) return input\.stored;/);
+  assert.match(rule, /return DEFAULT_TASK_SCOPE;/);
 });
 
 test("what it offers comes from the shared rule, given the viewer's scope", () => {

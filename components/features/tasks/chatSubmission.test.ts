@@ -386,3 +386,83 @@ test("the trigger always announces a menu, because there always is one", () => {
   assert.match(COMPOSER, /aria-haspopup="menu"/);
   assert.match(COMPOSER, /aria-expanded=\{menuOpen\}/);
 });
+
+/* ── The decision, at thread size ─────────────────────────────────────────── */
+
+/**
+ * It was three side-by-side cards, each with a title, a full sentence and a
+ * chip. In a thread — a column, not a page — that is two tall blocks of prose
+ * standing between a reviewer and a choice between two words, and the
+ * consequences of the option they were NOT taking competed for attention with
+ * the one they were.
+ *
+ * One row to choose with, one line to explain the choice. What must not come
+ * back is the prose-per-option, and what must not be lost is the cost being
+ * legible BEFORE the choice.
+ */
+
+const REVIEW = strip("components/features/tasks/ReviewPanel.tsx");
+
+test("the decision is one compact row, not a wall of cards", () => {
+  assert.match(REVIEW, /<Segmented\s+label="Your decision"/);
+  assert.match(REVIEW, /size="sm"/);
+  assert.doesNotMatch(
+    REVIEW,
+    /grid gap-2 \$\{OFFER_REJECTION \? "sm:grid-cols-3"/,
+    "the card grid is back",
+  );
+  assert.doesNotMatch(
+    REVIEW,
+    /function Choice\(\{/,
+    "the choice card component is back",
+  );
+});
+
+test("the cost is on the option, so it is read before the choice is made", () => {
+  /* Moving the whole consequence under the selection would hide what a rework
+     costs until after it was picked. The number rides the button. */
+  assert.match(REVIEW, /label: d\.cost \? `\$\{d\.label\} · \$\{d\.cost\}` : d\.label,/);
+  assert.match(REVIEW, /cost: `−\$\{REWORK_DEDUCTION\}`,/);
+});
+
+test("only the chosen decision explains itself", () => {
+  assert.match(
+    REVIEW,
+    /DECISIONS\.find\(\(d\) => d\.id === decision\)\?\.consequence/,
+  );
+});
+
+test("the control and the line beneath it cannot disagree", () => {
+  /* Both read the same table. Two hand-written copies of the same sentence is
+     how a screen comes to state a rule that is no longer the rule. */
+  const table = REVIEW.slice(
+    REVIEW.indexOf("const DECISIONS:"),
+    REVIEW.indexOf("export function ReviewPanel"),
+  );
+  assert.ok(table.length > 0, "the decisions table is gone");
+  for (const id of ["approved", "rework", "rejected"])
+    assert.ok(table.includes(`id: "${id}",`), `${id} left the table`);
+});
+
+test("a thread says who submitted, when, and whether it was on time", () => {
+  /* The task page carries this in the header above the panel; a chat has no
+     such header, so the decision arrived with no statement of what was being
+     decided. Lateness is not a detail — it decides whether a rework hands back
+     the time that person had left. */
+  assert.match(REVIEW, /\{compact && \(/);
+  assert.match(REVIEW, /submitter \? `\$\{submitter\} submitted` : "Submitted"/);
+  assert.match(REVIEW, /submission\.wasLate \?/);
+  assert.match(REVIEW, /handed in late/);
+  assert.match(REVIEW, /formatDateTime\(submission\.submittedAt\)/);
+});
+
+test("it is not repeated on the task page, where the header already says it", () => {
+  /* Saying it twice on one screen is how a reader comes to distrust both. */
+  const at = REVIEW.indexOf("{compact && (");
+  const block = REVIEW.slice(at, at + 900);
+  assert.match(block, /submitted/);
+  assert.ok(
+    at < REVIEW.indexOf('<h2 className="text-sm font-medium text-ink">Your decision'),
+    "the submission facts moved below the decision heading",
+  );
+});

@@ -14,6 +14,7 @@ import {
   Input,
   Panel,
   PanelHead,
+  QueryError,
   Select,
   SkeletonRows,
 } from "@/components/ui/Primitives";
@@ -347,7 +348,8 @@ function Tiles({ cells }: { cells: { label: string; value: number }[] }) {
 
 function MyRequests() {
   const viewerId = useViewerId();
-  const { data, isLoading, refetch } = useQuery((r) => r.listMyMrfs(), []);
+  const requests = useQuery((r) => r.listMyMrfs(), []);
+  const { data, isLoading, refetch } = requests;
   const [creating, setCreating] = useState(false);
   const [chatId, setChatId] = useState<string | null>(null);
   const [cancel, cancelState] = useAction((r, id: string) => r.cancelMrf(id));
@@ -363,6 +365,16 @@ function MyRequests() {
   const [confirming, setConfirming] = useState<MrfRequest | null>(null);
 
   if (isLoading) return <SkeletonRows rows={6} />;
+  /* A read that failed is not an empty queue. Without this the page drew four
+     zeroes and "no requests yet" over a request that exists — see
+     `listMyMrfs`, which now raises rather than answering with `[]`. */
+  if (requests.error)
+    return (
+      <QueryError
+        queries={[requests]}
+        message="Your material requests could not be loaded."
+      />
+    );
 
   return (
     <>
@@ -947,10 +959,17 @@ function Approvals() {
   const [status, setStatus] = useState<"pending" | "approved" | "rejected" | "all">(
     "pending",
   );
-  const { data, isLoading, refetch } = useQuery(
-    (r) => r.listMrfApprovals(status),
-    [status],
-  );
+  const approvals = useQuery((r) => r.listMrfApprovals(status), [status]);
+  const { data, isLoading, refetch } = approvals;
+
+  /* An approver shown an empty queue believes nothing is waiting on them. */
+  if (approvals.error)
+    return (
+      <QueryError
+        queries={[approvals]}
+        message="The approval queue could not be loaded."
+      />
+    );
 
   return (
     <>

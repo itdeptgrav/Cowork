@@ -27,6 +27,7 @@ import {
   getRepositoryVersion,
   notifyRepositoryChanged,
   purgeQueryCaches,
+  subscribeToPreload,
   subscribeToPurgeAll,
   subscribeToRepository,
   subscribeToStaleData,
@@ -77,9 +78,25 @@ const staleResultCache = new Map<string, StaleRecord>();
  * firing a redundant round-trip. Key = methodName + JSON.stringify(deps).
  *
  * Checked FIRST in the effect, before staleResultCache and inflight dedup.
- * Served once then deleted — it is a hand-off from the mutation, not a cache.
+ * Served once then deleted, and only while it is seconds old
+ * (`PRELOAD_MAX_AGE_MS`) — it is a hand-off from the mutation, not a cache.
  */
 const preloadCache = new Map<string, StaleRecord>();
+/**
+ * How old a hand-off may be and still be served.
+ *
+ * A preload is a read the writer already made, handed over for the refetch that
+ * is about to happen — the version bump sends every query looking within
+ * milliseconds, and the entry is deleted the moment it is used. Seconds, not
+ * tens of them: the ONLY entries that survive are the ones nobody came to
+ * collect, and those must expire before they become somebody's stale answer.
+ *
+ * The documented use — preload, then `router.push` to the page that reads it —
+ * completes far inside this.
+ */
+const PRELOAD_MAX_AGE_MS = 5_000;
+
+
 
 /**
  * Drop every cached answer for the named repository methods.
@@ -91,6 +108,16 @@ const preloadCache = new Map<string, StaleRecord>();
  */
 subscribeToStaleData((methods) =>
   purgeQueryCaches(methods, staleResultCache, preloadCache),
+);
+
+/**
+ * A writer handing over a read it has already made — see `publishPreload`.
+ *
+ * Registered once at module load, beside the other cache subscriptions: the
+ * caches are module singletons, so one subscriber serves every mounted query.
+ */
+subscribeToPreload((methodName, deps, data) =>
+  preloadQuery(methodName, deps, data),
 );
 
 /* Sync throws away every cached answer, not just the ones a mutation named. */
@@ -405,7 +432,7 @@ export function useQuery<T>(
     // render of this query doesn't need a round-trip. Served once then deleted.
     if (methodName) {
       const preloaded = preloadCache.get(methodName + JSON.stringify(deps));
-      if (preloaded && Date.now() - preloaded.resolvedAt < 30_000) {
+      if (preloaded && Date.now() - preloaded.resolvedAt < PRELOAD_MAX_AGE_MS) {
         preloadCache.delete(methodName + JSON.stringify(deps));
         if (!cancelled) setSettled({ key, depsKey, data: preloaded.data as T, error: null });
         return () => {

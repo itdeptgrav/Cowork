@@ -52,20 +52,41 @@ test("older pages are held in state and never refetched", () => {
 test("the live page is merged LAST so its copy wins", () => {
   /* It is the one just re-read, so it carries the edit, the tombstone and the
      newest readBy. History passed last would pin a message to whatever it
-     looked like when that page happened to be fetched. */
+     looked like when that page happened to be fetched.
+
+     `live ?? seed` is still that page: `seed` is only what this thread last had
+     on screen, drawn while the read that replaces it is in flight, and it is
+     never merged ALONGSIDE the live page — the moment one exists the other is
+     not consulted. See `recentThreads`. */
   assert.match(
     code(AREA),
-    /mergeMessagePages\(\[\.\.\.olderPages, messages\.data\?\.messages \?\? \[\]\]\)/,
+    /mergeMessagePages\(\[\.\.\.olderPages, live \?\? seed \?\? \[\]\]\)/,
   );
+  assert.match(code(AREA), /const live = messages\.data\?\.messages \?\? null;/);
 });
 
 test("the merge is memoised on the data, not on a fresh array", () => {
-  /* `messages.data?.messages ?? []` computed outside the memo builds a new
-     empty array every render, so the whole thread would re-merge on any change
-     at all. */
+  /* Anything that builds a new array per render defeats the memo and re-merges
+     the whole thread on every keystroke. Two ways that can happen here:
+     `?? []` computed outside it (so `live` falls back to `null`, not `[]`), and
+     `recentThread`, which hands back a COPY — hence its own memo on the
+     conversation. */
   const src = code(AREA);
   const at = src.indexOf("mergeMessagePages([...olderPages");
-  assert.match(src.slice(at, at + 120), /\[olderPages, messages\.data\]/);
+  assert.match(src.slice(at, at + 140), /\[olderPages, live, seed\]/);
+  assert.match(src, /const seed = useMemo\(\(\) => recentThread\(c\.id\), \[c\.id\]\);/);
+});
+
+test("a thread that has been open before is not redrawn as placeholders", () => {
+  /* The report: switching chats showed skeleton rows for the length of the
+     round trip, every time, including switching straight back to the thread you
+     were just reading. */
+  const src = code(AREA);
+  assert.match(
+    src,
+    /messages\.isLoading && list\.length === 0 \? \(/,
+    "the skeleton shows again while there is something to draw",
+  );
 });
 
 test("a page request is guarded by a ref, not by state", () => {

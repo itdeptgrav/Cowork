@@ -29,6 +29,7 @@ import {
   taskChatLabel,
   type PairedTaskChat,
 } from "@/lib/rules/messages/taskChats";
+import { forgetThreads, recentThread, rememberThread } from "./recentThreads";
 import { TaskChatPicker } from "./TaskChatPicker";
 import { TaskChatBrief } from "./TaskChatBrief";
 import { VoiceRecorder } from "./VoiceRecorder";
@@ -161,6 +162,13 @@ export function MessagesPage({
 }) {
   const router = useRouter();
   const viewerId = useViewerId();
+  /* One browser, two people: the threads held to smooth a switch are somebody's
+     correspondence, and the second person must not be handed them even for the
+     moment before their own read lands. Signing out usually takes the whole tab
+     with it; this covers the case where it does not. */
+  useEffect(() => {
+    return () => forgetThreads();
+  }, [viewerId]);
   const conversations = useQuery((r) => r.listConversations(), []);
   const repo = useRepo();
   /* Live: a message from anyone in any of the viewer's threads refreshes the
@@ -1296,9 +1304,42 @@ function Thread({
   /* `messages.data` in the deps, not a `?? []` computed outside: that fallback
      builds a NEW empty array on every render, so the memo would re-merge the
      whole thread every time anything at all changed. */
+  const live = messages.data?.messages ?? null;
+  /**
+   * The last page this thread was seen with, drawn while the new read is in
+   * flight.
+   *
+   * ## What it replaces
+   *
+   * `Thread` is keyed on the conversation, so switching chats remounts it and
+   * `listMessages` starts from nothing — and until it lands, the pane rendered
+   * four skeleton rows. Every switch, including switching straight back to the
+   * thread you were reading a second ago. That is the "it behaves oddly for a
+   * moment" in the report: a conversation you have already read dissolving into
+   * placeholder bars before returning exactly as it was.
+   *
+   * ## Why this cannot show anybody a stale thread
+   *
+   * It is not a cache with a lifetime — the read is ALWAYS made, every switch,
+   * and its result replaces this the moment it arrives. What is remembered is
+   * only what was last on screen for THIS conversation, so the worst case is
+   * seeing the thread as it stood moments ago for as long as the round trip
+   * takes, instead of seeing nothing at all. Nothing is served from it that a
+   * fresh read is not already on its way to confirm.
+   *
+   * Kept outside the component because the component is what unmounts; bounded,
+   * because a long day of chats should not accumulate every thread ever opened.
+   */
+  /* Read once per conversation, not per render: `recentThread` hands back a
+     copy, so calling it in the render body would build a new array every time
+     and the memo below would re-merge the whole thread on every keystroke. */
+  const seed = useMemo(() => recentThread(c.id), [c.id]);
+  useEffect(() => {
+    if (live) rememberThread(c.id, live);
+  }, [c.id, live]);
   const list = useMemo(
-    () => mergeMessagePages([...olderPages, messages.data?.messages ?? []]),
-    [olderPages, messages.data],
+    () => mergeMessagePages([...olderPages, live ?? seed ?? []]),
+    [olderPages, live, seed],
   );
   /* More to fetch while the deepest page we hold still says so, and while no
      page has come back adding nothing. The live page answers for a thread
@@ -2597,7 +2638,10 @@ function Thread({
             queries={[messages]}
             message="These messages could not be loaded."
           />
-        ) : messages.isLoading ? (
+        ) : messages.isLoading && list.length === 0 ? (
+          /* Placeholders only when there is genuinely nothing to draw. A thread
+             that has been open before is drawn from what it last showed while
+             the read that will replace it is in flight — see `recentThreads`. */
           <SkeletonRows rows={4} />
         ) : list.length === 0 ? (
           <div className="grid h-full place-items-center px-6 text-center">

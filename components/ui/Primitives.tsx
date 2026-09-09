@@ -768,6 +768,83 @@ export function SkeletonRows({ rows = 5 }: { rows?: number }) {
   );
 }
 
+/**
+ * The loading shape for a DETAIL surface — a record with a heading and panels,
+ * not a list of rows.
+ *
+ * ## Why a list skeleton was the wrong picture
+ *
+ * `SkeletonRows` draws a circle, a line and a right-hand stub, repeated: it is
+ * a table, and it reads as one. A task, a meeting or a person is not a table —
+ * it is a title, a line of facts, a column of panels and a narrower rail beside
+ * them — so ten list rows stood where none of that was about to appear, and
+ * then the whole screen was replaced rather than filled in. That is the "the
+ * loading effect is not showing properly": not that it was missing, but that it
+ * was a picture of a different page.
+ *
+ * A skeleton is a promise about what is coming. This one keeps the promise: the
+ * same twelve-column grid, the same 8/4 split at `deck`, the same panel corners
+ * and gaps, so the real content lands where its outline already was instead of
+ * pushing the page around.
+ *
+ * `rail` for a surface that has the narrower second column; a full-width detail
+ * passes `rail={false}` and gets the panels alone.
+ */
+export function SkeletonDetail({
+  rail = true,
+  panels = 2,
+}: {
+  rail?: boolean;
+  panels?: number;
+}) {
+  const panel = (lines: number, key: number) => (
+    <div key={key} className="frost-panel rounded-card p-4">
+      <Skeleton className="h-4 w-[38%]" />
+      <div className="mt-3 space-y-2.5">
+        {Array.from({ length: lines }).map((_, i) => (
+          <Skeleton
+            key={i}
+            className="h-3"
+            /* Uneven, because real lines are: a column of identical bars reads
+               as a loading GRAPHIC rather than as text about to arrive. */
+            style={{ width: `${92 - ((i * 17) % 46)}%` }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div role="status" aria-label="Loading">
+      {/* The masthead: title, then the line of facts under it. */}
+      <Skeleton className="h-7 w-[42%]" />
+      <div className="mt-2.5 flex flex-wrap items-center gap-2">
+        <Skeleton className="h-3.5 w-28" />
+        <Skeleton className="h-3.5 w-20" />
+        <Skeleton className="h-3.5 w-24" />
+      </div>
+
+      <div className="mt-4 grid grid-cols-1 items-start gap-4 deck:grid-cols-12">
+        <div
+          className={`flex flex-col gap-4 ${
+            rail ? "deck:col-span-8" : "deck:col-span-12"
+          }`}
+        >
+          {Array.from({ length: Math.max(1, panels) }).map((_, i) =>
+            panel(i === 0 ? 4 : 3, i),
+          )}
+        </div>
+        {rail && (
+          <div className="flex flex-col gap-4 deck:col-span-4">
+            {panel(3, 100)}
+            {panel(2, 101)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function EmptyState({
   title,
   body,

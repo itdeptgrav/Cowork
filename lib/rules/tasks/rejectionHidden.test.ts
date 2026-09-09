@@ -23,22 +23,43 @@ const PANEL = "components/features/tasks/ReviewPanel.tsx";
 test("the reviewer is not offered rejection", () => {
   const src = code(PANEL);
   assert.match(src, /const OFFER_REJECTION = false/);
-  assert.match(src, /\{OFFER_REJECTION && \(/);
+  /* The flag decides what the decision control OFFERS. It used to wrap a card
+     in `{OFFER_REJECTION && (`; it now filters the option out of the row, which
+     is the same gate on a different shape of control. */
+  assert.match(
+    src,
+    /OFFER_REJECTION,?\s*\)/,
+    "the flag no longer gates what the reviewer is offered",
+  );
 });
 
 test("the choice is behind the flag, not deleted", () => {
   /* Deleting it would make restoring the decision a rewrite. The owner asked
-     for a hidden button. */
+     for a hidden button.
+
+     The three decisions are a table now rather than three blocks of markup, so
+     "not deleted" means the rejected ENTRY is still in it, with its label and
+     its copy, and flipping the flag brings it back with nothing else to write.
+     That is a stronger form of the same guarantee than the hidden card was. */
   const src = code(PANEL);
-  assert.match(src, /id="rejected"/);
-  assert.match(src, /setDecision\("rejected"\)/);
+  assert.match(src, /id: "rejected",/);
+  assert.match(src, /label: "Reject",/);
+  /* Its consequence copy survives too — restoring the option must not restore
+     it wordless. */
+  assert.match(src, /Records an adverse review/);
 });
 
-test("the grid closes up rather than leaving a gap", () => {
-  /* Two choices in a three-column grid is a hole where a control used to be,
-     which reads as something failing to load. */
+test("the row closes up rather than leaving a gap", () => {
+  /* Two choices in a control sized for three is a hole where a control used to
+     be, which reads as something failing to load. The filter is what closes it:
+     the hidden decision is not rendered at all, so the row sizes to what it
+     actually offers. */
   const src = code(PANEL);
-  assert.match(src, /OFFER_REJECTION \? "sm:grid-cols-3" : "sm:grid-cols-2"/);
+  assert.match(
+    src,
+    /\(d\) => d\.id !== "rejected" \|\| OFFER_REJECTION,/,
+    "the hidden decision is no longer filtered out of the control",
+  );
 });
 
 test("everything behind the button is untouched", () => {

@@ -192,7 +192,10 @@ test("the badge hooks run before the early returns", () => {
   const src = readFileSync("components/features/tasks/TaskDetail.tsx", "utf8");
   const query = src.indexOf("readTaskTabActivity");
   const effect = src.indexOf("markTaskTabSeen");
-  const firstReturn = src.indexOf("if (isLoading) return");
+  /* The loading branch now reads `if (isLoading && !view)` — it draws the
+     whole-page skeleton only when there is no task in hand at all. The
+     guarantee this test protects is unchanged: every hook must sit above it. */
+  const firstReturn = src.indexOf("if (isLoading");
   assert.ok(query > 0 && effect > 0 && firstReturn > 0, "the wiring is gone");
   assert.ok(
     query < firstReturn,

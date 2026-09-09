@@ -127,8 +127,13 @@ test("5 · reassignment repairs BOTH queues", () => {
   assert.match(body, /view\.assignments/);
   assert.match(body, /view\.pendingAssignees/);
   /* Each queue independently — a rank is per person, so one person's move cannot
-     renumber somebody else's day. */
-  assert.match(body, /for \(const employeeId of affected\)/);
+     renumber somebody else's day. That independence is why they are normalised
+     TOGETHER rather than one after another: nothing here reads what the previous
+     one wrote, and in series it was a round trip per holder on the critical path
+     of every action. */
+  assert.match(body, /\[\.\.\.affected\]\.map\(async \(employeeId\) =>/);
+  /* One queue failing still costs only that queue. */
+  assert.match(body, /catch \(error\)/);
 
   /* And the calculation itself: the loser's queue closes its gap, the gainer's
      makes room. */
