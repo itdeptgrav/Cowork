@@ -85,7 +85,7 @@ import {
   toGrantedExtensions,
   toPendingExtension,
 } from "./deadlineMap.ts";
-import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateProjectInput, CreateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, SetOutputsInput, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
+import type { ActionResult, ActionableItem, ChangePriorityInput, CoworkRepository, CreateConversationInput, CreateProjectInput, CreateMeetingInput, UpdateMeetingInput, CreateTaskInput, DocumentVersionSummary, ExternalShareInvite, ExternalShareKind, ExternalShareRole, GoalReportFile, GoalStepPerson, Page, ProjectQuery, ProjectView, ReworkQueuePreview, SetOutputsInput, TaskQuery, TaskScope, TaskView, TimerSopStatus, UploadedMedia } from "../types";
 import { DEFAULT_TIMER_SOP_CONFIG, computeTodayTarget, evaluateTimerSop, type TimerSopConfig } from "@/lib/rules/scoring/timerSop";
 import { todayWindow } from "@/lib/rules/scoring/workTime";
 import { actionableFor } from "../../rules/tasks/actionable.ts";
@@ -448,6 +448,7 @@ import {
   readTask,
   type LegacyTask,
 } from "../../legacy/tasks.ts";
+import { extensionCredits } from "../../rules/tasks/budgetHistory.ts";
 import { firstNumber } from "../../legacy/wire.ts";
 import * as meetHttp from "../../legacy/meetings.ts";
 import { listMeetingRecordings as listMeetingRecordingsHttp } from "../../legacy/meetingMedia.ts";
@@ -10539,6 +10540,84 @@ export class LegacyRepository {
   }
 
   /**
+   * The same checks `createMeeting` makes, on the fields that are present —
+   * the engine stores `endsAt` without reading it, so a meeting that ends
+   * before it starts has to be refused here or it renders a negative duration.
+   * Everything else, the organiser check included, is the engine's.
+   */
+  async updateMeeting(
+    meetingId: string,
+    input: UpdateMeetingInput,
+  ): Promise<ActionResult<Meeting>> {
+    if (input.title !== undefined && !input.title.trim()) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Give the meeting a title.",
+        field: "title",
+      };
+    }
+    if (input.startsAt !== undefined && !input.startsAt) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "Say when the meeting starts.",
+        field: "startsAt",
+      };
+    }
+    if (
+      input.startsAt &&
+      input.endsAt &&
+      Date.parse(input.endsAt) <= Date.parse(input.startsAt)
+    ) {
+      return {
+        ok: false,
+        code: "validation_failed",
+        message: "The meeting has to end after it starts.",
+        field: "endsAt",
+      };
+    }
+    return this.#meetingWrite(meetingId, (token) =>
+      meetHttp.updateMeet({
+        token,
+        meetId: String(meetingId),
+        title: input.title?.trim(),
+        description:
+          input.description === undefined
+            ? undefined
+            : input.description?.trim() || null,
+        dateTime: input.startsAt,
+        endsAt: input.endsAt,
+        agenda: input.agenda?.map((a) => a.trim()).filter(Boolean),
+        participants: input.participantIds?.map(String),
+      }),
+    );
+  }
+
+  /* No read-back: there is nothing left to read. The engine's refusals —
+     not the organiser, or the room is still open — arrive as its sentence. */
+  async deleteMeeting(meetingId: string): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const result = await meetHttp.deleteMeet({
+      token,
+      meetId: String(meetingId),
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        code:
+          result.error.kind === "permission"
+            ? "permission_denied"
+            : result.error.kind === "not_found"
+              ? "not_found"
+              : "validation_failed",
+        message: result.error.message,
+      };
+    }
+    return { ok: true, data: undefined };
+  }
+
+  /**
    * Attendance, and only attendance.
    *
    * Returns the caller's own participant row read back from the store, so a
@@ -11648,6 +11727,8 @@ export class LegacyRepository {
      * to one question get made.
      */
     orderOverride?: string[] | null;
+    /** Extra time being granted, for the deadline-after-grant answer below. */
+    grantedSecs?: number;
   }): Promise<Feasibility> {
     const employeeId = String(input.employeeId);
     const { collection, getDocs, query, where } = await import(
@@ -11724,7 +11805,27 @@ export class LegacyRepository {
       blockedDates.map((b) => [b.date, { type: b.kind, name: b.label }]),
     );
 
-    return calculateDeadlineFeasibility({
+    /**
+     * Where the committed deadline moves if this much time is granted.
+     *
+     * Computed HERE because this is the only layer holding the schedule, the
+     * breaks and the blocked dates — the rule is pure and the card has no
+     * calendar, so neither could add "thirty minutes" to a date without
+     * risking two in the morning or a Sunday. Working seconds, so 17:31 + 30m
+     * is 18:01 while 18:15 + 30m is the next working morning.
+     */
+    const deadlineAfterGrant =
+      input.grantedSecs && input.grantedSecs > 0 && input.committedDeadline
+        ? addWorkingSecs(
+            Date.parse(input.committedDeadline),
+            input.grantedSecs,
+            policy.schedule,
+            blocked,
+            policy.breaks,
+          )
+        : null;
+
+    const feasibility = calculateDeadlineFeasibility({
       taskId: input.taskId ? String(input.taskId) : undefined,
       employeeId,
       proposedPriority: input.proposedPriority,
@@ -11755,6 +11856,8 @@ export class LegacyRepository {
           policy.breaks,
         ).steps,
     });
+
+    return { ...feasibility, deadlineAfterGrant };
   }
 
   /** Legacy's own clamp, from `handleUpdatePriority`. */
@@ -14302,7 +14405,7 @@ export class LegacyRepository {
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
 
-      const [taskSnap, creditSnap, moveSnap] = await Promise.all([
+      const [taskSnap, creditSnap, moveSnap, budgetExtSnap] = await Promise.all([
         getDoc(doc(db, "cowork_tasks", String(taskId))),
         getDocs(
           query(
@@ -14329,31 +14432,126 @@ export class LegacyRepository {
             where("taskId", "==", String(taskId)),
           ),
         ),
+        /**
+         * **The granted extensions, read as credits in their own right.**
+         *
+         * A receipt is written to `cowork_task_budget_credits` when a manager
+         * approves an extension — but only since that was added, so every
+         * extension granted before it left the budget larger with nothing
+         * naming the cause, and the panel reported the difference as
+         * "Credited earlier … the cause was not recorded".
+         *
+         * That was true of the RECEIPT and false of the event. The extension
+         * itself was recorded the whole time, right here, carrying its own
+         * before, after, approver and decision date — everything the row
+         * needed to name itself. Reported as exactly that: "it should show
+         * what +30 reason is, extension".
+         *
+         * Deduped against the receipts inside `extensionCredits`, so an
+         * approval carrying both records is listed once.
+         */
+        getDocs(
+          query(
+            collection(db, "cowork_task_budget_extensions"),
+            where("taskId", "==", String(taskId)),
+          ),
+        ),
       ]);
       if (!taskSnap.exists()) return empty;
 
       const data = taskSnap.data() as Record<string, unknown>;
       const hours = Number(data.etcHours);
+      /**
+       * **What the task was ORIGINALLY given, in order of trustworthiness.**
+       *
+       * This read `etcHours` alone, on a comment claiming it "is not rewritten
+       * by a credit … the only field that still remembers what was originally
+       * agreed". That was not true: the engine's `setActiveTaskBudget` writes
+       * `etcHours: secs / 3600` alongside the window, and
+       * `budgetNegotiation.service.js` rewrites it on every settled round. So
+       * the baseline was overwritten by the very events it was supposed to be
+       * measured against, "Given" always equalled "Now", and a budget that had
+       * grown showed no growth at all.
+       *
+       * `originalWindowSecs` is the field the engine keeps for exactly this —
+       * written once at first approval and preserved thereafter
+       * (`Number(task.originalWindowSecs) || secs`). `senderTimerWindowSecs` is
+       * the assignor's opening figure, the next best thing. `etcHours` stays
+       * last: on a task predating either it is all there is.
+       */
+      const original = Number(data.originalWindowSecs);
+      const sender = Number(data.senderTimerWindowSecs);
       /* `readTask` answers null on a document it cannot map. Zero is the honest
          current budget then — the panel says the account is incomplete rather
          than inventing a figure to reconcile against. */
       const mapped = readTask({ ...data, id: String(taskId) } as never);
 
+      /* Stored as an ISO string, a Firestore Timestamp or milliseconds
+         depending on which writer got there first. `readInstant` already
+         knows all three; the rule wants one shape. */
+      const isoOf = (v: unknown) => {
+        const ms = readInstant(v);
+        return ms === null ? null : new Date(ms).toISOString();
+      };
+
+      /* Cached on the instance, so this is a map lookup on all but the first
+         call — and the extension records keep an approver id only. */
+      const directory = await this.#employeesById().catch(
+        () => new Map<string, { displayName: string }>(),
+      );
+
+      /* Named, because `extensionCredits` needs this list twice: once to
+         concatenate onto, and once to dedupe against. */
+      const recordedCredits = creditSnap.docs.map((d) => {
+        const c = d.data() as Record<string, unknown>;
+        return {
+          id: d.id,
+          at: typeof c.at === "string" ? c.at : "",
+          previousSecs: Number(c.previousSecs) || 0,
+          newSecs: Number(c.newSecs) || 0,
+          reason: typeof c.reason === "string" ? c.reason : "",
+          byEmployeeId:
+            typeof c.forEmployeeId === "string" ? c.forEmployeeId : null,
+        };
+      });
+
       return {
-        givenSecs: Number.isFinite(hours) && hours > 0 ? Math.round(hours * 3600) : 0,
+        givenSecs:
+          Number.isFinite(original) && original > 0
+            ? Math.round(original)
+            : Number.isFinite(sender) && sender > 0
+              ? Math.round(sender)
+              : Number.isFinite(hours) && hours > 0
+                ? Math.round(hours * 3600)
+                : 0,
         currentSecs: mapped ? resolveTimeBudget(mapped) : 0,
-        credits: creditSnap.docs.map((d) => {
-          const c = d.data() as Record<string, unknown>;
-          return {
-            id: d.id,
-            at: typeof c.at === "string" ? c.at : "",
-            previousSecs: Number(c.previousSecs) || 0,
-            newSecs: Number(c.newSecs) || 0,
-            reason: typeof c.reason === "string" ? c.reason : "",
-            byEmployeeId:
-              typeof c.forEmployeeId === "string" ? c.forEmployeeId : null,
-          };
-        }),
+        credits: recordedCredits.concat(
+          extensionCredits(
+            budgetExtSnap.docs.map((d) => {
+              const x = d.data() as Record<string, unknown>;
+              return {
+                id: d.id,
+                status: String(x.status ?? ""),
+                previousBudgetSecs: Number(x.previousBudgetSecs) || 0,
+                newBudgetSecs: Number(x.newBudgetSecs) || 0,
+                approvedSecs:
+                  x.approvedSecs === null || x.approvedSecs === undefined
+                    ? null
+                    : Number(x.approvedSecs) || 0,
+                approverId:
+                  typeof x.approverId === "string" ? x.approverId : null,
+                approverName:
+                  typeof x.approverId === "string"
+                    ? (directory.get(x.approverId)?.displayName ?? null)
+                    : null,
+                approvedAt: isoOf(x.approvedAt),
+                confirmedAt: isoOf(x.confirmedAt),
+                createdAt: isoOf(x.createdAt),
+              };
+            }),
+            recordedCredits,
+          ),
+        ),
         /* Only the ones that were actually APPLIED. The same collection carries
            pending and rejected requests — a proposal nobody approved never
            moved a date, and listing it as history would say it did. */
@@ -15193,7 +15391,7 @@ export class LegacyRepository {
 
   async setMailFlag(
     messageId: string,
-    flag: "starred" | "trashed" | "spam" | "important",
+    flag: "starred" | "trashed" | "spam" | "important" | "archived",
     on: boolean,
   ): Promise<ActionResult<void>> {
     return this.#setMailArrayFlag(messageId, MAIL_FLAG_FIELD[flag], on);
@@ -15203,7 +15401,13 @@ export class LegacyRepository {
    *  a party to it — the same permission the mock enforces. */
   async #setMailArrayFlag(
     messageId: string,
-    field: "readBy" | "starredBy" | "trashedBy" | "spamBy" | "importantBy",
+    field:
+      | "readBy"
+      | "starredBy"
+      | "trashedBy"
+      | "spamBy"
+      | "importantBy"
+      | "archivedBy",
     on: boolean,
   ): Promise<ActionResult<void>> {
     const { arrayRemove, arrayUnion, doc, getDoc, updateDoc } = await import(

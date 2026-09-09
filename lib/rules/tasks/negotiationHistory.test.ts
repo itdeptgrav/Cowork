@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { readFileSync } from "node:fs";
-import { negotiationHistory, wasReduced } from "./negotiationHistory.ts";
+import {
+  grantedLessThanAsked,
+  negotiationHistory,
+  settledAddedSecs,
+  settledTotalSecs,
+  wasReduced,
+} from "./negotiationHistory.ts";
 
 /**
  * **Reported 17 Aug 2026: "Negotiation history — No proposals yet."**
@@ -201,4 +207,154 @@ test("the same instant written two ways is still the same instant", () => {
     ],
   });
   assert.equal(row.granted, null);
+});
+
+/* ── What a round settled on, versus what it opened with ─────────────────── */
+
+/**
+ * A manager granting five minutes of the twenty asked for left the headline
+ * announcing "2h 40m + 20m = 3h" and then correcting itself underneath. The
+ * help has said for a while that where a manager granted less than was asked,
+ * the granted figure is the one shown; the headline had not caught up.
+ */
+test("a round answered with a different figure settles on the answer", () => {
+  const rows = negotiationHistory({
+    budget: [
+      hours({
+        previousBudgetSecs: 9600,
+        requestedAdditionalSecs: 1200,
+        approvedSecs: 9900,
+        newBudgetSecs: 10800,
+      }) as never,
+    ],
+    deadline: [],
+  });
+  assert.equal(settledAddedSecs(rows[0]), 300);
+  assert.equal(settledTotalSecs(rows[0]), 9900);
+  /* And what was asked for is still on the row, for the line that names it. */
+  assert.equal(rows[0].asked.addedSecs, 1200);
+});
+
+test("an unanswered round settles on the ask, because that is all there is", () => {
+  const rows = negotiationHistory({
+    budget: [
+      hours({
+        status: "pending",
+        previousBudgetSecs: 9600,
+        requestedAdditionalSecs: 1200,
+        approvedSecs: null,
+        newBudgetSecs: 10800,
+      }) as never,
+    ],
+    deadline: [],
+  });
+  assert.equal(rows[0].granted, null);
+  assert.equal(settledAddedSecs(rows[0]), 1200);
+  assert.equal(settledTotalSecs(rows[0]), 10800);
+});
+
+test("the settled addition is never negative", () => {
+  /* An approval below the budget it was measured against would otherwise
+     print "+ -10m". Nothing writes that today; the row still must not invent
+     a negative grant if something ever does. */
+  const rows = negotiationHistory({
+    budget: [
+      hours({
+        previousBudgetSecs: 9600,
+        requestedAdditionalSecs: 1200,
+        approvedSecs: 9000,
+        newBudgetSecs: 10800,
+      }) as never,
+    ],
+    deadline: [],
+  });
+  assert.equal(settledAddedSecs(rows[0]), 0);
+});
+
+test("only a SMALLER answer is reported as only", () => {
+  /**
+   * The row says "granted only 5m", and "only" is a claim. `wasReduced` is
+   * just `granted !== null` — it says the answer differed, never which way —
+   * so a manager who granted MORE than was asked would have been reported as
+   * having short-changed somebody.
+   */
+  const less = negotiationHistory({
+    budget: [
+      hours({
+        previousBudgetSecs: 9600,
+        requestedAdditionalSecs: 1200,
+        approvedSecs: 9900,
+        newBudgetSecs: 10800,
+      }) as never,
+    ],
+    deadline: [],
+  });
+  assert.equal(grantedLessThanAsked(less[0]), true, "5m of the 20m asked");
+
+  const more = negotiationHistory({
+    budget: [
+      hours({
+        previousBudgetSecs: 9600,
+        requestedAdditionalSecs: 1200,
+        approvedSecs: 12000,
+        newBudgetSecs: 10800,
+      }) as never,
+    ],
+    deadline: [],
+  });
+  assert.equal(grantedLessThanAsked(more[0]), false, "40m of the 20m asked");
+});
+
+test("a date pulled EARLIER is the less generous answer", () => {
+  const earlier = negotiationHistory({
+    budget: [],
+    deadline: [
+      deadline({
+        proposedDeadline: "2026-08-17T10:00:00.000Z",
+        counterDeadline: "2026-08-17T09:45:00.000Z",
+      }) as never,
+    ],
+  });
+  assert.equal(grantedLessThanAsked(earlier[0]), true);
+
+  const later = negotiationHistory({
+    budget: [],
+    deadline: [
+      deadline({
+        proposedDeadline: "2026-08-17T10:00:00.000Z",
+        counterDeadline: "2026-08-17T10:30:00.000Z",
+      }) as never,
+    ],
+  });
+  assert.equal(grantedLessThanAsked(later[0]), false);
+});
+
+test("an answer that matched the request claims nothing either way", () => {
+  const [row] = negotiationHistory({
+    budget: [hours({ status: "accepted", approvedSecs: null }) as never],
+    deadline: [],
+  });
+  assert.equal(row.granted, null);
+  assert.equal(grantedLessThanAsked(row), false);
+});
+
+test("the row names the REQUEST first, then the answer", () => {
+  /**
+   * This read "Granted 5m, not the 20m that was asked for." — it opened with
+   * the figure the headline had just printed, and stated the request by
+   * denying it, so the number actually asked for arrived as the back half of
+   * a negative. Pinned on the panel because the rule cannot see its wording.
+   */
+  const src = readFileSync(
+    "components/features/tasks/DeadlinePanel.tsx",
+    "utf8",
+  );
+  const row = src.slice(src.indexOf("Asked for"));
+  assert.match(row.slice(0, 900), /Asked for/);
+  assert.match(row.slice(0, 900), /granted /);
+  assert.match(row.slice(0, 900), /grantedLessThanAsked\(row\) \? "only "/);
+  /* The rendered separator, not the prose — the comment above the block quotes
+     the old wording on purpose, and matching that is how this test failed the
+     first time it ran. */
+  assert.doesNotMatch(src, /\{", not the "\}/, "the denial is back");
 });

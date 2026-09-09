@@ -134,6 +134,117 @@ function secs(v: unknown): number {
 }
 
 /**
+ * **A granted extension is a credit, and it can be named without a receipt.**
+ *
+ * The budget grows when a manager approves an extension, and until recently
+ * nothing wrote a credit receipt when that happened. The panel then reported
+ * the difference as "Credited earlier — applied before this history was kept,
+ * so the cause was not recorded", which was true of the RECEIPT and false of
+ * the event: the extension record was sitting in
+ * `cowork_task_budget_extensions` the whole time, with its own before, after,
+ * approver and decision date. Reported as exactly that — "it should show what
+ * +30 reason is, extension".
+ *
+ * So the extension records are read as credits in their own right. Nothing is
+ * invented: every field comes off the stored request, and the delta is the
+ * record's own before/after pair, the same rule `budgetHistoryView` applies to
+ * a receipt.
+ *
+ * **Only where the time was actually granted.** `pending` is somebody asking,
+ * `rejected` is an answer of no, and `counter_proposed` is a different figure
+ * still being argued — none of them moved a budget. `approved` and `accepted`
+ * did.
+ *
+ * **Deduped against real receipts by the resulting budget.** Once the engine
+ * writes a receipt for an approval, both records describe one event; listing
+ * both would double the credit and show the same grant twice. Two different
+ * credits landing on the identical resulting budget is not a thing that
+ * happens, so `newSecs` identifies the event.
+ */
+export interface ExtensionCreditSource {
+  id: string;
+  status: string;
+  previousBudgetSecs: number;
+  newBudgetSecs: number;
+  /** What the manager actually granted, where it differs from what was asked. */
+  approvedSecs: number | null;
+  approverId: string | null;
+  /**
+   * The approver's name, resolved by the caller from the directory.
+   *
+   * The stored record keeps only an id, and `Extension approved by GR0000.`
+   * is not a sentence anybody should have to read on their own task. The
+   * id stays as the fallback rather than the source: somebody since
+   * removed from the directory is still better named by their code than
+   * by nothing at all.
+   */
+  approverName: string | null;
+  /** When the manager decided. */
+  approvedAt: string | null;
+  confirmedAt: string | null;
+  createdAt: string | null;
+}
+
+const GRANTED_EXTENSION_STATUSES = ["approved", "accepted"];
+
+export function extensionCredits(
+  extensions: readonly ExtensionCreditSource[],
+  recorded: readonly BudgetCredit[] = [],
+): BudgetCredit[] {
+  const covered = new Set(recorded.map((c) => Math.round(secs(c.newSecs))));
+
+  return extensions
+    .filter((x) => GRANTED_EXTENSION_STATUSES.includes(String(x.status)))
+    .map((x) => {
+      const previousSecs = secs(x.previousBudgetSecs);
+      /**
+       * **What the manager GRANTED, never what was asked for.**
+       *
+       * `newBudgetSecs` is the total the REQUEST proposed, and it is left
+       * standing when the manager grants a different figure — the answer
+       * goes to `approvedSecs`, which is the approved total window and not
+       * a delta. On a live record: previous 9600, asked 1200,
+       * `approvedSecs` 9900, `newBudgetSecs` 10800. The manager gave five
+       * minutes; the request had asked for twenty.
+       *
+       * Reading `newBudgetSecs` first credited the twenty. Four rows of a
+       * 2h budget then read +30m, +10m, +20m, +20m under a total of 2h 50m
+       * — an account that did not add up to the figure printed beneath it,
+       * which is the one thing this panel exists to guarantee. Reported as
+       * "it is showing 20 minutes even though the manager only added 5".
+       *
+       * So the answer wins where there is one, and the request stands only
+       * where the manager granted exactly what was asked — which is what
+       * a null `approvedSecs` means.
+       */
+      const newSecs =
+        secs(x.approvedSecs) > 0 ? secs(x.approvedSecs) : secs(x.newBudgetSecs);
+      /* The decision, not the request: the budget grew when it was answered. */
+      const at = x.approvedAt ?? x.confirmedAt ?? x.createdAt ?? "";
+      /* The name where the directory knew them, their code where it did not. */
+      const who = x.approverName?.trim() || x.approverId?.trim() || null;
+      return {
+        id: `extension:${x.id}`,
+        at,
+        previousSecs,
+        newSecs,
+        /* Worded as the engine's own receipt words it, so a derived row and a
+           recorded one read identically — and so `creditCause` classifies it
+           as an extension rather than falling through to "other". */
+        reason: who
+          ? `Extension approved by ${who}.`
+          : "Extension approved.",
+        byEmployeeId: null,
+      };
+    })
+    /* A row with no date cannot be placed in the account, and one that did not
+       raise the budget is not a credit. `budgetHistoryView` drops the second
+       kind as well; dropping it here keeps the dedupe honest. */
+    .filter((c) => c.at !== "" && c.newSecs > c.previousSecs)
+    .filter((c) => !covered.has(Math.round(c.newSecs)));
+}
+
+/**
  * The whole account: given, plus what was credited, versus what is held now.
  *
  * Credits are sorted oldest first and their deltas are computed from the

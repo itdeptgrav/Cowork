@@ -48,7 +48,10 @@ test("every real fact the flat list showed survives the redesign", () => {
      nothing here is new data, so nothing here should have been quietly
      dropped for the sake of the new layout. */
   assert.match(PANEL, /CREDIT_CAUSE_SHORT_LABEL\[cause\]/);
-  assert.match(PANEL, /formatDurationTimer\(Math\.abs\(m\.deltaSecs\)\)/);
+  /* `formatDuration` ("30m"), not `formatDurationTimer` ("00:30:00") — this
+     panel holds amounts, never a running clock. The duration is what this test
+     is about, and it is still here. */
+  assert.match(PANEL, /formatDuration\(Math\.abs\(m\.deltaSecs\)\)/);
   assert.match(
     PANEL,
     /m\.reason \|\|\s*\n?\s*\(m\.automatic \? "Applied automatically\." : "Approved change\."\)/,

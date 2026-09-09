@@ -367,11 +367,34 @@ export const Icon = {
     </S>
   ),
   /** TRASH — a waste bin; move-to-trash is a soft, per-person delete. */
+  /** EDIT: a pencil at 45 degrees, tip to the bottom-left. Opens a form. */
+  edit: (p: P) => (
+    <S {...p}>
+      <path d="M11.3 2.6a1.1 1.1 0 0 1 1.6 0l.5.5a1.1 1.1 0 0 1 0 1.6L6.2 11.9l-3 .9.9-3z" />
+      <path d="M9.9 4l2.1 2.1" />
+    </S>
+  ),
   trash: (p: P) => (
     <S {...p}>
       <path d="M3.5 4.5h9" />
       <path d="M5.6 4.5V3.3a.8.8 0 0 1 .8-.8h3.2a.8.8 0 0 1 .8.8v1.2" />
       <path d="M4.6 4.5l.5 8.2a.8.8 0 0 0 .8.8h4.2a.8.8 0 0 0 .8-.8l.5-8.2" />
+    </S>
+  ),
+  /**
+   * ARCHIVE — a box with its lid, and an arrow going down into it.
+   *
+   * Deliberately close to `inbox` (the same tray proportions) but closed and
+   * filed rather than open and receiving, because the two sit next to each
+   * other: one is where mail arrives, the other is where it goes when it is
+   * dealt with. The down-arrow is what every mail client uses for this, so it
+   * needs no learning.
+   */
+  archive: (p: P) => (
+    <S {...p}>
+      <path d="M2.5 3.4h11v2.4h-11z" />
+      <path d="M3.5 5.8v6.4a.8.8 0 0 0 .8.8h7.4a.8.8 0 0 0 .8-.8V5.8" />
+      <path d="M8 7.6v3.4M6.4 9.4 8 11l1.6-1.6" />
     </S>
   ),
   /** INBOX — a tray; where mail addressed to you lands. */

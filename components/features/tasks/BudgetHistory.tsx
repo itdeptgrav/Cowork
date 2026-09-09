@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useQuery } from "@/lib/hooks/useRepository";
-import { formatDateTime, formatDurationTimer } from "@/lib/utils/format";
+import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import {
   budgetHistoryView,
   creditCause,
@@ -143,7 +143,7 @@ export function BudgetHistory({
                 label="Given"
                 value={
                   view.givenSecs > 0
-                    ? formatDurationTimer(view.givenSecs)
+                    ? formatDuration(view.givenSecs)
                     : "not recorded"
                 }
                 muted={view.givenSecs === 0}
@@ -153,7 +153,7 @@ export function BudgetHistory({
                 <div key={e.id} className="mt-1.5">
                   <Row
                     label={e.label}
-                    value={`+ ${formatDurationTimer(e.deltaSecs)}`}
+                    value={`+ ${formatDuration(e.deltaSecs)}`}
                   />
                   <p className="text-[11px] leading-relaxed text-ink-faint">
                     {/* The engine's own sentence — it names the minutes and the
@@ -177,7 +177,7 @@ export function BudgetHistory({
                 <div className="mt-1.5">
                   <Row
                     label="Credited earlier"
-                    value={`+ ${formatDurationTimer(view.unaccountedSecs)}`}
+                    value={`+ ${formatDuration(view.unaccountedSecs)}`}
                   />
                   <p className="text-[11px] leading-relaxed text-ink-faint">
                     Applied before this history was kept, so the cause was not
@@ -189,7 +189,7 @@ export function BudgetHistory({
               <div className="mt-2 border-t border-hairline pt-2">
                 <Row
                   label="Now"
-                  value={formatDurationTimer(view.currentSecs)}
+                  value={formatDuration(view.currentSecs)}
                   strong
                 />
               </div>
@@ -380,7 +380,7 @@ function DeadlineSegment({ move: m }: { move: DeadlineMoveEntry }) {
             {CREDIT_CAUSE_SHORT_LABEL[cause]}
           </span>
           <span data-figure className="shrink-0 text-[11px] text-ink-muted">
-            {later ? "+" : "−"} {formatDurationTimer(Math.abs(m.deltaSecs))}
+            {later ? "+" : "−"} {formatDuration(Math.abs(m.deltaSecs))}
           </span>
         </div>
         <p className="text-[11px] leading-relaxed text-ink-faint">

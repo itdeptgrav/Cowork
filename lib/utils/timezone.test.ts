@@ -257,16 +257,53 @@ test("this is a display change and touches no deadline arithmetic", () => {
   }
 });
 
-test("no deadline surface still renders a coarse duration", () => {
+test("a duration shown BESIDE A DATE says its units instead", () => {
+  /**
+   * **This test used to ban `formatDuration` on the deadline screens too, and
+   * the owner reported the reason it had to stop.**
+   *
+   * The original rule was sound as far as it went: `HH:MM:SS` is fixed-width,
+   * cannot be misread between minutes and hours, and does not wrap at 24 —
+   * see the three tests above. What it did not account for is CONTEXT. On the
+   * Deadline panel and the extension decision card a budget sits in the same
+   * row as a real timestamp, and there `07:00:00` next to `9 Sep · 17:31 IST`
+   * reads as seven in the morning. Reported from the product, on a live task,
+   * as "this data looks like confusion" — and the verdict line under it,
+   * "⚠ Misses it by 00:17:52", drew the question "what is this??".
+   *
+   * So the rule is now about neighbours rather than about screens:
+   *
+   *  · A duration beside a DATE says its units — `7h`, `7h 30m`, `18m`.
+   *    Nothing there needs seconds; budgets are granted in hours and minutes.
+   *  · A duration beside ANOTHER DURATION keeps the clock shape. `TaskDetail`
+   *    and `TaskTable` show worked time against estimated time as a pair with
+   *    no date near them, where a fixed width is what lets the eye compare the
+   *    two, and neither can be mistaken for a time of day.
+   *  · A RUNNING timer always keeps it — a ticking figure must not change
+   *    width.
+   */
   for (const path of [
-    "components/features/tasks/DeadlinePanel.tsx",
     "components/features/tasks/TaskDetail.tsx",
     "components/features/tasks/TaskTable.tsx",
   ]) {
     assert.equal(
       /\bformatDuration\(/.test(code(path)),
       false,
-      `${path} still uses the coarse formatter`,
+      `${path} pairs worked time with estimated time — keep them the same width`,
+    );
+  }
+  /* And the two that DO sit beside dates use the unit-bearing one, with no
+     clock shape left on them. */
+  for (const path of [
+    "components/features/tasks/DeadlinePanel.tsx",
+    "components/features/tasks/ExtensionDecisionCard.tsx",
+  ]) {
+    const src = code(path);
+    assert.match(src, /\bformatDuration\(/, `${path} stopped saying its units`);
+    assert.equal(
+      /formatDurationTimer/.test(src),
+      false,
+      `${path} draws a budget as a clock again, beside the dates on the same row`,
     );
   }
 });

@@ -85,7 +85,14 @@ test("an unmeasurable verdict offers neither route", () => {
   assert.match(src, /The workload check is unavailable/);
   /* `unknown` falls through both branches to nothing. */
   assert.match(src, /\) : null\}/);
-  assert.match(src, /route\.outcome === "unknown" && "Not measurable"/);
+  /* "Not measurable" named neither what could not be measured nor what it
+     meant for the decision. The BRANCH is unchanged — `unknown` still falls
+     through both routes to no buttons at all, which is the rule this test
+     exists for. */
+  assert.match(
+    src,
+    /route\.outcome === "unknown" &&\s*"The queue could not be measured, so this cannot be checked\."/,
+  );
 });
 
 test("the assignee is never offered a date negotiation", () => {

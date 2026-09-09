@@ -5,6 +5,7 @@ import { type ComponentType, useEffect, useRef, useState } from "react";
 import { AvatarStack } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
 import { InstantMeetingModal } from "./InstantMeetingModal";
+import { MeetingRowMenu } from "./MeetingRowMenu";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import {
   Button,
@@ -135,6 +136,7 @@ export function MeetingsArea() {
                       people={people.data ?? []}
                       viewerId={me?.employeeId ?? ""}
                       hierarchyIds={me?.hierarchyIds ?? []}
+                      onChanged={() => void meetings.refetch()}
                     />
                   ))}
                 </div>
@@ -164,11 +166,14 @@ export function MeetingCard({
   people,
   viewerId,
   hierarchyIds,
+  onChanged,
 }: {
   meeting: Meeting;
   people: Employee[];
   viewerId: string;
   hierarchyIds: string[];
+  /** After the row's own menu edits or deletes the meeting. */
+  onChanged?: () => void;
 }) {
   const parts = people.filter(
     (p) =>
@@ -239,14 +244,22 @@ export function MeetingCard({
         </Chip>
       </div>
 
-      {joinable && (
-        /* Far right of the second line on a phone; in the row from `sm`. */
-        <div className="ml-auto sm:ml-0">
+      {/* Join and the row's own ⋮ menu, together at the far right of the
+          second line on a phone and in the row from `sm`. The menu is drawn
+          for the organiser only — see MeetingRowMenu — so for most rows this
+          holds Join alone, and for a manager's read-only row it is empty. */}
+      <div className="ml-auto flex items-center gap-1.5 sm:ml-0">
+        {joinable && (
           <Button tone="primary" size="sm">
             <Link href={`/meetings/${meeting.id}`}>Join</Link>
           </Button>
-        </div>
-      )}
+        )}
+        <MeetingRowMenu
+          meeting={meeting}
+          viewerId={viewerId}
+          onChanged={onChanged}
+        />
+      </div>
     </div>
   );
 }

@@ -57,6 +57,15 @@ export interface ExtensionRoute {
   bufferSeconds: number | null;
   /** The date the manager should ask the assignor for. Null when none is needed. */
   proposedDeadline: string | null;
+  /**
+   * The queue still finishes after `proposedDeadline`.
+   *
+   * The cost of moving the deadline by exactly the time granted: a task that
+   * was ALREADY behind stays behind, so the new date is broken the moment it
+   * is set. Decided here rather than in the card, which is not allowed to
+   * compare dates itself — see `the card decides nothing itself`.
+   */
+  stillLateAfterMove: boolean;
   /** One sentence, for the screen. */
   explanation: string;
 }
@@ -87,7 +96,11 @@ export function roundUpToHalfHour(iso: string): string {
 export function routeExtensionRequest(input: {
   feasibility: Pick<
     Feasibility,
-    "feasible" | "estimatedCompletionTime" | "bufferSeconds" | "deadline"
+    | "feasible"
+    | "estimatedCompletionTime"
+    | "bufferSeconds"
+    | "deadline"
+    | "deadlineAfterGrant"
   >;
   previousWindowSecs: number;
   addedSecs: number;
@@ -112,6 +125,8 @@ export function routeExtensionRequest(input: {
       committedDeadline,
       bufferSeconds,
       proposedDeadline: null,
+      /* Nothing is moving, so nothing can be late because of a move. */
+      stillLateAfterMove: false,
       explanation: !committedDeadline
         ? "No deadline has been committed for this task, so there is nothing the extra time has to fit inside."
         : "This person’s queue could not be measured, so whether the extra time fits is not known.",
@@ -127,10 +142,15 @@ export function routeExtensionRequest(input: {
       bufferSeconds,
       /* None needed. The commitment does not move, which is the point. */
       proposedDeadline: null,
+      /* Nothing is moving, so nothing can be late because of a move. */
+      stillLateAfterMove: false,
       explanation:
         "The extra time fits inside the deadline already committed. Granting it changes the budget and nothing else.",
     };
   }
+
+  const movedDeadline =
+    input.feasibility.deadlineAfterGrant ?? roundUpToHalfHour(earliestCompletion);
 
   return {
     outcome: "escalate_deadline",
@@ -138,11 +158,35 @@ export function routeExtensionRequest(input: {
     earliestCompletion,
     committedDeadline,
     bufferSeconds,
-    /* The earliest achievable date, rounded up — asked for, not assumed. */
-    proposedDeadline: roundUpToHalfHour(earliestCompletion),
+    /**
+     * **The deadline plus the time granted — by the owner's decision.**
+     *
+     * This was `roundUpToHalfHour(earliestCompletion)`: the queue's own answer
+     * for when the task would really finish, rounded up so the date was a
+     * round number. Correct, and unexplainable on screen — a task with twelve
+     * minutes of slack had thirty minutes granted and its deadline moved by
+     * eighteen, and nothing said why. Asked to choose, the owner took the
+     * plain reading: grant thirty minutes, move the deadline thirty minutes.
+     *
+     * `deadlineAfterGrant` is that sum, counted in WORKING seconds by the
+     * repository (which is the only layer holding the office calendar), so it
+     * cannot land outside the working day. The old date is the fallback for a
+     * backend that cannot compute it, because a proposal from the queue is
+     * still better than none.
+     */
+    proposedDeadline: movedDeadline,
+    stillLateAfterMove: laterThan(earliestCompletion, movedDeadline),
     explanation:
       "The extra time cannot fit inside the committed deadline. Moving it is the assignor’s decision, so this has to be asked rather than granted.",
   };
+}
+
+/** `a` is strictly after `b`. False when either cannot be read. */
+function laterThan(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  return Number.isFinite(x) && Number.isFinite(y) && x > y;
 }
 
 /**

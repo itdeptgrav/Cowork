@@ -43,6 +43,7 @@ import type {
   CreateConversationInput,
   CreateSubtaskInput,
   CreateMeetingInput,
+  UpdateMeetingInput,
   CreateProjectInput,
   CreateTaskInput,
   DocumentVersionSummary,
@@ -5178,6 +5179,8 @@ export class MockRepository implements CoworkRepository {
      * to one question get made.
      */
     orderOverride?: string[] | null;
+    /** Extra time being granted, for the deadline-after-grant answer below. */
+    grantedSecs?: number;
   }): Promise<Feasibility> {
     /* The fixture runs the REAL rule over the fixture's own tasks, so the
        component's rendering is exercised against genuine output rather than a
@@ -5194,7 +5197,18 @@ export class MockRepository implements CoworkRepository {
         /* A task cannot be due before it existed — see `QueueTask.createdAtMs`. */
         createdAtMs: t.createdAt ? Date.parse(t.createdAt) : undefined,
       }));
-    return calculateDeadlineFeasibility({
+    /* Where the deadline moves if this much is granted. The fixture has no
+       calendar — see `addWorkingSecs` below — so this is wall-clock, which
+       keeps the fixture's dates predictable and matches how it schedules
+       everything else. */
+    const deadlineAfterGrant =
+      input.grantedSecs && input.grantedSecs > 0 && input.committedDeadline
+        ? new Date(
+            Date.parse(input.committedDeadline) + input.grantedSecs * 1000,
+          ).toISOString()
+        : null;
+
+    const feasibility = calculateDeadlineFeasibility({
       taskId: input.taskId ? String(input.taskId) : undefined,
       employeeId: String(input.employeeId),
       proposedPriority: input.proposedPriority,
@@ -5218,6 +5232,8 @@ export class MockRepository implements CoworkRepository {
       addWorkingSecs: (anchorMs, secs) =>
         new Date(anchorMs + secs * 1000).toISOString(),
     });
+
+    return { ...feasibility, deadlineAfterGrant };
   }
 
   async getTimer(taskId: TaskId) {
@@ -9342,6 +9358,12 @@ export class MockRepository implements CoworkRepository {
     if (folder === "drafts") return m.sentAt === null && m.from.employeeId === me;
     if (m.sentAt === null) return false;
     if (folder === "sent") return m.from.employeeId === me;
+    /* Archive is about the Inbox and nothing else — below Sent so an archived
+       message you SENT still shows in Sent, above the Inbox fallthrough so it
+       leaves the Inbox. Mirrors legacy `inFolder` exactly. */
+    const archived = m.archivedBy.includes(me);
+    if (folder === "archived") return archived && m.from.employeeId !== me;
+    if (archived) return false;
     /* Inbox: addressed to me, and not something I sent. */
     return m.from.employeeId !== me;
   }
@@ -9397,7 +9419,7 @@ export class MockRepository implements CoworkRepository {
 
   async setMailFlag(
     messageId: string,
-    flag: "starred" | "trashed" | "spam" | "important",
+    flag: "starred" | "trashed" | "spam" | "important" | "archived",
     on: boolean,
   ): Promise<ActionResult<void>> {
     const g = guard();
@@ -10079,6 +10101,143 @@ export class MockRepository implements CoworkRepository {
     }
     persistStore();
     return delay(ok(m));
+  }
+
+  /**
+   * The same rules the engine applies in `updateCoworkMeet`: the organiser
+   * only, never a cancelled meeting, a title that is not blank, an end after
+   * the start. Only the fields present change; who is invited goes through
+   * `setMeetingParticipants` so the invitations and the history it writes
+   * are the same ones an Add people press writes.
+   */
+  async updateMeeting(
+    meetingId: string,
+    input: UpdateMeetingInput,
+  ): Promise<ActionResult<Meeting>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.meetings.find((x) => x.id === meetingId);
+    if (!m) return fail("not_found", "Meeting not found.");
+    /* Asked before the organiser check, so the answer names the real reason:
+       a cancelled meeting is a record, and that is true for its organiser
+       most of all. The engine says it in the same words. */
+    if (m.status === "cancelled")
+      return fail("invalid_state", "Cannot edit a cancelled meeting.");
+    const refusal = manageRefusal(m, actingId());
+    if (refusal) return fail("permission_denied", refusal);
+    if (input.title !== undefined && !input.title.trim())
+      return fail("validation_failed", "Give the meeting a title.", "title");
+    const startsAfter = input.startsAt ?? m.startsAt;
+    const endsAfter = input.endsAt === undefined ? m.endsAt : (input.endsAt ?? "");
+    if (
+      startsAfter &&
+      endsAfter &&
+      Date.parse(endsAfter) <= Date.parse(startsAfter)
+    )
+      return fail(
+        "validation_failed",
+        "The meeting has to end after it starts.",
+        "endsAt",
+      );
+
+    tick();
+    const changed: string[] = [];
+    if (input.title !== undefined && input.title.trim() !== m.title) {
+      m.title = input.title.trim();
+      changed.push("title");
+    }
+    if (input.description !== undefined) {
+      const next = input.description?.trim() || null;
+      if (next !== m.description) {
+        m.description = next;
+        changed.push("agenda");
+      }
+    }
+    if (input.startsAt !== undefined && input.startsAt !== m.startsAt) {
+      m.startsAt = input.startsAt;
+      changed.push("time");
+    }
+    if (input.endsAt !== undefined && (input.endsAt ?? "") !== m.endsAt) {
+      m.endsAt = input.endsAt ?? "";
+      if (!changed.includes("time")) changed.push("time");
+    }
+    if (input.agenda !== undefined) {
+      m.agenda = input.agenda.map((a) => a.trim()).filter(Boolean);
+      changed.push("agenda items");
+    }
+    if (changed.length) {
+      this.#meetingEvent(m, "updated", `Changed ${changed.join(", ")}`);
+      /* Everybody invited hears about it; the organiser made the change. */
+      for (const id of m.participantIds) {
+        if (id === m.organiserId) continue;
+        this.#notify(
+          id,
+          "meet_updated",
+          "Meeting updated",
+          `${this.#nameOf(actingId())} changed “${m.title}”.`,
+          "meeting",
+          m.id,
+        );
+      }
+    }
+    persistStore();
+    if (input.participantIds !== undefined) {
+      const r = await this.setMeetingParticipants(
+        meetingId,
+        input.participantIds,
+      );
+      if (!r.ok) return r;
+    }
+    return delay(ok(m));
+  }
+
+  /**
+   * Remove the booking — the organiser only, and never while the room is
+   * open, with the engine's own sentences. The record, its history and its
+   * chat go; the invitees are told. Recordings are a participant's own files
+   * and are not touched — the mock holds none, and the engine leaves Drive
+   * alone for the same reason.
+   */
+  async deleteMeeting(meetingId: string): Promise<ActionResult<void>> {
+    const g = guard();
+    if (g) return g;
+    const s = getStore();
+    const m = s.meetings.find((x) => x.id === meetingId);
+    if (!m) return fail("not_found", "Meeting not found.");
+    /* Not `manageRefusal`: that predicate refuses a cancelled or archived
+       meeting because it cannot be CHANGED, and a cancelled booking is
+       exactly the one somebody wants to tidy away. Deleting asks only who is
+       asking, and whether anybody is in the room — the same two questions the
+       engine asks, in its words. */
+    if (m.organiserId !== actingId())
+      return fail("permission_denied", "Only the meeting organiser can delete it.");
+    if (m.status === "live" || m.status === "waiting")
+      return fail(
+        "invalid_state",
+        "End the meeting for everyone before deleting it.",
+      );
+
+    tick();
+    const invited = m.participantIds.filter((id) => id !== m.organiserId);
+    s.meetings = s.meetings.filter((x) => x.id !== meetingId);
+    s.meetingParticipants = s.meetingParticipants.filter(
+      (p) => p.meetingId !== meetingId,
+    );
+    s.meetingEvents = s.meetingEvents.filter((e) => e.meetingId !== meetingId);
+    this.#meetingChat.delete(meetingId);
+    for (const id of invited) {
+      this.#notify(
+        id,
+        "meet_deleted",
+        "Meeting removed",
+        `${this.#nameOf(actingId())} deleted “${m.title}”.`,
+        "meeting",
+        m.id,
+      );
+    }
+    persistStore();
+    return delay(ok(undefined));
   }
 
   /**

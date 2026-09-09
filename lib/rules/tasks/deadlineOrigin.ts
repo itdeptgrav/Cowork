@@ -107,27 +107,6 @@ export interface ReferenceRow {
   isReference: boolean;
 }
 
-/** What to call the moment a given rule picked. */
-function anchorLabel(source: string | null): string {
-  switch (source) {
-    case "hours_granted":
-      return "Hours granted";
-    case "first_online":
-      return "Came online";
-    case "first_task":
-      return "Accepted";
-    case "self_approved":
-      return "Approved";
-    case "acceptance":
-      return "Accepted";
-    case "after_priority_work":
-      return "Earlier work finished";
-    default:
-      /* An anchor whose rule is not recorded is still a real instant, and the
-         honest thing to call it is what it is rather than guessing a cause. */
-      return "Counted from";
-  }
-}
 
 /**
  * The task's own clock, said as the two instants a reader is comparing.
@@ -139,10 +118,16 @@ function anchorLabel(source: string | null): string {
  * unexplainable. So both are listed, and the one the arithmetic actually used
  * is marked, because that is the whole question.
  *
- * When the two are the same instant there is one row, not two identical ones:
- * a task accepted by somebody already online anchors exactly at its creation,
- * and printing that twice invites the reader to look for a difference that is
- * not there.
+ * **Two fixed labels, and both rows always shown.** The anchor row is always
+ * called "Counted from" rather than naming the rule that chose it, and the two
+ * rows are printed even when they carry the same instant. Both were the other
+ * way round and both were reported: a rule name like "Earlier work finished"
+ * sitting against a creation instant reads as an event to go looking for, and
+ * collapsing the identical case left the panel showing a lone sentence —
+ * "Counted from this time." — with no figure beside it.
+ *
+ * The rule behind the anchor is still resolved and still shown elsewhere; see
+ * `clockStartReason`.
  */
 export function referenceTimes(input: {
   createdAt: string | null;
@@ -162,17 +147,36 @@ export function referenceTimes(input: {
     return [{ label: "Created", at: input.createdAt as string, isReference: true }];
   }
 
+  /**
+   * **Always "Counted from" — never the rule's name for itself.**
+   *
+   * This read `anchorLabel(source)`, which turned the anchor into "Accepted",
+   * "Came online", "Hours granted" or "Earlier work finished" depending on
+   * which rule chose it. The owner asked for two fixed labels and no invented
+   * vocabulary: Created, and Counted from. A row that changes its name from
+   * task to task is a row a reader has to decode before they can read it.
+   *
+   * The rule behind the anchor is not lost — `clockStartReason` still says it
+   * in a sentence, and `deadlineOrigin` still carries it — it simply is not
+   * the label on this row.
+   */
   const anchor: ReferenceRow = {
-    label: anchorLabel(input.clockStartsAtSource),
+    label: "Counted from",
     at: input.clockStartsAt as string,
     isReference: true,
   };
 
   if (!hasCreated) return [anchor];
 
-  /* A second apart is the same instant written by two clocks. */
+  /* A second apart is the same instant written by two clocks — so the anchor
+     takes the creation's own timestamp and the two rows cannot disagree by a
+     rounding. Both are still shown: one row plus a dangling sentence saying
+     "Counted from this time." read as a row whose figure had gone missing. */
   if (Math.abs(anchorMs - createdMs) <= 1000) {
-    return [{ label: "Created", at: input.createdAt as string, isReference: true }];
+    return [
+      { label: "Created", at: input.createdAt as string, isReference: false },
+      { ...anchor, at: input.createdAt as string },
+    ];
   }
 
   /* Chronological: the reader follows the task forward to the moment that

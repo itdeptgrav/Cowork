@@ -87,8 +87,12 @@ test("the assignee's request is hours, and carries no date", () => {
   );
   /* The window comes from the one budget field, not a second reading. */
   assert.match(src, /const previousWindowSecs = view\.task\.estimatedEffortSecs \?\? 0;/);
-  /* And the form still shows the sum it is sending. */
-  assert.match(src, /formatDurationTimer\(extension\.totalSecs\)/);
+  /* And the form still shows the sum it is sending. `formatDuration` ("7h 30m"),
+     not `formatDurationTimer` ("07:30:00") — a budget is an amount, and the
+     fixed-width timer shape was reported as unreadable where it was not
+     counting down. `formatDuration` cannot match `formatDurationTimer`, so
+     this still fails if the timer format comes back. */
+  assert.match(src, /formatDuration\(extension\.totalSecs\)/);
 });
 
 /* ── 2 · The stored record ────────────────────────────────────────────────── */
@@ -163,7 +167,8 @@ test("the history renders the stored amount, never a difference", () => {
      difference is zero for every granted extension. */
   const src = code("components/features/tasks/DeadlinePanel.tsx");
   assert.match(src, /p\.addedSecs !== null \?/);
-  assert.match(src, /formatDurationTimer\(p\.addedSecs\)/);
+  /* See the note on `extension.totalSecs` above — same change, same reason. */
+  assert.match(src, /formatDuration\(p\.addedSecs\)/);
   assert.equal(
     /p\.windowSecs - \(p\.previousWindowSecs/.test(src),
     false,

@@ -49,6 +49,10 @@ const FOLDERS: { id: MailFolder; label: string; icon: keyof typeof Icon }[] = [
   { id: "inbox", label: "Inbox", icon: "inbox" },
   { id: "sent", label: "Sent", icon: "send" },
   { id: "drafts", label: "Drafts", icon: "draft" },
+  /* Where the row's Archive action puts things. Without somewhere to look,
+     archiving would be a one-way door: search is scoped to the folder you are
+     in, so an archived message would be gone from the whole product. */
+  { id: "archived", label: "Archived", icon: "archive" },
   { id: "spam", label: "Spam", icon: "blocked" },
   { id: "trash", label: "Trash", icon: "trash" },
 ];
@@ -92,6 +96,35 @@ export function MailArea() {
     if (draft) setEditingDraft(draft);
   }
   const unread = useQuery((r) => r.getMailUnreadCount(), [folder]);
+
+  /**
+   * The row's quick actions — Archive and Delete, without opening the message.
+   *
+   * **A thread, applied per message.** The flag lives on each message
+   * (`archivedBy` / `trashedBy`), and a person thinks in conversations, so
+   * this moves every message of the thread that is theirs to move — the same
+   * loop `MailThreadView` runs for its own Trash and Spam controls, so the two
+   * routes to the same action cannot drift.
+   *
+   * `busyRow` is the id being worked on, not a boolean: it disables that row's
+   * buttons while its request is in flight without freezing the whole list.
+   */
+  const [busyRow, setBusyRow] = useState<string | null>(null);
+  async function flagThread(t: MailThread, flag: "archived" | "trashed") {
+    if (busyRow) return;
+    setBusyRow(t.id);
+    try {
+      const repo = getRepository();
+      const msgs = await repo.listMailMessages(t.id);
+      for (const m of msgs) await repo.setMailFlag(m.id, flag, true);
+    } finally {
+      setBusyRow(null);
+    }
+    /* Both, because either action can change what is unread: the row leaves
+       the Inbox whether or not it had been read. */
+    threads.refetch();
+    unread.refetch();
+  }
 
   /* Client-side windowing: draw the first page of rows and reveal more on
      demand, so a large inbox never renders hundreds of rows at once. The window
@@ -350,6 +383,23 @@ export function MailArea() {
                         key={t.id}
                         thread={t}
                         onOpen={() => void openRow(t)}
+                        busy={busyRow === t.id}
+                        /* Archive means "out of the Inbox", so it is offered
+                           where there is an Inbox to leave. Elsewhere it would
+                           be a control that says nothing. */
+                        onArchive={
+                          folder === "inbox"
+                            ? () => void flagThread(t, "archived")
+                            : undefined
+                        }
+                        /* Delete is offered everywhere except Trash, where the
+                           only remaining step would be deleting for ever —
+                           which this mailbox does not do. */
+                        onDelete={
+                          folder === "trash"
+                            ? undefined
+                            : () => void flagThread(t, "trashed")
+                        }
                       />
                     ))}
                   </ul>
@@ -451,12 +501,62 @@ function SideItem({
   );
 }
 
+/**
+ * One hover action on a mail row.
+ *
+ * `stopPropagation` is the load-bearing part: without it a press here would
+ * also open the conversation it was meant to file away, which is the classic
+ * way this control goes wrong.
+ */
+function RowAction({
+  icon,
+  label,
+  title,
+  onClick,
+  busy,
+  danger = false,
+}: {
+  icon: "archive" | "trash";
+  label: string;
+  title: string;
+  onClick: () => void;
+  busy: boolean;
+  danger?: boolean;
+}) {
+  const Glyph = Icon[icon];
+  return (
+    <button
+      type="button"
+      disabled={busy}
+      aria-label={label}
+      title={title}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      className={`grid h-8 w-8 place-items-center rounded-full text-ink-muted transition-colors hover:bg-[var(--surface-raised)] disabled:opacity-40 ${
+        danger ? "hover:text-[var(--state-overdue,#d1495b)]" : "hover:text-ink"
+      }`}
+    >
+      <Glyph className="h-4 w-4" />
+    </button>
+  );
+}
+
 function ThreadRow({
   thread,
   onOpen,
+  onArchive,
+  onDelete,
+  busy = false,
 }: {
   thread: MailThread;
   onOpen: () => void;
+  /** Absent where archiving would mean nothing — see the call site. */
+  onArchive?: () => void;
+  /** Absent in Trash, where the next step would be deleting for ever. */
+  onDelete?: () => void;
+  busy?: boolean;
 }) {
   /* Real clock, resolved after mount — see `useNow`. */
   const now = useNow();
@@ -476,8 +576,13 @@ function ThreadRow({
      lifted row; the design language stays quiet — no accent bars. */
   const unread = thread.unread === true;
 
+  const hasActions = !!onArchive || !!onDelete;
+
   return (
-    <li>
+    /* `group` so the actions can appear on hovering the ROW rather than only
+       on hovering the icons themselves, and `relative` because they are drawn
+       OVER the date rather than beside it — see the note where they render. */
+    <li className={hasActions ? "group relative" : undefined}>
       <button
         type="button"
         onClick={onOpen}
@@ -526,11 +631,50 @@ function ThreadRow({
         <span
           className={`w-14 shrink-0 text-right text-[11px] tabular-nums sm:w-16 ${
             unread ? "font-medium text-ink" : "text-ink-faint"
-          }`}
+          } ${hasActions ? "transition-opacity group-hover:opacity-0" : ""}`}
         >
           {now && formatRelative(thread.lastMessageAt, now)}
         </span>
       </button>
+
+      {/**
+       * **The quick actions, drawn over the date rather than beside it.**
+       *
+       * Absolutely positioned for two reasons. The row is one big `<button>`,
+       * and a button inside a button is invalid — so these have to be
+       * siblings. And the date is the one thing on the row nobody needs while
+       * they are reaching for Archive, so it fades and they take its place;
+       * adding a column instead would shorten every subject on every row for
+       * the sake of controls that are usually invisible.
+       *
+       * `opacity-0` rather than `hidden`, because a hidden element cannot be
+       * focused — and these must be reachable by keyboard. `focus-within`
+       * shows them the moment Tab arrives, and `pointer-events-none` keeps the
+       * invisible cluster from swallowing clicks meant for the row.
+       */}
+      {hasActions && (
+        <div className="pointer-events-none absolute inset-y-0 right-3 flex items-center gap-0.5 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover:pointer-events-auto group-hover:opacity-100">
+          {onArchive && (
+            <RowAction
+              icon="archive"
+              label={`Archive: ${thread.subject || "(no subject)"}`}
+              title="Archive — out of the Inbox, still in Gmail"
+              busy={busy}
+              onClick={onArchive}
+            />
+          )}
+          {onDelete && (
+            <RowAction
+              icon="trash"
+              label={`Delete: ${thread.subject || "(no subject)"}`}
+              title="Delete — moves it to Trash"
+              busy={busy}
+              onClick={onDelete}
+              danger
+            />
+          )}
+        </div>
+      )}
     </li>
   );
 }

@@ -26,9 +26,22 @@ const LEGACY = strip("lib/repositories/legacy/index.ts");
 const FLAGS = strip("lib/rules/mail/flags.ts");
 
 test("the domain grows Spam as a folder and two per-person flag arrays", () => {
-  assert.match(DOMAIN, /"inbox" \| "sent" \| "drafts" \| "trash" \| "spam"/);
+  /* Written on one line when Spam was added; the union is a list now because
+     Archived joined it. Every member is still asserted — the point of the
+     test is that the folder set is these and no others. */
+  for (const folder of [
+    '"inbox"',
+    '"sent"',
+    '"drafts"',
+    '"archived"',
+    '"trash"',
+    '"spam"',
+  ]) {
+    assert.match(DOMAIN, new RegExp(`\\| ${folder}`), `${folder} left MailFolder`);
+  }
   assert.match(DOMAIN, /spamBy: EmployeeId\[\];/);
   assert.match(DOMAIN, /importantBy: EmployeeId\[\];/);
+  assert.match(DOMAIN, /archivedBy: EmployeeId\[\];/);
 });
 
 test("both inFolder implementations bucket Spam identically, and it is exclusive", () => {

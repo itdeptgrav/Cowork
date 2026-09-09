@@ -47,7 +47,22 @@ export interface MailParty {
   displayName: string;
 }
 
-export type MailFolder = "inbox" | "sent" | "drafts" | "trash" | "spam";
+/**
+ * `archived` is a real folder, not a hiding place.
+ *
+ * Archive takes a message out of the Inbox — that is the whole of what it
+ * means. But search is scoped to the folder you are looking at, and Cowork has
+ * no "All mail", so without somewhere to look an archived message would be
+ * gone from every view in the product with no way back. That is a one-way door
+ * dressed up as a tidy-up, so archived mail gets its own place to live.
+ */
+export type MailFolder =
+  | "inbox"
+  | "sent"
+  | "drafts"
+  | "archived"
+  | "trash"
+  | "spam";
 
 /**
  * A conversation, whatever it travelled over.

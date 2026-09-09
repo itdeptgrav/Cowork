@@ -128,7 +128,7 @@ export const SECTION_TYPES: Readonly<
     "group_admin_changed",
     "group_deleted",
   ],
-  "/meetings": ["meet_scheduled", "meet_cancelled", "meet_updated", "meet_started"],
+  "/meetings": ["meet_scheduled", "meet_cancelled", "meet_updated", "meet_started", "meet_deleted"],
   /* No equivalent in the old bar — it had no Score entry. Added because this
      migration made a score deduction notify at all, and a notification about
      points coming off your record is the last one that should be silent on the

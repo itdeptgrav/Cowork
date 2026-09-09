@@ -233,7 +233,13 @@ const ACCEPTED = "2026-09-02T08:00:00.000Z"; // 1:30 PM IST
 
 test("both times are listed, and only the one that counted is marked", () => {
   /* The whole point of showing two: without the creation there is no way to
-     see the anchor moved, and without the anchor the date is unexplainable. */
+     see the anchor moved, and without the anchor the date is unexplainable.
+
+     The second label was "Accepted" here — the moment's own name, chosen by
+     whichever rule set the anchor. Two fixed labels were asked for instead;
+     see "the anchor row is ALWAYS called 'Counted from'" below for why. This
+     test is about which rows appear and which one is marked, and both of those
+     are unchanged. */
   const rows = referenceTimes({
     createdAt: CREATED,
     clockStartsAt: ACCEPTED,
@@ -244,7 +250,7 @@ test("both times are listed, and only the one that counted is marked", () => {
     rows.map((r) => [r.label, r.isReference]),
     [
       ["Created", false],
-      ["Accepted", true],
+      ["Counted from", true],
     ],
   );
 });
@@ -284,29 +290,62 @@ test("exactly one row is ever the reference", () => {
   }
 });
 
-test("an anchor at the creation is ONE row, not two identical ones", () => {
-  /* A task accepted by somebody already online anchors exactly at its creation.
-     Printing that twice invites a hunt for a difference that is not there. */
+test("an anchor at the creation is still BOTH rows, sharing one instant", () => {
+  /**
+   * **Reversed at the owner's request.** This asserted one row: "printing that
+   * twice invites a hunt for a difference that is not there."
+   *
+   * What one row actually produced was worse. The panel prints the rows and
+   * then the sentence "Counted from the time in bold" underneath — so a single
+   * Created row left that sentence pointing at nothing, and it was reported as
+   * a row whose figure had gone missing rather than as two instants that
+   * agree. Asked for by name: "Created 9 Sep · 10:19 IST / Counted from 9 Sep ·
+   * 10:19 IST".
+   *
+   * Both rows, and both carry the CREATION's timestamp — see below — so the
+   * pair can never disagree by a rounding.
+   */
   const rows = referenceTimes({
     createdAt: CREATED,
     clockStartsAt: CREATED,
     clockStartsAtSource: "first_online",
   });
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].label, "Created");
-  assert.equal(rows[0].isReference, true);
+  assert.deepEqual(
+    rows.map((r) => [r.label, r.at, r.isReference]),
+    [
+      ["Created", CREATED, false],
+      ["Counted from", CREATED, true],
+    ],
+  );
 });
 
 test("a second apart is the same instant written by two clocks", () => {
+  /* Both rows print the CREATION's stamp, not each their own: a sub-second
+     difference between two clocks is not something to make a reader compare. */
   const rows = referenceTimes({
     createdAt: CREATED,
     clockStartsAt: "2026-09-02T07:30:00.900Z",
     clockStartsAtSource: "first_online",
   });
-  assert.equal(rows.length, 1);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(new Set(rows.map((r) => r.at)), new Set([CREATED]));
 });
 
-test("each rule names its own moment", () => {
+test("the anchor row is ALWAYS called 'Counted from'", () => {
+  /**
+   * **Reversed at the owner's request.** This asserted the opposite: that each
+   * rule named its own moment, so the row read "Accepted", "Came online",
+   * "Hours granted" or "Earlier work finished" depending on which rule chose
+   * the anchor.
+   *
+   * Two fixed labels were asked for and no invented vocabulary — Created, and
+   * Counted from — because a row whose name changes from task to task has to
+   * be decoded before it can be read. "Earlier work finished" beside a
+   * creation instant was reported as exactly that.
+   *
+   * The rule is still resolved and still tested: `clockStartReason` says it in
+   * a sentence and `deadlineOrigin` carries it. It is simply not this label.
+   */
   const labelFor = (src: string) =>
     referenceTimes({
       createdAt: CREATED,
@@ -314,11 +353,17 @@ test("each rule names its own moment", () => {
       clockStartsAtSource: src,
     }).find((r) => r.isReference)!.label;
 
-  assert.equal(labelFor("first_task"), "Accepted");
-  assert.equal(labelFor("self_approved"), "Approved");
-  assert.equal(labelFor("hours_granted"), "Hours granted");
-  assert.equal(labelFor("first_online"), "Came online");
-  assert.equal(labelFor("after_priority_work"), "Earlier work finished");
+  for (const src of [
+    "first_task",
+    "self_approved",
+    "hours_granted",
+    "first_online",
+    "after_priority_work",
+    "something_unknown",
+    null,
+  ]) {
+    assert.equal(labelFor(src as string), "Counted from", `source ${src} renamed the row`);
+  }
 });
 
 test("an older task with no anchor still shows when it was created", () => {

@@ -128,6 +128,18 @@ export function inFolder(m: MailMessage, me: string, folder: MailFolder): boolea
   if (folder === "drafts") return m.sentAt === null && m.from.employeeId === me;
   if (m.sentAt === null) return false;
   if (folder === "sent") return m.from.employeeId === me;
+  /**
+   * **Archive is about the Inbox and nothing else.**
+   *
+   * Checked here, below Sent and Drafts and above the Inbox fallthrough, so a
+   * message you archived still appears in Sent if you sent it — archiving is
+   * "I have dealt with this", not "hide it from me everywhere". Trash and Spam
+   * already returned above, and they outrank it: a message you archived and
+   * then deleted is in Trash, which is what deleting means.
+   */
+  const archived = m.archivedBy.includes(me);
+  if (folder === "archived") return archived && m.from.employeeId !== me;
+  if (archived) return false;
   /* Inbox: addressed to me, not sent by me. */
   return m.from.employeeId !== me;
 }

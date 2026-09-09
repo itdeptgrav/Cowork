@@ -1274,6 +1274,18 @@ export interface CoworkRepository {
      * to one question get made.
      */
     orderOverride?: string[] | null;
+    /**
+     * Extra time being granted, for working out where the deadline would move.
+     *
+     * **Answered HERE because this is where the office calendar is.** The rule
+     * that proposes a new deadline is pure and the card that shows it has no
+     * schedule, so neither can add "thirty minutes" to a date without landing
+     * at two in the morning or on a Sunday. The repository already holds the
+     * schedule, the breaks and the blocked dates for this employee — it is the
+     * one place that can count working seconds — and it already runs for this
+     * card, so the answer rides along instead of costing a second round trip.
+     */
+    grantedSecs?: number;
   }): Promise<Feasibility>;
 
   decideDeadline(
@@ -2561,7 +2573,7 @@ export interface CoworkRepository {
   setMailRead(messageId: string, read: boolean): Promise<ActionResult<void>>;
   setMailFlag(
     messageId: string,
-    flag: "starred" | "trashed" | "spam" | "important",
+    flag: "starred" | "trashed" | "spam" | "important" | "archived",
     on: boolean,
   ): Promise<ActionResult<void>>;
   /**
@@ -2905,6 +2917,27 @@ export interface CoworkRepository {
    * that exists rather than replacing it.
    */
   openMeetingRoom(meetingId: string): Promise<ActionResult<Meeting>>;
+  /**
+   * Change a booking — its title, agenda, time and who is invited.
+   *
+   * The organiser's alone, like every other change, and refused on a
+   * cancelled meeting. Returns the meeting read back from the store, so what
+   * the dialog shows afterwards is what was kept rather than what was sent.
+   */
+  updateMeeting(
+    meetingId: string,
+    input: UpdateMeetingInput,
+  ): Promise<ActionResult<Meeting>>;
+  /**
+   * Remove a booking outright.
+   *
+   * The organiser's alone, and never while the room is open — "End the
+   * meeting for everyone before deleting it." Distinct from cancelling, which
+   * keeps the record and marks it: this is for a meeting that should not
+   * exist, and it takes the audit trail and the chat with it. Recordings
+   * already saved to Drive are not touched.
+   */
+  deleteMeeting(meetingId: string): Promise<ActionResult<void>>;
   /** Attendance only. The token route is what controls entry. */
   recordMeetingPresence(
     meetingId: string,
@@ -3469,6 +3502,24 @@ export interface CreateMeetingInput {
   participantIds: EmployeeId[];
   startsAt: string;
   endsAt: string;
+}
+
+/**
+ * Editing a booking.
+ *
+ * Every field is optional: only what is present changes, so a caller moving
+ * the time does not have to resend the title. `participantIds` is the people
+ * TICKED — the organiser is kept on the meeting by the repository whether or
+ * not they are in it, because a list that could drop them would drop them
+ * from their own meetings page.
+ */
+export interface UpdateMeetingInput {
+  title?: string;
+  description?: string | null;
+  startsAt?: string;
+  endsAt?: string | null;
+  agenda?: string[];
+  participantIds?: EmployeeId[];
 }
 
 /**

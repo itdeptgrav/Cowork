@@ -30,8 +30,14 @@ test("the sum is spelled out where it is chosen", () => {
   const src = code(PANEL);
   assert.match(src, /Current window/);
   assert.match(src, /= new total/);
-  assert.match(src, /formatDurationTimer\(extension\.addedSecs\)/);
-  assert.match(src, /formatDurationTimer\(extension\.totalSecs\)/);
+  /* `formatDuration` ("7h 30m"), not `formatDurationTimer` ("07:30:00").
+     A budget rendered in the clock shape sat beside real times of day on this
+     screen and read as one — "07:00:00" next to "9 Sep · 17:31 IST" looked
+     like seven in the morning rather than seven hours. Live timers keep the
+     clock shape, because a ticking figure must not change width; a total says
+     its units instead. */
+  assert.match(src, /formatDuration\(extension\.addedSecs\)/);
+  assert.match(src, /formatDuration\(extension\.totalSecs\)/);
 });
 
 test("the decision card shows all three figures", () => {
@@ -43,7 +49,7 @@ test("the decision card shows all three figures", () => {
   for (const label of ["Current window", "Extra requested", "New total"]) {
     assert.match(src, new RegExp(label));
   }
-  assert.match(src, /formatDurationTimer\(Math\.abs\(ext\.addedSecs\)\)/);
+  assert.match(src, /formatDuration\(Math\.abs\(ext\.addedSecs\)\)/);
 });
 
 test("the history row leads with what was added", () => {
@@ -55,7 +61,7 @@ test("the history row leads with what was added", () => {
      for every granted extension. */
   const src = code(PANEL);
   assert.match(src, /p\.addedSecs !== null \?/);
-  assert.match(src, /formatDurationTimer\(p\.addedSecs\)/);
+  assert.match(src, /formatDuration\(p\.addedSecs\)/);
   assert.equal(
     /p\.windowSecs - \(p\.previousWindowSecs/.test(src),
     false,

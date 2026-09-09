@@ -55,6 +55,52 @@ export interface NegotiationRow {
   reason: string | null;
 }
 
+/**
+ * **What a round actually settled on, rather than what it opened with.**
+ *
+ * The row's headline read `previous + asked = previous + asked`, so a round
+ * where the manager granted five minutes of the twenty requested still
+ * announced "2h 40m + 20m = 3h" and then corrected itself underneath. The
+ * help has said for a while that where a manager granted less than was asked,
+ * the granted figure is the one shown; the headline was the place that had
+ * not caught up.
+ *
+ * `granted` is null when the answer matched the request, so the request IS
+ * the settlement in that case — and on a round nobody has answered yet, what
+ * was asked for is the only figure there is.
+ */
+export function settledTotalSecs(row: NegotiationRow): number {
+  const previous = row.asked.previousSecs ?? 0;
+  return row.granted?.totalSecs ?? previous + (row.asked.addedSecs ?? 0);
+}
+
+/**
+ * **Was the answer SMALLER than the request?**
+ *
+ * `wasReduced` is only `granted !== null` — it says the answer differed,
+ * never which way. The row needs the direction because it now says
+ * "only 5m granted", and "only" is a claim: a manager who granted MORE than
+ * was asked, or moved a date later rather than earlier, must not be
+ * reported as having short-changed anybody.
+ *
+ * A date granted EARLIER than the one requested is the less generous answer,
+ * which is why the deadline side compares instants the same way round.
+ */
+export function grantedLessThanAsked(row: NegotiationRow): boolean {
+  if (row.granted === null) return false;
+  if (row.kind === "hours") {
+    return settledAddedSecs(row) < (row.asked.addedSecs ?? 0);
+  }
+  const asked = row.asked.deadline ? Date.parse(row.asked.deadline) : NaN;
+  const granted = row.granted.deadline ? Date.parse(row.granted.deadline) : NaN;
+  return Number.isFinite(asked) && Number.isFinite(granted) && granted < asked;
+}
+
+/** The addition that settlement represents. Never negative. */
+export function settledAddedSecs(row: NegotiationRow): number {
+  return Math.max(0, settledTotalSecs(row) - (row.asked.previousSecs ?? 0));
+}
+
 function ms(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const t = Date.parse(iso);

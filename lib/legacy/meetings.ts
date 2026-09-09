@@ -155,6 +155,53 @@ export async function startMeetRoom(input: {
 }
 
 /** `POST /cowork/schedule-meet/:id/presence` — arriving in or leaving the room. */
+/**
+ * `PATCH /cowork/schedule-meet/:id/edit` — the whole booking, from the edit
+ * dialog. Only the fields present are sent, so a caller moving the time does
+ * not have to know the title. The engine keeps the organiser in `participants`
+ * whatever list arrives.
+ */
+export async function updateMeet(input: {
+  token: string;
+  meetId: string;
+  title?: string;
+  description?: string | null;
+  dateTime?: string;
+  endsAt?: string | null;
+  agenda?: string[];
+  participants?: string[];
+}): Promise<LegacyResult<unknown>> {
+  const { token, meetId, ...fields } = input;
+  const body: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) body[key] = value;
+  }
+  return legacyFetch({
+    path: `/cowork/schedule-meet/${encodeURIComponent(meetId)}/edit`,
+    method: "PATCH",
+    body,
+    token,
+  });
+}
+
+/**
+ * `DELETE /cowork/schedule-meet/:id` — the organiser removes the booking.
+ *
+ * Not `/cancel`: cancelling keeps the record and marks it, deleting takes the
+ * record, its history and its chat away. The engine refuses it while the room
+ * is open, with the sentence the dialog shows.
+ */
+export async function deleteMeet(input: {
+  token: string;
+  meetId: string;
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/schedule-meet/${encodeURIComponent(input.meetId)}`,
+    method: "DELETE",
+    token: input.token,
+  });
+}
+
 export async function recordMeetPresence(input: {
   token: string;
   meetId: string;

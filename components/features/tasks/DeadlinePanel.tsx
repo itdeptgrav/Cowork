@@ -23,7 +23,12 @@ import {
   extensionHistoryLine,
   extensionProgress,
 } from "@/lib/rules/tasks/extensionProgress";
-import { negotiationHistory } from "@/lib/rules/tasks/negotiationHistory";
+import {
+  grantedLessThanAsked,
+  negotiationHistory,
+  settledAddedSecs,
+  settledTotalSecs,
+} from "@/lib/rules/tasks/negotiationHistory";
 import {
   deriveDueAt,
   describeWindow,
@@ -33,7 +38,7 @@ import { useViewerId } from "@/lib/hooks/usePermissions";
 import { windowOnOffer } from "./statusMeta";
 import {
   formatDateTime,
-  formatDurationTimer,
+  formatDuration,
   formatPercent,
   formatStamp,
 } from "@/lib/utils/format";
@@ -128,13 +133,13 @@ export function DeadlinePanel({
           <Row
             label="Original window"
             value={
-              d.originalWindowSecs ? formatDurationTimer(d.originalWindowSecs) : "—"
+              d.originalWindowSecs ? formatDuration(d.originalWindowSecs) : "—"
             }
           />
           <Row
             label="Current window"
             value={
-              d.currentWindowSecs ? formatDurationTimer(d.currentWindowSecs) : "—"
+              d.currentWindowSecs ? formatDuration(d.currentWindowSecs) : "—"
             }
           />
           <Row label="Working deadline" value={formatDateTime(d.dueAt)} />
@@ -173,18 +178,18 @@ export function DeadlinePanel({
               <>
                 An extension of{" "}
                 <span className="text-ink" data-figure>
-                  +{formatDurationTimer(open.addedSecs ?? 0)}
+                  +{formatDuration(open.addedSecs ?? 0)}
                 </span>{" "}
                 — a new total of{" "}
                 <span className="text-ink" data-figure>
-                  {formatDurationTimer(open.windowSecs)}
+                  {formatDuration(open.windowSecs)}
                 </span>
               </>
             ) : (
               <>
                 A deadline of{" "}
                 <span className="text-ink" data-figure>
-                  {formatDurationTimer(open.windowSecs)}
+                  {formatDuration(open.windowSecs)}
                 </span>
               </>
             )}{" "}
@@ -288,8 +293,27 @@ export function DeadlinePanel({
                           <>
                             Extra time ·{" "}
                             <span data-figure>
-                              {formatDurationTimer(row.asked.previousSecs ?? 0)}{" "}
-                              + {formatDurationTimer(row.asked.addedSecs ?? 0)}
+                              {formatDuration(row.asked.previousSecs ?? 0)} +{" "}
+                              {/* **What was SETTLED, not what was opened with.**
+
+                                  This read the request on both sides, so a round
+                                  where twenty minutes were asked for and five
+                                  were granted announced "2h 40m + 20m = 3h" and
+                                  then corrected itself in the line underneath.
+                                  Reported as showing 20m for a 5m grant.
+
+                                  The request is still what shows on a round
+                                  nobody has answered, and on one granted in
+                                  full — in both of those the ask IS the
+                                  settlement. What was asked for is never lost:
+                                  the line below names it whenever the two
+                                  differ. */}
+                              {formatDuration(settledAddedSecs(row))} ={" "}
+                              {/* The sum, because "7h + 30m" leaves the reader
+                                  to do the arithmetic the row exists to report,
+                                  and the total is the number the decision is
+                                  actually about. */}
+                              {formatDuration(settledTotalSecs(row))}
                             </span>
                           </>
                         ) : (
@@ -305,35 +329,51 @@ export function DeadlinePanel({
                       </span>
                     </div>
 
-                    {/* What was actually granted, where it differed from what
-                        was asked. OWNER REQUIREMENT, 17 Aug 2026: somebody who
-                        asked for an hour and was given thirty minutes has to
-                        see BOTH figures, never the smaller one on its own. */}
+                    {/**
+                      * **What was asked for, and what came back.**
+                      *
+                      * OWNER REQUIREMENT, 17 Aug 2026: somebody who asked for
+                      * an hour and was given thirty minutes has to see BOTH
+                      * figures, never the smaller one on its own.
+                      *
+                      * This read "Granted 5m, not the 20m that was asked for."
+                      * Both figures were there and it was still hard to read:
+                      * it opened with the figure the headline had just printed,
+                      * and "not the 20m" states the request by denying it, so
+                      * the number that was actually asked for arrives as the
+                      * back half of a negative. Reported as needing to show
+                      * plainly that "20 minutes were requested, but only 5
+                      * minutes were accepted".
+                      *
+                      * So: request first, answer second, in the order it
+                      * happened — and "only" where the answer really was
+                      * smaller, which is what `grantedLessThanAsked` decides.
+                      * A manager who grants MORE than was asked is not
+                      * reported as having short-changed anybody.
+                      */}
                     {row.granted !== null && (
                       <p className="mt-0.5 text-[12px] text-ink-muted">
-                        Granted{" "}
+                        Asked for{" "}
+                        <span data-figure>
+                          {row.kind === "hours"
+                            ? formatDuration(row.asked.addedSecs ?? 0)
+                            : row.asked.deadline
+                              ? formatStamp(row.asked.deadline)
+                              : "—"}
+                        </span>
+                        {" — granted "}
+                        {grantedLessThanAsked(row) ? "only " : ""}
                         <span data-figure className="text-ink">
                           {row.kind === "hours"
-                            ? formatDurationTimer(
-                                Math.max(
-                                  0,
-                                  (row.granted.totalSecs ?? 0) -
-                                    (row.asked.previousSecs ?? 0),
-                                ),
-                              )
+                            ? /* The same figure the headline prints — one
+                                 subtraction, in one place, so the two lines of
+                                 one row cannot disagree. */
+                              formatDuration(settledAddedSecs(row))
                             : row.granted.deadline
                               ? formatStamp(row.granted.deadline)
                               : "—"}
                         </span>
-                        {", not the "}
-                        <span data-figure>
-                          {row.kind === "hours"
-                            ? formatDurationTimer(row.asked.addedSecs ?? 0)
-                            : row.asked.deadline
-                              ? formatStamp(row.asked.deadline)
-                              : "—"}
-                        </span>{" "}
-                        that was asked for.
+                        .
                       </p>
                     )}
 
@@ -389,12 +429,12 @@ export function DeadlinePanel({
                       amount was carried has nothing to report and says so. */}
                   {p.addedSecs !== null ? (
                     <span data-figure>
-                      {formatDurationTimer(p.previousWindowSecs ?? 0)} +{" "}
-                      {formatDurationTimer(p.addedSecs)} ={" "}
-                      {formatDurationTimer(p.windowSecs)}
+                      {formatDuration(p.previousWindowSecs ?? 0)} +{" "}
+                      {formatDuration(p.addedSecs)} ={" "}
+                      {formatDuration(p.windowSecs)}
                     </span>
                   ) : p.windowSecs > 0 ? (
-                    <span data-figure>{formatDurationTimer(p.windowSecs)}</span>
+                    <span data-figure>{formatDuration(p.windowSecs)}</span>
                   ) : (
                     /* Plain, and not a diagnosis. Each earlier attempt at
                        this wording described a fault: "amount not recorded"
@@ -442,11 +482,11 @@ export function DeadlinePanel({
                   className="flex flex-wrap items-baseline gap-x-3 px-5 py-2.5"
                 >
                   <span data-figure className="text-sm text-ink">
-                    +{formatDurationTimer(e.addedSecs)}
+                    +{formatDuration(e.addedSecs)}
                   </span>
                   <span className="text-xs text-ink-faint">
-                    {formatDurationTimer(e.previousWindowSecs)} →{" "}
-                    {formatDurationTimer(e.newWindowSecs)}
+                    {formatDuration(e.previousWindowSecs)} →{" "}
+                    {formatDuration(e.newWindowSecs)}
                   </span>
                   <Chip tone={e.penaltyWaived ? "positive" : "rework"}>
                     {e.penaltyWaived ? "Penalty waived" : "Penalty charged"}
@@ -576,14 +616,14 @@ function ProposeForm({
         <p className="mt-2 text-[12px] text-ink-faint">
           Current window{" "}
           <span data-figure className="text-ink-muted">
-            {formatDurationTimer(extension.previousSecs)}
+            {formatDuration(extension.previousSecs)}
           </span>{" "}
           + <span data-figure className="text-ink-muted">
-            {formatDurationTimer(extension.addedSecs)}
+            {formatDuration(extension.addedSecs)}
           </span>{" "}
           = new total{" "}
           <span data-figure className="text-ink">
-            {formatDurationTimer(extension.totalSecs)}
+            {formatDuration(extension.totalSecs)}
           </span>
         </p>
       )}
@@ -686,27 +726,27 @@ function DecideProposal({
           <div>
             <dt className="text-[11px] text-ink-faint">Current window</dt>
             <dd data-figure className="text-[13px] text-ink-muted">
-              {formatDurationTimer(ext.previousSecs)}
+              {formatDuration(ext.previousSecs)}
             </dd>
           </div>
           <div>
             <dt className="text-[11px] text-ink-faint">Extra requested</dt>
             <dd data-figure className="text-[13px] text-ink">
               {ext.addedSecs >= 0 ? "+" : "\u2212"}
-              {formatDurationTimer(Math.abs(ext.addedSecs))}
+              {formatDuration(Math.abs(ext.addedSecs))}
             </dd>
           </div>
           <div>
             <dt className="text-[11px] text-ink-faint">New total</dt>
             <dd data-figure className="text-[13px] text-ink">
-              {formatDurationTimer(ext.totalSecs)}
+              {formatDuration(ext.totalSecs)}
             </dd>
           </div>
         </dl>
       ) : (
         <p className="mt-2 text-sm text-ink-muted">
           <span data-figure className="text-ink">
-            {formatDurationTimer(proposal.windowSecs)}
+            {formatDuration(proposal.windowSecs)}
           </span>{" "}
           requested.
         </p>
@@ -915,7 +955,7 @@ function ExtensionForm({
           <p className="mt-1.5 text-sm text-ink">
             You asked for{" "}
             <span data-figure>
-              {formatDurationTimer(progress.live.askedSecs)}
+              {formatDuration(progress.live.askedSecs)}
             </span>{" "}
             more
             {progress.live.round > 1 && (
@@ -939,7 +979,7 @@ function ExtensionForm({
           <p className="mt-1 text-sm text-ink">
             Your manager offered{" "}
             <span data-figure>
-              {formatDurationTimer(progress.live.counterSecs)}
+              {formatDuration(progress.live.counterSecs)}
             </span>{" "}
             instead.
           </p>
@@ -962,14 +1002,14 @@ function ExtensionForm({
               {progress.settled.map((r) => (
                 <li key={r.id} className="text-[11px] text-ink-muted">
                   Round <span data-figure>{r.round}</span> ·{" "}
-                  <span data-figure>{formatDurationTimer(r.askedSecs)}</span>{" "}
+                  <span data-figure>{formatDuration(r.askedSecs)}</span>{" "}
                   asked ·{" "}
                   {r.grantedSecs === null ? (
                     <span className="text-[var(--state-rework-ink)]">refused</span>
                   ) : (
                     <span className="text-[var(--state-positive-ink)]">
                       <span data-figure>
-                        {formatDurationTimer(r.grantedSecs)}
+                        {formatDuration(r.grantedSecs)}
                       </span>{" "}
                       granted
                     </span>
@@ -1005,14 +1045,14 @@ function ExtensionForm({
       <p className="mt-2 text-[12px] text-ink-faint">
         Current window{" "}
         <span data-figure className="text-ink-muted">
-          {formatDurationTimer(extension.previousSecs)}
+          {formatDuration(extension.previousSecs)}
         </span>{" "}
         + <span data-figure className="text-ink-muted">
-          {formatDurationTimer(extension.addedSecs)}
+          {formatDuration(extension.addedSecs)}
         </span>{" "}
         = new total{" "}
         <span data-figure className="text-ink">
-          {formatDurationTimer(extension.totalSecs)}
+          {formatDuration(extension.totalSecs)}
         </span>
       </p>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">

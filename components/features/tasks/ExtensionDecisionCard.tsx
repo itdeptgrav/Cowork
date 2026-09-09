@@ -10,7 +10,7 @@ import {
 } from "@/lib/rules/tasks/extensionActions";
 import { deadlineExtension } from "@/lib/rules/tasks/extensionRecords";
 import { routeExtensionRequest, type ExtensionRoute } from "@/lib/rules/tasks/extensionRouting";
-import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
+import { formatDuration, formatStamp } from "@/lib/utils/format";
 import { DurationField } from "./DurationField";
 import type { TaskView } from "@/lib/repositories";
 
@@ -125,6 +125,9 @@ export function ExtensionDecisionCard({
            question is whether the extra hours fit, not where to put it. */
         estimatedWorkSeconds: requestedTotal,
         committedDeadline: committed,
+        /* So the repository — the only layer with the office calendar — can
+           answer where the deadline lands if this is granted. */
+        grantedSecs: addedSecs,
       })
       .then((f) => {
         if (cancelled) return;
@@ -265,32 +268,103 @@ export function ExtensionDecisionCard({
       <p className="mt-1 text-sm text-ink">
         {subject.displayName} requested{" "}
         <span data-figure className="text-ink">
-          +{formatDurationTimer(addedSecs)}
+          +{formatDuration(addedSecs)}
         </span>
       </p>
 
-      {/* The arithmetic, spelled out. A total alone cannot answer "how much
-          more?", which is the question the decision turns on. */}
-      <dl className="mt-2 grid grid-cols-3 gap-x-4 gap-y-1">
-        <div>
-          <dt className="text-[11px] text-ink-faint">Current budget</dt>
-          <dd data-figure className="text-[13px] text-ink-muted">
-            {formatDurationTimer(previousSecs)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[11px] text-ink-faint">Requested</dt>
-          <dd data-figure className="text-[13px] text-ink">
-            {formatDurationTimer(requestedTotal)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-[11px] text-ink-faint">Committed deadline</dt>
-          <dd data-figure className="text-[13px] text-ink-muted">
-            {committed ? formatStamp(committed) : "None"}
-          </dd>
-        </div>
-      </dl>
+      {/**
+       * The arithmetic, spelled out. A total alone cannot answer "how much
+       * more?", which is the question the decision turns on.
+       *
+       * The two time BUDGETS are labelled as hours and kept together; the
+       * DEADLINE is a date and sits apart from them. They were three
+       * equal-looking columns of `HH:MM:SS` and `9 Sep · 17:31 IST` before,
+       * which is what made a seven-hour budget read as seven o'clock.
+       */}
+      {/**
+       * **Before and after, on one line each.**
+       *
+       * Three separate columns — "Hours now", "Hours if granted", "Deadline" —
+       * left the reader assembling the answer themselves: the amount asked for
+       * was in the title, the budget in two of the columns, today's deadline in
+       * the third, and the NEW deadline in a sentence further down. Reported
+       * as "what is now deadline, what extra time asked, and after approved how
+       * much it should be".
+       *
+       * Two rows answer all of it: what each thing is now, and what it becomes.
+       */}
+      {/**
+       * **A real table, because three grids could not line up.**
+       *
+       * This was three sibling `grid-cols-[auto_1fr_1fr]` rows. Each computed
+       * its OWN `auto` column: the header's first cell was empty so its column
+       * was zero wide, "Hours" made a narrow one and "Deadline" a wide one — so
+       * every row started its values at a different x. Reported as the padding
+       * and alignment being wrong, and it was: sibling grids share no columns.
+       *
+       * A table shares them by construction, and the data is genuinely tabular
+       * — two things, each with a before and an after — so the semantics are
+       * right as well as the geometry. `w-full` with a content-width first
+       * column keeps the two value columns equal.
+       */}
+      <div className="mt-2.5 overflow-hidden rounded-inset border border-hairline">
+        <table className="w-full border-collapse text-left">
+          <thead>
+            <tr className="border-b border-hairline">
+              {/* Empty, but present: the row-label column needs a header cell
+                  or the two value columns shift left by one. */}
+              <th className="w-px px-3 py-1.5" />
+              <th className="px-3 py-1.5 text-[11px] font-normal text-ink-faint">
+                Now
+              </th>
+              <th className="px-3 py-1.5 text-[11px] font-normal text-ink-faint">
+                If approved
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <th
+                scope="row"
+                className="w-px px-3 py-2 text-[11px] font-normal whitespace-nowrap text-ink-faint"
+              >
+                Hours
+              </th>
+              <td data-figure className="px-3 py-2 text-[13px] text-ink-muted">
+                {formatDuration(previousSecs)}
+              </td>
+              <td data-figure className="px-3 py-2 text-[13px] font-medium text-ink">
+                {formatDuration(requestedTotal)}
+                <span className="font-normal text-ink-faint">
+                  {" "}
+                  (+{formatDuration(addedSecs)})
+                </span>
+              </td>
+            </tr>
+            <tr className="border-t border-hairline">
+              <th
+                scope="row"
+                className="w-px px-3 py-2 text-[11px] font-normal whitespace-nowrap text-ink-faint"
+              >
+                Deadline
+              </th>
+              <td data-figure className="px-3 py-2 text-[13px] text-ink-muted">
+                {committed ? formatStamp(committed) : "None"}
+              </td>
+              <td data-figure className="px-3 py-2 text-[13px] font-medium text-ink">
+                {/* Only an escalation moves it. When the hours fit, the
+                    commitment stands — and saying so here is the whole point
+                    of the row. */}
+                {!route
+                  ? "…"
+                  : route.outcome === "escalate_deadline" && route.proposedDeadline
+                    ? formatStamp(route.proposedDeadline)
+                    : "unchanged"}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       {record.reason && (
         <p className="mt-2 text-[12px] text-ink-muted">“{record.reason}”</p>
@@ -307,31 +381,63 @@ export function ExtensionDecisionCard({
         </p>
       ) : (
         <>
+          {/**
+           * **One conclusion, and the working folded away behind it.**
+           *
+           * This block grew until it said the same thing four times: the
+           * queue's finish time, that finish measured against today's
+           * deadline, the resolution once the deadline moves, and a sentence
+           * restating all three — with the caption under the buttons saying it
+           * a fifth time. Reported as "why show unnecessary data".
+           *
+           * The reader here decides two things: do they get the hours, and
+           * does the deadline move. Everything else is HOW the card chose
+           * which buttons to draw — real, worth keeping, and not a decision
+           * input. So the conclusion is the line, and the arithmetic is one
+           * press away for anybody who wants to check it.
+           */}
           <div className="mt-3 rounded-inset bg-[var(--surface-sunken)] px-3.5 py-3">
-            <p className="text-[11px] text-ink-faint">
-              At {formatDurationTimer(requestedTotal)}, from{" "}
-              {subject.displayName}’s real queue
-            </p>
-            <p className="mt-1 text-sm text-ink">
-              <span data-figure>
-                {route.earliestCompletion
-                  ? formatStamp(route.earliestCompletion)
-                  : "—"}
-              </span>
-            </p>
             <p
-              className={`mt-1 text-[12px] ${
-                route.outcome === "approve_budget"
-                  ? "text-ink-faint"
-                  : "text-[var(--danger,#c4553d)]"
+              className={`text-[13px] ${
+                route.outcome === "unknown"
+                  ? "text-ink-muted"
+                  : route.stillLateAfterMove
+                    ? "text-[var(--danger,#c4553d)]"
+                    : route.outcome === "approve_budget"
+                      ? "text-[var(--state-positive-ink,#4a7c59)]"
+                      : "text-ink"
               }`}
             >
-              {route.outcome === "approve_budget" && "✓ Fits the committed deadline"}
+              {route.outcome === "approve_budget" &&
+                "✓ This fits. The deadline does not move."}
               {route.outcome === "escalate_deadline" &&
-                `⚠ Misses it by ${formatDurationTimer(Math.abs(route.bufferSeconds ?? 0))}`}
-              {route.outcome === "unknown" && "Not measurable"}
+                (route.stillLateAfterMove
+                  ? `⚠ This task is already behind. Moving the deadline to ${formatStamp(route.proposedDeadline)} does not on its own make it reachable.`
+                  : `Approving moves the deadline to ${formatStamp(route.proposedDeadline)}, and it fits from there.`)}
+              {route.outcome === "unknown" &&
+                "The queue could not be measured, so this cannot be checked."}
             </p>
-            <p className="mt-1.5 text-[12px] text-ink-muted">{route.explanation}</p>
+
+            {/**
+             * **The queue's own arithmetic used to sit here, and is gone.**
+             *
+             * It read: "At 4h 30m in total, going by <name>'s real queue, this
+             * task finishes 17:10 — 26m after the 16:45 deadline." Every
+             * figure was true, and it was still the wrong thing to show.
+             *
+             * It was load-bearing once: the proposed new deadline USED to be
+             * that finish time, rounded up, so printing it explained where the
+             * date came from. That is no longer how the date is chosen — the
+             * deadline now moves by exactly the time granted — so the finish
+             * time explains nothing the reader is deciding. Worse, it compared
+             * against the OLD deadline while the line above it talks about the
+             * NEW one, putting two different comparisons side by side.
+             *
+             * The check itself still runs and still matters: it is what
+             * decides whether this needs the assignor at all, and what the
+             * line above reports. Only its raw output is no longer printed.
+             * Asked about three times, then asked to remove it.
+             */}
           </div>
 
           {error && (
@@ -361,7 +467,7 @@ export function ExtensionDecisionCard({
                     if (r.ok) onChange();
                   }}
                 >
-                  Approve {formatDurationTimer(requestedTotal)} budget
+                  Approve {formatDuration(requestedTotal)} budget
                 </Button>
                 {/* Refusing is a real answer and belongs beside granting.
                     Without it the only way to say no was to ignore the
@@ -400,7 +506,7 @@ export function ExtensionDecisionCard({
                   <Field
                     label="Time to add instead"
                     required
-                    hint={`They asked for ${formatDurationTimer(addedSecs)}. Anything less is shown to them as less than they asked for.`}
+                    hint={`They asked for ${formatDuration(addedSecs)}. Anything less is shown to them as less than they asked for.`}
                   >
                     {/* The same hours-and-minutes control every other budget on
                         this screen uses. A minutes-only box asked somebody
@@ -442,7 +548,7 @@ export function ExtensionDecisionCard({
                       }}
                     >
                       Grant{" "}
-                      {grantSecs > 0 ? formatDurationTimer(grantSecs) : "this"}{" "}
+                      {grantSecs > 0 ? formatDuration(grantSecs) : "this"}{" "}
                       instead
                     </Button>
                     <Button
@@ -476,7 +582,7 @@ export function ExtensionDecisionCard({
                         onChange();
                       }}
                     >
-                      Approve {formatDurationTimer(requestedTotal)} and move the
+                      Approve {formatDuration(requestedTotal)} and move the
                       deadline
                     </Button>
                     {/* The choice this card was missing. Without it a manager
@@ -493,13 +599,22 @@ export function ExtensionDecisionCard({
                   </div>
                   <p className="mt-1.5 text-[11px] text-ink-faint">
                     You set the hours and you own the deadline on this task, so
-                    both are yours to decide. Approving makes it{" "}
-                    {route.proposedDeadline
-                      ? formatStamp(route.proposedDeadline)
-                      : "the earliest the queue can deliver"}
-                    . Granting a different amount gives them less than they asked
-                    for, and they are told so in those words.
+                    both are yours to decide. Granting a different amount gives
+                    them less than they asked for, and they are told so in those
+                    words.
                   </p>
+                  {/**
+                   * **The one case the new rule cannot cover on its own.**
+                   *
+                   * The deadline now moves by exactly the time granted, which
+                   * is what makes it predictable. But a task that was ALREADY
+                   * running late stays late: the queue says it finishes after
+                   * the new date too, so approving would set a deadline that
+                   * is broken the moment it is set. Said plainly rather than
+                   * left for somebody to notice next week.
+                   */}
+                  {/* The already-behind warning lives once, in the verdict
+                      line above — it was being said twice. */}
                 </>
               )}
             </div>

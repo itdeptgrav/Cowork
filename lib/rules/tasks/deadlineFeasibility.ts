@@ -98,6 +98,25 @@ export interface Feasibility {
   estimatedStartTime: string | null;
   estimatedCompletionTime: string | null;
   deadline: string | null;
+  /**
+   * Where the committed deadline would land if the requested time were granted:
+   * the deadline plus that many WORKING seconds.
+   *
+   * **This is what a granted extension moves the deadline to.** It replaced
+   * "the queue's earliest completion, rounded up to the half hour", which was
+   * defensible and unexplainable: granting thirty minutes moved the deadline by
+   * eighteen, because the task had twelve minutes of slack the screen never
+   * showed. The owner asked for the plain reading instead — grant thirty
+   * minutes, the deadline moves thirty minutes.
+   *
+   * Counted in working seconds, never raw clock time, so the answer stays
+   * inside the working day: 17:31 + 30m is 18:01, but 18:15 + 30m is the next
+   * working morning rather than a quarter to seven in the evening.
+   *
+   * Null where the repository could not compute it — an older backend, or no
+   * committed deadline to move. Callers fall back to the queue's own date.
+   */
+  deadlineAfterGrant?: string | null;
   /** Positive is slack, negative is the amount by which it misses. */
   bufferSeconds: number | null;
   blockingTasks: BlockingTask[];

@@ -5,9 +5,11 @@ import {
   creditCause,
   deadlineMoveEntries,
   deadlineTimelineChains,
+  extensionCredits,
   type BudgetCredit,
   type DeadlineMove,
   type DeadlineMoveEntry,
+  type ExtensionCreditSource,
 } from "./budgetHistory.ts";
 
 const credit = (over: Partial<BudgetCredit> = {}): BudgetCredit => ({
@@ -328,4 +330,176 @@ test("connection is judged on the real instant, not the string", () => {
     toIso: "2026-08-24T15:38:00.000+05:30",
   });
   assert.equal(deadlineTimelineChains([a, b]).length, 1);
+});
+
+/* ── A granted extension is a credit, named from its own record ─────────── */
+
+/**
+ * The budget grows when a manager approves an extension. Nothing wrote a
+ * credit receipt for that until recently, so the panel reported the
+ * difference as "Credited earlier — applied before this history was kept, so
+ * the cause was not recorded". True of the receipt, false of the event: the
+ * extension request was in `cowork_task_budget_extensions` the whole time with
+ * its before, after, approver and decision date on it.
+ *
+ * Reported as "it should show what +30 reason is, extension".
+ */
+const ext = (over: Partial<ExtensionCreditSource> = {}): ExtensionCreditSource => ({
+  id: "x1",
+  status: "accepted",
+  previousBudgetSecs: 7200,
+  newBudgetSecs: 9000,
+  approvedSecs: null,
+  approverId: "GR0000",
+  approverName: "Rakesh Sahoo",
+  approvedAt: "2026-09-09T09:12:14.364Z",
+  confirmedAt: null,
+  createdAt: "2026-09-09T09:10:00.000Z",
+  ...over,
+});
+
+test("a granted extension becomes a credit that names itself", () => {
+  const [c] = extensionCredits([ext()]);
+  assert.equal(c.previousSecs, 7200);
+  assert.equal(c.newSecs, 9000);
+  assert.equal(c.reason, "Extension approved by Rakesh Sahoo.");
+  assert.equal(c.at, "2026-09-09T09:12:14.364Z");
+  /* And the panel classifies it from that sentence, which is the whole
+     reason the wording matters. */
+  assert.equal(creditCause(c.reason), "extension");
+});
+
+test("the delta comes from the record's own before/after pair", () => {
+  /* Not from `requestedAdditionalSecs`: what was ASKED for and what was
+     GRANTED are different numbers, and only one of them moved the budget. */
+  const view = budgetHistoryView({
+    givenSecs: 7200,
+    currentSecs: 9000,
+    credits: extensionCredits([ext()]),
+  });
+  assert.equal(view.entries.length, 1);
+  assert.equal(view.entries[0].deltaSecs, 1800);
+  assert.equal(view.entries[0].label, "Extension granted");
+  /* The account balances, so the panel stops saying the cause is unknown. */
+  assert.equal(view.unaccountedSecs, 0);
+  assert.equal(view.complete, true);
+});
+
+test("only a granted extension counts — asking is not receiving", () => {
+  /* `pending` is somebody asking, `rejected` is an answer of no, and
+     `counter_proposed` is a different figure still being argued. None of the
+     three moved a budget, and listing them would credit time nobody gave. */
+  for (const status of ["pending", "rejected", "counter_proposed", ""]) {
+    assert.deepEqual(extensionCredits([ext({ status })]), [], status || "(blank)");
+  }
+  for (const status of ["approved", "accepted"]) {
+    assert.equal(extensionCredits([ext({ status })]).length, 1, status);
+  }
+});
+
+test("a real receipt for the same approval wins, and is not doubled", () => {
+  /* Once the engine writes a receipt, both records describe one event.
+     Listing both would double the credit and show one grant twice. */
+  const receipt = credit({
+    id: "r1",
+    previousSecs: 7200,
+    newSecs: 9000,
+    reason: "Extension approved by Rakesh",
+  });
+  const merged = [receipt].concat(extensionCredits([ext()], [receipt]));
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].id, "r1");
+
+  const view = budgetHistoryView({ givenSecs: 7200, currentSecs: 9000, credits: merged });
+  assert.equal(view.creditedSecs, 1800);
+});
+
+test("an unrelated credit does not suppress the extension", () => {
+  /* The dedupe keys on the RESULTING budget, so a break credited back to a
+     different figure must not hide a real extension. */
+  const brk = credit({ id: "b1", previousSecs: 7200, newSecs: 7500 });
+  const derived = extensionCredits([ext({ previousBudgetSecs: 7500, newBudgetSecs: 9300 })], [brk]);
+  assert.equal(derived.length, 1);
+  assert.equal(derived[0].newSecs, 9300);
+});
+
+test("a record with no decision date, or no growth, is not a credit", () => {
+  /* A row with no date cannot be placed in the account at all, and one that
+     did not raise the budget is not a credit — `budgetHistoryView` drops the
+     second kind too, and dropping it here keeps the dedupe honest. */
+  assert.deepEqual(
+    extensionCredits([ext({ approvedAt: null, confirmedAt: null, createdAt: null })]),
+    [],
+  );
+  assert.deepEqual(extensionCredits([ext({ newBudgetSecs: 7200 })]), []);
+});
+
+test("the credit is what was GRANTED, never what was asked for", () => {
+  /**
+   * `newBudgetSecs` is the total the REQUEST proposed, and it is left
+   * standing when the manager grants something else — the answer goes to
+   * `approvedSecs`, which is the approved TOTAL window rather than a delta.
+   * These are the numbers off a live record.
+   *
+   * Reading the request first credited twenty minutes for a five-minute
+   * grant, so four rows of a 2h budget read +30m, +10m, +20m, +20m under a
+   * total of 2h 50m — an account that did not add up to the figure printed
+   * beneath it, which is the one thing this panel exists to guarantee.
+   */
+  const [c] = extensionCredits([
+    ext({ previousBudgetSecs: 9600, approvedSecs: 9900, newBudgetSecs: 10800 }),
+  ]);
+  assert.equal(c.previousSecs, 9600);
+  assert.equal(c.newSecs, 9900, "credited what was asked, not what was granted");
+
+  /* And the account adds up, which is the property that broke. */
+  const view = budgetHistoryView({
+    givenSecs: 7200,
+    currentSecs: 10200,
+    credits: extensionCredits([
+      ext({ id: "a", previousBudgetSecs: 7200, approvedSecs: null, newBudgetSecs: 9000 }),
+      ext({ id: "b", previousBudgetSecs: 9000, approvedSecs: null, newBudgetSecs: 9600 }),
+      ext({ id: "c", previousBudgetSecs: 9600, approvedSecs: 9900, newBudgetSecs: 10800 }),
+      ext({ id: "d", previousBudgetSecs: 9900, approvedSecs: 10200, newBudgetSecs: 11100 }),
+    ]),
+  });
+  assert.deepEqual(
+    view.entries.map((e) => e.deltaSecs),
+    [1800, 600, 300, 300],
+  );
+  assert.equal(view.unaccountedSecs, 0);
+});
+
+test("a null approval means the manager granted exactly what was asked", () => {
+  /* The common case, and the only one where the request itself is the
+     settlement. */
+  const [c] = extensionCredits([ext({ approvedSecs: null })]);
+  assert.equal(c.newSecs, 9000);
+});
+
+test("the id is the fallback for a name, never the thing shown", () => {
+  /**
+   * The stored record keeps an approver id and nothing else, so the row read
+   * "Extension approved by GR0000." — reported as exactly that: "dont show
+   * id, show person name". The caller resolves the name from the directory;
+   * the id survives only for somebody the directory no longer has, where a
+   * visible code can still be looked up and a blank cannot.
+   */
+  const named = extensionCredits([ext()])[0];
+  assert.equal(named.reason, "Extension approved by Rakesh Sahoo.");
+
+  const unresolved = extensionCredits([ext({ approverName: null })])[0];
+  assert.equal(unresolved.reason, "Extension approved by GR0000.");
+
+  /* A directory that answered with blank space is not an answer. */
+  const blank = extensionCredits([ext({ approverName: "   " })])[0];
+  assert.equal(blank.reason, "Extension approved by GR0000.");
+
+  /* And with neither, the sentence still classifies as an extension — the
+     label above the row depends on it. */
+  const anonymous = extensionCredits([
+    ext({ approverId: null, approverName: null }),
+  ])[0];
+  assert.equal(anonymous.reason, "Extension approved.");
+  assert.equal(creditCause(anonymous.reason), "extension");
 });
