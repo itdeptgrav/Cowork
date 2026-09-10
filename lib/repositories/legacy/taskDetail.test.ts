@@ -114,6 +114,39 @@ test("a task with no assignees still resolves to a view", () => {
   assert.deepEqual(view.assignees, []);
 });
 
+/* ── filesCount — the Files-tab badge and the Overview files card ───────── */
+
+test("filesCount defaults to 0 when the caller supplied none", () => {
+  /* The list path builds fifty rows from documents already in hand and never
+     reads attachments per row — see `toTaskView`'s own doc comment on
+     `filesCount`. A task view built without the field must still be a valid
+     TaskView, not one missing a required number. */
+  const legacy = readTask(T620 as never)!;
+  const view = toTaskView({
+    legacy,
+    employeesById: new Map(),
+    viewerId: "GR0045",
+    nowMs: 0,
+  });
+  assert.equal(view.filesCount, 0);
+});
+
+test("filesCount carries through exactly what the detail read counted", () => {
+  /* `#readTaskView` is the one caller that reads attachments and passes a
+     real number — pinned here as the contract `toTaskView` must honour: the
+     count it is given is the count that reaches the Files-tab badge, not a
+     derived or re-rounded one. */
+  const legacy = readTask(T620 as never)!;
+  const view = toTaskView({
+    legacy,
+    employeesById: new Map(),
+    viewerId: "GR0045",
+    nowMs: 0,
+    filesCount: 3,
+  });
+  assert.equal(view.filesCount, 3);
+});
+
 test("subtaskIds is read defensively", () => {
   /* `getSubtasks` reads this array off the raw document. A malformed entry
      must not become a lookup for the empty-string document id. */

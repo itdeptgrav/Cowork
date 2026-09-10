@@ -295,6 +295,12 @@ import {
 } from "@/lib/rules/tasks/emergency";
 import { shiftableTasks, shiftedDueAt } from "@/lib/rules/tasks/deadlineShift";
 import {
+  afterHoursCreditReason,
+  afterHoursCreditRefusal,
+  afterHoursSecs,
+  pulledBackDueAt,
+} from "@/lib/rules/tasks/afterHoursCredit";
+import {
   claimedPercent,
   remainingPercent,
   weightageRefusal,
@@ -835,6 +841,9 @@ export class MockRepository implements CoworkRepository {
       parent: this.#parentContext(task),
       chatCount: s.chat.filter(
         (c) => c.taskId === task.id && c.thread === "chat",
+      ).length,
+      filesCount: [...this.#attachments.values()].filter(
+        (a) => a.entityType === "task" && a.entityId === task.id,
       ).length,
     };
   }
@@ -5091,7 +5100,7 @@ export class MockRepository implements CoworkRepository {
       name: input.file.name,
       type: input.file.type,
       size: input.file.size,
-      uploadedAt: new Date(0).toISOString(),
+      uploadedAt: nowIso(),
     };
     this.#attachments.set(id, {
       meta,
@@ -5409,6 +5418,10 @@ export class MockRepository implements CoworkRepository {
     };
     s.workCommits.push(commit);
     this.#event(taskId, "work_committed", message ?? "Work committed");
+    /* Work done after the office closed brings this task's deadline forward —
+       the same rule the legacy adapter applies on its own pause, over the same
+       real-clock span the commit above records. */
+    this.#creditAfterHoursWork(taskId, realStartMs, realEndMs);
     return delay(ok(commit));
   }
 
@@ -12018,6 +12031,74 @@ export class MockRepository implements CoworkRepository {
             r.claimants.length === 1 && r.claimants[0]?.id === task.id,
         })),
     };
+  }
+
+  /**
+   * Bring this task's deadline forward by the after-hours part of one session.
+   *
+   * `lib/rules/tasks/afterHoursCredit.ts` owns every decision; this only reads
+   * the task and writes the date.
+   *
+   * **Deliberately not `#extendDeadline`.** That call also sets
+   * `currentWindowSecs` and forces the deadline `state` to `"agreed"` — it is
+   * the shape of a NEGOTIATED change. Nothing was negotiated here and no budget
+   * moved: the hours allocated are still the hours allocated, and only the date
+   * they are owed by has changed.
+   */
+  #creditAfterHoursWork(taskId: TaskId, startMs: number, endMs: number): void {
+    const s = getStore();
+    const task = s.tasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    /* No `blockedDates` here, and not an oversight: the prototype's
+       `listBlockedDates` returns weekends, which its weekly schedule already
+       marks off, so passing them would change nothing — and reading them is
+       async, which this path is not. The live adapter does pass them, because
+       a real holiday falls on an ordinary weekday. */
+    const schedule = (this.#officePolicy?.schedule ?? null) as never;
+    const creditSecs = afterHoursSecs({ startMs, endMs, schedule });
+    if (creditSecs <= 0) return;
+
+    const dueAt = task.deadline.dueAt;
+    const refusal = afterHoursCreditRefusal({
+      type: task.type,
+      isFinished: ["completed", "cancelled", "assignment_rejected"].includes(
+        task.status,
+      ),
+      isCrossDepartment: task.isCrossDepartment === true,
+      hasDependencies: task.outputs.some((o) => o.needsOutputIds.length > 0),
+      /* Broken down, so nobody works it directly. The prototype holds the
+         parent link on the child rather than a list on the parent, which is the
+         same question asked from the other end. */
+      isProject:
+        task.isFolder ||
+        s.tasks.some((t) => t.parentTaskId === task.id && !t.deletedAt),
+      dueAtMs: dueAt ? Date.parse(dueAt) : null,
+    });
+    if (refusal) return;
+
+    const move = pulledBackDueAt({
+      dueAtMs: Date.parse(dueAt!),
+      creditSecs,
+      nowMs: endMs,
+    });
+    if (!move) return;
+
+    const previous = dueAt!;
+    const next = new Date(move.newDueAtMs).toISOString();
+    task.deadline.dueAt = next;
+    /* Legacy keeps no separate official date — `taskMap` reads both from the
+       one stored field — so the scored deadline moves with the working one
+       here too. Leaving it behind would score somebody against a date the app
+       had stopped showing them. */
+    task.deadline.officialDueAt = next;
+    task.updatedAt = nowIso();
+
+    this.#event(taskId, "deadline_change_decided", afterHoursCreditReason(move), {
+      previousDeadline: previous,
+      proposedDeadline: next,
+      automatic: true,
+    });
   }
 
   #event(

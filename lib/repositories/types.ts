@@ -483,6 +483,20 @@ export interface TaskView {
   subtaskCount: number;
   chatCount: number;
   /**
+   * Files attached directly to this task — reference material supplied at
+   * creation or added later through the Files tab's own uploader.
+   *
+   * Deliberately narrower than what the Files tab itself lists: that tab pools
+   * five origins (reference, correction, submission, report and chat files —
+   * see `lib/rules/tasks/taskFiles.ts`), each its own read, because somebody
+   * already on the tab can afford five. This field exists to drive a badge
+   * shown on every tab of the task, so it counts only the one origin cheap
+   * enough to read on every page view — the same tradeoff `chatCount` already
+   * makes for the Chat tab. A task whose only files came through chat, a
+   * report or a submission reads 0 here despite the Files tab listing some.
+   */
+  filesCount: number;
+  /**
    * Requirement satisfaction and project state, DERIVED on every read.
    *
    * On the view rather than computed per-component so the detail page, the

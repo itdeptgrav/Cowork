@@ -9,6 +9,12 @@ import {
   type NewMrfInput,
 } from "@/lib/rules/mrf/lifecycle";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
+import {
+  afterHoursCreditReason,
+  afterHoursCreditRefusal,
+  afterHoursSecs,
+  pulledBackDueAt,
+} from "../../rules/tasks/afterHoursCredit.ts";
 import { presenceIdentityFor } from "../../integrations/livekit/identity.ts";
 import {
   STALE_AFTER_MS,
@@ -448,6 +454,7 @@ import {
   readTask,
   type LegacyTask,
 } from "../../legacy/tasks.ts";
+import { toTaskType } from "./taskMap.ts";
 import { extensionCredits } from "../../rules/tasks/budgetHistory.ts";
 import { firstNumber } from "../../legacy/wire.ts";
 import * as meetHttp from "../../legacy/meetings.ts";
@@ -2367,6 +2374,14 @@ export class LegacyRepository {
      */
     const directoryRead = this.#employeesById();
     directoryRead.catch(() => {});
+    /* The Files-tab badge needs a count on every tab of the task, not only
+       the Files tab itself — so it is read here, once, alongside everything
+       else the detail page already gathers, rather than costing the Files
+       tab a second fetch of its own. Started early and awaited late, same as
+       the directory above; a failed read shows no badge rather than failing
+       the task. */
+    const filesRead = this.getAttachments("task", taskId);
+    filesRead.catch(() => {});
     const legacy = await this.#taskDoc(taskId);
     if (!legacy) return null;
     const viewerId = String(this.#ctx.employeeId);
@@ -2545,6 +2560,7 @@ export class LegacyRepository {
     }
 
     const detailOutputIndex = await this.#outputIndex();
+    const filesResult = await filesRead.catch(() => null);
     return toTaskView({
       legacy,
       employeesById,
@@ -2559,6 +2575,7 @@ export class LegacyRepository {
       subtasks,
       parent,
       parentSubtasks,
+      filesCount: filesResult?.ok ? filesResult.data.length : 0,
     });
   }
 
@@ -5143,6 +5160,35 @@ export class LegacyRepository {
       pauseReason,
     );
 
+    /**
+     * **Work done after the office closed pulls this task's deadline earlier.**
+     *
+     * The span is `[now − elapsed, now]` — the same span the work commit above
+     * records, and the same `bankableRunSecs` figure, so what is credited can
+     * never exceed what was banked. Deliberately NOT the counter on screen:
+     * that is a render of this number, and reading it back would put a display
+     * concern inside a stored commitment.
+     *
+     * Un-awaited, for the reason the long note above gives: the session write
+     * IS the pause and nothing may stand between it and the caller being told
+     * so. This reads the office calendar and the task, and on a slow link that
+     * is exactly the wait that made a pause look unconfirmed. It announces
+     * itself with its own `notifyRepositoryChanged()` when the date has really
+     * moved, so the deadline on screen updates the moment the write is real
+     * rather than the moment the pause was requested.
+     */
+    if (elapsed > 0) {
+      const endMs = Date.now();
+      void this.#creditAfterHoursWork({
+        taskId: id,
+        employeeId,
+        startMs: endMs - elapsed * 1000,
+        endMs,
+      }).catch((e) =>
+        console.error("[timer] after-hours credit failed:", e?.message ?? e),
+      );
+    }
+
     return { ok: true, data: { taskId: id, loggedSecs: total } };
   }
 
@@ -6320,6 +6366,160 @@ export class LegacyRepository {
      * carries `meetingTotalSecs`. A date that moved still files its
      * `cowork_task_deadline_extensions` receipt above — that collection records
      * decisions already taken and asks nobody for anything. */
+  }
+
+  /**
+   * Bring a task's deadline forward by the after-hours part of one session.
+   *
+   * The rule itself is `lib/rules/tasks/afterHoursCredit.ts` — which tasks,
+   * how many seconds, and how far the date may move. This is only the reading
+   * and the writing, and it is deliberately shaped like
+   * `#compensateActiveDeadlines`, its mirror image:
+   *
+   *  · **the same field precedence** — `fixedDeadline`, then `deadline`, then
+   *    `dueDate` — so the write lands in whichever field the readers look at.
+   *    That is the whole reason this does not go through `setTaskDeadline`,
+   *    which refuses a fixed-deadline task outright because the engine's
+   *    `editTaskDeadline` writes `dueDate` unconditionally and the date would
+   *    not move;
+   *  · **the same receipt** — a `cowork_task_deadline_extensions` row marked
+   *    `automatic`, which is what the History tab reads. One history answers
+   *    "why is this date not what I agreed?" whatever moved it, and a date that
+   *    moves with no record is the complaint rather than the feature.
+   *
+   * One task, not the queue: this is credit for work on THIS task, and the
+   * time budget is untouched — the hours allocated are still the hours
+   * allocated, and only the date the work is owed by has changed.
+   */
+  async #creditAfterHoursWork(input: {
+    taskId: string;
+    employeeId: string;
+    startMs: number;
+    endMs: number;
+  }): Promise<void> {
+    const { taskId, employeeId, startMs, endMs } = input;
+
+    /* No calendar, no credit — the rule refuses too, and refusing twice is
+       cheaper than a task read nothing will use.
+       
+       Holidays and approved leave come separately: they fall on ordinary
+       weekdays, so the weekly schedule cannot know about them, and without them
+       somebody working through a public holiday is credited only its evening.
+       A failure here is swallowed exactly as every other caller of
+       `listBlockedDates` swallows it — the credit is then smaller than it
+       should be, which is the safe direction for a rule that brings a deadline
+       forward. */
+    const dayKey = (ms: number) => {
+      const d = new Date(ms);
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    };
+    const [policy, blocked] = await Promise.all([
+      this.getOfficePolicy().catch(() => null),
+      this.listBlockedDates(
+        employeeId as never,
+        dayKey(startMs),
+        dayKey(endMs),
+      ).catch(() => []),
+    ]);
+    const schedule = policy?.schedule ?? null;
+    const creditSecs = afterHoursSecs({
+      startMs,
+      endMs,
+      schedule,
+      blockedDates: new Set(blocked.map((b) => b.date)),
+    });
+    if (creditSecs <= 0) return;
+
+    const data = await this.#taskDocument(taskId);
+    if (!data) return;
+    const task = readTask({ ...data, id: taskId } as never);
+    if (!task) return;
+
+    /* The field the readers look at, in `readDueAtMs`'s own precedence — so
+       the write lands where `dueAtMs` was read from and the date really moves.
+       This is why the credit does not go through `setTaskDeadline`, which
+       refuses a fixed-deadline task outright: the engine's `editTaskDeadline`
+       writes `dueDate` unconditionally, and on a fixed task that is a field
+       nothing reads. */
+    const field =
+      readInstant(data.fixedDeadline) !== null
+        ? "fixedDeadline"
+        : readInstant(data.deadline) !== null
+          ? "deadline"
+          : readInstant(data.dueDate) !== null
+            ? "dueDate"
+            : null;
+    const dueAtMs = readDueAtMs(data as never);
+
+    /* Every answer through the readers that already own it: `toTaskType` is
+       `taskMap`'s own translation, so "standard" means here what it means on
+       screen, and `isTerminal` is the document reader's verdict rather than a
+       second list of status spellings. */
+    const refusal = afterHoursCreditRefusal({
+      type: toTaskType(task.kind),
+      isFinished: task.isTerminal,
+      isCrossDepartment: task.isCrossDepartment,
+      /* An output of this task waiting on somebody else's output. The edge runs
+         output → output, so this is where a dependency lives. */
+      hasDependencies: task.outputs.some((o) => o.needsOutputIds.length > 0),
+      isProject: task.isFolder || task.subtaskIds.length > 0,
+      dueAtMs,
+    });
+    if (refusal) {
+      console.info("[timer] after-hours credit not applied:", { taskId, refusal });
+      return;
+    }
+
+    const move = pulledBackDueAt({ dueAtMs: dueAtMs!, creditSecs, nowMs: endMs });
+    if (!move) return;
+
+    const previousIso = new Date(dueAtMs!).toISOString();
+    const newDueIso = new Date(move.newDueAtMs).toISOString();
+    const reason = afterHoursCreditReason(move);
+
+    const { addDoc, collection, doc, updateDoc } = await import("firebase/firestore");
+    const { legacyDb } = await import("../../legacy/firebase.ts");
+    const db = legacyDb();
+
+    await updateDoc(doc(db, "cowork_tasks", taskId), {
+      [field!]: newDueIso,
+      updatedAt: new Date(),
+    });
+
+    /* Only now: a receipt for a write that did not land would put a move in the
+       history that never happened. */
+    void addDoc(collection(db, "cowork_task_deadline_extensions"), {
+      taskId,
+      requestedBy: employeeId,
+      approverId: null,
+      previousDeadline: previousIso,
+      proposedDeadline: newDueIso,
+      reason,
+      status: "approved",
+      createdAt: new Date().toISOString(),
+      approvedAt: new Date().toISOString(),
+      decidedBy: null,
+      /* Nobody decided this — the after-hours rule applied itself, exactly as
+         the absence credit does. The flag is what lets a reader tell it from a
+         negotiated extension. */
+      automatic: true,
+    }).catch((e) =>
+      console.error("[timer] after-hours history write failed:", e?.message ?? e),
+    );
+
+    console.info("[timer] AFTER-HOURS CREDIT applied:", {
+      taskId,
+      employeeId,
+      workedMinutes: Math.round(creditSecs / 60),
+      appliedMinutes: Math.round(move.appliedSecs / 60),
+      from: previousIso,
+      to: newDueIso,
+    });
+
+    /* The pause already announced itself. This is a second change, landing
+       later, and the deadline on screen is stale until it is announced too. */
+    notifyRepositoryChanged();
   }
 
   async #compensateActiveDeadlines(

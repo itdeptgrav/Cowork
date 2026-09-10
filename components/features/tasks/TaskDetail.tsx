@@ -286,6 +286,7 @@ export function TaskDetail({
       label: "Files",
       href: `/tasks/${taskId}/files`,
       icon: "folder" as const,
+      count: v.filesCount,
     },
     {
       id: "submission",

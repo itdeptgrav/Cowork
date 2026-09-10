@@ -191,7 +191,7 @@ export function FilePreview({
  * object URL — the tab cannot carry an Authorization header itself, and the
  * engine's route requires one. The handle is revoked once the tab has it.
  */
-function FileOpen({ attachment }: { attachment: AttachmentMeta }) {
+export function FileOpen({ attachment }: { attachment: AttachmentMeta }) {
   const repo = useRepo();
   const [busy, setBusy] = useState(false);
   if (!isPreviewableImage(attachment.type) && !isPdf(attachment.type)) {

@@ -1602,7 +1602,11 @@ export function ChatPanel({
                  two feel identical. `resize-none` because the drag handle and
                  an auto-growing box fight each other. */
               style={{ resize: "none" }}
-              className="max-h-32 min-h-[38px] py-2"
+              /* Opaque, not `inputBase`'s translucent default — see the same
+                 fix and its reasoning on the direct-message composer in
+                 MessagesArea.tsx, which this box is built to feel identical
+                 to. */
+              className="max-h-32 min-h-[38px] bg-[var(--frost-bar-solid)] py-2"
               onKeyDown={(e) => {
                 /* The mention popup gets first refusal on arrows/Enter/Tab/Esc
                    while it is open, so picking a name never sends. */

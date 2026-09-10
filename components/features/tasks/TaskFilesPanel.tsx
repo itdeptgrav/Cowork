@@ -6,6 +6,7 @@ import type { AttachmentMeta } from "@/lib/legacy/attachments";
 import type { CoworkRepository, TaskView } from "@/lib/repositories";
 import {
   FileDownload,
+  FileOpen,
   FilePreview,
   FileUploader,
   fileGlyph,
@@ -328,7 +329,13 @@ function FileRow({ file }: { file: TaskFile }) {
           </span>
         )}
         {file.handle.via === "attachment" ? (
-          <FileDownload attachment={file.handle.attachment} />
+          <>
+            {/* Silently absent for a type with nothing to show inline —
+                `FileOpen` itself decides, the same test every other
+                attachment list in Cowork already reads it by. */}
+            <FileOpen attachment={file.handle.attachment} />
+            <FileDownload attachment={file.handle.attachment} />
+          </>
         ) : (
           <a
             href={

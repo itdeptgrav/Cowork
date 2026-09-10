@@ -2986,7 +2986,16 @@ function Thread({
                the one place that cannot lose. A composer that can be dragged
                taller than its own panel is a scrollbar waiting to happen. */
             style={{ resize: "none" }}
-            className="max-h-32 min-h-[38px] py-2"
+            /* An OPAQUE background, not `inputBase`'s translucent default.
+               The composer sits directly on `frost-panel`, itself a blurred
+               translucent tint over whatever photo or gradient the workspace
+               background is — so a 50%-white field on top of that reads as
+               almost the same surface as what is behind it, and the one
+               place somebody is told to type disappears into the page. The
+               solid twin of that same frost — already the system's answer
+               for "a surface that must be opaque" — makes the field its own
+               distinct plate regardless of what is behind the panel. */
+            className="max-h-32 min-h-[38px] bg-[var(--frost-bar-solid)] py-2"
           />
 
           <button

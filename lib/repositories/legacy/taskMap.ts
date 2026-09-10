@@ -638,6 +638,15 @@ export function toTaskView(input: {
   /** Banked work from the assignee's timer session. */
   loggedSecs?: number;
   /**
+   * Reference files on this task — see `TaskView.filesCount`.
+   *
+   * Optional and only ever supplied by the detail path: the list path builds
+   * fifty rows from documents already in hand, and an attachment read per row
+   * would be fifty more. Defaults to 0, the same "not fetched here" meaning
+   * `chatCount` already carries on a list row.
+   */
+  filesCount?: number;
+  /**
    * The assignee's manager, where a time budget is outstanding.
    *
    * Supplied rather than derived: it is a reporting question, and the reporting
@@ -1150,6 +1159,7 @@ export function toTaskView(input: {
      */
     subtaskCount: legacy.subtaskIds.length,
     chatCount: 0,
+    filesCount: input.filesCount ?? 0,
     /*
      * The completion gate, built by the rule that owns it.
      *
