@@ -235,15 +235,23 @@ test("the chain is fed logged time, in one read for the whole queue", () => {
   assert.match(repo, /async #loggedSecsByTask\(/);
   /* One subcollection fetch, not one read per task. */
   assert.match(repo, /collection\(legacyDb\(\), "cowork_task_timers", employeeId, "sessions"\)/);
-  /* Both the operational chain and the preview deduct, or they would disagree
-     about the same task. */
+  /**
+   * Every scheduler deducts, or they would disagree about the same task.
+   *
+   * Three now, not two. The REORDER path joined them: it built its queue
+   * straight from the task documents, which carry no `loggedSecs`, so
+   * `remainingWorkSecs` there always returned the whole budget — and a task a
+   * swap pushed into the future was granted its budget a second time on top of
+   * the hours it had already spent. See `nowMs` in `chainDeadlines`.
+   */
   assert.equal(
     (repo.match(/this\.#loggedSecsByTask\(/g) ?? []).length,
-    2,
-    "one of the two schedulers is not deducting worked time",
+    3,
+    "one of the three schedulers is not deducting worked time",
   );
   assert.match(repo, /loggedSecs: logged\.get\(x\.id\) \?\? 0,/);
   assert.match(repo, /loggedSecs: logged\.get\(t\.id\) \?\? 0,/);
+  assert.match(repo, /loggedSecs: loggedByTask\.get\(d\.id\) \?\? 0,/);
 });
 
 test("a running timer counts toward the remainder as it runs", () => {
@@ -270,7 +278,23 @@ test("the chain schedules the remainder and the queue test reads the budget", ()
      plan fixed at the moment work began rather than a running estimate — but it
      has to ask, so nothing acquires that behaviour by accident. */
   assert.match(rule, /remainingWorkSecs\(task\)/);
-  assert.match(rule, /input\.budget === "full" \? windowSecs : remainingWorkSecs\(task\)/);
+  /**
+   * **The full budget now has a second condition, and both must hold.**
+   *
+   * `budget: "full"` still has to be asked for — nothing acquires it by
+   * accident, which is what this line has always protected. What was added is
+   * `!reAnchoredAhead`: a task a reorder pushes into the FUTURE is scheduled
+   * from what is left of it, because the hours it already spent lie behind that
+   * new start and the full budget would grant them a second time.
+   *
+   * A task running from a start in the past is unaffected — it keeps the full
+   * budget, so its date does not move because somebody logged time on it.
+   */
+  assert.match(
+    rule,
+    /input\.budget === "full" && !reAnchoredAhead\s*\?\s*windowSecs\s*:\s*remainingWorkSecs\(task\)/,
+  );
+  assert.match(rule, /anchorMs >= input\.nowMs/, "the re-anchor test is not on the start");
   assert.match(rule, /budget\?: "remaining" \| "full";/);
 });
 

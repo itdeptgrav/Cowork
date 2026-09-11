@@ -329,7 +329,16 @@ test("task creation stages files and uploads AFTER the task exists", () => {
   const createAt = handler.indexOf("create()");
   const uploadAt = handler.indexOf("repo.uploadAttachment");
   assert.ok(createAt >= 0 && uploadAt > createAt, "files upload before create");
-  assert.match(handler.slice(0, 900), /entityId: r\.data\.id/);
+  /**
+   * The window is generous on purpose. It exists to prove the id comes from the
+   * task that was just created — `r.data.id`, not some earlier value — and NOT
+   * to pin how much code sits between the two. A tight bound made this fail the
+   * moment somebody added a few characters to the handler: the match began at
+   * offset 898 and a 900-character slice cut it in half, so a correct component
+   * read as a broken one. The order is asserted above, which is the part that
+   * genuinely matters.
+   */
+  assert.match(handler.slice(0, 2500), /entityId: r\.data\.id/);
 });
 
 test("a failed upload does not discard the created task", () => {

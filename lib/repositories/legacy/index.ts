@@ -12248,9 +12248,28 @@ export class LegacyRepository {
         ),
       );
 
+      /**
+       * What has already been worked, per task.
+       *
+       * The chain needs it to schedule a task that a reorder pushes into the
+       * FUTURE from what is left of it rather than from its whole budget —
+       * without this the hours it already spent are granted a second time, and
+       * every task behind it inherits the surplus. See `nowMs` in
+       * `chainDeadlines`.
+       *
+       * Read the same way the Expected-completion projection reads it. A
+       * failure costs the correction, never the reorder: an empty map simply
+       * schedules full budgets, which is exactly the behaviour that was here
+       * before.
+       */
+      const loggedByTask = await this.#loggedSecsByTask(employeeId).catch(
+        () => new Map<string, number>(),
+      );
+
       const raw = peers.docs.map((d) => ({
         taskId: d.id,
         ...(d.data() as Record<string, unknown>),
+        loggedSecs: loggedByTask.get(d.id) ?? 0,
       }));
       const queue = queueFor({ tasks: raw, employeeId, parentTaskId });
       if (queue.length === 0) return [];
@@ -12282,6 +12301,14 @@ export class LegacyRepository {
           ),
           nowMs,
         }),
+        /* The whole budget for a task already running from its own start — its
+           date must not move because somebody logged time on it. */
+        budget: "full",
+        /* …and what is LEFT for one this reorder pushes into the future, where
+           the full budget would be granted a second time on top of the hours it
+           has already spent. `chainDeadlines` uses this for that test alone; it
+           never anchors on it. */
+        nowMs,
         addWorkingSecs: (anchorMs, windowSecs) =>
           addWorkingSecs(anchorMs, windowSecs, schedule),
       });

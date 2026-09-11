@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import {
   EXCLUDED_STATUSES,
   RECENT_START_MS,
@@ -441,4 +442,231 @@ test("a queue of tasks all raised late starts at the earliest of them", () => {
   /* b was raised while a was still running, so it waits for a rather than for
      its own creation. */
   assert.equal(moved[1].startsAt, moved[0].dueDate);
+});
+
+/* ── A reorder must not grant a budget twice ───────────────────────────────── */
+
+const NOW = T0 + 4.5 * HOUR * 1000; // 14:00, the moment of the swap
+
+test("a task pushed into the future is scheduled from what is LEFT", () => {
+  /**
+   * **The over-grant, reported.** Task 1 carries 5h and has already worked 2h.
+   * A swap re-anchors it to 17:00 — past the hours it spent — and the whole 5h
+   * was granted again from there: 2h already gone plus 5h more, seven hours for
+   * a five-hour task. Everything queued behind inherited the same surplus.
+   *
+   * `start + full budget` is only right while a task runs from its OWN start,
+   * because the hour that leaves the budget is the hour that moves the clock.
+   * A reorder moves the start past that work and the cancellation stops holding.
+   */
+  const ahead = T0 + 7.5 * HOUR * 1000; // 17:00 — after NOW
+  const moved = chainDeadlines({
+    queue: [
+      task({
+        taskId: "worked",
+        deadlineWindowSecs: 5 * HOUR,
+        loggedSecs: 2 * HOUR,
+        createdAtMs: ahead,
+      }),
+    ],
+    anchorMs: ahead,
+    addWorkingSecs: plainAdd,
+    budget: "full",
+    nowMs: NOW,
+  });
+  /* 3h remaining, not 5h. */
+  assert.equal(moved[0].dueDate, new Date(ahead + 3 * HOUR * 1000).toISOString());
+});
+
+test("a task already running from a past start keeps its FULL budget", () => {
+  /**
+   * The other half, and the reason this is narrow. A task whose start is behind
+   * `nowMs` is running from it: its spent hours already moved the clock, so the
+   * full budget is the honest figure and its date must NOT move because
+   * somebody logged time. Subtracting there would make a deadline tighten every
+   * time its owner worked.
+   */
+  const moved = chainDeadlines({
+    queue: [
+      task({
+        taskId: "running",
+        deadlineWindowSecs: 5 * HOUR,
+        loggedSecs: 2 * HOUR,
+        createdAtMs: T0,
+      }),
+    ],
+    anchorMs: T0, // 09:30 — before NOW
+    addWorkingSecs: plainAdd,
+    budget: "full",
+    nowMs: NOW,
+  });
+  assert.equal(moved[0].dueDate, new Date(T0 + 5 * HOUR * 1000).toISOString());
+});
+
+test("the surplus is not passed down the queue", () => {
+  /* Every task behind the re-anchored one starts from its corrected finish, so
+     the two hours are not handed out again further down. */
+  const ahead = T0 + 7.5 * HOUR * 1000;
+  const moved = chainDeadlines({
+    queue: [
+      task({ taskId: "a", deadlineWindowSecs: 5 * HOUR, loggedSecs: 2 * HOUR, createdAtMs: ahead }),
+      task({ taskId: "b", deadlineWindowSecs: 4 * HOUR, createdAtMs: ahead }),
+    ],
+    anchorMs: ahead,
+    addWorkingSecs: plainAdd,
+    budget: "full",
+    nowMs: NOW,
+  });
+  assert.equal(moved[1].startsAt, moved[0].dueDate, "b did not chain off a's real finish");
+  assert.equal(moved[1].dueDate, new Date(ahead + 7 * HOUR * 1000).toISOString());
+});
+
+test("without nowMs every caller computes exactly what it did before", () => {
+  /* The correction is opt-in. `chainDeadlines` is called by the Expected-
+     completion projection too, and that must not change. */
+  const ahead = T0 + 7.5 * HOUR * 1000;
+  const q = [
+    task({ taskId: "x", deadlineWindowSecs: 5 * HOUR, loggedSecs: 2 * HOUR, createdAtMs: ahead }),
+  ];
+  const withOut = chainDeadlines({ queue: q, anchorMs: ahead, addWorkingSecs: plainAdd, budget: "full" });
+  assert.equal(withOut[0].dueDate, new Date(ahead + 5 * HOUR * 1000).toISOString());
+});
+
+test("a task with nothing logged is unaffected either way", () => {
+  const ahead = T0 + 7.5 * HOUR * 1000;
+  const q = [task({ taskId: "fresh", deadlineWindowSecs: 5 * HOUR, createdAtMs: ahead })];
+  const a = chainDeadlines({ queue: q, anchorMs: ahead, addWorkingSecs: plainAdd, budget: "full" });
+  const b = chainDeadlines({ queue: q, anchorMs: ahead, addWorkingSecs: plainAdd, budget: "full", nowMs: NOW });
+  assert.equal(a[0].dueDate, b[0].dueDate);
+});
+
+test("logged time beyond the budget cannot produce a negative slot", () => {
+  /* `remainingWorkSecs` floors at zero; the task still occupies the queue until
+     it is submitted, so it must not pull the tasks behind it earlier than its
+     own start. */
+  const ahead = T0 + 7.5 * HOUR * 1000;
+  const moved = chainDeadlines({
+    queue: [
+      task({ taskId: "spent", deadlineWindowSecs: 2 * HOUR, loggedSecs: 9 * HOUR, createdAtMs: ahead }),
+      task({ taskId: "next", deadlineWindowSecs: HOUR, createdAtMs: ahead }),
+    ],
+    anchorMs: ahead,
+    addWorkingSecs: plainAdd,
+    budget: "full",
+    nowMs: NOW,
+  });
+  assert.equal(moved[0].dueDate, new Date(ahead).toISOString());
+  assert.ok(Date.parse(moved[1].dueDate) > Date.parse(moved[0].dueDate));
+});
+
+test("a start exactly at nowMs counts as pushed ahead", () => {
+  /* The boundary. A task re-anchored to this instant has not been running from
+     it, so its spent hours are behind the start just as they are for 17:00. */
+  const moved = chainDeadlines({
+    queue: [
+      task({ taskId: "edge", deadlineWindowSecs: 5 * HOUR, loggedSecs: 2 * HOUR, createdAtMs: NOW }),
+    ],
+    anchorMs: NOW,
+    addWorkingSecs: plainAdd,
+    budget: "full",
+    nowMs: NOW,
+  });
+  assert.equal(moved[0].dueDate, new Date(NOW + 3 * HOUR * 1000).toISOString());
+});
+
+test("the reorder path supplies logged time, the full budget and nowMs", () => {
+  /**
+   * The rule can only correct the over-grant if the caller hands it the three
+   * things it needs. `remainingWorkSecs` reads `loggedSecs`, and the reorder
+   * path built its queue straight from the task documents — which carry no such
+   * field — so "remaining" silently equalled the full budget for every task.
+   */
+  const src = readFileSync("lib/repositories/legacy/index.ts", "utf8");
+  const at = src.indexOf("async #recalculateQueueDeadlines");
+  assert.ok(at > 0, "the reorder path was renamed or removed");
+  const fn = src.slice(at, src.indexOf("\n  async ", at + 10));
+
+  assert.match(fn, /#loggedSecsByTask\(employeeId\)/, "logged time is not read");
+  assert.match(fn, /loggedSecs: loggedByTask\.get\(d\.id\) \?\? 0/, "logged time is not attached");
+  assert.match(fn, /budget: "full"/, "a running task would lose time as it worked");
+  /* Ordered rather than adjacent: the file is CRLF and carries comments
+     between the two, so a line-anchored match is brittle. */
+  assert.match(
+    fn,
+    /budget: "full"[\s\S]*?nowMs,[\s\S]*?addWorkingSecs/,
+    "nowMs is not passed to the chain alongside the budget",
+  );
+});
+
+/* ── The two shapes a priority change actually takes ───────────────────────── */
+
+const EARLY = T0 - HOUR * 1000;
+const RAISED_LATE = NOW; // 14:00, when the reorder happens
+
+/** The queue from the worked example: 5h(2h done), 4h, 6h, 3h raised at 14:00. */
+const four = () => [
+  task({ taskId: "t1", deadlineWindowSecs: 5 * HOUR, loggedSecs: 2 * HOUR, createdAtMs: EARLY }),
+  task({ taskId: "t2", deadlineWindowSecs: 4 * HOUR, createdAtMs: EARLY }),
+  task({ taskId: "t3", deadlineWindowSecs: 6 * HOUR, createdAtMs: EARLY }),
+  task({ taskId: "t4", deadlineWindowSecs: 3 * HOUR, createdAtMs: RAISED_LATE }),
+];
+const chain = (q: QueueTask[]) =>
+  chainDeadlines({ queue: q, anchorMs: T0, addWorkingSecs: plainAdd, budget: "full", nowMs: NOW });
+const dueOf = (r: { taskId: string; dueDate: string }[], id: string) =>
+  r.find((x) => x.taskId === id)!.dueDate;
+
+test("SWAP TWO (P3 <-> P4): only those two move", () => {
+  /* The property the whole "recalculate only what moved" question turns on.
+     Tasks above are never reached by the chain, and the pair occupies the same
+     total time whichever order it is in — so nothing below them shifts either. */
+  const [a, b, c, d] = four();
+  const before = chain([a, b, c, d]);
+  const after = chain([a, b, d, c]);
+
+  assert.equal(dueOf(after, "t1"), dueOf(before, "t1"), "the head moved");
+  assert.equal(dueOf(after, "t2"), dueOf(before, "t2"), "a task above the swap moved");
+  assert.notEqual(dueOf(after, "t3"), dueOf(before, "t3"));
+  assert.notEqual(dueOf(after, "t4"), dueOf(before, "t4"));
+});
+
+test("SWAP TWO: the pair still ends at the same instant", () => {
+  /* Which is WHY nothing below them can shift: a + b working hours equals
+     b + a, so the queue resumes at the same moment either way. */
+  const [a, b, c, d] = four();
+  const before = chain([a, b, c, d]);
+  const after = chain([a, b, d, c]);
+  const lastBefore = before[before.length - 1].dueDate;
+  const lastAfter = after[after.length - 1].dueDate;
+  assert.equal(lastAfter, lastBefore);
+});
+
+test("CASCADE (P4 -> P1): every position moves, and the worked hours are not re-granted", () => {
+  /* Task 1 is pushed to second place, past the two hours it already spent, so
+     it must be scheduled for the three that are LEFT. Granting five again would
+     hand it seven hours for a five-hour task and push t2 and t3 out with it. */
+  const [a, b, c, d] = four();
+  const after = chain([d, a, b, c]);
+
+  /* t4 leads, starting when it was raised rather than at the queue's opening. */
+  assert.equal(after[0].taskId, "t4");
+  assert.equal(after[0].startsAt, new Date(RAISED_LATE).toISOString());
+  assert.equal(after[0].dueDate, new Date(RAISED_LATE + 3 * HOUR * 1000).toISOString());
+
+  /* t1 takes 3h remaining, not its 5h budget. */
+  const t1Start = Date.parse(after[1].startsAt);
+  assert.equal(after[1].taskId, "t1");
+  assert.equal(after[1].dueDate, new Date(t1Start + 3 * HOUR * 1000).toISOString());
+
+  /* And the two behind it chain off that corrected finish. */
+  assert.equal(after[2].startsAt, after[1].dueDate);
+  assert.equal(after[3].startsAt, after[2].dueDate);
+});
+
+test("CASCADE: the head keeps its full budget when it is already running", () => {
+  /* The mirror of the case above. Moving t1 DOWN uses its remainder; leaving it
+     at the head, running from a start already behind us, keeps all five hours —
+     so nobody's deadline tightens because they worked. */
+  const [a, b, c, d] = four();
+  const held = chain([a, b, c, d]);
+  assert.equal(dueOf(held, "t1"), new Date(T0 + 5 * HOUR * 1000).toISOString());
 });

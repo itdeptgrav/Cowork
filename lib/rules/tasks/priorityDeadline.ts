@@ -383,6 +383,33 @@ export function chainDeadlines(input: {
    * clock with extra steps.
    */
   budget?: "remaining" | "full";
+  /**
+   * The instant this layout is being computed, when the caller wants a task
+   * RE-ANCHORED INTO THE FUTURE to be scheduled from what is left of it.
+   *
+   * **The over-grant this closes.** A budget is spent between a task's start
+   * and now, so `start + full budget` is right while a task is running from its
+   * own start — the hour that leaves the budget is the same hour that moves the
+   * clock, and the two cancel. A reorder breaks that cancellation: it moves the
+   * task's start FORWARD, past the work already done, and then grants the whole
+   * budget again from there.
+   *
+   *   Task 1, 5h, 2h already worked, re-anchored by a swap to 17:00
+   *     granted again   17:00 + 5h  ->  Thu 13:00     2h it had already spent
+   *     what is left    17:00 + 3h  ->  Thu 11:00     correct
+   *
+   * Everything queued behind it inherits the same surplus, so one swap hands
+   * out those hours several times over.
+   *
+   * **Only a start at or after this instant is affected**, which is what keeps
+   * the change narrow: a task already running from a start in the past keeps
+   * the full budget and its date does not move. And this is NOT a floor on the
+   * anchor — anchoring at `now` is what made dates walk forward all day, the
+   * fault `anchorMsFor` exists to prevent.
+   *
+   * Optional. Omitted, every task takes `budget` exactly as before.
+   */
+  nowMs?: number;
 }): ChainedDeadline[] {
   const out: ChainedDeadline[] = [];
 
@@ -555,8 +582,29 @@ export function chainDeadlines(input: {
      * testing the remainder would drop it and pull everything behind it
      * earlier.
      */
+    /**
+     * **A task pushed into the future is scheduled from what is LEFT of it.**
+     *
+     * See `nowMs` on the input for the whole reasoning. In short: `start + full
+     * budget` is only right while a task runs from its own start, because the
+     * hours it spends move the clock by the same amount. A reorder moves the
+     * start past those hours and the cancellation stops holding — the budget is
+     * granted a second time, and every task queued behind inherits the surplus.
+     *
+     * `anchorMs >= nowMs` is the exact test for "this start is not the one the
+     * work was done under". A task whose start is in the PAST is running from
+     * it, so it keeps the full budget and its date does not move — which is why
+     * this cannot creep, and why an unchanged queue computes what it always did.
+     */
+    const reAnchoredAhead =
+      typeof input.nowMs === "number" &&
+      Number.isFinite(input.nowMs) &&
+      anchorMs >= input.nowMs;
+
     const occupies =
-      input.budget === "full" ? windowSecs : remainingWorkSecs(task);
+      input.budget === "full" && !reAnchoredAhead
+        ? windowSecs
+        : remainingWorkSecs(task);
     let dueDate = input.addWorkingSecs(anchorMs, occupies);
 
     /**
