@@ -109,7 +109,11 @@ test("the contract carries files on an output submission", () => {
 test("files go to Drive, not through the engine", () => {
   /* The pipeline that makes a large file viable at all: bytes go browser to
      Google. `uploadAttachment` would stream every byte through Express. */
-  assert.match(FORM, /repo\.uploadDriveFile\(/);
+  /* `!?` because the call sits inside a `.map()` callback, where TypeScript's
+     narrowing from the guard above does not reach and a non-null assertion
+     is needed. Which METHOD is called is the rule here; the punctuation
+     around it is not. */
+  assert.match(FORM, /repo\.uploadDriveFile!?\(/);
   assert.equal(
     /uploadAttachment\(/.test(FORM),
     false,

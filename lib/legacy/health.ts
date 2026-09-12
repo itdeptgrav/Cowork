@@ -33,6 +33,7 @@ export type CheckId =
   | "firebase_auth"
   | "api_reachable"
   | "api_authenticated"
+  | "file_storage"
   | "firestore";
 
 export const CHECK_LABELS: Record<CheckId, string> = {
@@ -41,6 +42,7 @@ export const CHECK_LABELS: Record<CheckId, string> = {
   firebase_auth: "Firebase authentication available",
   api_reachable: "Backend API reachable",
   api_authenticated: "Backend accepts our token",
+  file_storage: "File storage reachable",
   firestore: "Firestore accessible",
 };
 
@@ -58,6 +60,10 @@ export const CHECK_ORDER: readonly CheckId[] = [
   "firebase_auth",
   "api_reachable",
   "api_authenticated",
+  /* After the token check, because storage is asked over the same authenticated
+     connection — a storage failure reported above a failed token would be the
+     second symptom of the first problem. */
+  "file_storage",
   "firestore",
 ];
 
@@ -136,6 +142,27 @@ export interface Probes {
   /** Whether `GET /cowork/me` succeeded with the current token. */
   apiAuthenticated: boolean | null;
   apiAuthError?: LegacyError | null;
+  /**
+   * Whether attachments can actually be stored.
+   *
+   * Its own check because it fails on its own. Everything above can pass — the
+   * backend answering, the token accepted — while Drive is unreachable or the
+   * service-account key is missing, and the only symptom anybody sees is that
+   * a file "sometimes does not upload". Nothing in the product said which of
+   * those it was, and that silence is what this ends.
+   */
+  storageReachable: boolean | null;
+  /** False when the service account is absent — a different fault to a refusal. */
+  storageConfigured?: boolean | null;
+  storageError?: string | null;
+  /**
+   * The last failure storage recorded, even when it is answering NOW.
+   *
+   * An intermittent upload fault is invisible to a probe that happens to run
+   * during a good minute. The engine keeps its last error, so a page checked
+   * after the fact can still say what went wrong.
+   */
+  storageLastError?: string | null;
   firestoreReachable: boolean | null;
   firestoreError?: string | null;
 }
@@ -146,6 +173,7 @@ export const NO_PROBES: Probes = {
   apiReachable: null,
   apiAuthenticated: null,
   firestoreReachable: null,
+  storageReachable: null,
 };
 
 /* ── The verdict ──────────────────────────────────────────────────────────── */
@@ -273,6 +301,44 @@ export function interpret(input: {
                 ? "The token is valid but this account has no cowork_employees record. The engine answers: \"Employee not found in Firestore. Ask your CEO.\""
                 : "Confirm the Firebase project matches the one the backend verifies against.",
           },
+  );
+
+  checks.push(
+    p.storageReachable === null
+      ? skipped("file_storage", "Not checked — no token to present.")
+      : p.storageConfigured === false
+        ? {
+            id: "file_storage",
+            label: CHECK_LABELS.file_storage,
+            state: "fail",
+            detail:
+              p.storageError ??
+              "The engine has no storage credential, so no file can be saved.",
+            remedy:
+              "Set GOOGLE_SERVICE_ACCOUNT_KEY on the backend. Until then every upload is refused — on the new-task form, on a submission, and on a rework.",
+          }
+        : p.storageReachable
+          ? {
+              id: "file_storage",
+              label: CHECK_LABELS.file_storage,
+              state: "pass",
+              detail: p.storageLastError
+                ? `Storage answered. It last recorded a failure: ${p.storageLastError}`
+                : "Storage answered, and has recorded no failure since the backend started.",
+              /* A pass that carries a past failure is the intermittent case, and
+                 the one somebody is on this page to diagnose. */
+              remedy: p.storageLastError
+                ? "Uploads are working now. If files have gone missing, that message is what happened to them."
+                : undefined,
+            }
+          : {
+              id: "file_storage",
+              label: CHECK_LABELS.file_storage,
+              state: "fail",
+              detail: p.storageError ?? "Storage did not answer.",
+              remedy:
+                "Files cannot be uploaded or opened while this fails. The task itself is unaffected — a submission still goes through, without its attachments.",
+            },
   );
 
   checks.push(

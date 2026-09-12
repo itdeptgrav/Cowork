@@ -435,6 +435,7 @@ export function SubmissionPanel({
               onChange={() => {}}
               staged={staged}
               onStagedChange={setStaged}
+              stagedNote="Not uploaded yet — these are sent the moment you submit, and a file that fails is named rather than losing the submission."
               label="Attach submitted files"
             />
           </div>

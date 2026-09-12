@@ -75,6 +75,37 @@ export async function runHealthChecks(
     }
   }
 
+  /* 4 — Files can actually be stored.
+     Asked over the same authenticated connection, and only once that has been
+     shown to work — otherwise a storage failure is just the token failure
+     reported a second time. This is the check that separates "the upload did
+     not happen" into its three real causes: no storage credential on the
+     engine, Drive not answering, or neither, in which case the fault is the
+     file or the connection rather than the service. `lastError` is carried
+     through even on a pass, because an upload fault that comes and goes is
+     invisible to a probe that runs during a good minute. */
+  if (probes.apiAuthenticated) {
+    const health = await legacyFetch<{
+      storageConfigured?: boolean;
+      driveConnected?: boolean;
+      lastError?: string | { message?: string } | null;
+    }>({ path: "/cowork/attachments/health", token: await idToken().catch(() => null) ?? undefined }, env);
+    if (health.ok) {
+      probes.storageConfigured = health.data.storageConfigured !== false;
+      probes.storageReachable = health.data.driveConnected === true;
+      const last = health.data.lastError;
+      probes.storageLastError =
+        typeof last === "string" ? last : (last?.message ?? null);
+      if (!probes.storageReachable && probes.storageConfigured)
+        probes.storageError = probes.storageLastError ?? "Drive did not answer.";
+      if (probes.storageConfigured === false)
+        probes.storageError = probes.storageLastError ?? undefined;
+    } else {
+      probes.storageReachable = false;
+      probes.storageError = health.error.message;
+    }
+  }
+
   /* Firestore is deliberately NOT probed.
      The architecture allows Firebase from the frontend for authentication only,
      and forbids Next.js API routes — so there is no sanctioned path to

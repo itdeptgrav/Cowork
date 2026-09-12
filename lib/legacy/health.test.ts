@@ -26,6 +26,8 @@ const ALL_GOOD: Probes = {
   apiReachable: true,
   apiAuthenticated: true,
   firestoreReachable: true,
+  storageReachable: true,
+  storageConfigured: true,
 };
 
 const check = (r: ReturnType<typeof interpret>, id: string) =>
@@ -263,4 +265,76 @@ test("a backend that identifies itself passes", () => {
   });
   assert.equal(check(r, "api_reachable").state, "pass");
   assert.match(check(r, "api_reachable").detail, /identified itself/);
+});
+
+/* ── File storage ─────────────────────────────────────────────────────────── */
+
+test("storage that was never asked is not reported as working", () => {
+  /* The rule the whole module is built on: three outcomes, not two. A person
+     debugging a failed upload must not read "File storage ✓" off a check that
+     never ran. */
+  const r = interpret({
+    env: FULL_ENV,
+    probes: { ...ALL_GOOD, storageReachable: null, storageConfigured: null },
+  });
+  assert.equal(check(r, "file_storage").state, "skipped");
+  assert.equal(r.overall, "connected", "an unrun check must not fail the report");
+});
+
+test("no storage credential is named as such, not as a refusal", () => {
+  /* Two different faults with two different fixes: nobody set the key, versus
+     the key is there and Drive will not answer. */
+  const r = interpret({
+    env: FULL_ENV,
+    probes: { ...ALL_GOOD, storageConfigured: false, storageReachable: false },
+  });
+  const c = check(r, "file_storage");
+  assert.equal(c.state, "fail");
+  assert.match(c.remedy ?? "", /GOOGLE_SERVICE_ACCOUNT_KEY/);
+  assert.equal(r.overall, "failed");
+});
+
+test("storage that cannot be reached says what it costs, and what it does not", () => {
+  /* A submission still goes through without its files. Saying so stops somebody
+     resubmitting work that is already with their reviewer. */
+  const r = interpret({
+    env: FULL_ENV,
+    probes: {
+      ...ALL_GOOD,
+      storageReachable: false,
+      storageError: "Drive did not answer.",
+    },
+  });
+  const c = check(r, "file_storage");
+  assert.equal(c.state, "fail");
+  assert.equal(c.detail, "Drive did not answer.");
+  assert.match(c.remedy ?? "", /submission still goes through/);
+});
+
+test("a pass still reports a failure storage remembers", () => {
+  /* The intermittent case — "sometimes the file does not upload". A probe run
+     during a good minute would otherwise say everything is fine, which is true
+     and useless. */
+  const r = interpret({
+    env: FULL_ENV,
+    probes: { ...ALL_GOOD, storageLastError: "quota exceeded at 11:04" },
+  });
+  const c = check(r, "file_storage");
+  assert.equal(c.state, "pass");
+  assert.match(c.detail, /quota exceeded at 11:04/);
+  assert.match(c.remedy ?? "", /working now/);
+});
+
+test("a clean pass says there has been no failure, and offers no remedy", () => {
+  const c = check(interpret({ env: FULL_ENV, probes: ALL_GOOD }), "file_storage");
+  assert.equal(c.state, "pass");
+  assert.match(c.detail, /recorded no failure/);
+  assert.equal(c.remedy, undefined);
+});
+
+test("storage is judged after the token, never before it", () => {
+  /* Dependency order: storage is asked over the authenticated connection, so a
+     storage failure above a token failure is the same problem reported twice. */
+  const ids = CHECK_ORDER.indexOf("file_storage");
+  assert.ok(ids > CHECK_ORDER.indexOf("api_authenticated"));
 });

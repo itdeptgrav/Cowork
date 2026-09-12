@@ -19,6 +19,10 @@ import {
 
 const code = (p: string) =>
   readFileSync(p, "utf8")
+    /* Line endings are mixed across this repository, and a CRLF file costs one
+       extra character per line — enough to push a match out of a fixed-width
+       slice and fail a test about something nobody touched. */
+    .replace(/\r\n/g, "\n")
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
@@ -329,7 +333,14 @@ test("task creation stages files and uploads AFTER the task exists", () => {
   const createAt = handler.indexOf("create()");
   const uploadAt = handler.indexOf("repo.uploadAttachment");
   assert.ok(createAt >= 0 && uploadAt > createAt, "files upload before create");
-  assert.match(handler.slice(0, 900), /entityId: r\.data\.id/);
+  /* The upload targets the task that was just created. Anchored to the upload
+     call itself rather than to a fixed number of characters after `create()`:
+     that window broke when a guard was added above it, which is a test failing
+     for a reason unrelated to the rule it protects. */
+  assert.match(
+    handler.slice(uploadAt, uploadAt + 300),
+    /entityType: "task",\s*\n?\s*entityId: r\.data\.id/,
+  );
 });
 
 test("a failed upload does not discard the created task", () => {

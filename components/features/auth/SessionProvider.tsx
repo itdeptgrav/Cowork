@@ -9,7 +9,11 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getRepository, setRepository } from "@/lib/repositories";
+import {
+  getRepository,
+  installMockRepository,
+  setRepository,
+} from "@/lib/repositories";
 import { unregisterFCMToken, useFCMToken } from "@/lib/hooks/useFCMToken";
 import { LegacyRepository, toCoworkRepository } from "@/lib/repositories/legacy";
 import { startTaskWatch } from "@/lib/repositories/legacy/taskWatch";
@@ -297,6 +301,13 @@ export function SessionProvider({
       process.env.NODE_ENV !== "production" &&
       process.env.NEXT_PUBLIC_MOCK_SESSION === "1"
     ) {
+      /* **Fetch the prototype before reading from it.**
+         It is no longer the starting value of `getRepository()` — it was, and
+         being reachable from every hook put all 12,000 lines of it into the
+         chunk every page downloads, 728 KB of it, for a path only a
+         development build can take. It travels in its own chunk now and this
+         is the one place that asks for it. */
+      await installMockRepository();
       /* Restore who the prototype bar last chose BEFORE the first read —
          `setActingEmployee` is what every query and permission resolves
          against, so applying it after would show one person's name over

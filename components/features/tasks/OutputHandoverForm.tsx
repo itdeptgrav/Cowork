@@ -91,9 +91,17 @@ export function OutputHandoverForm({
         return;
       }
       setUploading(true);
+      /* Together, not one after another. Each upload is independent, so the
+         loop this replaced paid a whole round trip per file while somebody
+         watched a spinner. `Promise.all` keeps the order, which matters: the
+         handover lists these files and they should read in the order they were
+         chosen rather than the order the network finished. */
+      const results = await Promise.all(
+        staged.map((file) => repo.uploadDriveFile!(file)),
+      );
       const failed: string[] = [];
-      for (const file of staged) {
-        const up = await repo.uploadDriveFile(file);
+      results.forEach((up, i) => {
+        const file = staged[i];
         if (up.ok) {
           attachments.push({
             url: up.data.url,
@@ -103,7 +111,7 @@ export function OutputHandoverForm({
         } else {
           failed.push(file.name);
         }
-      }
+      });
       setUploading(false);
       if (failed.length > 0) {
         setUploadFailures(failed);

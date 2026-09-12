@@ -1851,6 +1851,7 @@ export function NewTaskForm({
               staged={stagedFiles}
               onStagedChange={setStagedFiles}
               label="Attach reference files"
+              stagedNote="Not uploaded yet — these are attached once the task is created, because the engine checks permission against the task itself."
             />
           </div>
 

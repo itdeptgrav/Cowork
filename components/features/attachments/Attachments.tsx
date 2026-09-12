@@ -303,6 +303,7 @@ export function FileUploader({
   label = "Attach reference files",
   staged,
   onStagedChange,
+  stagedNote = "Not uploaded yet — these are sent when you save.",
 }: {
   entityType: AttachmentEntity;
   /**
@@ -323,11 +324,46 @@ export function FileUploader({
   /** Staging mode only: files chosen but not yet sent. */
   staged?: File[];
   onStagedChange?: (next: File[]) => void;
+  /**
+   * What happens to staged files, in the words of the surface staging them.
+   *
+   * The default is true everywhere, but vague — "when you save" is the right
+   * shape and the wrong noun on a form whose button says Create task. Each
+   * caller names its own moment, so the sentence matches the button the person
+   * is about to press.
+   */
+  stagedNote?: string;
 }) {
   const repo = useRepo();
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState<Pending[]>([]);
+  /**
+   * The list as it actually stands, rather than as one render saw it.
+   *
+   * **The bug this closes.** `send` is an async closure built during a render,
+   * so the `attachments` prop inside it is frozen at that moment — and the loop
+   * in it awaits a network round trip per file. Every success called
+   * `onChange([...attachments, r.data])` against that frozen snapshot, so
+   * picking three files handed the caller `[…, file1]`, then `[…, file2]`, then
+   * `[…, file3]` — each one DISCARDING the results before it. Only the last
+   * survived. The other two uploaded perfectly well and were recorded against
+   * the entity, with nothing in the interface pointing at them.
+   *
+   * Where it hurt most was the reviewer's correction files: `ReviewPanel` sends
+   * `files.map((f) => f.id)` as `reworkAttachmentIds`, so attaching three
+   * corrections sent exactly one to the person being asked to redo the work.
+   *
+   * The note beside `setPending` below already says all of this about state —
+   * "reading the prop here would drop every result but the last" — and the
+   * functional update it describes is why the progress list was right while the
+   * attachment list was wrong. A prop cannot take a functional update, so the
+   * current value is held here instead.
+   */
+  const latest = useRef(attachments);
+  useEffect(() => {
+    latest.current = attachments;
+  }, [attachments]);
   /* A staged file being previewed in the lightbox, or null. Staged files are
      local `File`s that have not been uploaded, so the preview is drawn straight
      from an object URL of the file in hand — nothing is fetched or stored. */
@@ -423,7 +459,12 @@ export function FileUploader({
         /* Functional update: several files can be in flight, and reading the
            prop here would drop every result but the last. */
         setPending((p) => p.filter((x) => x.key !== key));
-        onChange([...attachments, r.data]);
+        /* Built on `latest`, not on the captured prop, and written back before
+           the caller is told — the next file in this loop lands before the
+           parent's re-render has reached this closure. See `latest` above. */
+        const next = [...latest.current, r.data];
+        latest.current = next;
+        onChange(next);
       } else {
         setPending((p) =>
           p.map((x) => (x.key === key ? { ...x, error: r.message } : x)),
@@ -505,6 +546,18 @@ export function FileUploader({
       {/* Staged files are not attachments yet — no id, nothing stored — so
           they are listed here rather than through `FileList`, which fetches
           previews by id. */}
+      {isStaging && (staged?.length ?? 0) > 0 && (
+        <p className="mt-2 text-[11px] leading-relaxed text-ink-faint">
+          {/* **Said, because the list alone cannot say it.** A staged file draws
+              the same glyph, name and size as one that is stored, so a person
+              who has picked their files reasonably reads them as attached — and
+              they are not. Nothing has left the browser yet; these go up only
+              once the record exists to hang them on, which is why the sentence
+              names the moment rather than just the state. Without it, closing
+              the form loses files somebody believed were safe. */}
+          {stagedNote}
+        </p>
+      )}
       {isStaging && (staged?.length ?? 0) > 0 && (
         <ul className="mt-2 space-y-1">
           {staged!.map((f, i) => (
