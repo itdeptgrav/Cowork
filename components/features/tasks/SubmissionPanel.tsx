@@ -31,6 +31,7 @@ import {
   workedToday,
 } from "@/lib/rules/tasks/dailyReport";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
+import { UploadProgressRow } from "@/components/features/messages/MessageAttachments";
 import type { TaskView } from "@/lib/repositories";
 
 /**
@@ -66,6 +67,23 @@ export function SubmissionPanel({
      list and lose the audit trail rework depends on. */
   const [staged, setStaged] = useState<File[]>([]);
   const [uploadFailures, setUploadFailures] = useState<string[]>([]);
+  /**
+   * What each staged file is doing, once Submit has been pressed.
+   *
+   * Staged files go up AFTER the submission exists, so the slowest part of
+   * submitting happens when the form has already been left looking finished.
+   * A large PDF on a slow line simply sat there with nothing moving, and the
+   * honest reading of that screen is "it has hung" — which is the one thing a
+   * person about to press Submit again must not be told.
+   *
+   * Shares `UploadProgressRow` with the message composer rather than growing a
+   * second progress control: a bar and a percentage while the bytes move, then
+   * a turning ring and "Processing…" for the finalize step, which reports no
+   * progress of its own.
+   */
+  const [uploads, setUploads] = useState<{ name: string; fraction: number }[]>(
+    [],
+  );
   const repo = useRepo();
   const submissions = useQuery(
     (r) => r.listSubmissions(taskId),
@@ -438,6 +456,19 @@ export function SubmissionPanel({
               stagedNote="Not uploaded yet — these are sent the moment you submit, and a file that fails is named rather than losing the submission."
               label="Attach submitted files"
             />
+
+            {/* Under the picker, where the files themselves are listed, so the
+                bars replace the staged names in the same place on screen
+                rather than appearing somewhere new once Submit is pressed. */}
+            {uploads.length > 0 && (
+              <ul className="mt-2 space-y-1.5" aria-live="polite">
+                {uploads.map((u, i) => (
+                  <li key={`${u.name}-${i}`}>
+                    <UploadProgressRow name={u.name} fraction={u.fraction} />
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
 
           {uploadFailures.length > 0 && (
@@ -502,6 +533,12 @@ export function SubmissionPanel({
                   if (staged.length > 0) {
                     const fresh = await repo.listSubmissions(taskId);
                     const target = fresh[0]?.id ?? null;
+                    /* Listed before the first byte moves, so the wait is
+                       accounted for from the moment it starts rather than when
+                       the first progress event happens to arrive. */
+                    setUploads(
+                      staged.map((file) => ({ name: file.name, fraction: 0 })),
+                    );
                     setUploadFailures(
                       target
                         ? /* Together rather than one after another: each is an
@@ -514,6 +551,17 @@ export function SubmissionPanel({
                               file,
                               entityType: "submission",
                               entityId: target,
+                              /* By POSITION, not by name: two files chosen from
+                                 different folders can share one, and matching
+                                 on it would drive one row with both uploads. */
+                              onProgress: (fraction) => {
+                                const at = staged.indexOf(file);
+                                setUploads((rows) =>
+                                  rows.map((row, i) =>
+                                    i === at ? { ...row, fraction } : row,
+                                  ),
+                                );
+                              },
                             }),
                           )
                         : /* No submission to hang them on, so every one of them
@@ -521,6 +569,10 @@ export function SubmissionPanel({
                              per-file path gives. */
                           staged.map((file) => file.name),
                     );
+                    /* Cleared only once every upload has settled — a row that
+                       vanished at 100% would hide the finalize step, which is
+                       the part people wait longest on. */
+                    setUploads([]);
                   }
 
                   setMessage("");

@@ -533,7 +533,7 @@ function PollDialog({
             type="button"
             onClick={submit}
             disabled={!ready}
-            className="rounded-inset bg-ink px-3 py-2 text-sm font-medium text-[var(--surface)] disabled:cursor-not-allowed disabled:opacity-45"
+            className="rounded-inset bg-ink px-3 py-2 text-sm font-medium text-[var(--body-bg)] disabled:cursor-not-allowed disabled:opacity-45"
           >
             Send poll
           </button>

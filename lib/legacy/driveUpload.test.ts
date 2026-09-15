@@ -55,10 +55,26 @@ test("the Range header decides where to continue from", () => {
   assert.match(code(UPLOAD), /Number\.isFinite\(end\) \? end \+ 1 : 0/);
 });
 
-test("a resumed request sends only the remaining bytes", () => {
+test("a request sends a bounded chunk, never the rest of the file", () => {
+  /**
+   * This asserted `file.slice(offset)` and a range ending at `total - 1` — one
+   * request carrying everything left. That is what made a large file
+   * impossible: the upload became a single request that had to survive from
+   * start to finish, and anything that interrupted it failed the whole thing
+   * while the retry started another just as long.
+   *
+   * The guarantee it was protecting — a resume never re-sends from the
+   * beginning — is unchanged and now stronger: each request carries at most one
+   * chunk, so a failure costs a chunk rather than the upload.
+   */
   const src = code(UPLOAD);
-  assert.match(src, /xhr\.send\(offset > 0 \? file\.slice\(offset\) : file\)/);
-  assert.match(src, /`bytes \$\{offset\}-\$\{total - 1\}\/\$\{total\}`/);
+  assert.match(src, /xhr\.send\(wholeFile \? file : file\.slice\(offset, lastByte \+ 1\)\)/);
+  assert.match(src, /`bytes \$\{offset\}-\$\{lastByte\}\/\$\{total\}`/);
+  assert.match(
+    src,
+    /Math\.min\(offset \+ CHUNK_BYTES, total\) - 1/,
+    "the chunk is not bounded by CHUNK_BYTES",
+  );
 });
 
 test("progress is reported against the whole file, not the slice", () => {
@@ -184,4 +200,62 @@ test("failed uploads are dropped once the message is sent", () => {
   const at = src.indexOf("const r = await send();");
   const body = src.slice(at, at + 700);
   assert.match(body, /setFailedUploads\(\[\]\)/);
+});
+
+/* ── A file of any size gets through ───────────────────────────────────────── */
+
+test("the chunk size is a multiple of 256 KiB", () => {
+  /* Google refuses a partial PUT whose length is not, except for the final
+     chunk — so a chunk size that breaks this rejects every request but the
+     last, and the upload never advances. */
+  const src = code(UPLOAD);
+  const m = src.match(/const CHUNK_BYTES = ([^;]+);/);
+  assert.ok(m, "CHUNK_BYTES was removed");
+  const bytes = Function(`"use strict"; return (${m![1]});`)() as number;
+  assert.equal(bytes % (256 * 1024), 0, `${bytes} is not a multiple of 256 KiB`);
+  assert.ok(bytes > 0);
+});
+
+test("there is no cap on the file itself", () => {
+  /* Chunking bounds the REQUEST, not the upload. A size limit here would be a
+     new refusal for files that are merely large, which is the opposite of the
+     point — `MAX_BYTES` in the attachment rules is null and stays null. */
+  const src = code(UPLOAD);
+  assert.doesNotMatch(src, /file\.size > [A-Z_]*(MAX|LIMIT)/);
+  assert.doesNotMatch(src, /too large|exceeds the limit/i);
+});
+
+test("a whole-file request still sends exactly what it always did", () => {
+  /**
+   * The narrowness of the change. A file that fits in one chunk takes the same
+   * branch it always took — `xhr.send(file)` with no `Content-Range` — so the
+   * uploads that already worked are byte-identical and only the ones that could
+   * not get through are affected.
+   */
+  const src = code(UPLOAD);
+  assert.match(src, /const wholeFile = offset === 0 && lastByte === total - 1;/);
+  assert.match(src, /if \(!wholeFile && total > 0\) \{/);
+});
+
+test("an empty file is not given a nonsense range", () => {
+  /* `bytes 0--1/0` is not a range. A zero-byte file is sent whole. */
+  assert.match(code(UPLOAD), /total === 0 \? -1 :/);
+});
+
+test("a 308 that reports no new bytes spends an attempt", () => {
+  /**
+   * The loop refunds the attempt on every 308 so that chunk progress does not
+   * burn the retry budget. That is right only while the offset is MOVING: a 308
+   * repeating the same offset — or carrying no `Range` header at all — would
+   * otherwise resend the identical request for ever. A large file, now many
+   * requests instead of one, is exactly where that would be met.
+   */
+  const src = code(UPLOAD);
+  assert.match(src, /const advanced = outcome\.received > offset;/);
+  assert.match(src, /if \(advanced\) attempt--;/);
+  assert.doesNotMatch(
+    src,
+    /received;\s*\n\s*attempt--;/,
+    "the attempt is refunded without checking for progress",
+  );
 });

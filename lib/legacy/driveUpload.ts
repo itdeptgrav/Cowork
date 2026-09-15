@@ -183,6 +183,30 @@ async function postJson<T>(
  */
 const STALL_TIMEOUT_MS = 120_000;
 
+/**
+ * How much of a file one request carries.
+ *
+ * **Why a large file could not be uploaded at all.** This sent everything from
+ * the offset to the end of the file in a SINGLE request, so a big file became
+ * one request that had to survive from beginning to end. Anything that
+ * interrupts it — a stall, a proxy's idle timeout, a laptop sleeping, the
+ * session's own lifetime — failed the whole thing, and the retry started
+ * another request just as long, which met the same wall. Small files finished
+ * before any of that mattered, which is why only the big ones never arrived.
+ *
+ * Chunked, no request is longer than this regardless of the file, and a failure
+ * costs one chunk rather than the upload. `putToSession` already resumes from
+ * whatever Google reports having — chunking simply makes that path the normal
+ * one rather than the exception.
+ *
+ * **8 MiB, and it must stay a multiple of 256 KiB.** Google refuses a partial
+ * PUT whose length is not, except for the final chunk. Bigger wastes more on a
+ * retry; smaller pays another round trip per chunk.
+ *
+ * NOT a size limit: there is no cap on the file itself, and there never was.
+ */
+const CHUNK_BYTES = 8 * 1024 * 1024;
+
 /** What one attempt at sending bytes ended in. */
 type PutOutcome =
   /** Google has the whole file. */
@@ -276,15 +300,29 @@ function putFrom(
 ): Promise<PutOutcome> {
   const total = file.size;
   return new Promise((resolve) => {
+    /**
+     * The slice this request carries — at most `CHUNK_BYTES`, never the whole
+     * remainder of a large file. `end` is INCLUSIVE, because that is how
+     * `Content-Range` counts.
+     *
+     * An empty file has no range to describe (`bytes 0--1/0` is nonsense), so
+     * it is sent whole, exactly as before.
+     */
+    const lastByte = total === 0 ? -1 : Math.min(offset + CHUNK_BYTES, total) - 1;
+    const wholeFile = offset === 0 && lastByte === total - 1;
+
     const xhr = new XMLHttpRequest();
     xhr.open("PUT", sessionUrl, true);
-    /* Only on a resume: a `Content-Range` on a whole-file PUT is legal but
-       redundant, and omitting it keeps the first attempt byte-identical to what
-       this did before. */
-    if (offset > 0) {
+    /**
+     * Required on every PARTIAL request — Google cannot place the bytes without
+     * it. Still omitted when one request carries the entire file, which keeps
+     * small uploads byte-identical to what they have always sent: the change
+     * reaches only the files that could not get through before.
+     */
+    if (!wholeFile && total > 0) {
       xhr.setRequestHeader(
         "Content-Range",
-        `bytes ${offset}-${total - 1}/${total}`,
+        `bytes ${offset}-${lastByte}/${total}`,
       );
     }
 
@@ -348,7 +386,9 @@ function putFrom(
       settle({ kind: "failed", result: failure(0, "Upload cancelled.") });
 
     signal?.addEventListener("abort", () => xhr.abort(), { once: true });
-    xhr.send(offset > 0 ? file.slice(offset) : file);
+    /* The bounded slice, not the rest of the file. `slice` takes an EXCLUSIVE
+       end, hence `lastByte + 1`. */
+    xhr.send(wholeFile ? file : file.slice(offset, lastByte + 1));
   });
 }
 
@@ -379,10 +419,21 @@ export async function putToSession(
     if (outcome.kind === "complete") return { ok: true, data: { id: outcome.id } };
     if (outcome.kind === "expired") return { expired: true };
     if (outcome.kind === "incomplete") {
-      /* Progress without completion: continue from where it got to, and do NOT
-         count it as a failed attempt — it is the protocol working. */
+      /**
+       * Progress without completion: continue from where it got to, and do NOT
+       * count it as a failed attempt — it is the protocol working, and with
+       * chunking it is now the ordinary case rather than the exception.
+       *
+       * **Only FORWARD progress is free.** A 308 that reports no new bytes —
+       * the same offset again, or a response with no `Range` header at all —
+       * is not the protocol working, it is a stalemate. Refunding the attempt
+       * there would retry the identical request for ever, and a large file is
+       * exactly where that would happen. Letting it spend an attempt means the
+       * retry budget still terminates.
+       */
+      const advanced = outcome.received > offset;
       offset = outcome.received;
-      attempt--;
+      if (advanced) attempt--;
       if (offset >= file.size) {
         /* Everything is there but no id came back. Ask once more; the query
            returns the id when Google considers the upload finished. */
