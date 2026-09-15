@@ -58,11 +58,19 @@ test("the component only calls the repository", () => {
 });
 
 test("no arithmetic on the result beyond flipping a sign for display", () => {
-  /* Rendering `-buffer` as "over" is presentation. Deriving a buffer would not
-     be. */
+  /* Rendering a negative margin as "late" is presentation. Deriving the margin,
+     or subtracting one date from another to decide whether the projection is
+     worth showing, would not be — both are computed in the rule and read here.
+     This caught the reality-check line doing its own `Date.parse` subtraction
+     the first time it was written. */
   const src = code(CARD);
   assert.equal(/Date\.parse\(/.test(src), false, "the card is doing date maths");
-  assert.match(src, /buffer >= 0/);
+  assert.match(src, /margin >= 0/);
+  assert.match(
+    src,
+    /result\.projectionExceedsPromiseSeconds/,
+    "the gap between promise and projection is read, not computed",
+  );
 });
 
 test("the queue measured is the assignee's, not the viewer's", () => {

@@ -158,6 +158,44 @@ export function formatDurationTimer(secs: number | null | undefined): string {
   return formatTimer(secs);
 }
 
+/**
+ * A span as somebody would say it out loud: `2 days 18 hours`, `1 hour`,
+ * `45 minutes`.
+ *
+ * **For spans measured in real days, not for budgets or timers.** The deadline
+ * feasibility panel used `formatDurationTimer` for the amount a task misses by,
+ * and a task twelve days late read `293:36:29` — a figure nobody can picture,
+ * carrying seconds that came from a rounding on an unrelated task. Hours alone
+ * are no better past a day or two: `293h` is still arithmetic homework.
+ *
+ * Budgets and timers keep their own shape. `04:00:00` is right for a window
+ * somebody is working against, because it is compared with a running clock.
+ * This is for the gap between two dates, where days are the unit that means
+ * something.
+ *
+ * Two parts at most, and the smaller one is dropped when it is zero, so it
+ * never reads `2 days 0 hours`.
+ */
+export function formatSpanHuman(secs: number | null | undefined): string {
+  const total = Math.abs(Math.round(Number(secs) || 0));
+  if (total < 60) return "under a minute";
+
+  const days = Math.floor(total / 86400);
+  const hours = Math.floor((total % 86400) / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const part = (n: number, unit: string) => `${n} ${unit}${n === 1 ? "" : "s"}`;
+
+  if (days > 0) {
+    return hours > 0 ? `${part(days, "day")} ${part(hours, "hour")}` : part(days, "day");
+  }
+  if (hours > 0) {
+    return minutes > 0
+      ? `${part(hours, "hour")} ${part(minutes, "minute")}`
+      : part(hours, "hour");
+  }
+  return part(minutes, "minute");
+}
+
 export function formatTimer(secs: number | null | undefined): string {
   /* `Math.floor(NaN)` is NaN and `Math.max(0, NaN)` is NaN, so an unparsed
      figure rendered as "NaN:NaN:NaN" on the timer. A non-finite input means we

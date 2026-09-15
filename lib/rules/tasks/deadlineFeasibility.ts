@@ -119,6 +119,36 @@ export interface Feasibility {
   deadlineAfterGrant?: string | null;
   /** Positive is slack, negative is the amount by which it misses. */
   bufferSeconds: number | null;
+  /**
+   * When the work already queued ahead is PROMISED to end, or null where none
+   * of it still counts — nothing ahead, or everything ahead is already past or
+   * has no committed date of its own. See `promisedDeadline`.
+   */
+  queueAheadEndsAt: string | null;
+  /**
+   * The deadline this task would be GIVEN if the hours were set now.
+   *
+   * This is the figure the engine writes, and it is usually earlier than
+   * `estimatedCompletionTime` — the first is a promise measured from the
+   * promises ahead of it, the second is a projection measured from today.
+   * Showing only the projection is what put a red warning on a task that was
+   * about to be given a date comfortably inside its deadline.
+   */
+  promisedDeadline: string | null;
+  /**
+   * `deadline` minus `promisedDeadline`, in seconds. Positive is time to
+   * spare, negative is how late that promise lands. Null where either side is
+   * missing, which is not a failure.
+   */
+  promisedMarginSeconds: number | null;
+  /**
+   * How much later the real finish lands than the date that would be promised,
+   * in seconds, floored at zero. Null where either date is missing.
+   *
+   * The size of the gap between the promise and the projection, which is what
+   * decides whether saying both is worth the reader's attention.
+   */
+  projectionExceedsPromiseSeconds: number | null;
   blockingTasks: BlockingTask[];
   explanation: string;
   suggestions: Suggestion[];
@@ -213,6 +243,71 @@ function inRankOrder(
     /* Total, so the same queue never previews two ways. */
     return String(a.taskId).localeCompare(String(b.taskId));
   });
+}
+
+/**
+ * The deadline this task would actually be GIVEN, if the hours were set now.
+ *
+ * ## Why this is not the same as `estimatedCompletionTime`
+ *
+ * They answer two different questions and the panel was showing only one of
+ * them while the engine wrote the other.
+ *
+ * `estimatedCompletionTime` re-lays the whole queue from this morning, charging
+ * every task ahead its full remaining budget. That is when the work will
+ * REALLY be done, and on a queue nobody has touched for a fortnight it lands
+ * weeks out.
+ *
+ * This is what the engine does at acceptance: it anchors after the work already
+ * queued ahead, reading each of those tasks' STORED deadline — the promise, not
+ * the projection — and adds the budget from there. Two rules come with it,
+ * both transcribed from the engine rather than invented here:
+ *
+ *  · a task whose own date has already PASSED delays nobody, because it is
+ *    already being handled by rework or an extension, and letting it push
+ *    would move every date beneath it every day it stays late;
+ *  · a task with no committed date yet is not scheduled, so it waits for
+ *    nobody.
+ *
+ * With nothing ahead that still counts, the anchor is now — the person can
+ * start on it as soon as they accept it.
+ *
+ * **The reported case.** A task previewed as missing by 293 hours, in red,
+ * while the engine was about to write a date that met the deadline with 66
+ * hours to spare. Both figures were right about their own question. Only one
+ * of them was going to be written, and it was not the one on screen.
+ */
+export function promisedDeadline(input: {
+  /** The work ahead of this task, in queue order. Only their commitments are read. */
+  queueAhead: readonly { committedDueAt?: string | null }[];
+  windowSecs: number;
+  nowMs: number;
+  addWorkingSecs: (anchorMs: number, windowSecs: number) => string;
+}): {
+  /** When the work ahead is promised to end, or null where none of it counts. */
+  queueAheadEndsAt: string | null;
+  /** The instant the budget is counted from. */
+  anchorMs: number;
+  /** Null only where there is no budget to add. */
+  deadlineIso: string | null;
+} {
+  let endMs: number | null = null;
+  for (const t of input.queueAhead) {
+    if (!t.committedDueAt) continue;
+    const ms = Date.parse(t.committedDueAt);
+    if (!Number.isFinite(ms)) continue;
+    /* Already past, so it delays nobody. */
+    if (ms <= input.nowMs) continue;
+    if (endMs === null || ms > endMs) endMs = ms;
+  }
+
+  const anchorMs = endMs ?? input.nowMs;
+  const secs = Math.max(0, Math.round(input.windowSecs));
+  return {
+    queueAheadEndsAt: endMs === null ? null : new Date(endMs).toISOString(),
+    anchorMs,
+    deadlineIso: secs > 0 ? input.addWorkingSecs(anchorMs, secs) : null,
+  };
 }
 
 export function calculateDeadlineFeasibility(input: {
@@ -480,6 +575,50 @@ export function calculateDeadlineFeasibility(input: {
     reason: "Sits ahead in the queue, so this task cannot start until it ends.",
   }));
 
+  /**
+   * The date the engine would actually write, alongside the date the work will
+   * really be finished. Both, because they answer different questions and the
+   * panel used to show only the second while the first was what got saved.
+   */
+  const promise = promisedDeadline({
+    queueAhead: ahead,
+    windowSecs: Math.max(
+      0,
+      Math.round(input.estimatedWorkSeconds) -
+        Math.max(0, Math.round(input.alreadyWorkedSeconds ?? 0)),
+    ),
+    nowMs: input.nowMs,
+    addWorkingSecs: input.addWorkingSecs,
+  });
+  const promisedMs = promise.deadlineIso ? Date.parse(promise.deadlineIso) : NaN;
+  const requiredMs = input.committedDeadline
+    ? Date.parse(input.committedDeadline)
+    : NaN;
+  /* Positive is time to spare, negative is how late it lands. Null where either
+     side is missing, which is not a failure: a task with no requested date
+     cannot be early or late against one. */
+  const promisedMarginSeconds =
+    Number.isFinite(promisedMs) && Number.isFinite(requiredMs)
+      ? Math.round((requiredMs - promisedMs) / 1000)
+      : null;
+  /* How far the real finish lands beyond the date that would be promised.
+     Computed here rather than in the panel: the panel renders figures and must
+     not do date arithmetic of its own, or there would be two answers to the
+     same subtraction. Floored at zero, because a projection that lands EARLIER
+     than the promise is simply a promise with slack in it, not a warning. */
+  const completionMsForPromise = completion ? Date.parse(completion) : NaN;
+  const projectionExceedsPromiseSeconds =
+    Number.isFinite(promisedMs) && Number.isFinite(completionMsForPromise)
+      ? Math.max(0, Math.round((completionMsForPromise - promisedMs) / 1000))
+      : null;
+
+  const promiseFields = {
+    queueAheadEndsAt: promise.queueAheadEndsAt,
+    promisedDeadline: promise.deadlineIso,
+    promisedMarginSeconds,
+    projectionExceedsPromiseSeconds,
+  };
+
   /* What the whole queue looks like after the insertion, and what moved.
      A baseline chain WITHOUT the task is computed only to measure the
      knock-on — the difference between the two is what "moved later" means. */
@@ -599,6 +738,7 @@ export function calculateDeadlineFeasibility(input: {
       baselineQueue,
       affectedTasks,
       calculationTrace,
+      ...promiseFields,
     };
   }
 
@@ -620,6 +760,7 @@ export function calculateDeadlineFeasibility(input: {
       baselineQueue,
       affectedTasks,
       calculationTrace,
+      ...promiseFields,
     };
   }
 
@@ -648,6 +789,7 @@ export function calculateDeadlineFeasibility(input: {
     baselineQueue,
     affectedTasks,
     calculationTrace,
+    ...promiseFields,
   };
 }
 

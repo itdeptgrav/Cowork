@@ -6,7 +6,12 @@ import { useAction, useRepo } from "@/lib/hooks/useRepository";
 import { useListReorder } from "@/lib/hooks/useListReorder";
 import { PriorityConfirmDialog } from "./PriorityConfirmDialog";
 import type { QueueSnapshotRow } from "@/lib/rules/tasks/priorityPreview";
-import { formatDurationTimer, formatStamp } from "@/lib/utils/format";
+import {
+  formatDuration,
+  formatDurationTimer,
+  formatSpanHuman,
+  formatStamp,
+} from "@/lib/utils/format";
 import type {
   Feasibility,
   SimulatedEntry,
@@ -29,9 +34,23 @@ import type {
 /** Long enough to skip the positions somebody passes through on the way. */
 const SETTLE_MS = 350;
 
+/**
+ * Does the date this task would be GIVEN meet the date that was asked for?
+ *
+ * **Judged on the promise, not the projection.** It used to read
+ * `bufferSeconds`, which compares the requested deadline with when the work
+ * will really be finished given a queue nobody has touched. On a stale queue
+ * that put a red warning on tasks the engine was about to date comfortably
+ * inside their deadline \u2014 the screen and the save disagreeing about the same
+ * task. The projection has not gone away; it moved to `RealityCheck` below,
+ * where it is labelled for what it is.
+ */
 function Verdict({ result }: { result: Feasibility }) {
-  const buffer = result.bufferSeconds;
-  const ok = result.feasible;
+  const margin = result.promisedMarginSeconds;
+  /* No requested date, or no budget yet: there is nothing to be early or late
+     against, and inventing a verdict would be inventing a commitment. */
+  if (margin === null) return null;
+  const ok = margin >= 0;
 
   return (
     <div className="flex flex-wrap items-baseline gap-x-2">
@@ -46,15 +65,71 @@ function Verdict({ result }: { result: Feasibility }) {
             ok ? "bg-[var(--positive,#3f9d6b)]" : "bg-[var(--danger,#c4553d)]"
           }`}
         />
-        {ok ? "\u2713 Deadline achievable" : "\u26a0 Deadline risk"}
+        {ok ? "\u2713 Meets the deadline" : "\u26a0 Past the deadline"}
       </span>
-      {buffer !== null && (
-        <span data-figure className="text-[12px] text-ink-faint">
-          {buffer >= 0
-            ? `${formatDurationTimer(buffer)} buffer remaining`
-            : `misses by ${formatDurationTimer(-buffer)}`}
-        </span>
-      )}
+      <span data-figure className="text-[12px] text-ink-faint">
+        {ok
+          ? `${formatSpanHuman(margin)} to spare`
+          : `${formatSpanHuman(margin)} late`}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * What the queue says will really happen, separately from what will be promised.
+ *
+ * The two figures are both true and they answer different questions, which is
+ * exactly why they have to be labelled rather than reconciled. A reader who
+ * sees only the promise will set hours against a date the person cannot hit; a
+ * reader who sees only the projection will renegotiate a deadline that was
+ * never at risk.
+ *
+ * Silent when the two agree closely enough that saying it twice would be
+ * noise \u2014 under a working day apart.
+ */
+function RealityCheck({ result }: { result: Feasibility }) {
+  const projected = result.estimatedCompletionTime;
+  const gap = result.projectionExceedsPromiseSeconds;
+  /* A working day apart is the point where the two dates are telling the reader
+     different things. Below that, saying both is noise. The gap itself is
+     measured in the rule — this compares two numbers, it does not derive one. */
+  if (!projected || gap === null || gap < 9 * 3600) return null;
+
+  /* The single largest thing in front of it, named. On a queue that has drifted
+     it is almost always one task carrying the whole delay, and naming it is the
+     difference between a warning and something somebody can act on. */
+  const ahead = result.simulatedQueue.filter(
+    (e) => e.position < result.simulatedPosition,
+  );
+  const queuedSecs = ahead.reduce((s, e) => s + e.estimatedDuration, 0);
+  const biggest = ahead.reduce<SimulatedEntry | null>(
+    (worst, e) => (worst === null || e.estimatedDuration > worst.estimatedDuration ? e : worst),
+    null,
+  );
+
+  return (
+    <div className="mt-2 border-t border-[var(--hairline)] pt-2">
+      <p className="text-[12px] text-ink-faint">
+        <span className="text-ink">
+          Realistically finishes {formatStamp(projected)}.
+        </span>{" "}
+        {ahead.length > 0 ? (
+          <>
+            {formatDuration(queuedSecs)} of work sits ahead of it
+            {biggest
+              ? `, most of it \u201c${biggest.title}\u201d at ${formatDuration(biggest.estimatedDuration)}`
+              : ""}
+            . The date above is what gets saved; this is when the work actually
+            lands if the queue runs as it stands.
+          </>
+        ) : (
+          <>
+            The date above is what gets saved; this is when the work actually
+            lands if the queue runs as it stands.
+          </>
+        )}
+      </p>
     </div>
   );
 }
@@ -361,28 +436,31 @@ export function FeasibilityPreview({
    * label left, figure right, hairline between — is written once and cannot
    * drift between the three.
    */
-  const facts: { label: string; value: string; lead?: boolean }[] = [
-    ...(result.estimatedStartTime
+  const facts: { label: string; value: string; note?: string; lead?: boolean }[] = [
+    ...(result.queueAheadEndsAt
       ? [
           {
-            label: "Estimated start",
-            value: formatStamp(result.estimatedStartTime),
+            label: "Can start",
+            value: formatStamp(result.queueAheadEndsAt),
+            /* Named, because "why then?" is the first question the date raises
+               and the answer is always the work in front of it. */
+            note: "when the work already queued ahead is due to end",
           },
         ]
       : []),
-    ...(result.estimatedCompletionTime
+    ...(result.promisedDeadline
       ? [
           {
-            label: "Estimated completion",
-            value: formatStamp(result.estimatedCompletionTime),
-            /* The one figure the budget actually moves, so it carries full ink
-               while the other two stay muted context. */
+            label: "Deadline it would be given",
+            value: formatStamp(result.promisedDeadline),
+            /* The figure the budget actually moves, and the one that gets
+               written, so it carries full ink while the rest stay context. */
             lead: true,
           },
         ]
       : []),
     ...(result.deadline
-      ? [{ label: "Required deadline", value: formatStamp(result.deadline) }]
+      ? [{ label: "Asked for by", value: formatStamp(result.deadline) }]
       : []),
   ];
 
@@ -443,10 +521,19 @@ export function FeasibilityPreview({
                   key={f.label}
                   className="flex items-baseline justify-between gap-4 py-1.5"
                 >
-                  <dt className="text-[11px] text-ink-faint">{f.label}</dt>
+                  <dt className="min-w-0 text-[11px] text-ink-faint">
+                    {f.label}
+                    {/* The reason sits under the label rather than beside the
+                        figure: a date is read first and questioned second. */}
+                    {f.note && (
+                      <span className="block text-[10px] text-ink-faint/70">
+                        {f.note}
+                      </span>
+                    )}
+                  </dt>
                   <dd
                     data-figure
-                    className={`text-[12px] ${f.lead ? "text-ink" : "text-ink-muted"}`}
+                    className={`shrink-0 text-[12px] ${f.lead ? "text-ink" : "text-ink-muted"}`}
                   >
                     {f.value}
                   </dd>
@@ -458,6 +545,8 @@ export function FeasibilityPreview({
           <div className="mt-2.5">
             <Verdict result={result} />
           </div>
+
+          <RealityCheck result={result} />
 
           {/* The budget sits UNDER its own consequence, not above it. The dates
               and the verdict are what the number is for, and a control placed
