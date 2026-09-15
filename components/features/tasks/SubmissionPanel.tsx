@@ -398,6 +398,46 @@ export function SubmissionPanel({
          */
         <OutputSubmitList view={view} viewerId={me} onChange={onChange} />
       )}
+      {/**
+       * **Outside the composer, because the composer is gone by the time the
+       * files move.**
+       *
+       * `canSubmit` requires `status === "in_progress"`. Submitting moves the
+       * task to `in_review`, and `useAction` calls `notifyRepositoryChanged()`
+       * the instant that write succeeds — so the view refetches and this whole
+       * branch unmounts BEFORE the staged files start uploading, which is the
+       * order the engine forces: the submission must exist before anything can
+       * be attached to it.
+       *
+       * Rendered inside, the bar was mounted and destroyed in the same tick and
+       * nobody ever saw it — the upload ran on invisibly, which is exactly the
+       * "no progress bar, nothing happens" that was reported. The failure
+       * notice below had the same fault: a file that did not upload said so on
+       * a screen that had already been replaced.
+       */}
+      {uploads.length > 0 && (
+        <Panel>
+          <p className="mb-2 text-[12px] text-ink-faint">
+            Your work is with the reviewer. Sending{" "}
+            {uploads.length === 1 ? "the file" : `${uploads.length} files`} —
+            you can leave this page, but the upload stops if you close the tab.
+          </p>
+          <ul className="space-y-1.5" aria-live="polite">
+            {uploads.map((u, i) => (
+              <li key={`${u.name}-${i}`}>
+                <UploadProgressRow name={u.name} fraction={u.fraction} />
+              </li>
+            ))}
+          </ul>
+        </Panel>
+      )}
+
+      {uploadFailures.length > 0 && (
+        <InlineError
+          message={`Your work was submitted, but these files did not upload: ${uploadFailures.join(", ")}. You can add them from the task.`}
+        />
+      )}
+
       {canSubmit ? (
         <Panel>
           <h2 className="text-sm font-medium text-ink">
@@ -457,25 +497,8 @@ export function SubmissionPanel({
               label="Attach submitted files"
             />
 
-            {/* Under the picker, where the files themselves are listed, so the
-                bars replace the staged names in the same place on screen
-                rather than appearing somewhere new once Submit is pressed. */}
-            {uploads.length > 0 && (
-              <ul className="mt-2 space-y-1.5" aria-live="polite">
-                {uploads.map((u, i) => (
-                  <li key={`${u.name}-${i}`}>
-                    <UploadProgressRow name={u.name} fraction={u.fraction} />
-                  </li>
-                ))}
-              </ul>
-            )}
           </div>
 
-          {uploadFailures.length > 0 && (
-            <InlineError
-              message={`Your work was submitted, but these files did not upload: ${uploadFailures.join(", ")}. You can add them from the task.`}
-            />
-          )}
 
           {state.error && !state.errorField && (
             <div className="mt-3">
@@ -509,6 +532,30 @@ export function SubmissionPanel({
                   {filing ? "Filing…" : "File daily report"}
                 </Button>
               </>
+            )}
+            {/**
+             * **Why the button will not go.**
+             *
+             * Submit is disabled without a note, and said so nowhere. Pressing
+             * it did nothing at all — no movement, no message — and the only
+             * honest reading of that screen is that submitting is broken.
+             * Reported as "files are not uploading": a 2 KB file and a 200 MB
+             * file behaved identically, because neither submission ever
+             * started. Staged files upload only AFTER the submission exists,
+             * so a refused press takes the whole upload with it, silently.
+             *
+             * "Required" beside the field label is a statement about the form;
+             * this is the answer at the moment somebody acts. Shown only when
+             * that is genuinely what is blocking them, so it never nags at a
+             * form that is ready to send.
+             */}
+            {!message.trim() && !state.isPending && !sending && (
+              <span
+                className={`text-[11px] text-ink-faint ${reportOwed ? "" : "mr-auto"}`}
+              >
+                Describe what you completed first — the reviewer reads it before
+                opening anything.
+              </span>
             )}
             <Button loading={state.isPending || sending}
               data-help="task-submit-work-button"

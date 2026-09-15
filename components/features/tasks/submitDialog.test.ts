@@ -119,3 +119,49 @@ test("the rows appear before the first byte and clear only once settled", () => 
   assert.ok(listed > 0 && listed < uploaded, "the rows are listed after the upload starts");
   assert.ok(cleared > uploaded, "the rows are cleared before the uploads settle");
 });
+
+test("the progress rows survive the submission succeeding", () => {
+  /**
+   * **The reason nothing ever appeared on screen.**
+   *
+   * `canSubmit` requires `status === "in_progress"`. Submitting moves the task
+   * to `in_review`, and `useAction` calls `notifyRepositoryChanged()` the
+   * instant that write succeeds — so the view refetches and the composer
+   * unmounts BEFORE the staged files begin uploading. That order is forced by
+   * the engine: the submission must exist before anything can be attached to
+   * it.
+   *
+   * Rendered inside the composer, the bar was mounted and destroyed in the same
+   * tick. The upload ran on invisibly and the person saw a form that had simply
+   * gone — which is indistinguishable from nothing having happened. The failure
+   * notice had the identical fault: a file that did not upload said so on a
+   * screen that had already been replaced.
+   */
+  const src = readFileSync(PANEL, "utf8");
+  const gate = src.indexOf("{canSubmit ? (");
+  assert.ok(gate > 0, "the composer gate was renamed");
+
+  const rows = src.indexOf("uploads.length > 0 && (");
+  assert.ok(rows > 0, "the progress rows were removed");
+  assert.ok(rows < gate, "the progress rows are inside the composer and will unmount");
+
+  const failure = src.indexOf("uploadFailures.length > 0 && (");
+  assert.ok(failure > 0, "the failure notice was removed");
+  assert.ok(failure < gate, "the failure notice is inside the composer and will unmount");
+});
+
+test("a disabled Submit says what is blocking it", () => {
+  /**
+   * Reported as "files are not uploading". They were not: the button is
+   * disabled without a note, said so nowhere, and pressing it did nothing —
+   * which reads as a broken upload. A 2 KB file and a 200 MB file behaved
+   * identically, because neither submission ever started, and staged files go
+   * up only AFTER the submission exists.
+   */
+  const src = readFileSync(PANEL, "utf8");
+  assert.match(src, /disabled=\{state\.isPending \|\| sending \|\| !message\.trim\(\)\}/);
+  assert.match(src, /Describe what you completed first/);
+  /* Only while that is genuinely the blocker — not on a form ready to send,
+     and not while the press is already in flight. */
+  assert.match(src, /\{!message\.trim\(\) && !state\.isPending && !sending && \(/);
+});
