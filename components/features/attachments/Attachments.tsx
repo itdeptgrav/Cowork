@@ -45,6 +45,7 @@ import {
   localRefusal,
 } from "./attachmentRules";
 import { formatStamp } from "@/lib/utils/format";
+import { UploadProgressRow } from "@/components/features/messages/MessageAttachments";
 
 /* ── Download ─────────────────────────────────────────────────────────────── */
 
@@ -534,9 +535,24 @@ export function FileUploader({
                   </button>
                 </span>
               ) : (
-                <span className="text-ink-faint">
-                  {p.name} — <span data-figure>{Math.round(p.progress * 100)}%</span>
-                </span>
+                /**
+                 * **A bar, not a bare number — and it says when the bytes have
+                 * stopped moving but the upload has not finished.**
+                 *
+                 * This was the percentage as plain text. On a small file that is
+                 * enough, because it is over before anybody reads it. On a large
+                 * one it is not: the figure sits at 100% for as long as the
+                 * server takes to finalise, with nothing to say whether that is
+                 * work in progress or a hang — and this is the only uploader on
+                 * the Files tab, the submission composer and the daily report,
+                 * so every one of them showed the same ambiguous number.
+                 *
+                 * `UploadProgressRow` is the composer's row, which already
+                 * answers both halves: a bar with the percentage while bytes
+                 * move, then a turning ring and "Processing…" for the finalize
+                 * step, which reports no progress of its own.
+                 */
+                <UploadProgressRow name={p.name} fraction={p.progress} />
               )}
             </li>
           ))}
