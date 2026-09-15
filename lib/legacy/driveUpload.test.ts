@@ -259,3 +259,48 @@ test("a 308 that reports no new bytes spends an attempt", () => {
     "the attempt is refunded without checking for progress",
   );
 });
+
+/* ── A big file follows the message thread's path, and only that one ───────── */
+
+const ATTACH = "lib/legacy/attachments.ts";
+
+test("a large file is never retried down the whole-file fallback", () => {
+  /**
+   * The resumable path streams browser-to-Google in bounded chunks and has no
+   * size ceiling — which is why the message composer, which uses only that
+   * path, takes a file of any size. The fallback is the opposite shape: ONE
+   * POST carrying the whole file through the engine into
+   * `multer.memoryStorage()`.
+   *
+   * A 200 MB submission attempted there spends minutes uploading to a server
+   * that must hold all of it in memory, and then fails — after the person has
+   * watched a bar climb. Worse than refusing at once, and it buried the real
+   * error from the resumable attempt, which is the one worth reading.
+   */
+  const src = code(ATTACH);
+  assert.match(src, /if \(input\.file\.size > MULTIPART_CEILING_BYTES\) return r;/);
+  const guard = src.indexOf("if (input.file.size > MULTIPART_CEILING_BYTES) return r;");
+  const fallback = src.indexOf("return uploadViaMultipart(input);");
+  assert.ok(guard > 0 && fallback > guard, "the ceiling is checked after the fallback runs");
+});
+
+test("the fallback ceiling is not a limit on uploading", () => {
+  /* It governs the FALLBACK only. The resumable path has no cap and keeps
+     none — `MAX_BYTES` in the attachment rules is null and stays null. */
+  const src = code(ATTACH);
+  assert.match(src, /const MULTIPART_CEILING_BYTES = \d+ \* 1024 \* 1024;/);
+  const resumable = src.slice(
+    src.indexOf("async function uploadViaResumable"),
+    src.indexOf("function uploadViaMultipart"),
+  );
+  assert.doesNotMatch(resumable, /file\.size >/, "the resumable path grew a size check");
+});
+
+test("a refusal is still never retried, whatever the size", () => {
+  /* Auth and permission answer the same on both paths, so a second attempt
+     only delays the same words. */
+  assert.match(
+    code(ATTACH),
+    /if \(r\.error\.kind === "auth" \|\| r\.error\.kind === "permission"\) return r;/,
+  );
+});

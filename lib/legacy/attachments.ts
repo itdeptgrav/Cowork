@@ -97,8 +97,40 @@ export async function uploadAttachment(
      way, and not once bytes were already flowing. */
   if (r.error.kind === "auth" || r.error.kind === "permission") return r;
   if ((r as { fallback?: boolean }).fallback !== true) return r;
+
+  /**
+   * **A large file is never sent down the fallback, because it cannot survive
+   * it.**
+   *
+   * The resumable path streams browser-to-Google in bounded chunks and has no
+   * size ceiling — which is why the message composer, which uses only that
+   * path, takes a file of any size. This fallback is the opposite shape: ONE
+   * POST carrying the whole file, through the engine, into
+   * `multer.memoryStorage()`. A 200 MB submission attempted there spends
+   * minutes uploading to a server that has to hold all of it in memory, and
+   * then fails — after the person has watched a bar climb, which is worse than
+   * refusing immediately.
+   *
+   * So the safety net is kept for the files it can actually catch, and a large
+   * one is answered with the reason the RESUMABLE path gave. That failure is
+   * the true one and the one worth fixing; burying it under a doomed second
+   * attempt is how "big files just do not upload" stayed unexplained.
+   *
+   * It also brings this path in line with the message thread, which has no
+   * fallback at all — the same concept, and the same result for a big file.
+   */
+  if (input.file.size > MULTIPART_CEILING_BYTES) return r;
   return uploadViaMultipart(input);
 }
+
+/**
+ * The largest file worth attempting through the whole-file fallback.
+ *
+ * Not a limit on uploads — the resumable path above has none and keeps none.
+ * This is only the point past which the FALLBACK is known to be futile, so the
+ * real error is reported instead of being replaced by a slower one.
+ */
+const MULTIPART_CEILING_BYTES = 25 * 1024 * 1024;
 
 /** Open a private resumable session, PUT the bytes straight to Google, then
  *  finalize into the private record. */
