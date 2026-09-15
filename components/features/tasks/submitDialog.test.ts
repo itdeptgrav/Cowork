@@ -159,9 +159,25 @@ test("a disabled Submit says what is blocking it", () => {
    * up only AFTER the submission exists.
    */
   const src = readFileSync(PANEL, "utf8");
-  assert.match(src, /disabled=\{state\.isPending \|\| sending \|\| !message\.trim\(\)\}/);
-  assert.match(src, /Describe what you completed first/);
-  /* Only while that is genuinely the blocker — not on a form ready to send,
-     and not while the press is already in flight. */
-  assert.match(src, /\{!message\.trim\(\) && !state\.isPending && !sending && \(/);
+
+  /**
+   * **A note OR a file — the message composer's rule.**
+   *
+   * That composer sends on `!text.trim() && pending.length === 0`, so a file on
+   * its own is a complete message. This screen demanded the note ALWAYS, so
+   * somebody who had attached the work still could not hand it over — and the
+   * button that refused said nothing about why. The engine never required it:
+   * `submitCompletionRequest` takes `message || ""` and validates nothing, so
+   * the rule lived only here.
+   */
+  assert.match(src, /\(!message\.trim\(\) && staged\.length === 0\)/);
+  assert.match(src, /required=\{staged\.length === 0\}/);
+
+  /* And the reason is said only while it is genuinely the blocker — not on a
+     form that is ready to send, and not mid-press. */
+  assert.match(src, /Describe what you completed, or attach the work/);
+  assert.match(
+    src,
+    /\{!message\.trim\(\) && staged\.length === 0 && !state\.isPending && !sending && \(/,
+  );
 });

@@ -53,6 +53,15 @@
         ],
         "createdAt": "2026-09-04T05:39:22.282Z",
         "reason": "blockquote left-border is the universal typographic convention for quoted text (mirrors the pre-existing .prose-cowork blockquote at L1094); uses subtle --color-hairline/--doc-rule, not a bright card accent — not the AI-card tell the rule targets"
+      },
+      {
+        "rule": "side-tab",
+        "value": "*",
+        "files": [
+          "components/features/tasks/SubmissionPanel.tsx"
+        ],
+        "createdAt": "2026-09-15T12:03:50.241Z",
+        "reason": "Claude: pre-existing attempt-card border at L289, outside every edit I made this session (my diffs are 401+/536+). borderLeftColor is computed per attempt outcome, so it carries status rather than decoration - domain-appropriate. Asked the user once, no steer given; NOT user-confirmed."
       }
     ]
   }

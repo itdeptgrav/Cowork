@@ -452,7 +452,19 @@ export function SubmissionPanel({
           </p>
           <Field
             label="What you completed"
-            required
+            /**
+             * **Required only when nothing is attached — the message thread's
+             * rule.**
+             *
+             * The composer there sends on `text OR files`, so a file on its own
+             * is a complete message. This demanded the note ALWAYS, so a person
+             * who had attached the work still could not hand it over, and the
+             * button that refused them said nothing about why. The engine never
+             * required it either — `submitCompletionRequest` takes
+             * `message || ""` and validates nothing — so the rule existed only
+             * on this screen.
+             */
+            required={staged.length === 0}
             className="mt-3"
             error={state.errorField === "message" ? state.error : null}
           >
@@ -549,18 +561,25 @@ export function SubmissionPanel({
              * that is genuinely what is blocking them, so it never nags at a
              * form that is ready to send.
              */}
-            {!message.trim() && !state.isPending && !sending && (
+            {!message.trim() && staged.length === 0 && !state.isPending && !sending && (
               <span
                 className={`text-[11px] text-ink-faint ${reportOwed ? "" : "mr-auto"}`}
               >
-                Describe what you completed first — the reviewer reads it before
-                opening anything.
+                Describe what you completed, or attach the work — either is
+                enough to hand it over.
               </span>
             )}
             <Button loading={state.isPending || sending}
               data-help="task-submit-work-button"
               tone="primary"
-              disabled={state.isPending || sending || !message.trim()}
+              disabled={
+                state.isPending ||
+                sending ||
+                /* Note OR a file, exactly as the message composer sends on
+                   `text.trim() || pending.length` — a file on its own is a
+                   complete handover. */
+                (!message.trim() && staged.length === 0)
+              }
               onClick={async () => {
                 setSending(true);
                 try {

@@ -106,10 +106,18 @@ test("the button stays busy for the whole press", () => {
   assert.match(FORM, /loading=\{state\.isPending \|\| stage !== null\}/);
   assert.match(FORM, /state\.isPending \|\|\s*\n?\s*stage !== null \|\|/);
   assert.match(SUBMISSION, /loading=\{state\.isPending \|\| sending\}/);
-  assert.match(
-    SUBMISSION,
-    /disabled=\{state\.isPending \|\| sending \|\| !message\.trim\(\)\}/,
-  );
+  /**
+   * **Both busy flags still gate the button; only the third clause moved.**
+   *
+   * This pinned `|| !message.trim()` as the whole tail. Submitting now accepts
+   * a note OR a file — the message composer's rule, which sends on
+   * `!text.trim() && pending.length === 0` — so a person who attached the work
+   * is no longer refused for leaving the box empty. What this test protects is
+   * unchanged: the press stays busy for its whole duration, `sending` included,
+   * because `useAction`'s own pending covers only the first round trip.
+   */
+  assert.match(SUBMISSION, /disabled=\{\s*state\.isPending \|\|\s*sending \|\|/);
+  assert.match(SUBMISSION, /\(!message\.trim\(\) && staged\.length === 0\)/);
 });
 
 test("the busy flag is released whichever way the handler leaves", () => {
