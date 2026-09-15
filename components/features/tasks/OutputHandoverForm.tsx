@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button, InlineError, Input } from "@/components/ui/Primitives";
 import { FileUploader } from "@/components/features/attachments/Attachments";
+import { UploadProgressRow } from "@/components/features/messages/MessageAttachments";
 import { useAction, useRepo } from "@/lib/hooks/useRepository";
 import type { ReportAttachment, TaskId } from "@/lib/domain";
 
@@ -54,6 +55,19 @@ export function OutputHandoverForm({
   /** Named, because "upload failed" over four files does not say which. */
   const [uploadFailures, setUploadFailures] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  /**
+   * How far each chosen file has got.
+   *
+   * `uploadDriveFile` has always taken an `onProgress` callback and this form
+   * never passed one, so handing over a large document showed a bare spinner
+   * for as long as it took — and a spinner cannot distinguish "still going"
+   * from "stopped". The same row the message composer uses: a bar with the
+   * percentage while the bytes move, then a turning ring and "Processing…"
+   * while the server finalises, which reports no progress of its own.
+   */
+  const [uploads, setUploads] = useState<{ name: string; fraction: number }[]>(
+    [],
+  );
 
   const [submit, submitState] = useAction(
     (r, arg: { message: string; attachments: ReportAttachment[] }) =>
@@ -91,13 +105,26 @@ export function OutputHandoverForm({
         return;
       }
       setUploading(true);
+      /* Listed before the first byte moves, so the wait is accounted for from
+         the moment it starts rather than when the first event happens to
+         arrive. */
+      setUploads(staged.map((file) => ({ name: file.name, fraction: 0 })));
       /* Together, not one after another. Each upload is independent, so the
          loop this replaced paid a whole round trip per file while somebody
          watched a spinner. `Promise.all` keeps the order, which matters: the
          handover lists these files and they should read in the order they were
          chosen rather than the order the network finished. */
       const results = await Promise.all(
-        staged.map((file) => repo.uploadDriveFile!(file)),
+        staged.map((file, at) =>
+          /* By POSITION, not by name: two files chosen from different folders
+             can share one, and matching on it would drive a single row from
+             two uploads while another never moved. */
+          repo.uploadDriveFile!(file, (fraction) =>
+            setUploads((rows) =>
+              rows.map((row, i) => (i === at ? { ...row, fraction } : row)),
+            ),
+          ),
+        ),
       );
       const failed: string[] = [];
       results.forEach((up, i) => {
@@ -113,6 +140,10 @@ export function OutputHandoverForm({
         }
       });
       setUploading(false);
+      /* Cleared only once every upload has settled — a row that vanished at
+         100% would hide the finalize step, which is the part people wait
+         longest on. */
+      setUploads([]);
       if (failed.length > 0) {
         setUploadFailures(failed);
         return;
@@ -149,6 +180,19 @@ export function OutputHandoverForm({
             onStagedChange={setStaged}
             label="Attach the work — optional, any type, any size"
           />
+
+          {/* Under the picker, where the chosen files are already listed, so
+              the bars appear in the same place rather than somewhere new once
+              Send is pressed. */}
+          {uploads.length > 0 && (
+            <ul className="mt-2 space-y-1.5" aria-live="polite">
+              {uploads.map((u, i) => (
+                <li key={`${u.name}-${i}`}>
+                  <UploadProgressRow name={u.name} fraction={u.fraction} />
+                </li>
+              ))}
+            </ul>
+          )}
           {/* A suggestion, not a rule. Said once, beside the control it is
               about, and only while nothing is attached — repeating it under a
               list of four files would be nagging about a decision already
