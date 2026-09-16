@@ -64,12 +64,30 @@ export function DashboardChrome() {
   const meetings = useQuery((r) => r.listMeetings(), []);
   const active = useQuery((r) => r.getActiveTimer(), []);
 
-  const date = new Date(Date.UTC(2026, 6, 25)).toLocaleDateString("en-GB", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    timeZone: "Asia/Kolkata",
-  });
+  /**
+   * **Today, not a date somebody fixed while building this.**
+   *
+   * This read `new Date(Date.UTC(2026, 6, 25))` — month 6 is July, so the
+   * header announced "Saturday 25 July" on every day of the year, for
+   * everybody. The clock beside it has always been live, which made the pair
+   * worse than either alone: a real time next to a date months out, on the
+   * screen people open to see what is due.
+   *
+   * `now` is the same live value `clockOf` already uses a few lines down, so
+   * the two cannot drift apart or disagree about which day it is — which is
+   * exactly what the note above `clockOf` warns against. Null until the client
+   * has mounted, and then the date simply is not drawn: rendering a server's
+   * idea of "today" would flash a different day and, near midnight IST, the
+   * wrong one.
+   */
+  const date = now
+    ? now.toLocaleDateString("en-GB", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        timeZone: "Asia/Kolkata",
+      })
+    : "";
 
   const signals = team
     ? interventionSignals({

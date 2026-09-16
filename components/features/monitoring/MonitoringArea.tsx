@@ -6,6 +6,7 @@ import { ErrorState, PermissionDenied } from "@/components/ui/Primitives";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { MonitorRoom } from "./MonitorRoom";
 import { ScreenDialog } from "./ScreenDialog";
+import { useNow } from "@/lib/hooks/useNow";
 import {
   EmployeeActivityOverview,
   InterventionPanel,
@@ -90,12 +91,23 @@ export function MonitoringArea() {
   const subject = subjectQ.data;
   const selectedRow = rows.find((r) => r.employeeId === employeeId) ?? null;
 
-  const date = new Date(Date.UTC(2026, 6, 25)).toLocaleDateString("en-GB", {
-    weekday: "long",
-    day: "numeric",
-    month: "long",
-    timeZone: "UTC",
-  });
+  /**
+   * Today, not a date fixed while this was built.
+   *
+   * The identical fault the dashboard header carried: `Date.UTC(2026, 6, 25)`
+   * is month 6 — July — so this announced "Saturday 25 July" on every day of
+   * the year. Empty until the client has mounted, because a server-rendered
+   * "today" flashes a different day and, near midnight, the wrong one.
+   */
+  const now = useNow();
+  const date = now
+    ? now.toLocaleDateString("en-GB", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        timeZone: "UTC",
+      })
+    : "";
 
   /* A failed roster read is NOT an empty roster.
      Both produce zero rows, and rendering "you have no reports" over a failure
