@@ -80,9 +80,43 @@ export const INVALIDATES: Record<string, readonly string[]> = {
   ],
   cowork_notifications: ["listNotifications"],
   cowork_direct_messages: ["listMessages", "listConversations"],
+  cowork_conversations: ["listMessages", "listConversations"],
   cowork_groups: ["listGroups", "getGroup", "listConversations"],
   cowork_duty_status: ["getDutyMode", "listDutyDay", "listDutyHistory"],
+  cowork_duty_history: ["listDutyDay", "listDutyHistory"],
   cowork_task_timers: [
+    "getTimer",
+    "getActiveTimer",
+    "listTimers",
+    "listWorkCommits",
+    "listDayCommits",
+  ],
+  cowork_mails: ["listMailMessages"],
+  cowork_documents: ["listDocuments"],
+  cowork_document_bodies: ["listDocuments"],
+
+  /**
+   * The flattened subcollections — where the busiest traffic actually is.
+   *
+   * `firestoreCompat` stores `cowork_tasks/{id}/chat` as `cowork_tasks__chat`,
+   * so that is the name the server's notice carries. Keying this map only by
+   * parent collection meant every chat message, every conversation message and
+   * every timer session arrived under a name that matched nothing.
+   *
+   * A miss is not harmless. An unmapped collection still bumps the version, and
+   * for a zero-staleTime query that is enough — but `listConversations` (30s),
+   * `listTimers` (10s) and `listDocuments` (30s) are TTL-cached in
+   * `useRepository.ts`, and a bare bump leaves those cached answers standing.
+   * That is exactly the bug `events.ts` documents: a message arrives, the list
+   * re-renders, and still shows the previous one as the latest.
+   */
+  cowork_tasks__chat: ["listTaskChat"],
+  cowork_tasks__dailyReports: ["listDailyReports"],
+  cowork_tasks__events: ["listTaskEvents"],
+  cowork_direct_messages__messages: ["listMessages", "listConversations"],
+  cowork_conversations__messages: ["listMessages", "listConversations"],
+  cowork_groups__messages: ["listMessages", "listConversations"],
+  cowork_task_timers__sessions: [
     "getTimer",
     "getActiveTimer",
     "listTimers",

@@ -79,6 +79,40 @@ test("a notification does not invalidate the task lists", () => {
   ]);
 });
 
+test("the flattened subcollections are keyed, since that is where the traffic is", () => {
+  /**
+   * `firestoreCompat` stores `cowork_tasks/{id}/chat` as `cowork_tasks__chat`,
+   * so that is the name the server's notice carries. Keying this map only by
+   * parent meant every chat message, every conversation message and every timer
+   * session arrived under a name that matched nothing.
+   */
+  assert.deepEqual(methodsFor([notice("cowork_tasks__chat")]), ["listTaskChat"]);
+  for (const c of [
+    "cowork_direct_messages__messages",
+    "cowork_conversations__messages",
+    "cowork_groups__messages",
+  ]) {
+    const m = methodsFor([notice(c)]);
+    assert.ok(m.includes("listMessages"), `${c} does not refresh the thread`);
+    assert.ok(m.includes("listConversations"), `${c} does not refresh the list`);
+  }
+  assert.ok(methodsFor([notice("cowork_task_timers__sessions")]).includes("listTimers"));
+});
+
+test("every TTL-cached read this feed can touch is named, not left to the bump", () => {
+  /**
+   * A collection missing from the map still bumps the version, which is enough
+   * for a zero-staleTime query. It is NOT enough for a cached one:
+   * `notifyRepositoryChanged` drops cached answers only for the methods it is
+   * NAMED, so a bare bump leaves a TTL entry standing and the list goes on
+   * showing the previous state until the window lapses.
+   */
+  const cached = ["listConversations", "listTimers", "listDocuments"];
+  const named = new Set(Object.values(INVALIDATES).flat());
+  for (const m of cached)
+    assert.ok(named.has(m), `${m} is TTL-cached but no collection invalidates it`);
+});
+
 test("an unmapped collection invalidates nothing but still applies", () => {
   /* The safe side: the version still bumps so live queries re-run; no TTL cache
      is purged. Correct screen, one cached answer survives its window. */
