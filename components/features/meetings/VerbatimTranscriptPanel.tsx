@@ -14,8 +14,11 @@
  *
  * Two independent modes, a tab each, not a single toggle on one result:
  *  - Verbatim: exact words, original language preserved (Hindi/Odia/etc.
- *    stay as spoken). For someone who needs to trust the record word-for-
- *    word, or who reads the original language.
+ *    stay as spoken) but written in ROMAN letters — Hinglish, not
+ *    Devanagari. The words and the meaning are the speaker's; only the
+ *    script is ours, so the record stays word-for-word AND stays readable
+ *    to somebody who speaks Hindi without reading the script. Asked for
+ *    21 September 2026; it is the prompt that enforces it, not this panel.
  *  - Translated: renders everything into English, with translated lines
  *    marked so a reader who doesn't read Odia/Hindi script still knows a
  *    translation happened — not reading it as if it were said in English.
@@ -312,7 +315,7 @@ export function VerbatimTranscriptPanel({
           ))}
           <p className="mt-3 text-xs text-ink-faint">
             {mode === "verbatim"
-              ? 'This usually takes 1–3 minutes. Exact words, no translation — the model is told to say "unclear" rather than guess.'
+              ? 'This usually takes 1–3 minutes. Exact words, no translation — Hindi comes back in Roman letters, and the model is told to say "unclear" rather than guess.'
               : "This usually takes 1–3 minutes. Non-English speech is rendered in English, with translated lines marked."}
           </p>
         </div>
@@ -328,7 +331,7 @@ export function VerbatimTranscriptPanel({
           <>
             <p className="text-sm text-ink-muted">
               {mode === "verbatim"
-                ? "No verbatim transcript yet. Unlike the summary above, this preserves exact wording and original language — no translation, no paraphrasing."
+                ? "No verbatim transcript yet. Unlike the summary above, this preserves exact wording and original language — no translation, no paraphrasing. Hindi and the other Indian languages are written in Roman letters rather than their own script."
                 : "No translated transcript yet. Renders everything in English, but marks exactly which lines were translated rather than blending it in silently."}
             </p>
             <div className="mt-3">
@@ -379,21 +382,24 @@ export function VerbatimTranscriptPanel({
             ` · ${modeResult.unparsedLineCount} line(s) the parser couldn't structure`}
         </p>
         <div className="flex items-center gap-1">
-          <Button
-            tone="secondary"
-            size="sm"
-            disabled={dlLoading !== null || generating}
-            onClick={() => void download("docx")}
-          >
-            {dlLoading === "docx" ? "Downloading…" : "Download .docx"}
-          </Button>
+          {/**
+           * **One download, and it is PDF.** OWNER DECISION, 21 Sep 2026.
+           *
+           * Two buttons stood here — Download .docx and PDF. Asked to drop
+           * the .docx one and leave a single button reading Download PDF.
+           *
+           * The .docx is NOT removed: the engine still builds it, the route
+           * still serves it, and `download("docx")` still works. Only the
+           * button is gone, so anything that links to the document keeps
+           * working and putting the button back is one element.
+           */}
           <Button
             tone="secondary"
             size="sm"
             disabled={dlLoading !== null || generating}
             onClick={() => void download("pdf")}
           >
-            {dlLoading === "pdf" ? "Rendering…" : "PDF"}
+            {dlLoading !== null ? "Preparing…" : "Download PDF"}
           </Button>
           <Button
             tone="ghost"

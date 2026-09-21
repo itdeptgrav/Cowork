@@ -159,3 +159,72 @@ test("it keeps asking until the recording is covered, and cannot spin", { skip }
   assert.match(src, /Math\.ceil\(\(durationSecs > 0 \? durationSecs : 0\) \/ 300\) \+ 2/);
   assert.match(src, /Math\.min\(\s*TRANSCRIBE_MAX_PASSES,/);
 });
+
+/* ── Roman letters, not Devanagari ───────────────────────────────────────── */
+
+test(
+  "a verbatim Hindi line is asked for in Roman letters, not translated",
+  { skip },
+  () => {
+    /**
+     * **Reported 21 September 2026, with a picture of a transcript in two
+     * scripts.** One speaker's Hindi came back as Devanagari and the next
+     * speaker's as Hinglish, in the same meeting, because nothing in the
+     * prompt had ever named a script and the model chose per request.
+     *
+     * The ask reads like a translation request and is the opposite of one:
+     * same words, same meaning, different letters. So this pins BOTH halves
+     * — that the script is demanded, and that translating is still refused —
+     * because an implementation that satisfied only the first would read as
+     * fixed on screen while quietly turning verbatim into English.
+     */
+    const src = routes();
+
+    assert.match(src, /Write every line in the LATIN ALPHABET/);
+    assert.match(src, /never in Devanagari or any other script/);
+    assert.match(src, /This is NOT a translation/);
+
+    /* Still verbatim. The instruction that was there before has to survive
+       the one added next to it. */
+    assert.match(src, /Transcribe VERBATIM, in the language each line was actually spoken in. Do not translate./);
+
+    /**
+     * The examples are not decoration. A model told only to use Roman
+     * letters transliterates character by character and returns "sakate
+     * hain" and "aura" — right by the letter, and not how one person on
+     * earth types Hindi. The prompt shows the natural spelling against the
+     * mechanical one, and shows the English translation as a third WRONG
+     * answer so romanising cannot be mistaken for translating.
+     */
+    assert.match(src, /sakte hain" rather than "sakate hain"/);
+    assert.match(src, /WRONG, translated into English/);
+    assert.ok(
+      src.includes("और"),
+      "the prompt lost its Devanagari counter-example",
+    );
+
+    /* And a mixed line stays mixed rather than being pushed either way. */
+    assert.match(src, /stays mixed, with the English words spelled in English/);
+  },
+);
+
+test("the translated tab is untouched by the script rule", { skip }, () => {
+  /* Two tabs, two jobs. Translate still renders English and still marks the
+     lines it translated; nothing about letters belongs in that branch. */
+  const src = routes();
+  assert.match(src, /Render every line in ENGLISH/);
+  assert.match(src, /append the marker <<T>> at the very end of that line/);
+});
+
+test("the documents say which script the words are in", { skip }, () => {
+  /* The sub-heading under CoWork Meeting Transcript is the only thing in the
+     file that explains why a Hindi sentence is in English letters. Both
+     renderers carry it, and they carry the same sentence. */
+  const caption =
+    "Verbatim — the exact words, in the language they were spoken, written in Roman letters";
+  assert.ok(routes().includes(caption), "the .docx lost the caption");
+  assert.ok(
+    backendSource("routes/task_routes/meetingPdf.js").includes(caption),
+    "the PDF lost the caption",
+  );
+});

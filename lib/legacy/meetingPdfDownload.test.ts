@@ -20,6 +20,21 @@ const routes = () =>
 const panel = (name: string) =>
   readFileSync(`components/features/meetings/${name}`, "utf8");
 
+/**
+ * The same file with its comments taken out.
+ *
+ * What follows asserts about what the page RENDERS, and the comment that
+ * explains why the .docx button went away says ".docx" as plainly as the
+ * button did — matching prose would make the note about a change fail the
+ * test for that change. Block comments go first, which takes the JSX
+ * brace-and-star form with them; line comments are stripped only where
+ * they start a line, so an `https://` inside a string survives.
+ */
+const code = (name: string) =>
+  panel(name)
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "");
+
 /* ── One document, one URL ────────────────────────────────────────────────── */
 
 test("both downloads answer PDF on the same route", { skip }, () => {
@@ -101,24 +116,53 @@ test("a server with no renderer says so, and points at the .docx", { skip }, () 
 
 /* ── The buttons ──────────────────────────────────────────────────────────── */
 
-test("both panels offer both formats, and say which is working", () => {
+test("each panel offers ONE download, and it is PDF", () => {
+  /**
+   * **OWNER DECISION, 21 September 2026.** Both panels briefly carried two
+   * buttons — Download .docx and PDF. Asked to drop the .docx one and leave a
+   * single button reading Download PDF.
+   *
+   * The .docx is not removed, only unoffered: the engine still builds it and
+   * the route still serves it without `format=pdf`. That is the difference
+   * between taking a button away and taking a capability away — anything
+   * linking to the document keeps working, and putting the button back is one
+   * element.
+   */
   for (const name of ["MeetingSummaryPanel.tsx", "VerbatimTranscriptPanel.tsx"]) {
-    const src = panel(name);
-    /* The summary panel splits its actions row into a child component, so the
-       call reads `onDownload("docx")` there and `download("docx")` in the
-       transcript. Either spelling is the same intent. */
-    assert.match(src, /[Dd]ownload\("docx"\)/, name);
-    assert.match(src, /[Dd]ownload\("pdf"\)/, name);
+    const src = code(name);
 
-    /**
-     * Tracked as WHICH format, not a boolean. With a boolean both buttons read
-     * "Downloading…" at once and neither said which one was doing anything.
-     */
-    assert.match(src, /useState<"docx" \| "pdf" \| null>\(null\)/, name);
-    assert.match(src, /dlLoading === "docx" \? "Downloading…"/, name);
-    assert.match(src, /dlLoading === "pdf" \? "Rendering…"/, name);
+    assert.match(src, /[Dd]ownload\("pdf"\)/, name);
+    assert.doesNotMatch(
+      src,
+      /[Dd]ownload\("docx"\)/,
+      `${name}: the .docx button is back`,
+    );
+    assert.match(src, /"Download PDF"/, name);
+    assert.doesNotMatch(src, /Download \.docx/, name);
+
+    /* One button, so the label no longer has to say WHICH format is working. */
+    assert.match(src, /dlLoading !== null \? "Preparing…" : "Download PDF"/, name);
     assert.match(src, /disabled=\{dlLoading !== null/, name);
   }
+
+  /* The format is still a parameter rather than being hard-coded into the
+     fetch — which is what keeps the .docx one argument away. */
+  for (const name of ["MeetingSummaryPanel.tsx", "VerbatimTranscriptPanel.tsx"]) {
+    assert.match(code(name), /format: "docx" \| "pdf"/, name);
+  }
+});
+
+test("the engine still serves the .docx it no longer offers", { skip }, () => {
+  /* A button removed from a page is not a route removed from a server. Both
+     documents must still answer without `format=pdf`, or a link somebody saved
+     stops working. */
+  const src = routes();
+  assert.match(src, /const buffer = await generateSummaryDocx\(summaryWithMeta, meetId\)/);
+  assert.match(src, /const buffer = await renderTranscriptDocx\(/);
+  assert.match(
+    src,
+    /"application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document"/,
+  );
 });
 
 test("the engine's refusal reaches the reader instead of a status code", () => {
@@ -246,3 +290,52 @@ test(
     assert.match(src, /"\/audio\/summary\/:meetId"/);
   },
 );
+
+test("every table declares its columns, so Google Docs can lay it out", { skip }, () => {
+  /**
+   * **Reported 21 September 2026, with the transcript open in Google Docs.**
+   * The three columns had collapsed to one character wide: the header read
+   * T-i-m-e down the page and every line of speech was a vertical ribbon.
+   *
+   * The transcript table declared its own width and never declared its
+   * COLUMNS. `docx` only emits a `<w:tblGrid>` when `columnWidths` is given,
+   * and without that grid Word infers one from the cells and looks right while
+   * Google Docs auto-fits to something unreadable. Every other table in this
+   * codebase already carried it — this one was the exception, which is why
+   * only this document was wrong.
+   *
+   * `TableLayoutType.FIXED` is the other half: use the grid as given rather
+   * than re-fitting to content, which is what stops a 400-row transcript
+   * re-flowing differently on every page.
+   */
+  const src = routes();
+
+  /* Both tables in the transcript document. */
+  assert.match(src, /columnWidths: \[W_TIME, W_WHO, W_TEXT\]/);
+  assert.match(src, /columnWidths: \[W_TASK, W_WHO, W_DUE\]/);
+  assert.equal(
+    (src.match(/layout: TableLayoutType\.FIXED/g) || []).length,
+    2,
+    "both tables must fix their layout",
+  );
+  assert.match(src, /TableLayoutType,/, "the enum has to be imported");
+
+  /* And the widths have to add up, or a reader distributes the remainder
+     however it likes. */
+  assert.match(src, /const W_TEXT = CONTENT_W - W_TIME - W_WHO;/);
+  assert.match(src, /const W_DUE = CONTENT_W - W_TASK - W_WHO;/);
+
+  /* The summary document's tables were already right and are left alone. */
+  /* A window rather than a brace match: `width: { … }` closes before
+     `columnWidths` is reached, so a lazy `[\s\S]*?\}` stops too early and
+     reports a grid that is plainly there as missing. */
+  const docx = backendSource("routes/task_routes/generateSummaryDocx.js");
+  const opens = [...docx.matchAll(/new Table\(\{/g)];
+  assert.ok(opens.length >= 3, "the summary document lost a table");
+  for (const m of opens) {
+    assert.ok(
+      docx.slice(m.index, m.index + 400).includes("columnWidths"),
+      "a table in the summary document lost its column grid",
+    );
+  }
+});

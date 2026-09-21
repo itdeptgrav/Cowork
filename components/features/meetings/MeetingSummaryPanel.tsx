@@ -12,11 +12,11 @@
  *    File API, polling, generation).
  *  - When done → structured sections: Summary · Participants · Conversation ·
  *    Tasks · Deadlines · Action items.
- *  - Download .docx and Ask-AI are available whenever a summary exists.
+ *  - Download PDF and Ask-AI are available whenever a summary exists.
  *
- * All data calls go through `meetingMedia.ts` → `legacyFetch`. The .docx
- * download bypasses legacyFetch (it returns a blob, not JSON) and hits the
- * engine directly with a Bearer token.
+ * All data calls go through `meetingMedia.ts` → `legacyFetch`. The download
+ * bypasses legacyFetch (it returns a blob, not JSON) and hits the engine
+ * directly with a Bearer token.
  */
 
 import { useEffect, useRef, useState } from "react";
@@ -400,21 +400,24 @@ function SummaryView({
     <div className="mt-2 space-y-4">
       {/* Actions row */}
       <div className="flex flex-wrap items-center gap-2">
-        <Button
-          tone="ghost"
-          size="sm"
-          onClick={() => onDownload("docx")}
-          disabled={dlLoading !== null}
-        >
-          {dlLoading === "docx" ? "Downloading…" : "Download .docx"}
-        </Button>
+        {/**
+         * **One download, and it is PDF.** OWNER DECISION, 21 Sep 2026.
+         *
+         * Two buttons stood here — Download .docx and PDF. Asked to drop
+         * the .docx one and leave a single button reading Download PDF.
+         *
+         * The .docx is NOT removed: the engine still builds it, the route
+         * still serves it, and `download("docx")` still works. Only the
+         * button is gone, so anything that links to the document keeps
+         * working and putting the button back is one element.
+         */}
         <Button
           tone="ghost"
           size="sm"
           onClick={() => onDownload("pdf")}
           disabled={dlLoading !== null}
         >
-          {dlLoading === "pdf" ? "Rendering…" : "PDF"}
+          {dlLoading !== null ? "Preparing…" : "Download PDF"}
         </Button>
         <button
           type="button"
