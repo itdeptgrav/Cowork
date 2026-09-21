@@ -60,7 +60,7 @@ export async function startTaskWatch(
   input: TaskWatchInput,
 ): Promise<() => void> {
   const { collection, limit, onSnapshot, orderBy, query, where } =
-    await import("firebase/firestore");
+    await import("@/lib/legacy/firestoreClient");
   const { legacyDb } = await import("../../legacy/firebase.ts");
 
   const ref = collection(legacyDb(), "cowork_tasks");

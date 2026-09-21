@@ -17,6 +17,7 @@ import {
 import { unregisterFCMToken, useFCMToken } from "@/lib/hooks/useFCMToken";
 import { LegacyRepository, toCoworkRepository } from "@/lib/repositories/legacy";
 import { startTaskWatch } from "@/lib/repositories/legacy/taskWatch";
+import { connectAppSocket } from "@/lib/realtime/appSocket";
 import {
   PROFILE_STORAGE_KEY,
   PROFILE_SWITCHER_ENABLED,
@@ -547,6 +548,26 @@ export function SessionProvider({
         console.error("[taskWatch] could not start:", error);
         return () => {};
       });
+
+      /**
+       * **The session's live connection — the replacement for every Firestore
+       * listener.**
+       *
+       * The browser no longer holds a database connection, so "live" now means
+       * the server's `realtime:change` notice arriving over Socket.IO and the
+       * affected reads refetching. That socket has to exist for the whole
+       * session, not only during a meeting, and it has to carry the ID token
+       * in its handshake so the server can grant the `user:<id>` room — an
+       * anonymous socket receives none of the data. Started here, after the
+       * repository is live, for the same reason the task watch is: earlier
+       * would watch the previous session. Calling it again replaces the feed
+       * rather than stacking a second one.
+       */
+      try {
+        connectAppSocket(data.employeeId);
+      } catch (e) {
+        console.error("[realtime] socket could not start:", e);
+      }
 
       /* **Published rule values, before anything scores.**
        *

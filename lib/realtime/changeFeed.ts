@@ -141,8 +141,12 @@ export function methodsFor(notices: readonly ChangeNotice[]): string[] {
  * that cannot be tested is one whose failure is silent in both directions.
  */
 export interface ChangeSocket {
-  on(event: string, handler: (payload: never) => void): unknown;
-  off(event: string, handler: (payload: never) => void): unknown;
+  /* `any[]` because that is the listener type socket.io-client exposes, and a
+     narrower one here would refuse the real socket at the call site. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on(event: string, handler: (...args: any[]) => void): unknown;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  off(event: string, handler: (...args: any[]) => void): unknown;
 }
 
 /**
@@ -201,12 +205,12 @@ export function startChangeFeed(
     resync();
   };
 
-  socket.on("realtime:change", onChange as (p: never) => void);
-  socket.on("realtime:resync", onResync as (p: never) => void);
+  socket.on("realtime:change", onChange);
+  socket.on("realtime:resync", onResync);
 
   return () => {
-    socket.off("realtime:change", onChange as (p: never) => void);
-    socket.off("realtime:resync", onResync as (p: never) => void);
+    socket.off("realtime:change", onChange);
+    socket.off("realtime:resync", onResync);
     if (timer !== null) {
       clearTimeout(timer);
       timer = null;

@@ -1300,7 +1300,7 @@ export class LegacyRepository {
     if (!me) return empty;
     try {
       const { collection, getDocs, query, where } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const pendingFor = async (name: string): Promise<Set<string>> => {
@@ -1713,7 +1713,7 @@ export class LegacyRepository {
       const tree = await this.#reportingTree();
       const reach = [...reportingSubtree(tree, viewerId)];
       const { collection, getDocs, query, where } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -2100,7 +2100,7 @@ export class LegacyRepository {
    */
   async #childDocs(parentId: string, knownIds: string[]): Promise<LegacyTask[]> {
     const { collection, doc, getDoc, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const db = legacyDb();
@@ -2149,7 +2149,7 @@ export class LegacyRepository {
 
   /** One raw task document, or null. Used where a `TaskView` is too much. */
   async #taskDoc(taskId: string): Promise<LegacyTask | null> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), "cowork_tasks", taskId));
     if (!snap.exists()) return null;
@@ -2544,7 +2544,7 @@ export class LegacyRepository {
     let loggedSecs = 0;
     if (timeSubject) {
       try {
-        const { getDoc } = await import("firebase/firestore");
+        const { getDoc } = await import("@/lib/legacy/firestoreClient");
         const snap = await getDoc(
           await this.#timerSession(timeSubject, legacy.id),
         );
@@ -3425,7 +3425,7 @@ export class LegacyRepository {
 
   async #taskChatRef(taskId: TaskId, messageId: string) {
     const { collection, doc, getDocs, query, where, limit } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const chat = collection(legacyDb(), "cowork_tasks", String(taskId), "chat");
@@ -3464,7 +3464,7 @@ export class LegacyRepository {
         field: "text",
       };
     try {
-      const { getDoc, setDoc } = await import("firebase/firestore");
+      const { getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const ref = await this.#taskChatRef(taskId, messageId);
       const snap = await getDoc(ref);
       if (!snap.exists())
@@ -3510,7 +3510,7 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { getDoc, setDoc } = await import("firebase/firestore");
+      const { getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const ref = await this.#taskChatRef(taskId, messageId);
       const snap = await getDoc(ref);
       if (!snap.exists())
@@ -3557,7 +3557,7 @@ export class LegacyRepository {
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
       const { arrayRemove, arrayUnion, getDoc, setDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const ref = await this.#taskChatRef(taskId, messageId);
       const snap = await getDoc(ref);
@@ -3600,7 +3600,7 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { getDoc, setDoc } = await import("firebase/firestore");
+      const { getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const ref = await this.#taskChatRef(taskId, messageId);
       const snap = await getDoc(ref);
       if (!snap.exists())
@@ -3634,7 +3634,7 @@ export class LegacyRepository {
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
       const { arrayRemove, arrayUnion, getDoc, setDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const ref = await this.#taskChatRef(taskId, messageId);
       const snap = await getDoc(ref);
@@ -3674,7 +3674,7 @@ export class LegacyRepository {
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
       const { arrayUnion, collection, getDocs, query, where, writeBatch } =
-        await import("firebase/firestore");
+        await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
       const chat = collection(db, "cowork_tasks", String(taskId), "chat");
@@ -3914,7 +3914,7 @@ export class LegacyRepository {
     const taskId = String(input.taskId);
     const me = this.#ctx.employeeId ?? "";
     const { addDoc, collection, doc, getDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -4077,7 +4077,7 @@ export class LegacyRepository {
     decision: "approved" | "rejected",
     options?: { reason?: string; grantedSecs?: number },
   ): Promise<ActionResult<TimeBudgetExtensionRecord | null>> {
-    const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+    const { doc, getDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ref = doc(legacyDb(), "cowork_task_budget_extensions", recordId);
     const snap = await getDoc(ref);
@@ -4224,7 +4224,7 @@ export class LegacyRepository {
     answer: "accept" | "counter",
     options?: { counterSecs?: number; reason?: string },
   ): Promise<ActionResult<TimeBudgetExtensionRecord | null>> {
-    const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+    const { doc, getDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ref = doc(legacyDb(), "cowork_task_budget_extensions", recordId);
     const snap = await getDoc(ref);
@@ -4461,7 +4461,7 @@ export class LegacyRepository {
     taskId: TaskId,
   ): Promise<TimeBudgetExtensionRecord[]> {
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
@@ -4500,7 +4500,7 @@ export class LegacyRepository {
   }): Promise<ActionResult<DeadlineExtensionRecord>> {
     const taskId = String(input.taskId);
     const { addDoc, collection, doc, getDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -4589,7 +4589,7 @@ export class LegacyRepository {
         field: "counterDeadline",
       } as ActionResult<DeadlineExtensionRecord | null>;
     }
-    const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+    const { doc, getDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ref = doc(legacyDb(), "cowork_task_deadline_extensions", recordId);
     const snap = await getDoc(ref);
@@ -4665,7 +4665,7 @@ export class LegacyRepository {
   ): Promise<DeadlineExtensionRecord[]> {
     const id = String(taskId);
     const { collection, doc, getDoc, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -4716,7 +4716,7 @@ export class LegacyRepository {
 
   async listProposals(taskId: TaskId): Promise<DeadlineProposal[]> {
     const id = String(taskId);
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), "cowork_tasks", id));
     if (!snap.exists()) return [];
@@ -4748,7 +4748,7 @@ export class LegacyRepository {
    */
   async listExtensions(taskId: TaskId): Promise<DeadlineExtension[]> {
     const id = String(taskId);
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), "cowork_tasks", id));
     if (!snap.exists()) return [];
@@ -4811,7 +4811,7 @@ export class LegacyRepository {
    */
 
   #timerSession(employeeId: string, taskId: string) {
-    return import("firebase/firestore").then(async ({ doc }) => {
+    return import("@/lib/legacy/firestoreClient").then(async ({ doc }) => {
       const { legacyDb } = await import("../../legacy/firebase.ts");
       return doc(legacyDb(), "cowork_task_timers", employeeId, "sessions", taskId);
     });
@@ -4827,7 +4827,7 @@ export class LegacyRepository {
   ): Promise<void> {
     try {
       const { addDoc, collection, serverTimestamp } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await addDoc(
@@ -4865,7 +4865,7 @@ export class LegacyRepository {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
     console.info("[timerdbg] ▶ startTimer invoked", { id }, new Error().stack);
-    const { getDoc, setDoc } = await import("firebase/firestore");
+    const { getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
 
     /**
      * **Three independent reads, asked at once.**
@@ -5051,7 +5051,7 @@ export class LegacyRepository {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
     console.info("[timerdbg] ⏸ pauseTimer invoked", { id, reason });
-    const { addDoc, collection, getDoc, serverTimestamp, setDoc } = await import("firebase/firestore");
+    const { addDoc, collection, getDoc, serverTimestamp, setDoc } = await import("@/lib/legacy/firestoreClient");
 
     const ref = await this.#timerSession(employeeId, id);
     const snap = await getDoc(ref);
@@ -5211,7 +5211,7 @@ export class LegacyRepository {
   ): Promise<ActionResult<void>> {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
-    const { getDoc, setDoc } = await import("firebase/firestore");
+    const { getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
     const ref = await this.#timerSession(employeeId, id);
     const snap = await getDoc(ref);
     if (!snap.exists()) return { ok: true, data: undefined };
@@ -5268,7 +5268,7 @@ export class LegacyRepository {
    * concurrently. Two un-transacted resumes would each bank the same gap.
    */
   async #closeGapAndKeepRunning(
-    ref: import("firebase/firestore").DocumentReference,
+    ref: import("@/lib/legacy/firestoreClient").DocumentReference,
     id: string,
     aliveSinceMs: number | null,
   ): Promise<void> {
@@ -5308,7 +5308,7 @@ export class LegacyRepository {
     if (closingTimerGap.has(key)) return;
     closingTimerGap.add(key);
 
-    const { runTransaction } = await import("firebase/firestore");
+    const { runTransaction } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     try {
       await runTransaction(legacyDb(), async (tx) => {
@@ -5393,7 +5393,7 @@ export class LegacyRepository {
    */
 
   async getOfficePolicy(): Promise<OfficePolicy> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), "cowork_settings", "office"));
     /* An absent document is a workspace that has never opened the settings
@@ -5493,7 +5493,7 @@ export class LegacyRepository {
     }
 
     const { addDoc, collection, doc, setDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const [collectionName, documentId] = input.path;
@@ -5614,7 +5614,7 @@ export class LegacyRepository {
     collectionName: string,
     documentId: string,
   ): Promise<Record<string, unknown> | null> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), collectionName, documentId));
     return snap.exists() ? (snap.data() as Record<string, unknown>) : null;
@@ -5817,7 +5817,7 @@ export class LegacyRepository {
     }
 
     const { collection, getDocs, query, orderBy, limit: cap } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
@@ -5833,7 +5833,7 @@ export class LegacyRepository {
   }
 
   #dutyDoc(employeeId: string) {
-    return import("firebase/firestore").then(async ({ doc }) => {
+    return import("@/lib/legacy/firestoreClient").then(async ({ doc }) => {
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const [collectionName, id] = dutyStatusPath(employeeId);
       return doc(legacyDb(), collectionName, id);
@@ -5841,7 +5841,7 @@ export class LegacyRepository {
   }
 
   async #readDutyDoc(employeeId: string): Promise<DutyDocument | null> {
-    const { getDoc } = await import("firebase/firestore");
+    const { getDoc } = await import("@/lib/legacy/firestoreClient");
     const snap = await getDoc(await this.#dutyDoc(employeeId));
     return snap.exists() ? (snap.data() as DutyDocument) : null;
   }
@@ -5931,7 +5931,7 @@ export class LegacyRepository {
         bankEvenWhenRaising: false,
       });
 
-    const { setDoc, addDoc, collection } = await import("firebase/firestore");
+    const { setDoc, addDoc, collection } = await import("@/lib/legacy/firestoreClient");
     await setDoc(await this.#dutyDoc(employeeId), { employeeId, ...patch }, { merge: true });
 
     /* **The history entry — append-only, alongside the document patch.**
@@ -6147,7 +6147,7 @@ export class LegacyRepository {
    */
   async #clearPendingEmergencyGap(employeeId: string): Promise<void> {
     try {
-      const { setDoc } = await import("firebase/firestore");
+      const { setDoc } = await import("@/lib/legacy/firestoreClient");
       await setDoc(
         await this.#dutyDoc(employeeId),
         { pendingEmergencyGapMs: null, pendingEmergencyReason: null },
@@ -6210,7 +6210,7 @@ export class LegacyRepository {
        is a different thing that this history does not claim to explain. */
     if (!(input.newSecs > input.previousSecs)) return;
     try {
-      const { addDoc, collection } = await import("firebase/firestore");
+      const { addDoc, collection } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await addDoc(collection(legacyDb(), "cowork_task_budget_credits"), {
         taskId: input.taskId,
@@ -6241,7 +6241,7 @@ export class LegacyRepository {
     byEmployeeId: string;
   }): Promise<void> {
     const { addDoc, collection, doc, getDoc, updateDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const db = legacyDb();
@@ -6478,7 +6478,7 @@ export class LegacyRepository {
     const newDueIso = new Date(move.newDueAtMs).toISOString();
     const reason = afterHoursCreditReason(move);
 
-    const { addDoc, collection, doc, updateDoc } = await import("firebase/firestore");
+    const { addDoc, collection, doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const db = legacyDb();
 
@@ -6541,7 +6541,7 @@ export class LegacyRepository {
     let shifted = 0;
     try {
       const { addDoc, collection, query, where, getDocs, doc, writeBatch } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
@@ -6747,7 +6747,7 @@ export class LegacyRepository {
     if (storedMode(previous) !== "online") return { ok: true, data: undefined };
     if (!ownsClaim(previous, connectionId, now)) return { ok: true, data: undefined };
 
-    const { setDoc } = await import("firebase/firestore");
+    const { setDoc } = await import("@/lib/legacy/firestoreClient");
     await setDoc(
       await this.#dutyDoc(employeeId),
       heartbeatPatch(now, connectionId),
@@ -6794,7 +6794,7 @@ export class LegacyRepository {
     };
 
     void (async () => {
-      const { doc: docRef, onSnapshot } = await import("firebase/firestore");
+      const { doc: docRef, onSnapshot } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       if (stopped) return;
       unsub = onSnapshot(
@@ -6830,7 +6830,7 @@ export class LegacyRepository {
     };
 
     void (async () => {
-      const { doc: docRef, onSnapshot } = await import("firebase/firestore");
+      const { doc: docRef, onSnapshot } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       if (stopped) return;
       for (const employeeId of employeeIds) {
@@ -6898,7 +6898,7 @@ export class LegacyRepository {
     };
 
     void (async () => {
-      const { doc: docRef, onSnapshot } = await import("firebase/firestore");
+      const { doc: docRef, onSnapshot } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       if (stopped) return;
       for (const employeeId of employeeIds) {
@@ -6934,7 +6934,7 @@ export class LegacyRepository {
     const employeeId = String(this.#ctx.employeeId);
     const key = dayKey ?? dutyDayKey(Date.now());
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
@@ -6983,7 +6983,7 @@ export class LegacyRepository {
     if (wanted.size === 0) return out;
 
     const { collection, getDocs, orderBy, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
@@ -7050,7 +7050,7 @@ export class LegacyRepository {
 
     void (async () => {
       try {
-        const { onSnapshot } = await import("firebase/firestore");
+        const { onSnapshot } = await import("@/lib/legacy/firestoreClient");
         const ref = await this.#timerSession(String(employeeId), String(taskId));
         if (stopped) return;
         unsub = onSnapshot(
@@ -7190,7 +7190,7 @@ export class LegacyRepository {
   async getTimer(taskId: TaskId): Promise<TimerSession | null> {
     const employeeId = String(this.#ctx.employeeId);
     const id = String(taskId);
-    const { getDoc } = await import("firebase/firestore");
+    const { getDoc } = await import("@/lib/legacy/firestoreClient");
 
     const snap = await getDoc(await this.#timerSession(employeeId, id));
     if (!snap.exists()) return null;
@@ -7237,7 +7237,7 @@ export class LegacyRepository {
    */
   async listTaskEvents(taskId: TaskId): Promise<TaskEvent[]> {
     const { collection, getDocs, query, orderBy } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ref = collection(
@@ -7339,7 +7339,7 @@ export class LegacyRepository {
         },
       };
 
-    const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+    const { doc, getDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     for (const { taskId } of group) {
@@ -7380,7 +7380,7 @@ export class LegacyRepository {
   async #pendingCascadeGroups(
     employeeId: string,
   ): Promise<Map<string, { entry: StoredCascadeEntry; taskId: string; taskTitle: string }[]>> {
-    const { collection, getDocs, query, where } = await import("firebase/firestore");
+    const { collection, getDocs, query, where } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
       query(
@@ -7777,7 +7777,7 @@ export class LegacyRepository {
       ? (directory.get(managerId)?.displayName ?? managerId)
       : "";
 
-    const { addDoc, collection } = await import("firebase/firestore");
+    const { addDoc, collection } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     try {
       /* The document shape `listEmergencyRequests` reads: `gapMs` + `createdAt`,
@@ -7838,7 +7838,7 @@ export class LegacyRepository {
     scope: "mine" | "to_decide",
   ): Promise<EmergencyRequest[]> {
     const me = String(this.#ctx.employeeId);
-    const { collection, getDocs } = await import("firebase/firestore");
+    const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
       collection(legacyDb(), "cowork_emergency_approvals"),
@@ -7936,7 +7936,7 @@ export class LegacyRepository {
   async #emergencyRequestById(
     requestId: string,
   ): Promise<EmergencyRequest | null> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(
       doc(legacyDb(), "cowork_emergency_approvals", requestId),
@@ -8050,7 +8050,7 @@ export class LegacyRepository {
     const lostMs = emergencyCompensationMs({ request, actorId: me, approve });
     const decidedAt = new Date();
 
-    const { doc, updateDoc } = await import("firebase/firestore");
+    const { doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     try {
@@ -8138,7 +8138,7 @@ export class LegacyRepository {
    */
   async listDailyReports(taskId: TaskId): Promise<DailyReport[]> {
     const id = String(taskId);
-    const { collection, getDocs } = await import("firebase/firestore");
+    const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
       collection(legacyDb(), "cowork_tasks", id, "dailyReports"),
@@ -8253,7 +8253,7 @@ export class LegacyRepository {
       .map((a) => a.url);
 
     const { addDoc, collection, serverTimestamp } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -8323,7 +8323,7 @@ export class LegacyRepository {
   ): Promise<(WorkCommit & { employee: Employee; taskTitle: string })[]> {
     const employeeId = String(this.#ctx.employeeId);
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -8577,7 +8577,7 @@ export class LegacyRepository {
 
   /** One task document, or null. Shared by the completion reads above. */
   async #taskDocument(taskId: string): Promise<Record<string, unknown> | null> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), "cowork_tasks", taskId));
     return snap.exists() ? (snap.data() as Record<string, unknown>) : null;
@@ -8703,7 +8703,7 @@ export class LegacyRepository {
     if (thread === "draft") return [];
     const id = String(taskId);
     const { collection, getDocs, query, orderBy } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -8736,7 +8736,7 @@ export class LegacyRepository {
   async listWorkCommits(taskId: TaskId): Promise<WorkCommit[]> {
     const id = String(taskId);
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -9017,7 +9017,7 @@ export class LegacyRepository {
   /** Every session this employee holds, running or not. */
   async listTimers(): Promise<unknown[]> {
     const employeeId = String(this.#ctx.employeeId);
-    const { collection, getDocs } = await import("firebase/firestore");
+    const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
       collection(legacyDb(), "cowork_task_timers", employeeId, "sessions"),
@@ -9055,7 +9055,7 @@ export class LegacyRepository {
        show. The old app has exactly one source, and now so does this. */
     const employeeId = String(this.#ctx.employeeId);
     const { collection, getDocs, limit, orderBy, query, where } =
-      await import("firebase/firestore");
+      await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     const snap = await getDocs(
@@ -9160,7 +9160,7 @@ export class LegacyRepository {
   async listDocuments(kind: DocumentKind = "doc"): Promise<DocumentSummary[]> {
     const me = String(this.#ctx.employeeId);
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
@@ -9190,7 +9190,7 @@ export class LegacyRepository {
   }
 
   async #documentBodyHtml(id: string): Promise<string | null> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id));
     if (!snap.exists()) return null;
@@ -9200,7 +9200,7 @@ export class LegacyRepository {
 
   async getDocument(id: string): Promise<CoworkDocument | null> {
     const me = String(this.#ctx.employeeId);
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id));
     if (!snap.exists()) return null;
@@ -9215,7 +9215,7 @@ export class LegacyRepository {
   async getDocumentBody(id: string): Promise<CoworkDocumentBody | null> {
     const record = await this.getDocument(id);
     if (!record) return null;
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), DOCUMENT_BODY_COLLECTION, id));
     if (!snap.exists())
@@ -9248,7 +9248,7 @@ export class LegacyRepository {
     memberIds?: EmployeeId[];
   }): Promise<ActionResult<CoworkDocument>> {
     const me = String(this.#ctx.employeeId);
-    const { doc, setDoc, collection } = await import("firebase/firestore");
+    const { doc, setDoc, collection } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const now = new Date().toISOString();
     const ref = doc(collection(legacyDb(), DOCUMENT_COLLECTION));
@@ -9312,7 +9312,7 @@ export class LegacyRepository {
         code: "permission_denied",
         message: "Only an owner can rename this document.",
       };
-    const { doc, updateDoc } = await import("firebase/firestore");
+    const { doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const now = new Date().toISOString();
     await updateDoc(doc(legacyDb(), DOCUMENT_COLLECTION, id), {
@@ -9339,7 +9339,7 @@ export class LegacyRepository {
         code: "permission_denied",
         message: "Only an owner can delete this document.",
       };
-    const { doc, updateDoc } = await import("firebase/firestore");
+    const { doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     /* Soft. The body is left alone — a delete that destroyed the text would
        make the record unrecoverable while still looking recoverable. */
@@ -9371,7 +9371,7 @@ export class LegacyRepository {
     const refusal = editRefusal(record, me);
     if (refusal)
       return { ok: false, code: "permission_denied", message: refusal };
-    const { doc, setDoc, updateDoc } = await import("firebase/firestore");
+    const { doc, setDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const now = new Date().toISOString();
 
@@ -9436,7 +9436,7 @@ export class LegacyRepository {
       role,
       at: new Date().toISOString(),
     });
-    const { doc, updateDoc } = await import("firebase/firestore");
+    const { doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const now = new Date().toISOString();
     /* Both lists in ONE write. Firestore cannot query inside an array of
@@ -9926,7 +9926,7 @@ export class LegacyRepository {
   async joinTaskMeeting(taskId: TaskId) {
     const me = String(this.#ctx.employeeId);
     try {
-      const { doc: fsDoc, getDoc: fsGetDoc } = await import("firebase/firestore");
+      const { doc: fsDoc, getDoc: fsGetDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb: fsDb } = await import("../../legacy/firebase.ts");
 
       /* ── Membership before anything else.
@@ -10004,7 +10004,7 @@ export class LegacyRepository {
       const creds = (await res.json()) as { token: string; url: string };
 
       const { addDoc, collection, doc, getDocs, query, updateDoc, where, arrayUnion } =
-        await import("firebase/firestore");
+        await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
       const path = this.#taskMeetingSessions(String(taskId));
@@ -10099,7 +10099,7 @@ export class LegacyRepository {
   async touchTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
     const me = String(this.#ctx.employeeId);
     try {
-      const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+      const { doc, getDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const ref = doc(
         legacyDb(),
@@ -10138,7 +10138,7 @@ export class LegacyRepository {
   async leaveTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
     const me = String(this.#ctx.employeeId);
     try {
-      const { doc, getDoc, updateDoc } = await import("firebase/firestore");
+      const { doc, getDoc, updateDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
       const ref = doc(
@@ -10201,7 +10201,7 @@ export class LegacyRepository {
   async endTaskMeeting(input: { taskId: TaskId; sessionId: string }) {
     try {
       const { collection, doc, getDoc, getDocs, query, updateDoc, where } =
-        await import("firebase/firestore");
+        await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
       const ref = doc(
@@ -10621,7 +10621,7 @@ export class LegacyRepository {
     const HISTORY_CAP = 200;
     try {
       const { collection, getDocs, limit, orderBy, query } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const snap = await getDocs(
@@ -11652,7 +11652,7 @@ export class LegacyRepository {
   async #loggedSecsByTask(employeeId: string): Promise<Map<string, number>> {
     const out = new Map<string, number>();
     try {
-      const { collection, getDocs } = await import("firebase/firestore");
+      const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const snap = await getDocs(
         collection(legacyDb(), "cowork_task_timers", employeeId, "sessions"),
@@ -11985,7 +11985,7 @@ export class LegacyRepository {
     provisionalPositions: Map<string, number>;
   }> {
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -12123,7 +12123,7 @@ export class LegacyRepository {
   }): Promise<Feasibility> {
     const employeeId = String(input.employeeId);
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
@@ -12289,7 +12289,7 @@ export class LegacyRepository {
     }
 
     const rank = this.#clampRank(input.newRank);
-    const { doc, updateDoc } = await import("firebase/firestore");
+    const { doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     /*
@@ -12429,7 +12429,7 @@ export class LegacyRepository {
   ): Promise<QueueDeadlineMove[]> {
     try {
       const { collection, doc, getDoc, getDocs, query, where, updateDoc } =
-        await import("firebase/firestore");
+        await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
 
@@ -12562,7 +12562,7 @@ export class LegacyRepository {
   ): Promise<ActionResult<{ changed: number; fault: string | null }>> {
     const id = String(employeeId);
     const { collection, doc, getDocs, query, where, writeBatch } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const db = legacyDb();
@@ -12679,7 +12679,7 @@ export class LegacyRepository {
     }
 
     const { collection, doc, getDocs, writeBatch } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const db = legacyDb();
@@ -12861,7 +12861,7 @@ export class LegacyRepository {
     employeeId: string,
     orderOverride?: readonly string[],
   ): Promise<CascadeOrderEntry[]> {
-    const { collection, getDocs, query, where } = await import("firebase/firestore");
+    const { collection, getDocs, query, where } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDocs(
       query(
@@ -12954,7 +12954,7 @@ export class LegacyRepository {
 
     const me = await this.getCurrentEmployee().catch(() => null);
     const at = new Date().toISOString();
-    const { doc, updateDoc, arrayUnion } = await import("firebase/firestore");
+    const { doc, updateDoc, arrayUnion } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     for (const move of input.moves) {
@@ -13058,7 +13058,7 @@ export class LegacyRepository {
     if (!id) return [];
     try {
       const { collection, getDocs, query, where } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
@@ -13303,7 +13303,7 @@ export class LegacyRepository {
         return { ok: false, code: "validation_failed", message: refusal };
     }
 
-    const { doc, updateDoc } = await import("firebase/firestore");
+    const { doc, updateDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     try {
       /* `updateDoc`, never `setDoc(..., { merge: true })`: a missing employee
@@ -13378,7 +13378,7 @@ export class LegacyRepository {
    */
   async getActiveTimer() {
     const employeeId = String(this.#ctx.employeeId);
-    const { collection, getDocs } = await import("firebase/firestore");
+    const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     let running: {
@@ -13474,7 +13474,7 @@ export class LegacyRepository {
    */
   async #taskDocuments(viewerId: string): Promise<Record<string, unknown>[]> {
     const { collection, getDocs, limit, orderBy, query, where } =
-      await import("firebase/firestore");
+      await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const role = String(this.#ctx.legacyRole ?? "employee");
     const ref = collection(legacyDb(), "cowork_tasks");
@@ -13612,7 +13612,7 @@ export class LegacyRepository {
       ];
       if (missing.length === 0) return;
 
-      const { doc, getDoc } = await import("firebase/firestore");
+      const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
       const snaps = await Promise.all(
         missing.map((id) => getDoc(doc(legacyDb(), "cowork_tasks", id))),
       );
@@ -14115,7 +14115,7 @@ export class LegacyRepository {
     employeeId: string,
   ): Promise<{ taskId: string; taskTitle: string } | null> {
     try {
-      const { collection, getDocs } = await import("firebase/firestore");
+      const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const snap = await getDocs(
         collection(legacyDb(), "cowork_task_timers", employeeId, "sessions"),
@@ -14161,7 +14161,7 @@ export class LegacyRepository {
   async getTimerSopConfig(): Promise<TimerSopConfig> {
     try {
       const { legacyDb } = await import("../../legacy/firebase.ts");
-      const { doc, getDoc } = await import("firebase/firestore");
+      const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
       const snap = await getDoc(doc(legacyDb(), "cowork_sop_settings", "task_events"));
       const d = (snap.exists() ? snap.data() : {}) as Record<string, unknown>;
       const num = (v: unknown, fallback: number) => {
@@ -14196,7 +14196,7 @@ export class LegacyRepository {
   ): Promise<ActionResult<TimerSopConfig>> {
     try {
       const { legacyDb } = await import("../../legacy/firebase.ts");
-      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { doc, getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const ref = doc(legacyDb(), "cowork_sop_settings", "task_events");
       /* The engine stamps `timerSopEnabledAt` when it is switched on and uses it
          for its off-period amnesty. Keep an existing stamp; set a new one only on
@@ -14327,7 +14327,7 @@ export class LegacyRepository {
     istDate: string,
   ): Promise<WorkCommit[]> {
     const { legacyDb } = await import("../../legacy/firebase.ts");
-    const { collection, getDocs } = await import("firebase/firestore");
+    const { collection, getDocs } = await import("@/lib/legacy/firestoreClient");
     const snap = await getDocs(
       collection(legacyDb(), "cowork_work_commits", employeeId, "logs"),
     );
@@ -14833,7 +14833,7 @@ export class LegacyRepository {
     const empty = { givenSecs: 0, currentSecs: 0, credits: [], deadlineMoves: [] };
     try {
       const { collection, doc, getDoc, getDocs, query, where } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
@@ -15024,7 +15024,7 @@ export class LegacyRepository {
     const [roadmap, taskDoc] = await Promise.all([
       fetchRoadmap({ token, taskId: String(taskId) }),
       (async () => {
-        const { doc, getDoc } = await import("firebase/firestore");
+        const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
         const { legacyDb } = await import("../../legacy/firebase.ts");
         const snap = await getDoc(
           doc(legacyDb(), "cowork_tasks", String(taskId)),
@@ -15273,7 +15273,7 @@ export class LegacyRepository {
 
   /** Who the task is assigned to. Empty rather than throwing. */
   async #assigneesOf(taskId: TaskId): Promise<string[]> {
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const snap = await getDoc(doc(legacyDb(), "cowork_tasks", String(taskId)));
     if (!snap.exists()) return [];
@@ -15435,7 +15435,7 @@ export class LegacyRepository {
     submittedAt: string | null;
   }): Promise<ActionResult<{ pointsEarned: number }>> {
     const taskSnap = await (async () => {
-      const { doc, getDoc } = await import("firebase/firestore");
+      const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const s = await getDoc(doc(legacyDb(), "cowork_tasks", String(input.taskId)));
       return s.exists() ? (s.data() as Record<string, unknown>) : null;
@@ -15672,7 +15672,7 @@ export class LegacyRepository {
   /** Every message this person is a party to, in one `array-contains` read. */
   async #myMailMessages(): Promise<MailMessage[]> {
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const me = String(this.#ctx.employeeId);
@@ -15752,7 +15752,7 @@ export class LegacyRepository {
 
   async listMailMessages(threadId: string): Promise<MailMessage[]> {
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const me = String(this.#ctx.employeeId);
@@ -15774,7 +15774,7 @@ export class LegacyRepository {
 
   async listMailAttachments(ids: string[]): Promise<MailAttachment[]> {
     if (ids.length === 0) return [];
-    const { doc, getDoc } = await import("firebase/firestore");
+    const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     /* The ids ARE the doc ids; read each rather than an `in` query (which caps
        at ten). A missing attachment is skipped, not fatal. */
@@ -15844,7 +15844,7 @@ export class LegacyRepository {
     on: boolean,
   ): Promise<ActionResult<void>> {
     const { arrayRemove, arrayUnion, doc, getDoc, updateDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const me = String(this.#ctx.employeeId);
@@ -15888,7 +15888,7 @@ export class LegacyRepository {
     gmail?: { messageId: string; threadId: string } | null;
     deliveryError?: string | null;
   }): Promise<ActionResult<MailMessage>> {
-    const { addDoc, collection } = await import("firebase/firestore");
+    const { addDoc, collection } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ctx = await this.#mailContext();
     if (!ctx.meEmp)
@@ -15999,7 +15999,7 @@ export class LegacyRepository {
     mailboxAddress: string,
   ): Promise<ActionResult<{ added: number }>> {
     const { addDoc, collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ctx = await this.#mailContext();
@@ -16068,7 +16068,7 @@ export class LegacyRepository {
     threadId?: string | null;
   }): Promise<ActionResult<MailMessage>> {
     const { addDoc, collection, doc, getDoc, updateDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const ctx = await this.#mailContext();
@@ -16173,7 +16173,7 @@ export class LegacyRepository {
   }
 
   async discardMailDraft(messageId: string): Promise<ActionResult<void>> {
-    const { deleteDoc, doc, getDoc } = await import("firebase/firestore");
+    const { deleteDoc, doc, getDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const me = String(this.#ctx.employeeId);
     const ref = doc(legacyDb(), MAIL_COLLECTION, messageId);
@@ -16220,7 +16220,7 @@ export class LegacyRepository {
     let cancelled = false;
     void (async () => {
       const { collection, onSnapshot, query, where } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       if (cancelled) return;
@@ -16281,7 +16281,7 @@ export class LegacyRepository {
       LegacyRepository.#conversationCollectionById.get(conversationId);
     if (known) return known;
     try {
-      const { doc, getDoc } = await import("firebase/firestore");
+      const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const dm = await getDoc(doc(legacyDb(), DM_COLLECTION, conversationId));
       /**
@@ -16318,7 +16318,7 @@ export class LegacyRepository {
   ): Promise<number> {
     try {
       const { collection, getDocs, query, where } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const snap = await getDocs(
@@ -16342,7 +16342,7 @@ export class LegacyRepository {
     const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
     if (!me) return [];
     const { collection, getDocs, query, where } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const directory = await this.#employeesById();
@@ -16429,7 +16429,7 @@ export class LegacyRepository {
       .slice(0, MAX_CONVERSATIONS);
 
     const { collection, getDocs, limit: fsLimit, orderBy, query: fsQuery } =
-      await import("firebase/firestore");
+      await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     const perConversation = await Promise.all(
@@ -16475,7 +16475,7 @@ export class LegacyRepository {
       query,
       where,
       Timestamp,
-    } = await import("firebase/firestore");
+    } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const coll = await this.#conversationCollection(conversationId);
     const pageSize = Math.max(1, opts?.limit ?? MESSAGE_PAGE_SIZE);
@@ -16639,7 +16639,7 @@ export class LegacyRepository {
         field: "text",
       };
 
-    const { doc, serverTimestamp, setDoc } = await import("firebase/firestore");
+    const { doc, serverTimestamp, setDoc } = await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
     const coll = await this.#conversationCollection(conversationId);
     const directory = await this.#employeesById();
@@ -16909,7 +16909,7 @@ export class LegacyRepository {
       };
     try {
       const { doc, getDoc, serverTimestamp, updateDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
@@ -16975,7 +16975,7 @@ export class LegacyRepository {
         serverTimestamp,
         setDoc,
         updateDoc,
-      } = await import("firebase/firestore");
+      } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
@@ -17064,7 +17064,7 @@ export class LegacyRepository {
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
       const { arrayRemove, arrayUnion, doc, getDoc, setDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
@@ -17117,7 +17117,7 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { doc, getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       const ref = doc(legacyDb(), coll, conversationId, "messages", messageId);
@@ -17159,7 +17159,7 @@ export class LegacyRepository {
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
       const { arrayRemove, arrayUnion, doc, getDoc, setDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
@@ -17203,7 +17203,7 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { doc, getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       const ref = doc(legacyDb(), coll, conversationId);
@@ -17245,7 +17245,7 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { doc, getDoc, setDoc } = await import("firebase/firestore");
+      const { doc, getDoc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       const ref = doc(legacyDb(), coll, conversationId);
@@ -17290,7 +17290,7 @@ export class LegacyRepository {
       };
 
     const { addDoc, collection, doc, getDoc, serverTimestamp, setDoc } =
-      await import("firebase/firestore");
+      await import("@/lib/legacy/firestoreClient");
     const { legacyDb } = await import("../../legacy/firebase.ts");
 
     if (input.kind === "direct") {
@@ -17467,7 +17467,7 @@ export class LegacyRepository {
   /** Whether the viewer administers a group, read fresh. */
   async #isGroupAdmin(groupId: string, me: string): Promise<boolean> {
     try {
-      const { doc, getDoc } = await import("firebase/firestore");
+      const { doc, getDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const snap = await getDoc(doc(legacyDb(), GROUP_COLLECTION, groupId));
       if (!snap.exists()) return false;
@@ -17505,7 +17505,7 @@ export class LegacyRepository {
       };
     try {
       const { doc, serverTimestamp, updateDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
@@ -17544,7 +17544,7 @@ export class LegacyRepository {
       };
     try {
       const { arrayUnion, doc, serverTimestamp, updateDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
@@ -17587,7 +17587,7 @@ export class LegacyRepository {
       };
     try {
       const { arrayRemove, doc, serverTimestamp, updateDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await updateDoc(doc(legacyDb(), GROUP_COLLECTION, groupId), {
@@ -17636,7 +17636,7 @@ export class LegacyRepository {
         getDoc,
         serverTimestamp,
         updateDoc,
-      } = await import("firebase/firestore");
+      } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const ref = doc(legacyDb(), GROUP_COLLECTION, groupId);
       if (!isAdmin) {
@@ -17687,7 +17687,7 @@ export class LegacyRepository {
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
       const { arrayUnion, collection, getDocs, query, where, writeBatch } =
-        await import("firebase/firestore");
+        await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       const snap = await getDocs(
@@ -17743,7 +17743,7 @@ export class LegacyRepository {
       return { ok: true, data: undefined };
     try {
       const { doc, serverTimestamp, setDoc } = await import(
-        "firebase/firestore"
+        "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
       await Promise.all(
@@ -17792,7 +17792,7 @@ export class LegacyRepository {
     void (async () => {
       try {
         const { collection, onSnapshot, query, where } = await import(
-          "firebase/firestore"
+          "@/lib/legacy/firestoreClient"
         );
         const { legacyDb } = await import("../../legacy/firebase.ts");
         if (disposed) return;
@@ -17841,7 +17841,7 @@ export class LegacyRepository {
     let disposed = false;
     void (async () => {
       try {
-        const { collection, onSnapshot } = await import("firebase/firestore");
+        const { collection, onSnapshot } = await import("@/lib/legacy/firestoreClient");
         const { legacyDb } = await import("../../legacy/firebase.ts");
         const coll = await this.#conversationCollection(conversationId);
         if (disposed) return;
@@ -17900,7 +17900,7 @@ export class LegacyRepository {
     let disposed = false;
     void (async () => {
       try {
-        const { collection, onSnapshot } = await import("firebase/firestore");
+        const { collection, onSnapshot } = await import("@/lib/legacy/firestoreClient");
         const { legacyDb } = await import("../../legacy/firebase.ts");
         if (disposed) return;
         const bump = debounce(() => notifyRepositoryChanged("listTaskChat"), 200);
@@ -17948,7 +17948,7 @@ export class LegacyRepository {
     const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
     if (!me) return;
     try {
-      const { deleteField, doc, setDoc } = await import("firebase/firestore");
+      const { deleteField, doc, setDoc } = await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
       await setDoc(
@@ -17972,7 +17972,7 @@ export class LegacyRepository {
     let disposed = false;
     void (async () => {
       try {
-        const { doc, onSnapshot } = await import("firebase/firestore");
+        const { doc, onSnapshot } = await import("@/lib/legacy/firestoreClient");
         const { legacyDb } = await import("../../legacy/firebase.ts");
         const coll = await this.#conversationCollection(conversationId);
         if (disposed) return;
@@ -18020,7 +18020,7 @@ export class LegacyRepository {
     const online: Record<string, boolean> = {};
     void (async () => {
       try {
-        const { onSnapshot } = await import("firebase/firestore");
+        const { onSnapshot } = await import("@/lib/legacy/firestoreClient");
         for (const id of ids) {
           if (disposed) return;
           const ref = await this.#dutyDoc(id);

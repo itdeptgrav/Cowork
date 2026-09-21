@@ -15,7 +15,7 @@ import {
   signInWithEmailAndPassword,
   signOut as fbSignOut,
 } from "firebase/auth";
-import { type Firestore, getFirestore } from "firebase/firestore";
+import { type Firestore, getFirestore } from "./firestoreClient";
 import { type LegacyConfig, readConfig } from "./config.ts";
 import { PUBLIC_ENV } from "./publicEnv.ts";
 

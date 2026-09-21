@@ -29,7 +29,7 @@ import {
   query,
   serverTimestamp,
   setDoc,
-} from "firebase/firestore";
+} from "@/lib/legacy/firestoreClient";
 
 // ── Language config ────────────────────────────────────────────────────────────
 

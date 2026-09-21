@@ -262,7 +262,7 @@ async function subscribeWebPush(
 
 async function saveToken(employeeId: string, token: string): Promise<void> {
   const { arrayRemove, arrayUnion, doc, getDoc, serverTimestamp, setDoc } =
-    await import("firebase/firestore");
+    await import("@/lib/legacy/firestoreClient");
   const { legacyDb } = await import("../legacy/firebase.ts");
   const key = deviceKey();
   const ref = doc(legacyDb(), "cowork_fcm_tokens", employeeId);
@@ -413,7 +413,7 @@ export async function unregisterFCMToken(
     if (!stored) return;
 
     const { arrayRemove, deleteField, doc, updateDoc } = await import(
-      "firebase/firestore"
+      "@/lib/legacy/firestoreClient"
     );
     const { legacyDb } = await import("../legacy/firebase.ts");
     await updateDoc(doc(legacyDb(), "cowork_fcm_tokens", employeeId), {

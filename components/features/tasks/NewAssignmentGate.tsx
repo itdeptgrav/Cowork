@@ -212,7 +212,7 @@ export function NewAssignmentGate() {
 
     async function startWatch() {
       const { collection, limit, onSnapshot, orderBy, query, where } =
-        await import("firebase/firestore");
+        await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("@/lib/legacy/firebase");
 
       if (cancelled) return;

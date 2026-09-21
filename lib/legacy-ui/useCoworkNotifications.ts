@@ -19,7 +19,7 @@ import {
   collection, query, where, orderBy, limit,
   onSnapshot, writeBatch, getDocs, doc, DocumentData,
   QuerySnapshot, Unsubscribe,
-} from "firebase/firestore";
+} from "@/lib/legacy/firestoreClient";
 import { firebaseDb, firebaseAuth } from "./coworkFirebase";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
