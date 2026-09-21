@@ -77,40 +77,62 @@ test("an outsider cannot even see the meeting", () => {
   assert.equal(canView(meeting(), viewer(OUTSIDER)), false);
 });
 
-test("an administrator sees it for audit", () => {
-  assert.ok(
-    canView(meeting(), viewer(ADMIN, { seesOrganisation: true })),
-    "organisation reach is what carries audit visibility",
-  );
-});
-
-test("a manager sees a meeting one of their reports is in", () => {
-  assert.ok(
-    canView(meeting(), viewer(MANAGER, { hierarchyIds: [GUEST] })),
-    "the same closure that governs every other team surface",
-  );
-});
-
-test("a manager does NOT see a meeting nobody under them is in", () => {
+/**
+ * **Seeing is membership now.** OWNER DECISION, 21 September 2026.
+ *
+ * Three tests here asserted the opposite: an administrator saw a meeting for
+ * audit, and a manager saw a meeting one of their own reports was in, on the
+ * reasoning that seeing is not joining.
+ *
+ * Reported as a fault with the meetings page as evidence. The manager's list
+ * held meetings they could not open — clicking one answered *You are not on
+ * this meeting's invitation* — so the distinction was real and invisible, and
+ * the page that was meant to show your meetings showed everybody's. Asked
+ * directly, the owner chose: only the people on it.
+ */
+test("an administrator does not see a meeting they are not on", () => {
   assert.equal(
-    canView(meeting(), viewer(MANAGER, { hierarchyIds: ["someone-else"] })),
+    canView(meeting(), viewer(ADMIN, { seesOrganisation: true })),
     false,
+    "organisation reach no longer carries meeting visibility",
   );
+});
+
+test("a manager does not see a meeting their report is in", () => {
+  assert.equal(
+    canView(meeting(), viewer(MANAGER, { hierarchyIds: [GUEST] })),
+    false,
+    "the report is on it; the manager is not",
+  );
+});
+
+test("the organiser and the invited still see it", () => {
+  /* The other half of the decision, and the half that must not break:
+     narrowing a permission is only correct if the people it exists for keep
+     it. */
+  assert.ok(canView(meeting(), viewer(ORGANISER)), "the organiser");
+  assert.ok(canView(meeting(), viewer(GUEST)), "somebody on the invitation");
 });
 
 /* ── Joining is strictly narrower than seeing ─────────────────────────────── */
 
-test("seeing a meeting does not let you walk into it", () => {
-  /* The distinction the whole module exists to draw. An administrator auditing
-     a meeting and a manager watching their team both get the record and NOT
-     the room — otherwise every private conversation becomes joinable by
-     seniority. */
+test("somebody not on the meeting neither sees it nor joins it", () => {
+  /**
+   * This asserted that they COULD see it and could not join — the distinction
+   * the module used to exist to draw. Reversed on 21 September 2026 by owner
+   * decision: a row you cannot open is a dead end, so the two questions are now
+   * the same question of membership.
+   *
+   * The refusal message is still checked. Seeing is gone; the reason somebody
+   * is turned away at the door has not changed, and the guest link and the
+   * token route both read it.
+   */
   const open = meeting({ status: "live" });
   for (const v of [
     viewer(ADMIN, { seesOrganisation: true }),
     viewer(MANAGER, { hierarchyIds: [GUEST] }),
   ]) {
-    assert.ok(canView(open, v), "they can see it");
+    assert.equal(canView(open, v), false, "they cannot see it");
     assert.equal(canJoin(open, v), false, "and cannot join it");
     assert.match(joinRefusal(open, v) ?? "", /not on this meeting's invitation/);
   }

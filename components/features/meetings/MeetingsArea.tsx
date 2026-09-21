@@ -18,6 +18,8 @@ import {
 import { useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { canJoin, canView } from "@/lib/rules/meetings/access";
+import { displayStatus, hasExpired } from "@/lib/rules/meetings/expiry";
+import { useNow } from "@/lib/hooks/useNow";
 import type { Employee, Meeting } from "@/lib/domain";
 
 /**
@@ -48,12 +50,51 @@ export function MeetingsArea() {
       : false,
   );
 
+  /**
+   * **Read once per render, and passed down.**
+   *
+   * Every row asks the same question — is this one expired — and asking
+   * separately in each would let two rows in one list disagree across a tick.
+   * It is also what makes the section and the badge on a row inside it answer
+   * from the same instant.
+   *
+   * `useNow` rather than `Date.now()`: reading the clock during render is impure
+   * and the server and the browser would render different instants, which React
+   * reports as a hydration mismatch. The hook returns null on the server and
+   * quantises to the minute, which is finer than this needs.
+   *
+   * Null reads as 0, and 0 expires nothing — so the server renders every
+   * meeting as still scheduled and the Expired section appears on hydration.
+   * That is the right way round: a meeting wrongly shown as upcoming for one
+   * paint is recoverable, one wrongly hidden is not.
+   */
+  const nowMs = useNow()?.getTime() ?? 0;
+
   const now = visible.filter(
     (m) => m.status === "live" || m.status === "waiting",
   );
+  /**
+   * **Upcoming means upcoming.**
+   *
+   * Reported 21 Sep 2026: this section held meetings scheduled for 8 September,
+   * still reading `scheduled`, a fortnight after the time they were for. A
+   * section people open to see what is next is worth nothing if they have to
+   * read past a fortnight of things that never happened.
+   *
+   * See `hasExpired`: 24 hours after the time it was scheduled for, a meeting
+   * that never opened is expired. Derived, so the meetings already in the
+   * database moved out of here the moment this shipped.
+   */
   const upcoming = visible
-    .filter((m) => m.status === "scheduled")
+    .filter((m) => m.status === "scheduled" && !hasExpired(m, nowMs))
     .sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+  /* Kept, not hidden. The organiser needs to see that the call they booked
+     never happened — dropping the row would answer "where did my meeting go?"
+     with nothing. Newest first: a lapse from yesterday matters more than one
+     from last month. */
+  const expired = visible
+    .filter((m) => hasExpired(m, nowMs))
+    .sort((a, b) => b.startsAt.localeCompare(a.startsAt));
   const done = visible
     .filter(
       (m) =>
@@ -66,6 +107,9 @@ export function MeetingsArea() {
   const SECTIONS: [string, Meeting[], string][] = [
     ["Happening now", now, "Nothing is running."],
     ["Upcoming", upcoming, "Nothing scheduled."],
+    /* Below Upcoming and above the finished ones: it is not what is next, and
+       it is not something that happened. */
+    ["Expired", expired.slice(0, 8), "Nothing has lapsed."],
     ["Recently completed", done.slice(0, 8), "Nothing finished yet."],
   ];
 
@@ -136,6 +180,7 @@ export function MeetingsArea() {
                       people={people.data ?? []}
                       viewerId={me?.employeeId ?? ""}
                       hierarchyIds={me?.hierarchyIds ?? []}
+                      nowMs={nowMs}
                       onChanged={() => void meetings.refetch()}
                     />
                   ))}
@@ -166,19 +211,36 @@ export function MeetingCard({
   people,
   viewerId,
   hierarchyIds,
+  nowMs,
   onChanged,
 }: {
   meeting: Meeting;
   people: Employee[];
   viewerId: string;
   hierarchyIds: string[];
+  /**
+   * The instant the whole list is being read at, so a row and the section
+   * holding it cannot disagree about whether a meeting has lapsed.
+   *
+   * Optional, and falls back to now: this is exported, and a caller that has no
+   * list around it should not have to invent one.
+   */
+  nowMs?: number;
   /** After the row's own menu edits or deletes the meeting. */
   onChanged?: () => void;
 }) {
+  /* Called unconditionally — it is a hook — and used only when the list did not
+     pass its own instant. A caller with a list around it should win, so that
+     every row in it agrees. */
+  const ownNow = useNow();
+  const at = nowMs ?? ownNow?.getTime() ?? 0;
   const parts = people.filter(
     (p) =>
       meeting.participantIds.includes(p.id) || p.id === meeting.organiserId,
   );
+  /* One call, used by both the badge and its tone — two readings could
+     disagree on the tick a meeting lapses. */
+  const label = displayStatus(meeting, at);
   const joinable = canJoin(meeting, {
     employeeId: viewerId,
     seesOrganisation: false,
@@ -233,14 +295,14 @@ export function MeetingCard({
       </div>
 
       <div className="flex shrink-0 sm:w-28">
-        <Chip tone={statusTone(meeting.status)}>
+        <Chip tone={statusTone(label)}>
           {/* A dot in the status's own ink — `bg-current` — so live reads green
               and cancelled red at a glance, without making the whole chip loud. */}
           <span
             aria-hidden
             className="mr-1.5 inline-block h-1.5 w-1.5 rounded-full bg-current align-middle"
           />
-          {meeting.status === "waiting" ? "waiting room" : meeting.status}
+          {label}
         </Chip>
       </div>
 
@@ -264,10 +326,21 @@ export function MeetingCard({
   );
 }
 
-function statusTone(status: Meeting["status"]) {
-  if (status === "live") return "positive" as const;
-  if (status === "waiting") return "extension" as const;
-  if (status === "cancelled") return "overdue" as const;
+/**
+ * Takes the DISPLAYED label, not the stored status.
+ *
+ * `expired` is derived and never stored, so it cannot arrive as a
+ * `Meeting["status"]` — typing this by the label is what lets one function
+ * colour every word the badge can show.
+ *
+ * Expired is deliberately quiet. Cancelled is red because somebody did it on
+ * purpose and the other side needs to notice; a booking that simply lapsed is
+ * not an alarm, and it already sits under a heading that says so.
+ */
+function statusTone(label: string) {
+  if (label === "live") return "positive" as const;
+  if (label === "waiting room") return "extension" as const;
+  if (label === "cancelled") return "overdue" as const;
   return "neutral" as const;
 }
 

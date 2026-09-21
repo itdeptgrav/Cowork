@@ -283,3 +283,139 @@ export async function getPublicMeetingInfo(input: {
     path: `/cowork/public/meeting-info/${encodeURIComponent(input.shareToken)}`,
   });
 }
+
+/* ── Waiting out a generation the connection did not survive ──────────────────
+ *
+ * **Reported 21 September 2026.** Generating the transcript for a 45–50 minute
+ * meeting — three participants, ~7 MB of audio each — answered *Could not reach
+ * the Cowork server. Check your connection and try again.*
+ *
+ * Nothing was wrong with the connection, and the generation had not failed.
+ * Both routes do the slow work FIRST and store it, then answer:
+ * `callGemini` runs (three models, two attempts each, with backoff between
+ * retries on a quota error), the result is written to Firestore, and only then
+ * does `res.json()` go out. A meeting long enough to push that past whatever
+ * sits in front of the engine — a proxy's read timeout, a dropped keep-alive —
+ * loses the ANSWER, not the work. The transcript is generated and saved, and
+ * the person is told it failed.
+ *
+ * `legacyFetch` already separates the two cases it can tell apart: its own
+ * 300-second abort reports "did not answer within 300s", and a connection that
+ * broke underneath it reports the generic message above. The generic one is
+ * what was seen, which is how we know the client had not given up.
+ *
+ * So a broken connection is not treated as a failure any more: the caller polls
+ * the GET route until the record appears. That is safe because the routes are
+ * idempotent about it — a second POST while the first is still working answers
+ * **429 "already in progress"** rather than starting a duplicate run, which is
+ * why 429 is read here as "keep waiting" too.
+ */
+
+/** A generate call failed. Does it mean the engine might still be working? */
+export function generationMayStillBeRunning(error: {
+  status: number;
+}): boolean {
+  /* 0 is `legacyFetch`'s own code for "no HTTP response at all" — a dropped
+     connection or a timeout. 429 is the engine's per-meeting lock saying it is
+     already generating this. Every other status is a real answer: a 403 key
+     problem, a 404 meeting, a 500 pipeline error. Those are reported. */
+  return error.status === 0 || error.status === 429;
+}
+
+/** How often to ask, and how long to keep asking. */
+export const GENERATION_POLL_EVERY_MS = 10_000;
+/**
+ * Long enough for the slowest real case.
+ *
+ * Was 15 minutes. A transcript is now one pass per ~5 minutes of recording,
+ * per speaker — the speakers run together, so the wall clock is the passes,
+ * not the files. A 55-minute meeting is about fourteen of them, which can
+ * reach a quarter of an hour on its own before the Drive-to-Gemini uploads.
+ */
+export const GENERATION_POLL_FOR_MS = 25 * 60_000;
+
+export interface PollOptions {
+  everyMs?: number;
+  forMs?: number;
+  /** Injected by the tests so they do not wait in real time. */
+  sleep?: (ms: number) => Promise<void>;
+  now?: () => number;
+}
+
+const realSleep = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Wait for a transcript the engine is still making.
+ *
+ * `newerThanMs` is what makes **Regenerate** honest: forcing a new transcript
+ * over an existing one would otherwise be satisfied instantly by the old one
+ * sitting in the store. Pass the `createdAtMs` on screen, or 0 when there is
+ * nothing there yet.
+ *
+ * A failed read is never fatal — a 404 means "nothing yet", and a blip means
+ * ask again. Only the deadline ends the wait, and it returns null rather than
+ * throwing so the caller can word its own message.
+ */
+export async function waitForMeetingTranscript(
+  input: {
+    getToken: () => Promise<string>;
+    meetId: string;
+    mode: TranscriptMode;
+    newerThanMs: number;
+  } & PollOptions,
+): Promise<MeetingTranscript | null> {
+  const everyMs = input.everyMs ?? GENERATION_POLL_EVERY_MS;
+  const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? realSleep;
+  const deadline = now() + (input.forMs ?? GENERATION_POLL_FOR_MS);
+
+  while (now() < deadline) {
+    await sleep(everyMs);
+    let token: string;
+    try {
+      token = await input.getToken();
+    } catch {
+      /* A token that could not be minted this second is not a verdict on the
+         transcript. Ask again on the next turn. */
+      continue;
+    }
+    const got = await getMeetingTranscriptGemini({ token, meetId: input.meetId });
+    if (!got.ok) continue;
+    const record = got.data?.transcript;
+    const generated = record?.[input.mode];
+    if (record && generated && generated.createdAtMs > input.newerThanMs) {
+      return record;
+    }
+  }
+  return null;
+}
+
+/** The same wait, for the summary. See `waitForMeetingTranscript`. */
+export async function waitForMeetingSummary(
+  input: {
+    getToken: () => Promise<string>;
+    meetId: string;
+    newerThanMs: number;
+  } & PollOptions,
+): Promise<{ createdAtMs?: number } | null> {
+  const everyMs = input.everyMs ?? GENERATION_POLL_EVERY_MS;
+  const now = input.now ?? Date.now;
+  const sleep = input.sleep ?? realSleep;
+  const deadline = now() + (input.forMs ?? GENERATION_POLL_FOR_MS);
+
+  while (now() < deadline) {
+    await sleep(everyMs);
+    let token: string;
+    try {
+      token = await input.getToken();
+    } catch {
+      continue;
+    }
+    const got = await getMeetingSummary({ token, meetId: input.meetId });
+    if (!got.ok) continue;
+    const summary = got.data?.summary as { createdAtMs?: number } | undefined;
+    if (summary && (summary.createdAtMs ?? 0) > input.newerThanMs) return summary;
+  }
+  return null;
+}

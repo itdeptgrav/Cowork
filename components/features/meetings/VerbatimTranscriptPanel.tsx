@@ -29,6 +29,8 @@ import { useEffect, useRef, useState } from "react";
 import { firebaseAuth } from "@/lib/legacy-ui/coworkFirebase";
 import {
   generateMeetingTranscriptGemini,
+  generationMayStillBeRunning,
+  waitForMeetingTranscript,
   getMeetingTranscriptGemini,
   type MeetingTranscript,
   type TranscriptMode,
@@ -90,7 +92,9 @@ export function VerbatimTranscriptPanel({
   const [generating, setGenerating] = useState(false);
   const [step, setStep] = useState(0);
   const [genError, setGenError] = useState<string | null>(null);
-  const [dlLoading, setDlLoading] = useState(false);
+  /* Which format is downloading, or null. A boolean could not say WHICH, so
+     both buttons would have read Downloading… at once. */
+  const [dlLoading, setDlLoading] = useState<"docx" | "pdf" | null>(null);
   /* Which page of the transcript is on screen. Reset whenever the record or the
      tab changes, so switching to Translated does not strand you on page 7 of a
      verbatim transcript that had more lines. */
@@ -143,11 +147,47 @@ export function VerbatimTranscriptPanel({
   async function generate(force = false) {
     setGenerating(true);
     setGenError(null);
+    /* Read BEFORE asking for a new one. Regenerating over an existing
+       transcript must not be satisfied by the old one still in the store. */
+    const newerThanMs = record?.[mode]?.createdAtMs ?? 0;
     try {
       const token = await getToken();
       const res = await generateMeetingTranscriptGemini({ token, meetId, mode, force });
-      if (!res.ok) throw new Error(res.error.message ?? "Generation failed");
-      if (res.data?.transcript) setRecord(res.data.transcript);
+      if (res.ok) {
+        if (res.data?.transcript) setRecord(res.data.transcript);
+        return;
+      }
+      /**
+       * **A broken connection is not a failed generation.**
+       *
+       * The engine does the slow work first and answers last — Gemini runs,
+       * the result is written to Firestore, and only then does the response
+       * go out. On a long meeting that can outlast whatever sits in front of
+       * the engine, and the answer is lost while the work is not.
+       *
+       * Reported with a 45–50 minute meeting: *Could not reach the Cowork
+       * server.* on a transcript that had in fact been generated and saved.
+       *
+       * So we wait for it instead of reporting a failure. 429 is included
+       * because that is the engine's own lock telling us it is already
+       * working on this one. Anything else is a real answer and is shown.
+       */
+      if (!generationMayStillBeRunning(res.error)) {
+        throw new Error(res.error.message ?? "Generation failed");
+      }
+      const waited = await waitForMeetingTranscript({
+        getToken,
+        meetId,
+        mode,
+        newerThanMs,
+      });
+      if (waited) {
+        setRecord(waited);
+        return;
+      }
+      throw new Error(
+        "This is taking longer than usual. The transcript is still being made — leave this open, or come back to the meeting in a few minutes.",
+      );
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Generation failed");
     } finally {
@@ -158,8 +198,19 @@ export function VerbatimTranscriptPanel({
   /* Download the tab being read. `mode` is whichever is open, so Verbatim
      gives the verbatim document and Translated the translated one — the file
      matches the screen rather than being one fixed export. */
-  async function downloadDocx() {
-    setDlLoading(true);
+  /**
+   * **The same document, in whichever format.**
+   *
+   * One route, one permission check, one set of contents — `format=pdf` only
+   * changes how the engine renders it. A second route would have been a
+   * second place for the two to drift apart.
+   *
+   * `which` is tracked rather than a single boolean so the two buttons can say
+   * which one is working: two buttons both reading Downloading… is worse than
+   * no feedback at all.
+   */
+  async function download(format: "docx" | "pdf") {
+    setDlLoading(format);
     setGenError(null);
     try {
       const token = await getToken();
@@ -168,7 +219,9 @@ export function VerbatimTranscriptPanel({
         process.env.NEXT_PUBLIC_LEGACY_API_URL ||
         "http://localhost:5000";
       const res = await fetch(
-        `${base}/cowork/audio/transcript/${encodeURIComponent(meetId)}/download?mode=${mode}`,
+        `${base}/cowork/audio/transcript/${encodeURIComponent(meetId)}/download?mode=${mode}${
+          format === "pdf" ? "&format=pdf" : ""
+        }`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
       if (!res.ok) {
@@ -186,13 +239,13 @@ export function VerbatimTranscriptPanel({
       const url = URL.createObjectURL(await res.blob());
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Meeting_Transcript_${mode === "translate" ? "Translated" : "Verbatim"}_${meetId}.docx`;
+      a.download = `Meeting_Transcript_${mode === "translate" ? "Translated" : "Verbatim"}_${meetId}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Download failed");
     } finally {
-      setDlLoading(false);
+      setDlLoading(null);
     }
   }
 
@@ -329,10 +382,18 @@ export function VerbatimTranscriptPanel({
           <Button
             tone="secondary"
             size="sm"
-            disabled={dlLoading || generating}
-            onClick={() => void downloadDocx()}
+            disabled={dlLoading !== null || generating}
+            onClick={() => void download("docx")}
           >
-            {dlLoading ? "Downloading…" : "Download .docx"}
+            {dlLoading === "docx" ? "Downloading…" : "Download .docx"}
+          </Button>
+          <Button
+            tone="secondary"
+            size="sm"
+            disabled={dlLoading !== null || generating}
+            onClick={() => void download("pdf")}
+          >
+            {dlLoading === "pdf" ? "Rendering…" : "PDF"}
           </Button>
           <Button
             tone="ghost"

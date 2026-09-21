@@ -18,6 +18,8 @@ import {
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { formatDateTime, formatDuration } from "@/lib/utils/format";
 import { canView, joinRefusal, manageRefusal } from "@/lib/rules/meetings/access";
+import { displayStatus } from "@/lib/rules/meetings/expiry";
+import { useNow } from "@/lib/hooks/useNow";
 import { RoomClosed } from "./MeetingRoom";
 import { CollapsiblePanel } from "./CollapsiblePanel";
 import { MeetingMasthead } from "./MeetingMasthead";
@@ -55,6 +57,10 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
      End was pressed (its clock) until it closes itself or is dismissed. */
   const [confirmEnd, setConfirmEnd] = useState(false);
   const [endedAt, setEndedAt] = useState<number | null>(null);
+  /* With the other hooks, because this page returns early — for a meeting that
+     is not found, and for one you may not see — and a hook after a return is
+     not a hook. See the masthead's `status` for what it answers. */
+  const nowMs = useNow()?.getTime() ?? 0;
   const meetingSession = useMeetingSession();
   const meeting = useQuery((r) => r.getMeeting(meetingId), [meetingId]);
   const viewer = useQuery((r) => r.getViewer(), []);
@@ -355,7 +361,11 @@ export function MeetingDetailArea({ meetingId }: { meetingId: string }) {
        */}
       <MeetingMasthead
         title={m.title}
-        status={m.status}
+        /* The DERIVED label, not the stored one. A meeting scheduled for two
+           weeks ago that nobody opened still reads "Scheduled" otherwise — see
+           lib/rules/meetings/expiry.ts. Starting it makes it waiting/live, so
+           it stops being expired on its own; nothing here blocks that. */
+        status={displayStatus(m, nowMs)}
         when={formatDateTime(m.startsAt)}
         duration={formatDuration(
           m.actualDurationSecs ??

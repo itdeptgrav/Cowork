@@ -24,10 +24,16 @@ import { firebaseAuth } from "@/lib/legacy-ui/coworkFirebase";
 import {
   askMeetingAI,
   generateMeetingSummary,
+  generationMayStillBeRunning,
+  waitForMeetingSummary,
   getMeetingSummary,
 } from "@/lib/legacy/meetingMedia";
 import { Button, InlineError } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
+import {
+  needsActionCount,
+  needsActionGroups,
+} from "@/lib/rules/meetings/needsAction";
 
 const BASE =
   process.env.NEXT_PUBLIC_API_URL ||
@@ -88,7 +94,9 @@ export function MeetingSummaryPanel({
   const [generating, setGenerating] = useState(false);
   const [step, setStep] = useState(0);
   const [genError, setGenError] = useState<string | null>(null);
-  const [dlLoading, setDlLoading] = useState(false);
+  /* Which format is downloading, or null. A boolean could not say WHICH, so
+     both buttons would have read Downloading… at once. */
+  const [dlLoading, setDlLoading] = useState<"docx" | "pdf" | null>(null);
 
   // Load existing summary on mount
   useEffect(() => {
@@ -163,11 +171,46 @@ export function MeetingSummaryPanel({
   async function generate(force = false) {
     setGenerating(true);
     setGenError(null);
+    /* See the transcript panel: read before asking, so Regenerate is not
+       satisfied by the summary already on screen. */
+    const newerThanMs = summary?.createdAtMs ?? 0;
     try {
       const token = await getToken();
       const res = await generateMeetingSummary({ token, meetId, force });
-      if (!res.ok) throw new Error(res.error.message ?? "Generation failed");
-      if (res.data?.summary) setSummary(res.data.summary as SummaryData);
+      if (res.ok) {
+        if (res.data?.summary) setSummary(res.data.summary as SummaryData);
+        return;
+      }
+      /**
+       * **A broken connection is not a failed generation.**
+       *
+       * The engine does the slow work first and answers last — Gemini runs,
+       * the result is written to Firestore, and only then does the response
+       * go out. On a long meeting that can outlast whatever sits in front of
+       * the engine, and the answer is lost while the work is not.
+       *
+       * Reported with a 45–50 minute meeting: *Could not reach the Cowork
+       * server.* on a transcript that had in fact been generated and saved.
+       *
+       * So we wait for it instead of reporting a failure. 429 is included
+       * because that is the engine's own lock telling us it is already
+       * working on this one. Anything else is a real answer and is shown.
+       */
+      if (!generationMayStillBeRunning(res.error)) {
+        throw new Error(res.error.message ?? "Generation failed");
+      }
+      const waited = await waitForMeetingSummary({
+        getToken,
+        meetId,
+        newerThanMs,
+      });
+      if (waited) {
+        setSummary(waited as SummaryData);
+        return;
+      }
+      throw new Error(
+        "This is taking longer than usual. The summary is still being made — leave this open, or come back to the meeting in a few minutes.",
+      );
     } catch (e) {
       setGenError(e instanceof Error ? e.message : "Generation failed");
     } finally {
@@ -175,20 +218,44 @@ export function MeetingSummaryPanel({
     }
   }
 
-  async function downloadDocx() {
-    setDlLoading(true);
+  /**
+   * **The same document, in whichever format.**
+   *
+   * One route, one permission check, one set of contents — `format=pdf` only
+   * changes how the engine renders it. A second route would have been a
+   * second place for the two to drift apart.
+   *
+   * `which` is tracked rather than a single boolean so the two buttons can say
+   * which one is working: two buttons both reading Downloading… is worse than
+   * no feedback at all.
+   */
+  async function download(format: "docx" | "pdf") {
+    setDlLoading(format);
     try {
       const token = await getToken();
       const res = await fetch(
-        `${BASE}/cowork/audio/summary/${encodeURIComponent(meetId)}/download`,
+        `${BASE}/cowork/audio/summary/${encodeURIComponent(meetId)}/download${
+          format === "pdf" ? "?format=pdf" : ""
+        }`,
         { headers: { Authorization: `Bearer ${token}` } },
       );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        /* The engine answers its refusals as JSON, and its reason is more use
+           than the number — a server with no Chromium says so in words. */
+        let reason = `HTTP ${res.status}`;
+        try {
+          const body = (await res.json()) as { error?: string };
+          if (body.error) reason = body.error;
+        } catch {
+          /* Not JSON — the status is all there is. */
+        }
+        throw new Error(reason);
+      }
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Meeting_Summary_${meetId}.docx`;
+      a.download = `Meeting_Summary_${meetId}.${format}`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -196,7 +263,7 @@ export function MeetingSummaryPanel({
         e instanceof Error ? e.message : "Download failed",
       );
     } finally {
-      setDlLoading(false);
+      setDlLoading(null);
     }
   }
 
@@ -227,7 +294,7 @@ export function MeetingSummaryPanel({
       summary={summary}
       meetId={meetId}
       onRegenerate={() => void generate(true)}
-      onDownload={() => void downloadDocx()}
+      onDownload={(format) => void download(format)}
       dlLoading={dlLoading}
       error={genError}
     />
@@ -325,8 +392,8 @@ function SummaryView({
   summary: SummaryData;
   meetId: string;
   onRegenerate: () => void;
-  onDownload: () => void;
-  dlLoading: boolean;
+  onDownload: (format: "docx" | "pdf") => void;
+  dlLoading: "docx" | "pdf" | null;
   error: string | null;
 }) {
   return (
@@ -336,10 +403,18 @@ function SummaryView({
         <Button
           tone="ghost"
           size="sm"
-          onClick={onDownload}
-          disabled={dlLoading}
+          onClick={() => onDownload("docx")}
+          disabled={dlLoading !== null}
         >
-          {dlLoading ? "Downloading…" : "Download .docx"}
+          {dlLoading === "docx" ? "Downloading…" : "Download .docx"}
+        </Button>
+        <Button
+          tone="ghost"
+          size="sm"
+          onClick={() => onDownload("pdf")}
+          disabled={dlLoading !== null}
+        >
+          {dlLoading === "pdf" ? "Rendering…" : "PDF"}
         </Button>
         <button
           type="button"
@@ -355,6 +430,72 @@ function SummaryView({
           </div>
         )}
       </div>
+
+      {/**
+       * **What somebody has to do, before anything else on the page.**
+       *
+       * Asked for 21 Sep 2026: there was nowhere that answered "what do I have
+       * to do". Tasks and action items sat in two separate blocks partway down,
+       * deadlines were produced by the engine and rendered NOWHERE, and the
+       * reader had to work out which of the three concerned them.
+       *
+       * First, because it is the only part of a summary anybody is obliged to
+       * act on. Grouped by person, because the question is asked about oneself
+       * and is answered by finding your own name.
+       *
+       * This REPLACED the separate "Tasks assigned" and "Action items"
+       * sections rather than joining them. It holds everything they held and
+       * the deadlines besides, so keeping them would have printed the same
+       * commitments twice under three headings — which is the kind of
+       * duplication this panel was reported for in the first place.
+       */}
+      {needsActionCount(summary) > 0 && (
+        <div className="rounded-inset border border-hairline bg-[var(--control)] p-3">
+          <p className="mb-2 flex items-center gap-1.5 text-[10px] font-medium tracking-[0.09em] text-ink uppercase">
+            <Icon.flag className="h-3.5 w-3.5 text-ink-muted" />
+            Needs action
+            <span data-figure className="text-ink-faint">
+              {needsActionCount(summary)}
+            </span>
+          </p>
+
+          <div className="flex flex-col gap-2.5">
+            {needsActionGroups(summary).map((group) => (
+              <div key={group.owner ?? "everyone"}>
+                <p className="mb-1 text-[11px] font-medium text-ink">
+                  {/* Null is the room's own list — work the meeting agreed
+                      without naming anybody to do it. */}
+                  {group.owner ?? "Everyone"}
+                </p>
+                <ul className="space-y-1">
+                  {group.items.map((item) => (
+                    <li
+                      key={item.source}
+                      className="flex gap-2 text-sm leading-relaxed text-ink-muted"
+                    >
+                      <Icon.check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" />
+                      <span>
+                        {item.what}
+                        {item.due && (
+                          <>
+                            {" "}
+                            {/* The date in the model's own words — "28th",
+                                "next Tuesday" — never reformatted into a date
+                                the meeting did not say. */}
+                            <span className="rounded-full bg-[var(--surface-raised)] px-1.5 py-0.5 text-[11px] whitespace-nowrap text-ink">
+                              {item.due}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Summary */}
       {summary.summary && (
@@ -381,33 +522,9 @@ function SummaryView({
         </Section>
       )}
 
-      {/* Tasks assigned */}
-      {summary.tasksAssigned && summary.tasksAssigned.length > 0 && (
-        <Section label="Tasks assigned">
-          <ul className="space-y-1">
-            {summary.tasksAssigned.map((t, i) => (
-              <li key={i} className="flex gap-2 text-sm text-ink-muted">
-                <Icon.tasks className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                {t}
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
-
-      {/* Action items */}
-      {summary.actionItems && summary.actionItems.length > 0 && (
-        <Section label="Action items">
-          <ul className="space-y-1">
-            {summary.actionItems.map((a, i) => (
-              <li key={i} className="flex gap-2 text-sm text-ink-muted">
-                <Icon.check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-ink-faint" />
-                {a}
-              </li>
-            ))}
-          </ul>
-        </Section>
-      )}
+      {/* Tasks assigned and Action items were two separate sections here.
+          Both are inside Needs action above, with the deadlines the page never
+          used to show at all — see the note on it. */}
 
       {/* Conversation — collapsible */}
       {summary.conversationFlow && summary.conversationFlow.length > 0 && (

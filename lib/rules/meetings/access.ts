@@ -17,9 +17,12 @@ import type { Meeting, MeetingStatus } from "@/lib/domain";
  * you are on the invitation, or you are neither. That is the same identity
  * routing `DeadlineChangeRequest` and the emergency request use, and it is what
  * makes "an administrator does not silently join a meeting" true without
- * writing that as a special case. Administrators get ORGANISATION VISIBILITY
- * through `canView` — they can see that a meeting exists and read its audit —
- * which is a different thing from being in the room.
+ * writing that as a special case.
+ *
+ * Since 21 September 2026 it decides SEEING as well. Administrators and
+ * managers used to get organisation and team visibility through `canView` — the
+ * meeting's existence and its audit, without the room — and that is gone by
+ * owner decision; see the note on `canView` for why.
  */
 
 /** Live in the sense that a room exists to enter. */
@@ -48,28 +51,41 @@ export function isOrganiser(meeting: Meeting, employeeId: string): boolean {
 /**
  * Whether this person may see that the meeting exists.
  *
- * Members always. Administrators with organisation reach, for audit. Managers
- * for meetings their own reports are in — the same `#closure()` that governs
- * every other team surface, so meetings do not become a place where the
- * hierarchy stops applying.
+ * **Membership, and nothing else.** OWNER DECISION, 21 September 2026.
  *
- * Seeing is not joining. `canJoin` is a strictly narrower question.
+ * This used to be wider: members, plus administrators with organisation reach
+ * for audit, plus managers for meetings their own reports were in — on the
+ * reasoning that seeing is not joining, and that meetings should not be the one
+ * place the hierarchy stops applying.
+ *
+ * It was reported as a fault, with the meetings page as evidence. A manager
+ * opened a report's meeting from their own list and was told *You are not on
+ * this meeting's invitation* — so the row was an invitation to a dead end. The
+ * distinction the old rule drew is real, and it was invisible: nothing on the
+ * row said "you are watching this, not attending it", so a list that was
+ * supposed to be *your* meetings read as a list of everybody's.
+ *
+ * Asked directly, the owner chose: a meeting shows only if you made it or you
+ * are on it. So seeing and joining are now the same question of membership, and
+ * `canJoin` differs from this only by the meeting's status.
+ *
+ * `MeetingViewer` keeps `seesOrganisation` and `hierarchyIds` rather than
+ * shedding them: every caller builds one, the token route and the repository
+ * read the same shape, and a narrowed permission is the thing most likely to be
+ * widened again. Leaving the fields costs nothing and keeps that a one-line
+ * change rather than a signature change across four files.
  */
 export function canView(meeting: Meeting, viewer: MeetingViewer): boolean {
-  if (isMember(meeting, viewer.employeeId)) return true;
-  if (viewer.seesOrganisation) return true;
-  return [meeting.organiserId, ...meeting.participantIds].some((id) =>
-    viewer.hierarchyIds.includes(id),
-  );
+  return isMember(meeting, viewer.employeeId);
 }
 
 /**
  * Why this person cannot enter the room, or null.
  *
- * Membership only. A manager who can SEE their report's meeting does not get to
- * walk into it, and neither does an administrator: being able to audit a
- * meeting is not being invited to it. Anything else would make every private
- * conversation in the organisation joinable by seniority.
+ * Membership only, and since 21 September 2026 so is `canView` — a manager no
+ * longer SEES a report's meeting either, so this is the only door and there is
+ * no longer a second, wider one behind it. The refusal text is unchanged: it is
+ * what the guest link and the token route both read.
  */
 export function joinRefusal(
   meeting: Meeting,
