@@ -416,6 +416,7 @@ export function collectionGroup(_db: Firestore, _id: string): never {
 /* ── Queries ──────────────────────────────────────────────────────────────── */
 
 export type QueryConstraint =
+  | { readonly kind: "select"; readonly fields: readonly string[] }
   | { readonly kind: "where"; readonly field: string; readonly op: WhereFilterOp; readonly value: unknown }
   | { readonly kind: "orderBy"; readonly field: string; readonly dir: OrderByDirection }
   | { readonly kind: "limit"; readonly n: number }
@@ -453,6 +454,24 @@ export const orderBy = (field: string, dir: OrderByDirection = "asc"): QueryCons
   dir,
 });
 export const limit = (n: number): QueryConstraint => ({ kind: "limit", n });
+
+/**
+ * Ask for only these fields. NOT part of the Firestore client SDK.
+ *
+ * A deliberate addition, for one reason. Counting unread messages means
+ * reading every message somebody else sent and checking `readBy` -- and the
+ * conversation list does that for every conversation, every time a message
+ * arrives. Whole message documents carry text, attachments and names that
+ * the count never looks at: about 79% of a payload that runs to a megabyte
+ * on a busy account.
+ *
+ * Firestore had no equivalent on the client, which is why the code being
+ * preserved here never asked for one. It changes nothing about which rows
+ * come back, in what order, or who may see them -- the server still reads
+ * each whole document and still applies the access rule to it, and only
+ * then drops the fields that were not asked for.
+ */
+export const select = (...fields: string[]): QueryConstraint => ({ kind: "select", fields });
 export const startAt = (value: unknown): QueryConstraint => ({ kind: "startAt", value: cursorValue(value) });
 export const startAfter = (value: unknown): QueryConstraint => ({
   kind: "startAfter",
@@ -482,6 +501,7 @@ function queryBody(src: Query<any>): Op {
     else if (c.kind === "limit") body.limit = c.n;
     else if (c.kind === "startAt") body.startAt = encodeValue(c.value);
     else if (c.kind === "startAfter") body.startAfter = encodeValue(c.value);
+    else if (c.kind === "select") body.select = [...c.fields];
   }
   if (w.length) body.where = w;
   if (o.length) body.orderBy = o;
@@ -706,6 +726,11 @@ export function noticeConcerns(watchedFlatName: string, noticeCollection: string
 
 type ErrorFn = (error: Error) => void;
 
+/**
+ * The most documents a listener will patch in one go before it gives up and
+ * re-reads the collection instead.
+ */
+export const PATCH_LIMIT = 50;
 export function onSnapshot<T = DocumentData>(
   ref: DocumentReference<T>,
   next: (snapshot: DocumentSnapshot<T>) => void,
@@ -728,6 +753,7 @@ export function onSnapshot<T = DocumentData>(
   next: (snapshot: QuerySnapshot<T>) => void,
   error?: ErrorFn,
 ): Unsubscribe;
+
 export function onSnapshot(target: any, a: any, b?: any, c?: any): Unsubscribe {
   /* The options overload: `onSnapshot(ref, {includeMetadataChanges}, next, err)`. */
   const hasOptions = typeof a === "object" && a !== null;
@@ -740,10 +766,85 @@ export function onSnapshot(target: any, a: any, b?: any, c?: any): Unsubscribe {
       ? target.parent.flatName
       : (target instanceof Query ? target.ref : (target as CollectionReference)).flatName;
 
+  /**
+   * Whether a change to ONE document can be applied without reading the rest.
+   *
+   * A Firestore listener was a live cursor: after the first snapshot Google
+   * sent only the documents that changed. Re-running the whole query in its
+   * place is correct and, on the collections that matter, ruinous -- an open
+   * conversation re-read all 444 of its messages, 212 KB, every time either
+   * side sent one, and the thread list re-read every thread behind it.
+   *
+   * The notice already names the document that changed, so the held result can
+   * be patched with that one document instead.
+   *
+   * Only for a watch with NO constraints, which is what a chat thread is:
+   * `collection(db, coll, conversationId, "messages")`. The moment a `where`,
+   * `orderBy` or `limit` is involved, whether a changed document still belongs
+   * in the result -- and where -- is the server's answer to give, not this
+   * cache's to guess, so those keep re-reading in full.
+   */
+  const source = target instanceof DocumentReference ? null : asQuery(target);
+  const patchable = source !== null && source.constraints.length === 0;
+  let current: QueryDocumentSnapshot<any>[] | null = null;
+
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let inflight: Promise<void> | null = null;
   let again = false;
+  /* Ids waiting to be patched in. `null` means something asked for a full
+     read, which supersedes every pending patch. */
+  let touched: Set<string> | null = new Set();
+
+  const fetchAll = async () => {
+    const snap =
+      target instanceof DocumentReference ? await getDoc(target) : await getDocs(target);
+    if (snap instanceof QuerySnapshot) current = [...snap.docs];
+    return snap;
+  };
+
+  /**
+   * Read just the named documents and fold them into what is already held.
+   *
+   * A document that comes back missing is removed -- it was deleted, or the
+   * notice was for the same collection under a DIFFERENT parent, which reads
+   * as absent through a parent-scoped reference. If nothing in the set
+   * actually moved, no snapshot is emitted at all: a message in somebody
+   * else's conversation must not re-render this one.
+   */
+  const fetchSome = async (ids: string[]): Promise<QuerySnapshot<any> | null> => {
+    if (!source || !current) return null;
+    const wires = await Promise.all(
+      ids.map(async (id) => ({
+        id,
+        wire: (await transport({ op: "get", path: [...source.ref.segments, id] })).doc as
+          | WireDoc
+          | undefined,
+      })),
+    );
+    const held = [...current];
+    let moved = false;
+    for (const { id, wire } of wires) {
+      const at = held.findIndex((d) => d.id === id);
+      if (!wire || !wire.exists) {
+        if (at >= 0) {
+          held.splice(at, 1);
+          moved = true;
+        }
+        continue;
+      }
+      const doc = new QueryDocumentSnapshot<any>(
+        new DocumentReference<any>([...source.ref.segments, id]),
+        wire,
+      );
+      if (at >= 0) held[at] = doc;
+      else held.push(doc);
+      moved = true;
+    }
+    if (!moved) return null;
+    current = held;
+    return new QuerySnapshot<any>(source, held);
+  };
 
   const fetch = async () => {
     if (stopped) return;
@@ -751,11 +852,24 @@ export function onSnapshot(target: any, a: any, b?: any, c?: any): Unsubscribe {
       again = true;
       return;
     }
+    const wanted = touched;
+    touched = new Set();
     inflight = (async () => {
       try {
-        const snap =
-          target instanceof DocumentReference ? await getDoc(target) : await getDocs(target);
-        if (!stopped) next(snap);
+        /* Past a point, reading the changed documents one by one stops being
+           cheaper than reading the collection. Marking a long thread read
+           writes a receipt per message, and several hundred of those should
+           cost one query, not several hundred reads. */
+        const incremental =
+          patchable &&
+          current !== null &&
+          wanted !== null &&
+          wanted.size > 0 &&
+          wanted.size <= PATCH_LIMIT;
+        const snap = incremental
+          ? await fetchSome([...(wanted as Set<string>)])
+          : await fetchAll();
+        if (!stopped && snap) next(snap);
       } catch (e) {
         if (!stopped) onError(e as Error);
       }
@@ -777,9 +891,23 @@ export function onSnapshot(target: any, a: any, b?: any, c?: any): Unsubscribe {
     }, SNAPSHOT_COALESCE_MS);
   };
 
+  /** Ask for a full read next time, whatever was pending. */
+  const scheduleAll = () => {
+    touched = null;
+    schedule();
+  };
+
   const unsubscribe = subscribeToChanges((n) => {
-    if ("resync" in n) return schedule();
-    if (noticeConcerns(flat, n.collection)) schedule();
+    if ("resync" in n) return scheduleAll();
+    if (!noticeConcerns(flat, n.collection)) return;
+    /* Exactly this collection, with a document named, and nothing pending that
+       already demands a full read. A notice from a SUBcollection of what is
+       watched names a document of the child, which this set cannot place. */
+    if (patchable && n.collection === flat && n.id && touched !== null) {
+      touched.add(String(n.id));
+      return schedule();
+    }
+    scheduleAll();
   });
 
   void fetch();

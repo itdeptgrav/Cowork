@@ -3673,7 +3673,7 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { arrayUnion, collection, getDocs, query, where, writeBatch } =
+      const { arrayUnion, collection, getDocs, query, select, where, writeBatch } =
         await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const db = legacyDb();
@@ -3681,7 +3681,11 @@ export class LegacyRepository {
       /* Only what somebody else sent, and only what this viewer has not
          already been recorded on — otherwise every open of the tab rewrites
          every row and the live listener answers its own write for ever. */
-      const snap = await getDocs(query(chat, where("senderId", "!=", me)));
+      /* Only the two fields the decision below reads. The rest of a message --
+         its text, its attachments -- is never looked at here. */
+      const snap = await getDocs(
+        query(chat, where("senderId", "!=", me), select("senderId", "readBy")),
+      );
       const unread = snap.docs.filter((d) => {
         const by = (d.data() as Record<string, unknown>).readBy;
         return !Array.isArray(by) || !by.includes(me);
@@ -16317,14 +16321,23 @@ export class LegacyRepository {
     me: string,
   ): Promise<number> {
     try {
-      const { collection, getDocs, query, where } = await import(
+      const { collection, getDocs, query, select, where } = await import(
         "@/lib/legacy/firestoreClient"
       );
       const { legacyDb } = await import("../../legacy/firebase.ts");
+      /**
+       * Only `readBy`, which is the only field counted.
+       *
+       * This runs once per conversation every time the list is rebuilt, and the
+       * list is rebuilt on every message that arrives. Whole message documents
+       * made that megabytes of text and attachment metadata, per message, to
+       * produce a handful of integers.
+       */
       const snap = await getDocs(
         query(
           collection(legacyDb(), collectionName, conversationId, "messages"),
           where("senderId", "!=", me),
+          select("readBy"),
         ),
       );
       return snap.docs.filter((d) => {
@@ -17686,14 +17699,17 @@ export class LegacyRepository {
     if (!me)
       return { ok: false, code: "permission_denied", message: "Sign in first." };
     try {
-      const { arrayUnion, collection, getDocs, query, where, writeBatch } =
+      const { arrayUnion, collection, getDocs, query, select, where, writeBatch } =
         await import("@/lib/legacy/firestoreClient");
       const { legacyDb } = await import("../../legacy/firebase.ts");
       const coll = await this.#conversationCollection(conversationId);
+      /* `readBy` decides which of these still need a receipt; nothing else on
+         the message is read before the batch below writes to it. */
       const snap = await getDocs(
         query(
           collection(legacyDb(), coll, conversationId, "messages"),
           where("senderId", "!=", me),
+          select("readBy"),
         ),
       );
       const unread = snap.docs.filter((d) => {

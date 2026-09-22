@@ -144,46 +144,113 @@ test("the client behaves like the SDK where the two would differ", async () => {
   }
 });
 
-test("onSnapshot fetches now, and again when the server says that collection changed", async () => {
+test("onSnapshot reads once, then reads only what changed", async () => {
+  /**
+   * The behaviour this replaces re-ran the whole query on every notice. On an
+   * open conversation that was 444 messages, 212 KB, per message either side
+   * sent. Firestore never did that: after the first snapshot it delivered the
+   * documents that changed and nothing else.
+   */
   const m = await import("./firestoreClient.ts");
   const sock = await import("@/lib/realtime/appSocket");
-  let fetches = 0;
-  const restore = m.setDataTransport(async () => {
-    fetches += 1;
-    return { docs: [{ id: "m1", exists: true, data: { text: `v${fetches}` } }] };
+  const reads: string[] = [];
+  const restore = m.setDataTransport(async (op) => {
+    reads.push(op.op as string);
+    if (op.op === "get") {
+      const id = (op as unknown as { path: string[] }).path[3];
+      return { doc: { id, exists: true, data: { text: `${id}!` } } };
+    }
+    return { docs: [{ id: "m1", exists: true, data: { text: "first" } }] };
   });
-  const seen: string[] = [];
-  const stop = m.onSnapshot(m.collection(m.getFirestore(), "cowork_tasks", "T1", "chat"), (snap) => {
-    seen.push(snap.docs[0].data().text as string);
-  });
+  const seen: string[][] = [];
+  const stop = m.onSnapshot(
+    m.collection(m.getFirestore(), "cowork_tasks", "T1", "chat"),
+    (snap) => {
+      seen.push(snap.docs.map((d) => d.data().text as string));
+    },
+  );
   const settle = (ms: number) => new Promise((r) => setTimeout(r, ms));
   try {
     await settle(20);
-    assert.deepEqual(seen, ["v1"], "no initial fetch");
+    assert.deepEqual(seen, [["first"]], "no initial read");
+    assert.deepEqual(reads, ["query"], "the first read was not the whole collection");
 
-    /* A change to some OTHER collection must not refetch. */
+    /* A change to some OTHER collection must not read anything. */
     sock.__emitForTest({ collection: "cowork_notifications", id: "x", operation: "insert" });
     await settle(m.SNAPSHOT_COALESCE_MS + 30);
-    assert.deepEqual(seen, ["v1"]);
+    assert.deepEqual(reads, ["query"]);
 
-    /* The flattened name of what is watched does. A burst is one refetch. */
+    /* A new message: ONE read, for that message, and it joins what is held. */
     for (let i = 0; i < 5; i += 1)
       sock.__emitForTest({ collection: "cowork_tasks__chat", id: "m2", operation: "insert" });
-    await settle(m.SNAPSHOT_COALESCE_MS + 30);
-    assert.deepEqual(seen, ["v1", "v2"], "a burst became several refetches, or none");
+    await settle(m.SNAPSHOT_COALESCE_MS + 40);
+    assert.deepEqual(reads, ["query", "get"], "a new message re-read the whole thread");
+    assert.deepEqual(seen[1], ["first", "m2!"], "the new message did not join the thread");
 
-    /* A resync refetches too. */
+    /* A message in somebody ELSE’s conversation reads as absent through this
+       parent-scoped reference, and must not re-render this one. */
+    const before = seen.length;
+    m.setDataTransport(async (op) => {
+      reads.push(op.op as string);
+      return op.op === "get" ? { doc: { id: "zz", exists: false } } : { docs: [] };
+    });
+    sock.__emitForTest({ collection: "cowork_tasks__chat", id: "zz", operation: "insert" });
+    await settle(m.SNAPSHOT_COALESCE_MS + 40);
+    assert.equal(seen.length, before, "a message in another conversation re-rendered this one");
+
+    /* A delete removes the message that went. */
+    sock.__emitForTest({ collection: "cowork_tasks__chat", id: "m2", operation: "delete" });
+    await settle(m.SNAPSHOT_COALESCE_MS + 40);
+    assert.deepEqual(seen[seen.length - 1], ["first"], "a deleted message stayed on screen");
+
+    /* A resync cannot be patched -- it means changes were missed -- so it reads
+       everything again. */
+    m.setDataTransport(async (op) => {
+      reads.push(op.op as string);
+      return { docs: [{ id: "m9", exists: true, data: { text: "afresh" } }] };
+    });
     sock.__emitForTest({ resync: true });
-    await settle(m.SNAPSHOT_COALESCE_MS + 30);
-    assert.deepEqual(seen, ["v1", "v2", "v3"]);
+    await settle(m.SNAPSHOT_COALESCE_MS + 40);
+    assert.deepEqual(seen[seen.length - 1], ["afresh"], "a resync did not read everything again");
   } finally {
     stop();
     m.setDataTransport(restore);
   }
+
   /* And after stop, nothing. */
+  const quiet = seen.length;
   sock.__emitForTest({ collection: "cowork_tasks__chat", id: "m3", operation: "insert" });
-  await settle(m.SNAPSHOT_COALESCE_MS + 30);
-  assert.deepEqual(seen, ["v1", "v2", "v3"]);
+  await new Promise((r) => setTimeout(r, m.SNAPSHOT_COALESCE_MS + 30));
+  assert.equal(seen.length, quiet);
+});
+
+test("a constrained watch still reads the whole query, because only the server can place a row", async () => {
+  /* With a where/orderBy/limit, whether a changed document still belongs in the
+     result, and where, is not something a local cache may decide. */
+  const m = await import("./firestoreClient.ts");
+  const sock = await import("@/lib/realtime/appSocket");
+  const ops: string[] = [];
+  const restore = m.setDataTransport(async (op) => {
+    ops.push(op.op as string);
+    return { docs: [{ id: "a", exists: true, data: {} }] };
+  });
+  const stop = m.onSnapshot(
+    m.query(
+      m.collection(m.getFirestore(), "cowork_tasks", "T1", "chat"),
+      m.orderBy("createdAt", "desc"),
+      m.limit(30),
+    ),
+    () => {},
+  );
+  try {
+    await new Promise((r) => setTimeout(r, 20));
+    sock.__emitForTest({ collection: "cowork_tasks__chat", id: "m2", operation: "insert" });
+    await new Promise((r) => setTimeout(r, m.SNAPSHOT_COALESCE_MS + 40));
+    assert.deepEqual(ops, ["query", "query"], "a constrained watch was patched locally");
+  } finally {
+    stop();
+    m.setDataTransport(restore);
+  }
 });
 
 test("a parent watch also refetches on its subcollection, never the reverse", async () => {
@@ -211,7 +278,7 @@ test("concurrent operations are sent as one request, and each still answers for 
         results: ops.map((op, i) =>
           i === 1
             ? { ok: false, status: 403, error: "You do not have access to this record." }
-            : { ok: true, data: { doc: { id: String((op as { path: string[] }).path[1]), exists: true, data: {} } } },
+            : { ok: true, data: { doc: { id: String((op as unknown as { path: string[] }).path[1]), exists: true, data: {} } } },
         ),
       };
     },
