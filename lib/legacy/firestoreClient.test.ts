@@ -193,3 +193,64 @@ test("a parent watch also refetches on its subcollection, never the reverse", as
   assert.equal(m.noticeConcerns("cowork_tasks__chat", "cowork_tasks"), false);
   assert.equal(m.noticeConcerns("cowork_tasks", "cowork_task_timers"), false);
 });
+
+/* ── Reads issued together travel together ────────────────────────────────── */
+
+test("concurrent operations are sent as one request, and each still answers for itself", async () => {
+  const m = await import("./firestoreClient.ts");
+  const singles: unknown[] = [];
+  const groups: unknown[][] = [];
+  const t = m.createBatchingTransport(
+    async (op) => {
+      singles.push(op);
+      return { doc: { id: "solo", exists: true, data: {} } };
+    },
+    async (ops) => {
+      groups.push(ops);
+      return {
+        results: ops.map((op, i) =>
+          i === 1
+            ? { ok: false, status: 403, error: "You do not have access to this record." }
+            : { ok: true, data: { doc: { id: String((op as { path: string[] }).path[1]), exists: true, data: {} } } },
+        ),
+      };
+    },
+  );
+
+  /* Three reads started in the same tick. */
+  const settled = await Promise.allSettled([
+    t({ op: "get", path: ["cowork_tasks", "A"] }),
+    t({ op: "get", path: ["cowork_tasks", "B"] }),
+    t({ op: "get", path: ["cowork_tasks", "C"] }),
+  ]);
+  assert.equal(groups.length, 1, "three concurrent reads were not sent as one request");
+  assert.equal(groups[0].length, 3);
+  assert.equal(settled[0].status, "fulfilled");
+  assert.equal(settled[1].status, "rejected", "a refusal in one slot did not reject that one");
+  assert.equal(settled[2].status, "fulfilled", "a refusal in one slot took a sibling down with it");
+  assert.equal(
+    (settled[1] as PromiseRejectedResult).reason.code,
+    "permission-denied",
+    "the refusal lost its code on the way back",
+  );
+
+  /* One on its own is sent on its own — no new shape for the common case. */
+  await t({ op: "get", path: ["cowork_tasks", "D"] });
+  assert.equal(singles.length, 1);
+  assert.equal(groups.length, 1, "a lone read was wrapped in a group");
+});
+
+test("a failed request fails every operation that was riding in it", async () => {
+  const m = await import("./firestoreClient.ts");
+  const t = m.createBatchingTransport(
+    async () => ({}),
+    async () => {
+      throw new Error("offline");
+    },
+  );
+  const settled = await Promise.allSettled([
+    t({ op: "get", path: ["cowork_tasks", "A"] }),
+    t({ op: "get", path: ["cowork_tasks", "B"] }),
+  ]);
+  assert.deepEqual(settled.map((r) => r.status), ["rejected", "rejected"]);
+});

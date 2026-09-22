@@ -91,7 +91,8 @@ const METADATA: SnapshotMetadata = Object.freeze({ fromCache: false, hasPendingW
 type Op = Record<string, unknown> & { op: string };
 type Transport = (op: Op) => Promise<Record<string, unknown>>;
 
-let transport: Transport = async (op) => {
+/** One request, one operation — the shape the server has always answered. */
+async function postOne(op: Op): Promise<Record<string, unknown>> {
   const token = (await idToken().catch(() => null)) ?? undefined;
   const r = await legacyFetch<Record<string, unknown>>({
     path: "/cowork/db",
@@ -99,21 +100,117 @@ let transport: Transport = async (op) => {
     body: op,
     token,
   });
-  if (!r.ok) {
-    const e = new Error(r.error.message) as Error & { code: string; status: number };
-    e.code =
-      r.error.kind === "permission"
-        ? "permission-denied"
-        : r.error.kind === "not_found"
-          ? "not-found"
-          : r.error.kind === "auth"
-            ? "unauthenticated"
-            : "unavailable";
-    e.status = r.error.status;
-    throw e;
-  }
+  if (!r.ok) throw transportError(r.error.kind, r.error.message, r.error.status);
   return r.data;
+}
+
+function transportError(kind: string, message: string, status: number) {
+  const e = new Error(message) as Error & { code: string; status: number };
+  e.code =
+    kind === "permission"
+      ? "permission-denied"
+      : kind === "not_found"
+        ? "not-found"
+        : kind === "auth"
+          ? "unauthenticated"
+          : "unavailable";
+  e.status = status;
+  return e;
+}
+
+/** Turn a slot of a `multi` answer back into a resolved value or a throw. */
+function settle(
+  slot: { ok?: boolean; data?: Record<string, unknown>; status?: number; error?: string } | undefined,
+): Record<string, unknown> {
+  if (!slot) throw transportError("unavailable", "The request did not come back.", 500);
+  if (slot.ok) return slot.data ?? {};
+  const status = slot.status ?? 500;
+  const kind =
+    status === 403 ? "permission" : status === 404 ? "not_found" : status === 401 ? "auth" : "unavailable";
+  throw transportError(kind, slot.error ?? "The request could not be completed.", status);
+}
+
+/** How many operations the server accepts in one `multi`. */
+const MULTI_MAX = 50;
+
+/**
+ * Operations issued in the same tick travel together.
+ *
+ * ## Why this is here at all
+ *
+ * Firestore multiplexed every read over one connection. A request per read does
+ * not: a browser opens six connections to one origin and queues the rest. The
+ * conversation list asks for an unread count per conversation — fourteen reads
+ * for this workspace — so they arrive in three waves rather than one, and every
+ * incoming message re-runs them. That queueing is most of what a reader feels
+ * as chat being sluggish.
+ *
+ * ## What it does NOT change
+ *
+ * Nothing about what is asked for, in what order, or who may have it. Each
+ * operation is still executed on its own by the server, still against the same
+ * policy, and still resolves or throws on its own — a refusal in one does not
+ * disturb the others. A single operation with nothing to travel with is sent
+ * exactly as before.
+ *
+ * The wait is one turn of the event loop, which is also what makes the grouping
+ * possible: everything a `Promise.all` starts is queued before the flush runs.
+ */
+type Waiting = {
+  op: Op;
+  resolve: (value: Record<string, unknown>) => void;
+  reject: (reason: unknown) => void;
 };
+
+export function createBatchingTransport(
+  sendOne: (op: Op) => Promise<Record<string, unknown>>,
+  sendMany: (ops: Op[]) => Promise<Record<string, unknown>>,
+): Transport {
+  let queue: Waiting[] = [];
+  let scheduled = false;
+
+  const flush = () => {
+    scheduled = false;
+    const batch = queue;
+    queue = [];
+    if (batch.length === 0) return;
+    if (batch.length === 1) {
+      const only = batch[0];
+      sendOne(only.op).then(only.resolve, only.reject);
+      return;
+    }
+    for (let i = 0; i < batch.length; i += MULTI_MAX) {
+      const slice = batch.slice(i, i + MULTI_MAX);
+      sendMany(slice.map((w) => w.op)).then(
+        (answer) => {
+          const results = (answer?.results ?? []) as Record<string, unknown>[];
+          slice.forEach((w, at) => {
+            try {
+              w.resolve(settle(results[at] as never));
+            } catch (e) {
+              w.reject(e);
+            }
+          });
+        },
+        /* The request itself failed, so every operation in it failed. */
+        (e) => slice.forEach((w) => w.reject(e)),
+      );
+    }
+  };
+
+  return (op) =>
+    new Promise((resolve, reject) => {
+      queue.push({ op, resolve, reject });
+      if (!scheduled) {
+        scheduled = true;
+        setTimeout(flush, 0);
+      }
+    });
+}
+
+let transport: Transport = createBatchingTransport(postOne, (ops) =>
+  postOne({ op: "multi", ops } as Op),
+);
 
 /** For tests: replace the network with a function. Returns the previous one. */
 export function setDataTransport(next: Transport): Transport {
