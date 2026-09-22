@@ -82,7 +82,11 @@ import { myReaction, reactionSummary } from "@/lib/rules/messages/reactions";
 import { isPinned } from "@/lib/rules/messages/pins";
 import { escapeAction } from "@/lib/rules/messages/escapeLadder";
 import { searchThread } from "@/lib/rules/messages/threadSearch";
-import { snippetAround, searchSegments } from "@/lib/rules/messages/globalSearch";
+import {
+  snippetAround,
+  searchSegments,
+  matchPeople,
+} from "@/lib/rules/messages/globalSearch";
 import { clearDraft, readDraft, saveDraft } from "./draftStorage";
 import {
   mergeMessagePages,
@@ -178,6 +182,15 @@ export function MessagesPage({
   const [newChat, setNewChat] = useState<null | "direct" | "group">(null);
   const [search, setSearch] = useState("");
 
+  /* Typing is what makes the directory worth reading, so the flag is set from
+     the event rather than from an effect watching the term after the fact —
+     one render instead of two, and no cascade. It never goes back to false:
+     clearing the box does not un-read what was read. */
+  function handleSearch(value: string) {
+    setSearch(value);
+    if (value.trim()) setDirectoryWanted(true);
+  }
+
   const all = useMemo(
     () => sortByRecency(conversations.data ?? []),
     [conversations.data],
@@ -222,6 +235,79 @@ export function MessagesPage({
       }),
     [messageHits.data, all, viewerId],
   );
+
+
+  /**
+   * **A name should find the PERSON, not only their messages.** Asked for
+   * 21 September 2026.
+   *
+   * Everything above searches things the viewer already has: the chat list is
+   * filtered by name, and `searchMessages` reads the text of threads they are
+   * in. Both are useless for the search somebody actually runs most often —
+   * looking up a colleague they have never written to. There is no
+   * conversation to match and no message to find, so the box answered
+   * "nothing" about somebody sitting in the directory.
+   *
+   * **The directory is read once, on the first search of the session, and not
+   * before.** Most visits to this page never type anything, and a page that
+   * pulled every employee on mount would pay for a feature nobody used. After
+   * that first read the matching is local, so it keeps up with typing rather
+   * than waiting on the 220ms debounce the message fan-out needs.
+   */
+  const [directoryWanted, setDirectoryWanted] = useState(false);
+  const peopleQ = useQuery(
+    (r) => (directoryWanted ? r.listEmployees() : Promise.resolve<Employee[]>([])),
+    [directoryWanted],
+  );
+  /* Matched off the live term rather than the debounced one: the work is a
+     pass over an array already in memory, and there is nothing to spare the
+     network by waiting. */
+  const peopleMatches = useMemo(
+    () => matchPeople(peopleQ.data ?? [], search, { excludeId: viewerId }),
+    [peopleQ.data, search, viewerId],
+  );
+
+  /**
+   * The thread the viewer already has with each person.
+   *
+   * What makes a person row a LINK rather than a write. Clicking somebody you
+   * already message must not create anything — `createConversation`
+   * deduplicates the pair so it would be harmless, but a plain link is also
+   * openable in a new tab, needs no pending state, and cannot fail.
+   */
+  const directChatByPerson = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of all) {
+      if (c.kind !== "direct") continue;
+      const other = c.participants.find((p) => p.id !== viewerId);
+      if (other) m.set(other.id, c.id);
+    }
+    return m;
+  }, [all, viewerId]);
+
+  const [startChat, startState] = useAction((r, personId: string) =>
+    r.createConversation({
+      kind: "direct",
+      participantIds: [personId],
+      title: null,
+    }),
+  );
+  const [startingPersonId, setStartingPersonId] = useState<string | null>(null);
+
+  /* Opening somebody from the search: their thread if there is one, otherwise
+     the same create-then-open the New message dialog performs — this is a
+     second door onto that action, not a second implementation of it. */
+  async function openPerson(personId: string) {
+    const existing = directChatByPerson.get(personId);
+    if (existing) {
+      router.push(`/messages/${existing}`);
+      return;
+    }
+    setStartingPersonId(personId);
+    const r = await startChat(personId);
+    setStartingPersonId(null);
+    if (r.ok) openCreated(r.data.id);
+  }
 
   /* The route is the source of truth for what is open; the first conversation
      is only a default, and only until the reader has said otherwise — see
@@ -390,12 +476,18 @@ export function MessagesPage({
               activeId={active}
               viewerId={viewerId}
               search={search}
-              onSearch={setSearch}
+              onSearch={handleSearch}
               onNew={() => setNewChat("direct")}
               messageHits={enrichedHits}
               searching={debouncedQuery.length > 0}
               messageSearchSupported={typeof repo.searchMessages === "function"}
               searchLoading={messageHits.isLoading}
+              people={peopleMatches}
+              peopleLoading={peopleQ.isLoading}
+              directChatByPerson={directChatByPerson}
+              onOpenPerson={openPerson}
+              startingPersonId={startingPersonId}
+              startPersonError={startState.error}
             />
           </div>
 
@@ -467,6 +559,12 @@ function ConversationList({
   searching,
   messageSearchSupported,
   searchLoading,
+  people,
+  peopleLoading,
+  directChatByPerson,
+  onOpenPerson,
+  startingPersonId,
+  startPersonError,
 }: {
   conversations: ConversationView[];
   total: number;
@@ -489,6 +587,14 @@ function ConversationList({
   /** Whether the backend offers cross-thread message search at all. */
   messageSearchSupported: boolean;
   searchLoading: boolean;
+  /** Employees matching the search, best first — see `matchPeople`. */
+  people: Employee[];
+  peopleLoading: boolean;
+  /** Person id → the direct conversation already open with them, if any. */
+  directChatByPerson: Map<string, string>;
+  onOpenPerson: (personId: string) => void;
+  startingPersonId: string | null;
+  startPersonError: string | null;
 }) {
   return (
     <Panel padded={false} label="Conversations" className="flex h-full flex-col">
@@ -576,6 +682,66 @@ function ConversationList({
               <p className="px-3 pt-2 pb-1 text-xs text-ink-faint">
                 No chats match “{search}”.
               </p>
+            )}
+
+
+            {/* People — matched by NAME, against the DIRECTORY rather than
+                against anything the viewer already has. This is the section
+                that makes looking somebody up work at all: a colleague you
+                have never written to has no conversation for the list above
+                to match and no message for the one below to find.
+
+                It sits between them on purpose. Someone typing a name most
+                often wants the person; someone typing a phrase wants the
+                line. Chats stay first because a thread you already have with
+                that name is the shortest answer of the three. */}
+            {searching && (
+              <div className="mt-1 border-t border-hairline pt-2">
+                <p className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-faint">
+                  People
+                </p>
+                {peopleLoading && people.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-ink-faint">Searching…</p>
+                ) : people.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-ink-faint">
+                    No one in the directory matches “{search}”.
+                  </p>
+                ) : (
+                  <>
+                    <ul>
+                      {people.slice(0, PEOPLE_SHOWN).map((p) => (
+                        <li key={p.id}>
+                          <PersonResultRow
+                            person={p}
+                            query={search}
+                            existingChatId={directChatByPerson.get(p.id)}
+                            onOpen={() => onOpenPerson(p.id)}
+                            starting={startingPersonId === p.id}
+                            busy={startingPersonId !== null}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                    {/* A cap rather than a scroll: two letters match half a
+                        company, and burying Messages under forty faces would
+                        cost the search that was already working. The count is
+                        shown because silently dropping people is how somebody
+                        concludes a colleague is not in Cowork. */}
+                    {people.length > PEOPLE_SHOWN && (
+                      <p className="px-3 pt-1 pb-1 text-[11px] text-ink-faint">
+                        <span data-figure>{people.length - PEOPLE_SHOWN}</span> more
+                        {people.length - PEOPLE_SHOWN === 1 ? " person matches" : " people match"}
+                        {" — keep typing to narrow it."}
+                      </p>
+                    )}
+                  </>
+                )}
+                {startPersonError && (
+                  <div className="px-3 py-1.5">
+                    <InlineError compact message={startPersonError} />
+                  </div>
+                )}
+              </div>
             )}
 
             {/* Messages — matched by their TEXT, across every conversation. The
@@ -718,6 +884,105 @@ function ConversationRow({
         </span>
       </span>
     </Link>
+  );
+}
+
+
+/**
+ * How many people a search shows before it asks for a narrower term.
+ *
+ * Eight is about what fits above the fold of the list pane without pushing
+ * the Messages section off it — the cap exists to protect the search that was
+ * already there, not to ration the directory.
+ */
+const PEOPLE_SHOWN = 8;
+
+/**
+ * A person, as a search result.
+ *
+ * Built to read like `ConversationRow` beside it — same avatar, same two
+ * lines, same height — because they are answers to one question and a
+ * different shape would read as a different KIND of thing.
+ *
+ * The second line is what the reader needs to tell two people with the same
+ * first name apart: what they do and where they sit. It is the profile in the
+ * three words there is room for, and it is why this is a person row rather
+ * than a bare name.
+ */
+function PersonResultRow({
+  person,
+  query,
+  existingChatId,
+  onOpen,
+  starting,
+  busy,
+}: {
+  person: Employee;
+  query: string;
+  /** The thread already open with them, which makes this a link. */
+  existingChatId: string | undefined;
+  onOpen: () => void;
+  starting: boolean;
+  /**
+   * Somebody's thread is being started — not necessarily this one.
+   *
+   * Every row is disabled for it, not just the one that was pressed.
+   * `useAction` dedupes calls that overlap by handing the second one the FIRST
+   * call's promise, so a click on a second person while the first is still
+   * being created would open the first person's conversation. Taking the rows
+   * out of reach for the moment it takes is the fix; disabling only the
+   * pressed row would leave exactly that click available.
+   */
+  busy: boolean;
+}) {
+  const subtitle =
+    [person.designation, person.departmentName].filter(Boolean).join(" · ") ||
+    "In the directory";
+
+  const body = (
+    <>
+      <Avatar
+        initials={person.initials}
+        hue={person.hue}
+        src={person.profilePictureUrl}
+        name={person.displayName}
+        size="md"
+      />
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm text-ink">
+          {/* The matched run is marked exactly as a message hit's is, so the
+              two sections explain themselves the same way. */}
+          {searchSegments(person.displayName, query).map((seg, i) =>
+            seg.match ? (
+              <mark
+                key={i}
+                className="rounded-[2px] bg-[color-mix(in_srgb,var(--accent,#1a73e8)_24%,transparent)] text-ink"
+              >
+                {seg.text}
+              </mark>
+            ) : (
+              <span key={i}>{seg.text}</span>
+            ),
+          )}
+        </span>
+        <span className="mt-0.5 block truncate text-[11px] text-ink-faint">
+          {starting ? "Opening…" : subtitle}
+        </span>
+      </span>
+    </>
+  );
+
+  const className =
+    "flex w-full items-center gap-3 rounded-inset px-2.5 py-3 text-left transition-colors duration-[180ms] ease-[var(--ease-deck)] hover:bg-[var(--control)] disabled:opacity-60 sm:py-2.5";
+
+  return existingChatId ? (
+    <Link href={`/messages/${existingChatId}`} className={className}>
+      {body}
+    </Link>
+  ) : (
+    <button type="button" onClick={onOpen} disabled={busy} className={className}>
+      {body}
+    </button>
   );
 }
 

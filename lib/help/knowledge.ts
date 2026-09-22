@@ -3467,7 +3467,7 @@ export const HELP_ARTICLES: HelpArticle[] = [
   {
     id: "general-global-message-search",
     category: "general",
-    title: "Searching across all your chats",
+    title: "Searching across all your chats, and finding people",
     keywords: [
       "global search",
       "search all chats",
@@ -3475,22 +3475,31 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "search everything",
       "find a message in any chat",
       "search across conversations",
+      "search for a person",
+      "search an employee name",
+      "find an employee",
+      "find someone to message",
+      "search people",
+      "name search shows no results",
     ],
     examples: [
       "How do I search all my chats at once?",
       "Can I find a message when I don't remember which chat it was in?",
       "Does the search box search message text?",
       "How do I jump to a message a search found?",
+      "Can I search for an employee by name?",
+      "I searched a colleague's name and got nothing — why?",
+      "How do I message somebody I have never written to before?",
     ],
     answer:
-      "The search box above the conversation list searches everything, not just chat names. Type a word and you get two sets of results: **Chats** — conversations whose name or last message matches — and **Messages** — actual messages whose TEXT matches, drawn from across every conversation you are in, so you can find a line without remembering which chat it was in. Each message result names the chat it is in and who sent it, with the matching words highlighted; tapping one opens that conversation and scrolls straight to that message, loading older history first if the message is far back. Matching is by plain text and is not case-sensitive; deleted messages never appear. It searches your recent conversations and a window of recent messages in each rather than the entire archive of every chat you have ever had — so a very old line in a rarely-used conversation may not surface, and opening that conversation and using its own in-chat search (the magnifier in its header) is the way to reach deep history. Clearing the box returns the list to all your conversations.",
+      "The search box above the conversation list searches everything, not just chat names. Type a word and you get three sets of results: **Chats** — conversations whose name or last message matches — **People** — employees from the directory, whether or not you have ever written to them — and **Messages** — actual messages whose TEXT matches, drawn from across every conversation you are in, so you can find a line without remembering which chat it was in. **People is how you reach somebody you have never messaged.** They have no conversation for the first list to match and no message for the last one to find, so before this a search for their name came back empty even though they were sitting in the directory. A person is found by their name — the start of it, or any word of it, so a surname works as well as a first name — and also by their job, their department, their employee code or their work address; the people whose NAME you typed are listed first, because a department called Production must not bury somebody called Rakesh. Each row shows their picture, their name with the matching part highlighted, and their designation and department underneath, which is what tells two people with the same first name apart. Tapping one opens your conversation with them, and starts one if you have never messaged them — the same thing the + button beside the search box does, reached by typing a name instead. Up to eight people are shown at once and the rest are counted underneath, so a two-letter search says how many more there are rather than quietly dropping them. You are not offered to yourself, and neither is anybody who has left the company, because neither is a conversation Cowork will carry. Each message result names the chat it is in and who sent it, with the matching words highlighted; tapping one opens that conversation and scrolls straight to that message, loading older history first if the message is far back. Matching is by plain text and is not case-sensitive; deleted messages never appear. It searches your recent conversations and a window of recent messages in each rather than the entire archive of every chat you have ever had — so a very old line in a rarely-used conversation may not surface, and opening that conversation and using its own in-chat search (the magnifier in its header) is the way to reach deep history. Clearing the box returns the list to all your conversations.",
     related: [
       "general-message-search",
       "general-message-actions",
       "general-start-conversation",
     ],
     source:
-      "searchMessages on both repositories — the mock filters its message store, the legacy repo does a BOUNDED Firestore fan-out (top 40 conversations by lastMessageAt × 60 recent messages, filtered by matchesQuery) because Firestore has no full-text index; matchesQuery / snippetAround / searchSegments in lib/rules/messages/globalSearch.ts; the Chats + Messages sections render in ConversationList (MessagesArea), debounced 220ms; a hit links to /messages/{id}?m={messageId} and Thread reads ?m to jumpToMessage once the first page loads",
+      "searchMessages on both repositories — the mock filters its message store, the legacy repo does a BOUNDED Firestore fan-out (top 40 conversations by lastMessageAt × 60 recent messages, filtered by matchesQuery) because Firestore has no full-text index; matchesQuery / snippetAround / searchSegments in lib/rules/messages/globalSearch.ts; the Chats + People + Messages sections render in ConversationList (MessagesArea), debounced 220ms; a hit links to /messages/{id}?m={messageId} and Thread reads ?m to jumpToMessage once the first page loads; the People section matches with matchPeople / personRank in the same globalSearch.ts (name, then code and email, then designation and department; self and exited excluded) over one lazy listEmployees() read taken on the first search rather than on mount, capped at PEOPLE_SHOWN = 8, and a row is a plain Link when directChatByPerson already holds a thread and a createConversation({ kind: direct }) button when it does not",
   },
   {
     id: "general-phone-numbers-in-chat",
