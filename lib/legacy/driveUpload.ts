@@ -474,6 +474,16 @@ export async function uploadToDrive(input: {
   file: File;
   onProgress?: (fraction: number) => void;
   signal?: AbortSignal;
+  /**
+   * A token taken NOW, for the finalize that happens after the bytes.
+   *
+   * Same fault as the private attachment path, reported the same day: `token`
+   * is read once, before the transfer, and a sign-in token lives one hour. A
+   * long upload therefore delivered every byte and then failed on the small
+   * call that records it. Optional — without it the finalize uses `token`, as
+   * it always did.
+   */
+  freshToken?: () => Promise<string | null>;
 }): Promise<LegacyResult<DriveFile>> {
   const { file } = input;
 
@@ -524,8 +534,13 @@ export async function uploadToDrive(input: {
   if (!put) return failure(0, "The upload could not be started.");
   if (!put.ok) return put;
 
+  /* A token taken now, not the one from before the transfer — see
+     `freshToken`. `postJson` already retries a 5xx; an expired token is a 401,
+     which it correctly does not retry, so the refresh has to happen here. */
+  const finalizeToken =
+    (await input.freshToken?.().catch(() => null)) ?? input.token;
   const done = await postJson<Record<string, unknown>>(
-    input.token,
+    finalizeToken,
     "/cowork/upload/drive-finalize",
     { fileId: put.data.id },
   );

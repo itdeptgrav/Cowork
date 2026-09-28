@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Button,
   Chip,
@@ -13,6 +13,12 @@ import {
 import { Icon } from "@/components/ui/Icons";
 import { ActionWait } from "@/components/ui/ActionWait";
 import { uploadAll } from "@/lib/utils/uploadAll";
+import {
+  fileCountLabel,
+  uploadsMissing,
+  uploadsRunning,
+} from "@/lib/rules/tasks/submissionUploads";
+import type { SubmissionUpload } from "@/lib/domain";
 import { useAction, useQuery, useRepo } from "@/lib/hooks/useRepository";
 import {
   EntityAttachments,
@@ -84,6 +90,31 @@ export function SubmissionPanel({
   const [uploads, setUploads] = useState<{ name: string; fraction: number }[]>(
     [],
   );
+
+  /**
+   * **Ask before the tab takes an upload with it.**
+   *
+   * The banner says the upload stops if you close the tab, and that sentence
+   * was the only thing standing between somebody and a lost 3 GB — on a page
+   * they have every reason to navigate away from, since the work is already
+   * with the reviewer. The browser's own confirmation is the one thing that
+   * arrives at the moment it matters.
+   *
+   * Only while something is actually going. An unconditional handler would
+   * nag on every close of a task page, which teaches people to dismiss it.
+   */
+  useEffect(() => {
+    if (uploads.length === 0) return;
+    const warn = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      /* Browsers show their own wording and ignore ours; returning a value is
+         still what marks the event as handled in some of them. */
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [uploads.length]);
+
   const repo = useRepo();
   const submissions = useQuery(
     (r) => r.listSubmissions(taskId),
@@ -91,8 +122,8 @@ export function SubmissionPanel({
   );
   const reworks = useQuery((r) => r.listReworkRequests(taskId), [taskId]);
 
-  const [submit, state] = useAction((r) =>
-    r.submitCompletion({ taskId, message, attachmentIds: files }),
+  const [submit, state] = useAction((r, pendingUploads: SubmissionUpload[]) =>
+    r.submitCompletion({ taskId, message, attachmentIds: files, pendingUploads }),
   );
 
   /**
@@ -269,6 +300,25 @@ export function SubmissionPanel({
           ? { label: "Under review", tone: "extension" as const }
           : { label: "Submitted", tone: "neutral" as const }
       : { label: "Rework requested", tone: "rework" as const };
+    /**
+     * Files named at submit that have not arrived, read off the record rather
+     * than off this browser's own upload — so the reviewer sees the same thing
+     * the submitter does. `uploadsMissing` folds in the ones nobody ever
+     * reported on: a closed tab writes no failure, and an entry left saying
+     * "uploading" for ever would hold a decision for ever.
+     */
+    const stillComing = isCurrent
+      ? uploadsRunning(latest?.pendingUploads, nowMs)
+      : [];
+    const neverCame = isCurrent
+      ? uploadsMissing(latest?.pendingUploads, nowMs)
+      : [];
+    const pendingCount = fileCountLabel(
+      a.files.length,
+      latest?.pendingUploads,
+      nowMs,
+    );
+
     /* A coloured left edge signals which is which at a glance — the current
        attempt in the review tone, a reworked one in the rework tone. */
     const accent = isCurrent
@@ -308,13 +358,107 @@ export function SubmissionPanel({
         {/* This attempt's files — split out of the pooled record by upload time,
             so what was sent first is no longer mixed with what was sent after. */}
         <p className="mt-3 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-          Submitted files ({a.files.length})
+          Submitted files ({isCurrent ? pendingCount : a.files.length})
         </p>
         {a.files.length > 0 ? (
           <FileList attachments={a.files} />
         ) : (
-          <p className="mt-2 text-xs text-ink-faint">No files on this attempt.</p>
+          !isCurrent ||
+          (stillComing.length === 0 && neverCame.length === 0 && (
+            <p className="mt-2 text-xs text-ink-faint">
+              No files on this attempt.
+            </p>
+          ))
         )}
+
+        {/**
+         * **What is still on its way, and what never came.**
+         *
+         * The submission is written the instant it is made and its files
+         * arrive afterwards — for a 3 GB video, hours afterwards. This block
+         * is what stopped "Submitted files (0) — No files on this attempt"
+         * being shown, as a statement of fact, over work that was at 1%.
+         *
+         * It reads from the SUBMISSION rather than from the upload in
+         * progress, so the reviewer sees it too. The progress bar above is
+         * local to the browser doing the uploading; this is not.
+         */}
+        {isCurrent && stillComing.length > 0 && (
+          <ul className="mt-2 flex flex-col gap-1">
+            {stillComing.map((u) => (
+              <li
+                key={`coming-${u.name}`}
+                className="flex items-center gap-2 text-xs text-ink-muted"
+              >
+                <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--state-extension)]" />
+                <span className="min-w-0 truncate">{u.name}</span>
+                <span className="shrink-0 text-ink-faint">still uploading</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {isCurrent && neverCame.length > 0 && (
+          <ul className="mt-2 flex flex-col gap-1">
+            {neverCame.map((u) => (
+              <li
+                key={`missing-${u.name}`}
+                className="flex items-center gap-2 text-xs text-ink-muted"
+              >
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--state-rework)]" />
+                <span className="min-w-0 truncate">{u.name}</span>
+                <span className="shrink-0 text-ink-faint">did not arrive</span>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {/**
+         * **A way back for a file that never arrived.**
+         *
+         * There was none. The submit form disappears the moment the task is
+         * with a reviewer, so somebody whose upload died with a closed tab had
+         * nowhere to put the file — the failure notice said "you can add them
+         * from the task", meaning the Files tab, which is not the submission
+         * the reviewer is reading.
+         *
+         * Same uploader, same submission, so what lands here is what the
+         * reviewer sees. Offered to the person who submitted: nobody else's
+         * upload failed.
+         */}
+        {isCurrent &&
+          neverCame.length > 0 &&
+          latest?.submittedById === me &&
+          submissionId && (
+            <div className="mt-2">
+              <FileUploader
+                entityType="submission"
+                entityId={submissionId}
+                attachments={[]}
+                onChange={(next) => {
+                  /**
+                   * Adding the file clears the line that said it never came.
+                   *
+                   * Without this the attempt would keep reporting "did not
+                   * arrive" against a file now sitting directly above it —
+                   * which is the same fault as "Submitted files (0)", just
+                   * the other way round.
+                   */
+                  const arrived = new Set(next.map((f) => f.name));
+                  const before = latest?.pendingUploads ?? [];
+                  const remaining = before.filter((u) => !arrived.has(u.name));
+                  if (remaining.length !== before.length) {
+                    void repo
+                      .setSubmissionUploads(taskId, remaining)
+                      .catch(() => {});
+                  }
+                  /* The pooled read is keyed on the task's `updatedAt`, which
+                     the upload bumps, so the list refreshes itself. */
+                  onChange();
+                }}
+                label="Add the missing file"
+              />
+            </div>
+          )}
         {/* Legacy URL attachments (old application) sit on the record itself, not
             in the file service, and cannot be dated — so they show on current. */}
         {isCurrent && latest && (
@@ -418,7 +562,7 @@ export function SubmissionPanel({
       {uploads.length > 0 && (
         <Panel>
           <p className="mb-2 text-[12px] text-ink-faint">
-            Your work is with the reviewer. Sending{" "}
+            Your work is with the reviewer, and waits for this file. Sending{" "}
             {uploads.length === 1 ? "the file" : `${uploads.length} files`} —
             you can leave this page, but the upload stops if you close the tab.
           </p>
@@ -583,7 +727,35 @@ export function SubmissionPanel({
               onClick={async () => {
                 setSending(true);
                 try {
-                  const r = await submit();
+                  /**
+                   * **The submission says what is coming.** OWNER DECISION,
+                   * 28 September 2026.
+                   *
+                   * It is recorded now and its files arrive later — for a 3 GB
+                   * video, hours later — and nothing outside this browser can
+                   * see that. So the attempt read "Submitted files (0) — No
+                   * files on this attempt" at a reviewer who was free to
+                   * approve it, or to send it back for having nothing
+                   * attached.
+                   *
+                   * Making Submit WAIT for the upload was the obvious
+                   * alternative and is the wrong one: `wasLate` is judged
+                   * against the deadline at submission time and feeds scoring,
+                   * so an hour of uploading would mark an on-time hand-over
+                   * late for the size of somebody's own file.
+                   *
+                   * Named here instead, before the first byte moves, so the
+                   * record is honest from the instant it exists.
+                   */
+                  const startedAt = new Date().toISOString();
+                  const declared: SubmissionUpload[] = staged.map((file) => ({
+                    name: file.name,
+                    sizeBytes: file.size,
+                    startedAt,
+                    state: "uploading",
+                  }));
+
+                  const r = await submit(declared);
                   if (!r.ok) return;
 
                   /*
@@ -605,7 +777,7 @@ export function SubmissionPanel({
                     setUploads(
                       staged.map((file) => ({ name: file.name, fraction: 0 })),
                     );
-                    setUploadFailures(
+                    const failures =
                       target
                         ? /* Together rather than one after another: each is an
                              independent write against a submission that already
@@ -633,12 +805,48 @@ export function SubmissionPanel({
                         : /* No submission to hang them on, so every one of them
                              failed — named, which is the same answer the
                              per-file path gives. */
-                          staged.map((file) => file.name),
-                    );
+                          staged.map((file) => file.name);
+                    setUploadFailures(failures);
                     /* Cleared only once every upload has settled — a row that
                        vanished at 100% would hide the finalize step, which is
                        the part people wait longest on. */
                     setUploads([]);
+
+                    /**
+                     * **And the submission's own list is corrected.**
+                     *
+                     * What arrived is dropped from it; what gave up is marked
+                     * failed. Both matter to a screen this browser cannot see:
+                     * the reviewer's decision is held while anything is still
+                     * coming, so a file that arrives must release it and a
+                     * file that is never coming must release it too. A
+                     * reviewer left waiting on a dead upload would be a worse
+                     * failure than the one this replaced.
+                     *
+                     * Matched by POSITION through a consumed copy, not by a
+                     * bare name: two files picked from different folders can
+                     * share one, and `uploadAll` reports names in staging
+                     * order precisely so this can line them up.
+                     *
+                     * Never allowed to cost the submission — it is already
+                     * with the reviewer. If this write cannot land, the
+                     * six-hour rule in `submissionUploads.ts` releases the
+                     * decision anyway.
+                     */
+                    const unclaimed = [...failures];
+                    void repo
+                      .setSubmissionUploads(
+                        taskId,
+                        declared
+                          .filter((u) => {
+                            const at = unclaimed.indexOf(u.name);
+                            if (at < 0) return false;
+                            unclaimed.splice(at, 1);
+                            return true;
+                          })
+                          .map((u) => ({ ...u, state: "failed" as const })),
+                      )
+                      .catch(() => {});
                   }
 
                   setMessage("");

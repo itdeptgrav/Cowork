@@ -182,10 +182,14 @@ test("an unauthorised download surfaces the engine's refusal", () => {
 
 test("upload and download both carry the bearer token", () => {
   const src = code(WIRE);
-  /* Five now, not four: the resumable path adds one — the `auth` header shared
-     by the session-open and finalize calls — on top of the multipart upload,
-     the download and the list. Every path still carries the token. */
-  assert.equal((src.match(/Authorization/g) ?? []).length, 5);
+  /* Seven now. Six came from the finalize taking its own header on 28
+     September 2026 — the shared one was read before the bytes moved, and a
+     sign-in token lives one hour, so a long upload delivered every byte and
+     then failed on that header. The seventh is `createDownloadTicket`, the
+     one small authenticated request that a large download now starts with.
+     The count is kept rather than loosened: a path that quietly loses its
+     token is exactly what this is here to catch. */
+  assert.equal((src.match(/Authorization/g) ?? []).length, 7);
 });
 
 test("a refusal is not offered a retry, a dropped connection is", () => {
@@ -374,11 +378,62 @@ test("submission files are staged, then uploaded once the submission exists", ()
      record is made. */
   const src = code(SUBMISSION);
   assert.match(src, /entityId=\{null\}/);
-  const handler = src.slice(src.indexOf("const r = await submit()"));
+  /* The submit call carries the list of what is about to upload — see
+     `pendingUploads` — so the anchor names the argument rather than an empty
+     pair of brackets. The ordering it guards is unchanged. */
+  const at = src.indexOf("const r = await submit(declared)");
+  assert.ok(at > 0, "the submit call moved");
+  const handler = src.slice(at);
   assert.ok(
-    handler.indexOf("submit()") < handler.indexOf("repo.uploadAttachment"),
+    handler.indexOf("submit(declared)") < handler.indexOf("repo.uploadAttachment"),
     "files upload before the submission exists",
   );
+});
+
+test("the submission names the files that are still coming", () => {
+  /**
+   * **Reported 28 September 2026.** A 3 GB video attached, Submit pressed, and
+   * the attempt read "Submitted files (0) — No files on this attempt" at a
+   * reviewer who could approve it, while the file was at 1%.
+   *
+   * The ordering above is what makes this necessary: the submission exists
+   * before its files do, and nothing outside the uploading browser can see an
+   * upload in progress. So the record says what is coming — declared before
+   * the first byte, corrected as each one settles.
+   */
+  const src = code(SUBMISSION);
+  assert.match(src, /const declared: SubmissionUpload\[\] = staged\.map/);
+  assert.match(src, /state: "uploading"/);
+  assert.match(src, /repo\s*\n?\s*\.setSubmissionUploads\(/);
+  assert.match(src, /\.map\(\(u\) => \(\{ \.\.\.u, state: "failed" as const \}\)\)/);
+});
+
+test("a reviewer cannot decide while the work is still arriving", () => {
+  /* The other half. A list nobody read would be bookkeeping; this is the line
+     that stops an approval landing on work that has not turned up. */
+  const src = code("components/features/tasks/ReviewPanel.tsx");
+  assert.match(src, /const uploadWait = reviewWaitReason\(/);
+  assert.match(src, /const canReview =\s*\n?\s*!uploadWait &&/);
+  assert.match(src, /Waiting for the submitted work\./);
+});
+
+test("closing the tab mid-upload asks first", () => {
+  /* The banner said the upload stops if you close the tab, and that sentence
+     was all that stood between somebody and a lost 3 GB — on a page they have
+     every reason to leave, since the work is already with the reviewer. */
+  const src = code(SUBMISSION);
+  assert.match(src, /if \(uploads\.length === 0\) return;/);
+  assert.match(src, /window\.addEventListener\("beforeunload", warn\)/);
+  assert.match(src, /window\.removeEventListener\("beforeunload", warn\)/);
+});
+
+test("a file that never arrived can be added to the same submission", () => {
+  /* There was no way back: the submit form disappears once the task is with a
+     reviewer, so a dead upload had nowhere to be retried — the failure notice
+     pointed at the task's Files tab, which is not the submission being read. */
+  const src = code(SUBMISSION);
+  assert.match(src, /label="Add the missing file"/);
+  assert.match(src, /neverCame\.length > 0 &&\s*\n?\s*latest\?\.submittedById === me/);
 });
 
 test("each attempt's files hang off THAT submission, not the task", () => {

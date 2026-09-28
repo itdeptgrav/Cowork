@@ -304,3 +304,54 @@ test("a refusal is still never retried, whatever the size", () => {
     /if \(r\.error\.kind === "auth" \|\| r\.error\.kind === "permission"\) return r;/,
   );
 });
+
+/* ── The finalize outlives the token the upload started with ──────────────── */
+
+/**
+ * **Reported 28 September 2026: a 3 GB file reached 100% and then failed.**
+ *
+ * The token was read once, before the first byte, and the finalize — the small
+ * call that records the file, an hour of uploading later — was still sending
+ * that same string. A sign-in token lives one hour. So every byte arrived at
+ * Google and the transfer was thrown away on a header.
+ *
+ * It was never only about enormous files. The token can already be fifty-nine
+ * minutes old when an upload begins, which is why this presented as "big files
+ * sometimes fail" rather than as a rule: a big file is simply a longer window
+ * for the hour to run out in.
+ */
+
+test("the finalize takes a token at the moment it runs, not before the bytes", () => {
+  for (const path of [ATTACH, UPLOAD]) {
+    const src = code(path);
+    assert.match(
+      src,
+      /freshToken\?: \(\) => Promise<string \| null>/,
+      `${path} has no way to ask for a current token`,
+    );
+    assert.match(
+      src,
+      /await input\.freshToken\?\.\(\)\.catch\(\(\) => null\)\) \?\? input\.token/,
+      `${path} still finalizes with the token it started with`,
+    );
+  }
+});
+
+test("a finalize refused for the token is tried once more with a new one", () => {
+  /* Every byte is already at Google by then, so one more small request is
+     cheap against a transfer that may have taken an hour. Once, not in a
+     loop — a genuine refusal must still come back as a refusal. */
+  const src = code(ATTACH);
+  assert.match(src, /for \(let attempt = 1; attempt <= 2; attempt\+\+\)/);
+  assert.match(
+    src,
+    /\(res\.status === 401 \|\| res\.status === 403\) && attempt === 1 && input\.freshToken/,
+  );
+});
+
+test("both upload paths are handed something to refresh with", () => {
+  /* A getter that never fires is the same fault with more code in it. */
+  const repo = code("lib/repositories/legacy/index.ts");
+  assert.match(repo, /freshToken: \(\) => this\.#ctx\.getToken\(\)/);
+  assert.match(repo, /freshToken: \(\) => idToken\(\)/);
+});

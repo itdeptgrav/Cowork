@@ -146,6 +146,7 @@ import type {
   TaskId,
   TaskReview,
   TaskSubmission,
+  SubmissionUpload,
   TimerSession,
   WorkflowTrigger,
   Viewer,
@@ -5847,6 +5848,15 @@ export class MockRepository implements CoworkRepository {
       wasLate: Boolean(
         t.deadline.officialDueAt && now() > new Date(t.deadline.officialDueAt),
       ),
+      /**
+       * What the caller says is still coming.
+       *
+       * Taken from the input rather than left empty: the prototype has no
+       * uploads of its own, but a surface built against it must SEE the
+       * reviewer's wait, or the gate looks like a fault in the real backend
+       * the first time somebody meets it.
+       */
+      pendingUploads: input.pendingUploads ?? [],
     };
     prior.forEach((p) => {
       if (p.supersededById === "pending") p.supersededById = sub.id;
@@ -5890,6 +5900,41 @@ export class MockRepository implements CoworkRepository {
         t.id,
       );
     return delay(ok(sub));
+  }
+
+  /**
+   * Amend what is still uploading to the newest submission.
+   *
+   * The prototype has no uploads of its own, but it implements this so a
+   * surface built against the mock behaves the same way it will against the
+   * engine — a method the mock silently lacked would make the reviewer's wait
+   * look like a bug in the real backend.
+   */
+  async setSubmissionUploads(
+    taskId: TaskId,
+    uploads: SubmissionUpload[],
+  ): Promise<ActionResult<void>> {
+    const s = getStore();
+    const mine = s.submissions
+      .filter((x) => x.taskId === taskId && x.outputId === null)
+      .sort((a, b) => a.submittedAt.localeCompare(b.submittedAt));
+    const sub = mine[mine.length - 1];
+    if (!sub)
+      return {
+        ok: false,
+        code: "not_found",
+        message: "There is no submission to attach files to.",
+      };
+    /* The submitter only — the same rule the engine applies. Nobody else has
+       an upload of their own to report on. */
+    if (sub.submittedById !== actingId())
+      return {
+        ok: false,
+        code: "permission_denied",
+        message: "Only the person who submitted can report on its uploads.",
+      };
+    sub.pendingUploads = uploads;
+    return delay(ok(undefined));
   }
 
   /* ── Permission and workflow context ────────────────────────────────────── */

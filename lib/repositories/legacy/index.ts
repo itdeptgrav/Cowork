@@ -73,11 +73,13 @@ import {
   markTaskTabSeen as markTaskTabSeenRequest,
   declineAssignment as declineAssignmentRequest,
   setActiveTaskBudget,
+  setSubmissionUploads as setSubmissionUploadsRequest,
   setPriorityOrder,
   counterBudget as counterBudgetRequest,
 } from "../../legacy/taskWrites.ts";
 import {
   deleteAttachment as deleteAttachmentRequest,
+  createDownloadTicket,
   downloadAttachment as downloadAttachmentRequest,
   listAttachments as listAttachmentsRequest,
   uploadAttachment as uploadAttachmentRequest,
@@ -196,8 +198,10 @@ import {
   readSubmissionAttachments,
   submissionAttempt,
 } from "../../rules/tasks/submissionFiles.ts";
+import { readSubmissionUploads } from "../../rules/tasks/submissionUploads.ts";
 import { extensionFromAddition } from "../../rules/tasks/deadlineExtension.ts";
 import type { RoleArchetype } from "../../domain/identity.ts";
+import type { SubmissionUpload } from "../../domain/tasks.ts";
 import type {
   MailAttachment,
   MailFolder,
@@ -772,6 +776,10 @@ function readOutputSubmissionRecords(
       currentStage: 1,
       supersededById: null,
       wasLate: false,
+      /* Output submissions carry no separate upload list: their files go
+         through the same staging, and the task-level record is where a
+         hand-over in flight is recorded. */
+      pendingUploads: [],
     });
   }
   return out.sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
@@ -2939,6 +2947,7 @@ export class LegacyRepository {
     taskId: TaskId;
     message: string;
     attachmentIds: string[];
+    pendingUploads?: SubmissionUpload[];
   }): Promise<ActionResult<Task>> {
     const taskId = String(input.taskId);
 
@@ -2978,7 +2987,16 @@ export class LegacyRepository {
     }
 
     return this.#write(
-      (token) => submitCompletion({ token, taskId, message: input.message }),
+      (token) =>
+        submitCompletion({
+          token,
+          taskId,
+          message: input.message,
+          /* Named BEFORE the first byte moves. The submission is written now
+             and its files arrive later, so without this the reviewer is shown
+             "no files" on work that is on its way — and may act on it. */
+          pendingUploads: input.pendingUploads ?? [],
+        }),
       () => taskId,
     );
   }
@@ -7112,7 +7130,15 @@ export class LegacyRepository {
     signal?: AbortSignal;
   }): Promise<ActionResult<AttachmentMeta>> {
     const token = await this.#token();
-    const r = await uploadAttachmentRequest({ token, ...input });
+    const r = await uploadAttachmentRequest({
+      token,
+      ...input,
+      /* The finalize runs AFTER the bytes — an hour later, for a big file —
+         and a sign-in token lives one hour. Handing the uploader a way to ask
+         again is what stops a completed transfer failing on its last small
+         call. `getToken` refreshes when the cached one is spent. */
+      freshToken: () => this.#ctx.getToken(),
+    });
     if (!r.ok) {
       return {
         ok: false,
@@ -7168,6 +7194,27 @@ export class LegacyRepository {
       };
     }
     return { ok: true, data: r.data };
+  }
+
+  /**
+   * A link the browser can open by itself, so a large file is downloaded by
+   * the browser rather than assembled in this tab's memory. See the interface
+   * for the 3 GB file that made it necessary.
+   */
+  async attachmentDownloadUrl(id: string): Promise<ActionResult<string>> {
+    const token = await this.#token();
+    const r = await createDownloadTicket({ token, id: String(id) });
+    if (!r.ok) {
+      return {
+        ok: false,
+        code:
+          r.error.kind === "permission" || r.error.kind === "auth"
+            ? "permission_denied"
+            : "not_found",
+        message: r.error.message,
+      };
+    }
+    return { ok: true, data: r.data.url };
   }
 
   async deleteAttachment(id: string): Promise<ActionResult<void>> {
@@ -8471,9 +8518,45 @@ export class LegacyRepository {
            against a deadline that may since have moved would put a late flag on
            work that was not. */
         wasLate: false,
+        /**
+         * What was still going up when this was handed over.
+         *
+         * Read through the rule rather than trusted as written: the list is
+         * put there by a browser, and the reviewer's decision now waits on it,
+         * so a half-formed entry must drop out rather than reach the screen.
+         */
+        pendingUploads: readSubmissionUploads(sub.pendingUploads),
       },
       ...outputs,
     ];
+  }
+
+  /**
+   * Amend what is still uploading to the current submission.
+   *
+   * One field on one record, written by the browser that is doing the
+   * uploading as each file settles. The engine refuses it from anybody but the
+   * person who submitted, and it can change nothing else about the submission.
+   */
+  async setSubmissionUploads(
+    taskId: TaskId,
+    uploads: SubmissionUpload[],
+  ): Promise<ActionResult<void>> {
+    const token = await this.#token();
+    const r = await setSubmissionUploadsRequest({
+      token,
+      taskId: String(taskId),
+      uploads,
+    });
+    if (!r.ok) {
+      return {
+        ok: false,
+        code: r.error.kind === "permission" ? "permission_denied" : "offline",
+        message: r.error.message,
+      };
+    }
+    notifyRepositoryChanged("listSubmissions");
+    return { ok: true, data: undefined };
   }
 
   /**
@@ -16820,7 +16903,15 @@ export class LegacyRepository {
         };
 
       const { uploadToDrive } = await import("../../legacy/driveUpload.ts");
-      const r = await uploadToDrive({ token, file, onProgress });
+      /* `idToken()` again at the finalize rather than reusing the one read
+         above: a long upload outlives a sign-in token, and the finalize is the
+         call that would otherwise throw the whole transfer away. */
+      const r = await uploadToDrive({
+        token,
+        file,
+        onProgress,
+        freshToken: () => idToken(),
+      });
       if (!r.ok) {
         return {
           ok: false,

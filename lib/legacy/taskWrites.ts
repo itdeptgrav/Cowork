@@ -1,6 +1,7 @@
 import type { LegacyResult } from "./envelope";
 import { legacyFetch } from "./http.ts";
 import type { MessageCard } from "../domain/work.ts";
+import type { SubmissionUpload } from "../domain/tasks.ts";
 import { messageCardForWrite } from "../rules/messages/card.ts";
 
 /**
@@ -278,6 +279,8 @@ export async function submitCompletion(input: {
   message: string;
   imageUrls?: string[];
   pdfAttachments?: unknown[];
+  /** Files about to start uploading — see `TaskSubmission.pendingUploads`. */
+  pendingUploads?: SubmissionUpload[];
 }): Promise<LegacyResult<unknown>> {
   return legacyFetch({
     path: `/cowork/task/${encodeURIComponent(input.taskId)}/submit-completion`,
@@ -286,7 +289,28 @@ export async function submitCompletion(input: {
       message: input.message,
       imageUrls: input.imageUrls ?? [],
       pdfAttachments: input.pdfAttachments ?? [],
+      pendingUploads: input.pendingUploads ?? [],
     },
+    token: input.token,
+  });
+}
+
+/**
+ * `POST /cowork/task/:id/submission-uploads` — what is still on its way.
+ *
+ * Amended by the browser doing the uploading as each file settles. It changes
+ * one field and nothing else about the submission; the engine refuses it from
+ * anyone but the person who submitted.
+ */
+export async function setSubmissionUploads(input: {
+  token: string;
+  taskId: string;
+  uploads: SubmissionUpload[];
+}): Promise<LegacyResult<unknown>> {
+  return legacyFetch({
+    path: `/cowork/task/${encodeURIComponent(input.taskId)}/submission-uploads`,
+    method: "POST",
+    body: { uploads: input.uploads },
     token: input.token,
   });
 }

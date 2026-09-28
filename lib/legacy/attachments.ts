@@ -70,6 +70,24 @@ interface UploadInput {
   entityId: string;
   onProgress?: (fraction: number) => void;
   signal?: AbortSignal;
+  /**
+   * A token taken NOW, for the call that happens after the bytes.
+   *
+   * **Reported 28 September 2026: a 3 GB file uploaded to 100% and then
+   * failed.** `token` is read once, before the first byte moves, and the
+   * finalize an hour later was still sending that same string. A sign-in token
+   * lives for one hour, so the upload delivered every byte to Google and then
+   * died on the one small call that records it — the worst possible place,
+   * because all the waiting had already been paid.
+   *
+   * It is not only enormous files. The token can already be fifty-nine minutes
+   * old when the upload STARTS, so a five-minute upload hits it just as
+   * surely — which is exactly why this looked random rather than like a rule.
+   *
+   * Optional so a caller with nothing to refresh with still works: absent, the
+   * finalize uses `token` exactly as it did.
+   */
+  freshToken?: () => Promise<string | null>;
 }
 
 /**
@@ -175,21 +193,43 @@ async function uploadViaResumable(
   if (!put.ok) return put; // already a LegacyResult; do not fall back mid-flight
   const fileId = put.data.id;
 
-  /* 3 — finalize into the private record (sniffs the mime, no public grant). */
-  try {
-    const res = await fetch(`${baseUrl()}/cowork/attachments/finalize`, {
-      method: "POST",
-      headers: auth,
-      signal: input.signal,
-      body: JSON.stringify({ fileId, entityType: input.entityType, entityId: input.entityId }),
-    });
-    const body = (await res.json().catch(() => ({}))) as { attachment?: AttachmentMeta; error?: string };
-    if (res.ok && body.attachment) return { ok: true, data: body.attachment };
-    return failure(res.status, body.error ?? "The upload could not be saved.");
-  } catch {
-    if (input.signal?.aborted) return failure(0, "Upload cancelled.");
-    return failure(0, "The upload could not be saved.");
+  /**
+   * 3 — finalize into the private record (sniffs the mime, no public grant).
+   *
+   * **With a token taken now, not the one from before the bytes.** See
+   * `freshToken`: every byte is already at Google by this point, and failing
+   * here throws away the entire transfer over a header. Tried twice — a token
+   * that was valid when this call was assembled can still expire in the
+   * moments before the server reads it, and the second attempt costs one small
+   * request against a file that may have taken an hour.
+   */
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const current = (await input.freshToken?.().catch(() => null)) ?? input.token;
+    try {
+      const res = await fetch(`${baseUrl()}/cowork/attachments/finalize`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${current}`,
+          "Content-Type": "application/json",
+        },
+        signal: input.signal,
+        body: JSON.stringify({ fileId, entityType: input.entityType, entityId: input.entityId }),
+      });
+      const body = (await res.json().catch(() => ({}))) as { attachment?: AttachmentMeta; error?: string };
+      if (res.ok && body.attachment) return { ok: true, data: body.attachment };
+      /* Only a refusal is worth a second go, and only when there is something
+         new to send — repeating a rejected body with the same token would just
+         be the same refusal twice. */
+      if ((res.status === 401 || res.status === 403) && attempt === 1 && input.freshToken)
+        continue;
+      return failure(res.status, body.error ?? "The upload could not be saved.");
+    } catch {
+      if (input.signal?.aborted) return failure(0, "Upload cancelled.");
+      if (attempt === 1) continue;
+      return failure(0, "The upload could not be saved.");
+    }
   }
+  return failure(0, "The upload could not be saved.");
 }
 
 /**
@@ -301,6 +341,57 @@ export async function downloadAttachment(input: {
       );
     }
     return { ok: true, data: await r.blob() };
+  } catch (e) {
+    return failure(0, e instanceof Error ? e.message : "The request failed.");
+  }
+}
+
+/**
+ * A URL the BROWSER can open on its own, for one file, for ten minutes.
+ *
+ * **Reported 28 September 2026: a 3 GB file showed "Opening…" for ever.** The
+ * download above is the reason. An anchor with a `download` attribute cannot
+ * carry an Authorization header, so the page fetched the file itself and
+ * `res.blob()` buffered every byte into memory before anything was handed
+ * over. At a few megabytes nobody notices. At three gigabytes it is a tab
+ * holding 3 GB of RAM, no progress, no save dialog, and — often — a crash.
+ *
+ * With a ticket the browser does the downloading: straight to disk, with a
+ * progress bar and a cancel button, at any size, and it survives leaving the
+ * page. The engine issues one only after the same permission check the
+ * authenticated route performs.
+ *
+ * Returns the full URL to open. A 404 here means the engine predates the
+ * route, and the caller falls back to fetching the bytes itself.
+ */
+export async function createDownloadTicket(input: {
+  token: string;
+  id: string;
+}): Promise<LegacyResult<{ url: string }>> {
+  try {
+    const r = await fetch(
+      `${baseUrl()}/cowork/attachments/${encodeURIComponent(input.id)}/download-ticket`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${input.token}` },
+      },
+    );
+    const body = (await r.json().catch(() => ({}))) as {
+      path?: string;
+      error?: string;
+    };
+    if (!r.ok || !body.path) {
+      return failure(
+        r.status,
+        body.error ??
+          (r.status === 403
+            ? "You do not have access to this file."
+            : "That file could not be opened."),
+      );
+    }
+    /* The engine returns a PATH — it does not reliably know the origin it was
+       reached on, and this side already does. */
+    return { ok: true, data: { url: `${baseUrl()}${body.path}` } };
   } catch (e) {
     return failure(0, e instanceof Error ? e.message : "The request failed.");
   }

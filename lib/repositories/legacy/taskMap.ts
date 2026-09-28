@@ -805,6 +805,10 @@ export function toTaskView(input: {
            for the whole task, so claiming a per-output verdict would be
            inventing a date nobody set. */
         wasLate: false,
+        /* An output's files go up through the same staging as the task's, and
+           the task-level record is where a hand-over still in flight is
+           written down. */
+        pendingUploads: [],
         };
       }),
     /**

@@ -29,6 +29,7 @@ import type {
 /* The rules live next door, JSX-free, so they can be tested directly. */
 export {
   ACCEPT,
+  BLOB_DOWNLOAD_CEILING_BYTES,
   MAX_BYTES,
   fileGlyph,
   formatBytes,
@@ -38,6 +39,7 @@ export {
 } from "./attachmentRules";
 import {
   ACCEPT,
+  BLOB_DOWNLOAD_CEILING_BYTES,
   fileGlyph,
   formatBytes,
   isPdf,
@@ -50,10 +52,26 @@ import { UploadProgressRow } from "@/components/features/messages/MessageAttachm
 /* ── Download ─────────────────────────────────────────────────────────────── */
 
 /**
- * Fetch and hand over the bytes.
+ * Hand the file over — by letting the BROWSER fetch it wherever possible.
  *
- * `<a download href>` cannot carry an Authorization header, so the file is
- * fetched, turned into an object URL for one click and revoked immediately.
+ * **Reported 28 September 2026: a 3 GB submission sat at "Opening…" for ever
+ * and never arrived.** This did what the comment below it said: `<a download
+ * href>` cannot carry an Authorization header, so the page fetched the bytes
+ * itself and turned them into an object URL. That means the WHOLE file is
+ * assembled in this tab's memory before anything is offered — no progress, no
+ * save dialog, nothing to cancel, and at three gigabytes usually nothing at
+ * all.
+ *
+ * So it asks the engine for a short-lived link first and simply opens it. The
+ * download then belongs to the browser: straight to disk, with its own
+ * progress and cancel, at any size, and it keeps going if the reader leaves
+ * the page. The link is a capability for one file for ten minutes, issued
+ * behind the same permission check — not a token, which is why it can be in a
+ * URL at all.
+ *
+ * **The old path is kept as the fallback**, for a backend that has no ticket
+ * route yet. It is the right shape for a small file and the wrong one for a
+ * large file, which is exactly how it is now used.
  */
 export function FileDownload({
   attachment,
@@ -74,6 +92,58 @@ export function FileDownload({
         onClick={async () => {
           setBusy(true);
           setError(null);
+
+          /* The link, if this backend has one. One small request, then the
+             browser takes over — which is the whole fix for a file too big to
+             hold in a tab. */
+          if (repo.attachmentDownloadUrl) {
+            const t = await repo.attachmentDownloadUrl(attachment.id);
+            if (t.ok) {
+              setBusy(false);
+              const a = document.createElement("a");
+              a.href = t.data;
+              /* The engine already sets Content-Disposition with the real
+                 name; this is for the cross-origin case, where the attribute
+                 is ignored but costs nothing. */
+              a.download = attachment.name;
+              a.rel = "noopener";
+              a.click();
+              return;
+            }
+            /* A refusal is the same refusal the bytes would give, so it is
+               shown rather than retried down the slow path. */
+            if (t.code === "permission_denied") {
+              setBusy(false);
+              setError(t.message);
+              return;
+            }
+
+            /**
+             * **A large file does not fall through to the slow path.**
+             *
+             * That path holds the whole file in this tab before offering it,
+             * which at gigabyte scale is the "Opening…" that never ends — the
+             * very fault being fixed. Falling back to it made a page that
+             * could not do the job indistinguishable from one that had not
+             * been updated yet, which is exactly how the fix was reported as
+             * not working.
+             */
+            if (attachment.size > BLOB_DOWNLOAD_CEILING_BYTES) {
+              setBusy(false);
+              setError(
+                "Cowork could not prepare a download for a file this large. Reload and try again — if it keeps happening, this server needs updating.",
+              );
+              return;
+            }
+          } else if (attachment.size > BLOB_DOWNLOAD_CEILING_BYTES) {
+            /* No link method at all — an older store. Same reasoning. */
+            setBusy(false);
+            setError(
+              "This copy of Cowork cannot download a file this large. It needs updating.",
+            );
+            return;
+          }
+
           const r = await repo.downloadAttachment(attachment.id);
           setBusy(false);
           if (!r.ok) {

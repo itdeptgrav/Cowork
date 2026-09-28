@@ -280,13 +280,54 @@ test("every route is authenticated, including the download", (t) => {
      lets the browser upload straight to Google, so a route that skipped the
      token would be an unguarded way to attach a private file. */
   const routes = src.match(/router\.(post|get|delete)\(/g) ?? [];
-  assert.equal(routes.length, 7);
+  /* Nine now — the download-ticket pair joined them, 28 September 2026. */
+  assert.equal(routes.length, 9);
   /* Minus one for the import line — the earlier count included it and was
      therefore satisfied by the guarded routes plus a destructure. */
   const uses = (name: string) =>
     (src.match(new RegExp(name, "g")) ?? []).length - 1;
-  assert.equal(uses("verifyCoworkToken"), 7, "a route is missing authentication");
-  assert.equal(uses("verifyEmployeeToken"), 7);
+  /**
+   * **Eight of the nine, and the ninth is the exception this test exists to
+   * make visible.**
+   *
+   * `/attachments/download/:ticket` carries no middleware ON PURPOSE. It is
+   * the URL the browser opens by itself so a 3 GB file is downloaded by the
+   * browser rather than assembled in a tab — and a browser navigating to a URL
+   * cannot send an Authorization header, which is the same constraint that
+   * made `<a download>` useless here in the first place.
+   *
+   * What replaces the middleware is the ticket: a random 32-byte capability
+   * for ONE attachment, issued only after the same `mayViewTask` check every
+   * other route makes, expiring in ten minutes, identifying nobody. The test
+   * below pins that, because "the ticket is checked" is the only thing that
+   * makes this exception acceptable — an unauthenticated route that did NOT
+   * redeem a ticket would be an open door to private files.
+   */
+  assert.equal(uses("verifyCoworkToken"), 8, "a route is missing authentication");
+  assert.equal(uses("verifyEmployeeToken"), 8);
+});
+
+test("the one unauthenticated route is the ticketed download, and nothing else", (t) => {
+  if (!available()) return t.skip("backend not present");
+  /**
+   * Named rather than counted. A second route losing its middleware would keep
+   * the count above honest only until somebody adjusted it; this says WHICH
+   * route may be open, so anything else appearing beside it fails.
+   */
+  const src = code(ROUTE);
+  const open = src
+    .split(/router\.(?:post|get|delete)\(/)
+    .slice(1)
+    .filter((block) => !/verify(Cowork|Employee)Token/.test(block.slice(0, 400)))
+    .map((block) => (block.match(/"([^"]+)"/) ?? [])[1]);
+
+  assert.deepEqual(open, ["/attachments/download/:ticket"]);
+
+  /* And it is a redemption, not a free pass: no ticket, no file. */
+  const redeem = src.slice(src.indexOf('router.get("/attachments/download/:ticket"'));
+  assert.match(redeem, /const held = tickets\.get\(String\(req\.params\.ticket\)\);/);
+  assert.match(redeem, /if \(!held\) \{/);
+  assert.match(redeem, /TICKET_EXPIRED/);
 });
 
 test("access follows the task's own visibility, not a new rule", (t) => {

@@ -152,6 +152,7 @@ import type {
   TaskStatus,
   TaskOutput,
   TaskSubmission,
+  SubmissionUpload,
   TeamAnalytics,
   TeamMonitoringRow,
   TimerSession,
@@ -1660,6 +1661,24 @@ export interface CoworkRepository {
 
   /** The bytes, for a caller to turn into a short-lived object URL. */
   downloadAttachment(id: string): Promise<ActionResult<Blob>>;
+  /**
+   * A URL the browser itself can open, for one file, for a few minutes.
+   *
+   * **Why this exists beside `downloadAttachment`.** That one hands back a
+   * Blob, which means the whole file is held in memory before the person gets
+   * anything. A 3 GB video reported on 28 September 2026 sat at "Opening…"
+   * indefinitely for exactly that reason. This returns a link instead, and the
+   * browser's own downloader streams it to disk with a progress bar, at any
+   * size, whether or not the page stays open.
+   *
+   * The Blob form is still right for what it was written for — a preview that
+   * has to become an object URL — so both exist and neither replaces the
+   * other.
+   *
+   * Optional: a store with no authenticated file service has no such link to
+   * give, and the caller falls back to the bytes.
+   */
+  attachmentDownloadUrl?(id: string): Promise<ActionResult<string>>;
 
   deleteAttachment(id: string): Promise<ActionResult<void>>;
 
@@ -1776,6 +1795,27 @@ export interface CoworkRepository {
   submitCompletion(
     input: SubmitCompletionInput,
   ): Promise<ActionResult<TaskSubmission>>;
+  /**
+   * Amend the list of files still on their way to the current submission.
+   *
+   * Called by the browser that is doing the uploading, as each one settles: a
+   * file that lands is removed, one that gives up is marked `failed`. Both
+   * matter to somebody else's screen — the first because the reviewer's
+   * decision is waiting on it, the second because a file that is never coming
+   * must release that decision rather than hold it for ever.
+   *
+   * Whole list rather than a per-file call: it is one small write either way,
+   * and a partial update from a browser that then closed would leave the two
+   * halves disagreeing about what is outstanding.
+   *
+   * Only the person who submitted may call it. It cannot change the submission
+   * itself — not the message, not the files that have arrived, not its time —
+   * so the worst a wrong call can do is misdescribe what is still coming.
+   */
+  setSubmissionUploads(
+    taskId: TaskId,
+    uploads: SubmissionUpload[],
+  ): Promise<ActionResult<void>>;
   listSubmissions(taskId: TaskId): Promise<TaskSubmission[]>;
   reviewSubmission(input: ReviewInput): Promise<ActionResult<TaskReview>>;
   /**
@@ -3348,6 +3388,15 @@ export interface SubmitCompletionInput {
    * — and only that output goes for review.
    */
   outputId?: string | null;
+  /**
+   * Files that are about to start uploading, named at the moment of submit.
+   *
+   * The submission exists before its files do — that is what stops a long
+   * upload pushing an on-time hand-over past its deadline — so it has to say
+   * what is coming, or the reviewer is shown "no files" and is free to decide
+   * on work still in flight. See `TaskSubmission.pendingUploads`.
+   */
+  pendingUploads?: SubmissionUpload[];
 }
 
 export interface ReviewInput {

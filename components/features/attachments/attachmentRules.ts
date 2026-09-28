@@ -31,6 +31,27 @@ export const ACCEPT = "";
  */
 export const MAX_BYTES: number | null = null;
 
+/**
+ * The largest file worth pulling through the TAB to download it.
+ *
+ * Not a limit on anything. A download normally goes through a link the browser
+ * opens by itself, which streams to disk at any size. The old path — fetch the
+ * bytes here, build an object URL, click it — is kept for a server with no such
+ * link to give, and it holds the entire file in this tab's memory first.
+ *
+ * **Reported 28 September 2026, twice.** A 3 GB video on that path shows
+ * "Opening…" and never finishes: there is no progress, nothing to cancel, and
+ * at that size usually no file at the end either. The second report was the
+ * same screen after the fix, because the page in front of the person was still
+ * the old build — and the fallback made the two indistinguishable.
+ *
+ * So above this, the fallback is not taken. A sentence saying what went wrong
+ * is worth more than ten minutes of a spinner that was never going to end.
+ * 200 MB: comfortably survivable in a tab, and far below anything anyone would
+ * describe as a large file.
+ */
+export const BLOB_DOWNLOAD_CEILING_BYTES = 200 * 1024 * 1024;
+
 export function isPreviewableImage(type: string): boolean {
   return /^image\/(png|jpeg|webp)$/.test(type);
 }

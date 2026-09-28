@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { ActionWait } from "@/components/ui/ActionWait";
 import { mayReview } from "@/lib/rules/tasks/reviewChain";
+import { reviewWaitReason } from "@/lib/rules/tasks/submissionUploads";
+import { useNow } from "@/lib/hooks/useNow";
 import {
   Button,
   Chip,
@@ -135,7 +137,32 @@ export function ReviewPanel({
      the stage that is OPEN rather than on membership anywhere in the chain: on
      a two-stage flow the second reviewer is in the chain from the start, and
      letting them decide early would skip the first stage entirely. */
+  /**
+   * **A decision waits for the work.** OWNER DECISION, 28 September 2026.
+   *
+   * A submission is recorded the instant it is made, while its files are still
+   * uploading — for a 3 GB video, for hours. The attempt said "Submitted files
+   * (0) - No files on this attempt", which is not a loading state but a false
+   * statement, and this panel offered Approve and Send back beside it. Somebody
+   * could approve work that had not arrived, or send it back for having none.
+   *
+   * So the decision opens when the files do. Only a genuinely running upload
+   * holds it: one the uploading browser reported as failed, or one silent long
+   * enough to presume gone, releases it — a file that is never coming must not
+   * block a reviewer for ever. See `lib/rules/tasks/submissionUploads.ts`.
+   */
+  const now = useNow();
+  /* Before the clock resolves — the server render, and the first frame — the
+     submission's own time stands in. Ageing against it can only ever make an
+     entry look YOUNGER than it is, so the decision stays held rather than
+     opening for an instant on work that has not arrived. */
+  const uploadWait = reviewWaitReason(
+    latest?.pendingUploads,
+    now?.getTime() ?? (Date.parse(latest?.submittedAt ?? "") || 0),
+  );
+
   const canReview =
+    !uploadWait &&
     !!latest &&
     /* The same rule the engine applies, not a second copy of it. A task-level
        submission still needs the task to be `in_review`; an OUTPUT submission
@@ -158,7 +185,15 @@ export function ReviewPanel({
     <div className="flex flex-col gap-4">
       {latest && !canReview && (
         <Panel>
-          {latest.submittedById === me ? (
+          {uploadWait ? (
+            /* Named rather than generic: "a file is still uploading" leaves a
+               reviewer wondering whether anything is wrong, and the name is
+               what lets them recognise the work they are waiting for. */
+            <div>
+              <p className="text-sm text-ink">Waiting for the submitted work.</p>
+              <p className="mt-1 text-sm text-ink-muted">{uploadWait}</p>
+            </div>
+          ) : latest.submittedById === me ? (
             <PermissionDenied
               what="review this"
               reason="You submitted this work. Nobody can review their own submission."

@@ -1551,6 +1551,7 @@ export const submissions: TaskSubmission[] = [
     currentStage: 1,
     supersededById: null,
     wasLate: true,
+    pendingUploads: [],
   },
   {
     id: "sb-02",
@@ -1566,6 +1567,7 @@ export const submissions: TaskSubmission[] = [
     currentStage: 1,
     supersededById: null,
     wasLate: true,
+    pendingUploads: [],
   },
   {
     id: "sb-03",
@@ -1581,6 +1583,7 @@ export const submissions: TaskSubmission[] = [
     currentStage: 1,
     supersededById: null,
     wasLate: false,
+    pendingUploads: [],
   },
 ];
 

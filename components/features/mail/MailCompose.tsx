@@ -129,7 +129,7 @@ export function MailCompose({
   /* Rich body. The editor mounts ONCE from this initial HTML — a draft's saved
      rich body, or the plain reply/forward prefill converted — and reports both
      its HTML and its plain text back on every change. `body` stays the plain
-     text (the source of truth for the grammar gate, search and preview);
+     text (the source of truth for the grammar check, search and preview);
      `bodyHtml` carries the formatting. */
   const editorRef = useRef<RichTextEditorHandle>(null);
   const initialHtmlRef = useRef(editingDraft?.bodyHtml ?? textToHtml(body));
@@ -190,14 +190,23 @@ export function MailCompose({
   }
 
   /**
-   * The mandatory spelling/grammar gate.
+   * The spelling/grammar check — **offered, not required.**
    *
-   * `grammarCheckedFor` holds the signature of the subject+body pair the
-   * check last ran against. "Checked" means the pass ran and its findings
-   * were looked at — not that its suggestions were accepted, because a
-   * person is always allowed to send their own wording once they've seen
-   * what the assistant would change. Editing either field afterward changes
-   * the signature and re-engages the gate.
+   * **OWNER DECISION, 23 September 2026.** It used to hold Send shut until it
+   * had been run: the footer read "Run the spelling & grammar check before
+   * sending" and the button stayed dead. Asked to make it optional, in these
+   * words — *without Check now click, can user send that mail message*.
+   *
+   * So the panel stays exactly as it is and the refusal is gone. Nothing about
+   * the check itself changes: press **Check now** and it runs, shows what it
+   * would change, and lets you apply it or keep your own wording. What changed
+   * is that ignoring it is now allowed.
+   *
+   * `grammarCheckedFor` holds the signature of the subject+body pair the check
+   * last ran against, which is what the ✓ reads. "Checked" means the pass ran
+   * and its findings were looked at — not that its suggestions were accepted.
+   * Editing either field afterward changes the signature, so the ✓ drops back
+   * to the offer; it no longer stops anybody sending.
    */
   const [grammarCheckedFor, setGrammarCheckedFor] = useState<string | null>(null);
   const [checkingGrammar, setCheckingGrammar] = useState(false);
@@ -252,6 +261,10 @@ export function MailCompose({
      `getGmailConnection`. The banner, the disabled state and the server's own
      check now all resolve from that same record, which is what stopped Settings
      and the composer contradicting each other. */
+  /* The spelling & grammar check is NOT one of these, and has not been since
+     23 September 2026. A refusal is something Cowork cannot do — no recipient,
+     no subject, no Gmail connection, an upload still running — and an unread
+     suggestion is not in that class. See the check's own note above. */
   const refusal =
     (uploading ? "Wait for the attachment upload to finish." : null) ??
     recipientRefusal({ to: recipients, cc, bcc }) ??
@@ -259,8 +272,7 @@ export function MailCompose({
       recipients: everyone,
       subject,
       gmailAvailable: gmail.data?.connected ?? false,
-    }) ??
-    (!grammarChecked ? "Run the spelling & grammar check before sending." : null);
+    });
 
   /**
    * Send.
@@ -333,8 +345,9 @@ export function MailCompose({
     return sent;
   });
 
-  /* Save Draft is deliberately NOT gated on the grammar check or a recipient —
-     an unfinished message is exactly what a draft is for. */
+  /* Save Draft is deliberately NOT gated on a recipient — an unfinished
+     message is exactly what a draft is for. (It was not gated on the grammar
+     check either; nothing is, now.) */
   const [saveDraft, saveState] = useAction((r) =>
     r.saveMailDraft({
       draftId: editingDraft?.id ?? null,
@@ -498,7 +511,7 @@ export function MailCompose({
 
                 No AI-assist button sits over this field: its popover opened
                 DOWNWARD across the whole editor and blocked typing. AI grammar
-                help stays available through the "Check now" gate below, and the
+                help stays available through the "Check now" panel below, and the
                 Subject field keeps its own small assist. */}
             <RichTextEditor
               ref={editorRef}
@@ -598,20 +611,18 @@ export function MailCompose({
             </div>
           )}
 
-          {/* A grammar/spelling pass is mandatory before send — see `refusal`
-              below, which folds `grammarRefusal` into the same one-reason
-              gate as the recipient and transport checks. This panel is where
-              that check actually runs and where its findings are reviewed;
-              "checked" means the pass ran and was looked at, not that its
-              suggestions were accepted — a person is always allowed to send
-              their own wording. */}
+          {/* The spelling & grammar pass — offered here, and nowhere in
+              `refusal`. It ran as a gate on Send until 23 September 2026; now
+              it is a check you may run, ignore, or run and then disagree with.
+              "Checked" means the pass ran and was looked at, not that its
+              suggestions were accepted. */}
           {(subject.trim() || body.trim()) && (
             <div className="mt-4 rounded-inset bg-[var(--surface-sunken)] px-3 py-2.5">
               <div className="flex items-center justify-between gap-3">
                 <p className="text-xs font-medium text-ink">
                   {grammarChecked
                     ? "✓ Spelling & grammar checked"
-                    : "Spelling & grammar check required before sending"}
+                    : "Check spelling & grammar — optional"}
                 </p>
                 <Button
                   size="sm"
@@ -669,7 +680,12 @@ export function MailCompose({
                         setGrammarSuggestions(null);
                       }}
                     >
-                      Send as written
+                      {/* It read "Send as written" while the check held Send
+                          shut, which is what pressing it used to achieve. It
+                          no longer unblocks anything — it records that you saw
+                          the suggestions and kept your own words — so it says
+                          that instead. */}
+                      Keep my wording
                     </Button>
                     <Button
                       size="sm"
@@ -715,7 +731,7 @@ export function MailCompose({
                 Cancel
               </Button>
               {/* Save Draft keeps an unfinished message without sending — no
-                  recipient or grammar check required. */}
+                  recipient needed. */}
               <Button
                 tone="secondary"
                 size="sm"

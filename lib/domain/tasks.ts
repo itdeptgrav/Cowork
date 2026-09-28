@@ -625,6 +625,41 @@ export interface TaskSubmission {
   supersededById: string | null;
   /** Computed against `deadline.officialDueAt` at submission time. */
   wasLate: boolean;
+  /**
+   * Files handed over WITH this submission that had not arrived yet.
+   *
+   * A submission is recorded the instant it is made — the timer stops there and
+   * `wasLate` above is stamped there — while its files are still going up, and
+   * for a 3 GB video that gap is hours. Nothing outside the uploading browser
+   * could see that, so the attempt read "Submitted files (0) — No files on this
+   * attempt" at a reviewer who was free to approve it.
+   *
+   * So the submission says what is coming. Written at submit, amended by the
+   * same browser as each upload settles, and read through
+   * `lib/rules/tasks/submissionUploads.ts` — which also decides when an entry
+   * nobody ever amended has been silent long enough to presume gone.
+   *
+   * Empty is the ordinary case: a submission with no files, or one whose files
+   * have all landed.
+   */
+  pendingUploads: SubmissionUpload[];
+}
+
+/**
+ * One file on its way to a submission.
+ *
+ * Here rather than in the rules module because it is part of the record —
+ * `lib/rules/tasks/submissionUploads.ts` reads and ages it, but does not own
+ * it.
+ */
+export interface SubmissionUpload {
+  /** As the person will recognise it on their own screen. */
+  name: string;
+  sizeBytes: number;
+  /** When the upload began — what tells a running one from an abandoned one. */
+  startedAt: string;
+  /** `failed` is written by the browser doing it, and releases the reviewer. */
+  state: "uploading" | "failed";
 }
 
 export type ReviewDecision = "approved" | "rework" | "rejected";

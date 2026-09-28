@@ -84,6 +84,44 @@ test("the sender sees a status chip; Reply All appears only when it differs", ()
   assert.match(THREAD, /setReply\(\{ mode: "replyAll" \}\)/);
 });
 
+/* ── The spelling & grammar check ─────────────────────────────────────────── */
+
+test("the spelling & grammar check does not hold Send shut", () => {
+  /**
+   * **OWNER DECISION, 23 September 2026.** It used to: the footer read "Run the
+   * spelling & grammar check before sending" and Send stayed dead until Check
+   * now had been pressed. Asked to make it optional — a message can be sent
+   * without ever running it.
+   *
+   * Pinned from the REFUSAL rather than from the button, because that is where
+   * it lived: one string, computed from a chain, and `disabled={!!refusal}`.
+   * Anything added back to that chain turns the offer into a gate again.
+   */
+  assert.doesNotMatch(COMPOSE, /Run the spelling & grammar check before sending/);
+  assert.doesNotMatch(COMPOSE, /grammarChecked \?.*refusal|!grammarChecked \?/);
+  assert.match(COMPOSE, /disabled=\{!!refusal \|\| state\.isPending\}/);
+
+  /* The chain that IS there: things Cowork genuinely cannot do. */
+  assert.match(COMPOSE, /uploading \? "Wait for the attachment upload to finish\." : null/);
+  assert.match(COMPOSE, /recipientRefusal\(\{ to: recipients, cc, bcc \}\)/);
+  assert.match(COMPOSE, /sendRefusal\(\{/);
+});
+
+test("the check itself is untouched — it still runs, and still offers its fixes", () => {
+  /* Made optional, not removed. The panel, the pass over subject and body, the
+     suggestions and both ways of answering them all stay. */
+  assert.match(COMPOSE, /Check spelling & grammar — optional/);
+  assert.match(COMPOSE, /"Check now"/);
+  assert.match(COMPOSE, /✓ Spelling & grammar checked/);
+  assert.match(COMPOSE, /improveText\(\{ text: subject, mode: "grammar"/);
+  assert.match(COMPOSE, /improveText\(\{ text: body, mode: "grammar"/);
+  assert.match(COMPOSE, /Apply corrections/);
+  /* It said "Send as written" when pressing it was what let you send. It no
+     longer unblocks anything, so it no longer says it does. */
+  assert.match(COMPOSE, /Keep my wording/);
+  assert.doesNotMatch(COMPOSE, /Send as written/);
+});
+
 test("compose supports Reply All, on the same thread, never addressing you", () => {
   assert.match(COMPOSE, /"reply" \| "replyAll" \| "forward"/);
   assert.match(COMPOSE, /replySeed\(mode \?\? "forward", replyTo, viewerId\)/);
