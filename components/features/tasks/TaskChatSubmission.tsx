@@ -9,6 +9,8 @@ import { SubmittedFiles } from "./SubmittedFiles";
 import { EntityAttachments } from "@/components/features/attachments/Attachments";
 import { ReviewDecisionBox } from "./ReviewPanel";
 import { mayReview } from "@/lib/rules/tasks/reviewChain";
+import { clusterSubmissionAttempts } from "@/lib/rules/tasks/submissionAttempts";
+import { useQuery } from "@/lib/hooks/useRepository";
 import { mayReview as mayReviewOutput } from "@/lib/rules/tasks/outputs";
 import { formatDateTime } from "@/lib/utils/format";
 import type { TaskView } from "@/lib/repositories";
@@ -217,6 +219,14 @@ export function ChatSubmissionCard({
    *  the card clears itself rather than sitting there already answered. */
   onDecided: () => void;
 }) {
+  /* The boundary between attempts, for the same reason the review screen
+     reads it: every attempt's files are pooled under one submission record,
+     and this card is about ONE of them. */
+  const reworks = useQuery(
+    (r) => r.listReworkRequests(view.task.id),
+    [view.task.id, view.task.updatedAt],
+  );
+
   /* The same pair of gates the review screen and the engine apply, imported
      rather than restated — a third copy is a third chance to offer somebody a
      decision the backend then refuses. */
@@ -279,10 +289,17 @@ export function ChatSubmissionCard({
         * readable. `SubmittedFiles` renders nothing when its list is empty, so
         * the pair costs nothing when only one store has anything in it.
         */}
+      {/* This attempt's files. The pool holds every attempt's — see the
+          review screen, where the same fault put a 3 GB video from a previous
+          attempt in front of somebody judging a 1.2 MB PDF. */}
       <EntityAttachments
         entityType="submission"
         entityId={submission.id}
         title="Submitted work"
+        filter={(files) => {
+          const attempts = clusterSubmissionAttempts(files, reworks.data ?? []);
+          return attempts.length ? attempts[attempts.length - 1].files : files;
+        }}
       />
       <SubmittedFiles files={submission.attachments} label="Also attached" />
 

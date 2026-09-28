@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ActionWait } from "@/components/ui/ActionWait";
 import { mayReview } from "@/lib/rules/tasks/reviewChain";
+import { clusterSubmissionAttempts } from "@/lib/rules/tasks/submissionAttempts";
 import { reviewWaitReason } from "@/lib/rules/tasks/submissionUploads";
 import { useNow } from "@/lib/hooks/useNow";
 import {
@@ -128,6 +129,13 @@ export function ReviewPanel({
   );
   const reviews = useQuery(
     (r) => r.listReviews(taskId),
+    [taskId, view.task.updatedAt],
+  );
+  /* The other boundary between attempts, besides a gap in the upload times —
+     see `clusterSubmissionAttempts`, which this panel now applies so it shows
+     the attempt being judged rather than the pool of every attempt. */
+  const reworks = useQuery(
+    (r) => r.listReworkRequests(taskId),
     [taskId, view.task.updatedAt],
   );
 
@@ -269,10 +277,39 @@ export function ReviewPanel({
            * application instead wrote URLs onto the task record itself, and
            * work submitted there still has to be reviewable here.
            */}
+          {/**
+           * **THIS attempt's files, not every file the task ever carried.**
+           *
+           * Reported 28 September 2026 with a picture of the two panels side
+           * by side: the submitter had attached one 1.2 MB PDF, the attempt
+           * card said one file, and this panel listed the PDF *and* a 3 GB
+           * video from a previous attempt — as the work to be judged.
+           *
+           * The cause is the engine's record: one `completionSubmission` per
+           * task, overwritten on every resubmit, with every attempt's files
+           * pooled under one id. `clusterSubmissionAttempts` is what splits
+           * that pool back into attempts, and it was applied on the
+           * submitter's side and not here. Same rule, both sides, so the two
+           * screens cannot disagree about what was handed over.
+           *
+           * The earlier files are not hidden — they are under Review history
+           * below, with the attempt they belong to.
+           */}
           <EntityAttachments
             entityType="submission"
             entityId={latest.id}
             title="Submitted work"
+            filter={(files) => {
+              const attempts = clusterSubmissionAttempts(
+                files,
+                reworks.data ?? [],
+              );
+              /* No attempt could be reconstructed — no dated files at all —
+                 so showing the pool is better than showing nothing. */
+              return attempts.length
+                ? attempts[attempts.length - 1].files
+                : files;
+            }}
           />
           <SubmittedFiles files={latest.attachments} label="Also attached" />
           {latest.reviewChain.length > 1 && (

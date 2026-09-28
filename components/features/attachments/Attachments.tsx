@@ -703,6 +703,7 @@ export function EntityAttachments({
   entityId,
   title,
   hint,
+  filter,
 }: {
   entityType: AttachmentEntity;
   entityId: string;
@@ -711,6 +712,21 @@ export function EntityAttachments({
      to have, which on a task with one kind of file is two of them. */
   title?: string;
   hint?: string;
+  /**
+   * Narrow what is shown, without changing what is fetched.
+   *
+   * **Reported 28 September 2026.** One entity is not always one list. The
+   * legacy engine keeps a single submission record per task and overwrites it
+   * on every resubmit, so every attempt's files land in one bucket — and a
+   * reviewer opening a resubmission of a 1.2 MB PDF was shown a 3 GB video
+   * from the attempt before it, as part of the work they were about to judge.
+   *
+   * The caller decides, because only the caller knows which slice its screen
+   * is about. The fetch, the loading state and the error state stay here, so
+   * a filtered section still says "loading" and still reports a storage
+   * failure rather than quietly showing nothing.
+   */
+  filter?: (files: AttachmentMeta[]) => AttachmentMeta[];
 }) {
   const repo = useRepo();
 
@@ -774,7 +790,10 @@ export function EntityAttachments({
      boolean is what stops a previous task's files showing under a new one. */
   const key = `${entityType}:${entityId}`;
   const settled = state?.key === key ? state : null;
-  const files = settled?.files ?? [];
+  /* Filtered AFTER settling, so the loading and error states above are about
+     the fetch rather than about what survived the filter. */
+  const fetched = settled?.files ?? [];
+  const files = settled && filter ? filter(fetched) : fetched;
   const error = settled?.error ?? null;
 
   if (!settled) {
