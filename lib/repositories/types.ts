@@ -34,9 +34,11 @@ import type {
   TimerSopResult,
   TodayTarget,
 } from "@/lib/rules/scoring/timerSop";
-import type { MrfChatMessage, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
+import type { MrfChatMessage, MrfRequest, RawItemHit } from "@/lib/domain/mrf";
 import type {
+  MrfApprovalFilter,
   MrfApprovalStats,
+  MrfItemDecisionInput,
   MrfStats,
   NewMrfInput,
 } from "@/lib/rules/mrf/lifecycle";
@@ -2324,14 +2326,24 @@ export interface CoworkRepository {
   /* Material Request Forms — request and approval (store issue/return is a
      separate app). */
   listMyMrfs(): Promise<{ requests: MrfRequest[]; stats: MrfStats }>;
-  /** The approver's queue: requests routed to the acting viewer. */
+  /** The approver's queue: requests routed to the acting viewer, filtered by
+   * how far the approver has got ("pending" = an item still waiting). */
   listMrfApprovals(
-    status?: MrfStatus | "all",
+    status?: MrfApprovalFilter,
   ): Promise<{ requests: MrfRequest[]; stats: MrfApprovalStats }>;
   getMrf(id: string): Promise<MrfRequest | null>;
   createMrf(input: NewMrfInput): Promise<ActionResult<MrfRequest>>;
   cancelMrf(id: string, note?: string): Promise<ActionResult<MrfRequest>>;
-  /** The resolved approver (or CEO) approves or rejects a pending request. */
+  /**
+   * The approver decides some or all of the items still waiting, one by one.
+   * Approved items go to the store at once; the rest stay in the queue. A
+   * rejection, or approving less than was asked, carries a reason.
+   */
+  decideMrfItems(
+    id: string,
+    decisions: MrfItemDecisionInput[],
+  ): Promise<ActionResult<MrfRequest>>;
+  /** Approve all / Reject all — every item still waiting, in one go. */
   decideMrf(
     id: string,
     decision: {

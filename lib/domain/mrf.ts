@@ -12,8 +12,53 @@ import type { EmployeeId } from "./identity";
 export type MrfRequestType = "uses_based" | "time_based";
 export type MrfPriority = "low" | "normal" | "high" | "urgent";
 
-/** Request-level lifecycle. Store-side downstream states collapse to `approved`. */
+/** Request-level lifecycle. Store-side downstream states collapse to `approved`.
+ *
+ * `approved` means "with the store" — and a request reaches the store as soon
+ * as ONE of its items is approved, while others may still be waiting. How far
+ * the manager has got is `MrfApprovalStatus`, not this. */
 export type MrfStatus = "pending" | "approved" | "rejected" | "cancelled";
+
+/**
+ * The manager's decisions on a request, rolled up from its items.
+ *
+ *   awaiting             nothing decided yet
+ *   partially_processed  some items decided, some still waiting
+ *   approved             every item approved in full
+ *   partially_approved   all decided; some rejected, or approved for less
+ *   rejected             every item rejected
+ *   cancelled            withdrawn while items still waited
+ */
+export type MrfApprovalStatus =
+  | "awaiting"
+  | "partially_processed"
+  | "approved"
+  | "partially_approved"
+  | "rejected"
+  | "cancelled";
+
+/** The manager's decision on one item. */
+export type MrfItemDecision = "pending" | "approved" | "rejected";
+
+/**
+ * What the manager decided about one item, and who, when and why.
+ *
+ * Approving LESS than was asked is an approval: `approvedQty` is what the store
+ * will supply and `rejectedQty` the part that was refused, with `reason`.
+ */
+export interface MrfItemApproval {
+  decision: MrfItemDecision;
+  /** What the requester asked for — kept when the approved quantity is less. */
+  requestedQty: number;
+  approvedQty: number;
+  rejectedQty: number;
+  reason: string | null;
+  decidedByName: string | null;
+  decidedById: string | null;
+  decidedAt: string | null;
+  /** True when no manager was involved (auto-forwarded, raised by the store). */
+  automatic: boolean;
+}
 
 /** Item-level lifecycle, including the store's issue/return states (read-only). */
 export type MrfItemStatus =
@@ -56,6 +101,9 @@ export interface MrfItem {
   variantCombination?: string[];
   /** Reference photos attached to the line. */
   images?: MrfImage[];
+  /** The manager's decision on this item. Absent from an older backend; read
+   * it through `itemApprovalOf`, which falls back to `status`. */
+  approval?: MrfItemApproval;
 }
 
 export interface MrfImage {
@@ -109,6 +157,9 @@ export interface MrfRequest {
   /** Return date — time-based requests only. */
   deadline: string | null;
   status: MrfStatus;
+  /** How far the manager has got, item by item. Absent from an older backend;
+   * read it through `approvalStatusOf`. */
+  approvalStatus?: MrfApprovalStatus;
   /** The reporting manager who approves; null means it auto-forwarded. */
   approverId: EmployeeId | null;
   approverName: string | null;

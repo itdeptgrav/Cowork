@@ -50,7 +50,7 @@ test("the header is only sent when a caller asks for it", () => {
 test("every guarded MRF write sends one", () => {
   /* create, cancel, tl-approve/tl-reject, and chat — the five operations
      `coworkMrfRoutes.js` wraps in `withIdempotency`. */
-  const writes = ["createMrf", "cancelMrf", "decideMrf", "sendMrfChat"];
+  const writes = ["createMrf", "cancelMrf", "decideMrfItems", "decideMrf", "sendMrfChat"];
   for (const name of writes) {
     const at = REPO.indexOf(`async ${name}(`);
     assert.ok(at !== -1, `${name} moved`);

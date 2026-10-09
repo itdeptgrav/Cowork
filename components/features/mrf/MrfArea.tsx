@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { DriveImage } from "@/components/ui/DriveImage";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
@@ -13,7 +13,6 @@ import {
   InlineError,
   Input,
   Panel,
-  PanelHead,
   QueryError,
   Select,
   SkeletonRows,
@@ -21,19 +20,26 @@ import {
 import { useAction, useQuery } from "@/lib/hooks/useRepository";
 import { useViewerId } from "@/lib/hooks/usePermissions";
 import {
+  approvalStatusOf,
+  awaitingItems,
   canCancelMrf,
   canDecideMrf,
-  mrfStatusLabel,
+  decidedItems,
+  itemApprovalOf,
+  itemDecisionLabel,
+  mrfRequestLabel,
+  validateItemDecisions,
+  type MrfApprovalFilter,
+  type MrfItemDecisionDraft,
 } from "@/lib/rules/mrf/lifecycle";
 import { formatDate } from "@/lib/utils/format";
 import { MrfChat } from "./MrfChat";
-import { MrfPhotoUploader } from "./MrfPhotoUploader";
+import { NewMrfForm } from "./NewMrfForm";
 import type {
   MrfImage,
+  MrfItem,
   MrfPriority,
   MrfRequest,
-  MrfRequestType,
-  RawItemHit,
 } from "@/lib/domain/mrf";
 
 /**
@@ -109,16 +115,51 @@ function PriorityChip({ priority }: { priority: MrfPriority }) {
   );
 }
 
-function StatusChip({ status }: { status: MrfRequest["status"] }) {
+/**
+ * The request's standing, by the manager's decisions — not by the store's
+ * lifecycle, which says "approved" the moment ONE item reaches the store.
+ */
+function StatusChip({ request }: { request: MrfRequest }) {
+  const a = request.status === "cancelled" ? "cancelled" : approvalStatusOf(request);
   const tone =
-    status === "approved"
+    a === "approved"
       ? "positive"
-      : status === "rejected"
+      : a === "partially_approved"
+        ? "extension"
+        : a === "rejected"
+          ? "rework"
+          : a === "partially_processed"
+            ? "risk"
+            : "neutral";
+  return <Chip tone={tone}>{mrfRequestLabel(request)}</Chip>;
+}
+
+/** One item's decision, as a small chip. */
+function DecisionChip({ item, request }: { item: MrfItem; request: MrfRequest }) {
+  const a = itemApprovalOf(item, request);
+  const tone =
+    a.decision === "approved"
+      ? a.rejectedQty > 0
+        ? "extension"
+        : "positive"
+      : a.decision === "rejected"
         ? "rework"
-        : status === "cancelled"
-          ? "neutral"
-          : "info";
-  return <Chip tone={tone as never}>{mrfStatusLabel(status)}</Chip>;
+        : "neutral";
+  return (
+    <Chip tone={tone} className="!px-2 !py-[2px] text-[11px]">
+      {request.status === "cancelled" && a.decision === "pending"
+        ? "Withdrawn"
+        : itemDecisionLabel(a, item.unit)}
+    </Chip>
+  );
+}
+
+/** "by Rakesh · 9 Oct" — who decided an item, and when. */
+function decidedBy(item: MrfItem, request: MrfRequest): string | null {
+  const a = itemApprovalOf(item, request);
+  if (a.decision === "pending" || a.automatic) return null;
+  const parts = [a.decidedByName, a.decidedAt ? formatDate(a.decidedAt) : null].filter(Boolean);
+  return parts.length ? `by ${parts.join(" · ")}` : null;
 }
 
 const AVAILABILITY_LABEL: Record<string, string> = {
@@ -145,11 +186,12 @@ const HISTORY_ACTION_LABEL: Record<string, string> = {
   created: "Request raised",
   tl_approved: "Approved",
   tl_rejected: "Rejected",
+  item_approved: "Approved an item",
   auto_forwarded: "Auto-forwarded to the store",
   item_matched: "Item matched to a catalogue product",
   item_rematched: "Item re-matched to a catalogue product",
   item_registered: "Item registered as a new inventory item",
-  item_rejected: "Item rejected",
+  item_rejected: "Rejected an item",
   availability_updated: "Availability updated",
   store_unfulfilled: "Marked unfulfilled by the store",
   partially_issued: "Partially issued",
@@ -185,32 +227,76 @@ function isOverdue(r: MrfRequest): boolean {
   );
 }
 
-function ItemLines({ request }: { request: MrfRequest }) {
+/** An item's reference photos — thumbnails that open full size. */
+function ItemPhotos({ images }: { images?: MrfImage[] }) {
   const [zoomed, setZoomed] = useState<MrfImage | null>(null);
+  if (!images?.length) return null;
   return (
-    <ul className="mt-2 space-y-1.5">
+    <>
+      <div className="mt-1 flex flex-wrap gap-1.5">
+        {images.map((im, k) => (
+          <button
+            key={k}
+            type="button"
+            aria-label={`View ${im.name ?? "reference photo"}`}
+            onClick={() => setZoomed(im)}
+            className="block"
+          >
+            <DriveImage
+              fileId={im.fileId}
+              url={im.url}
+              alt={im.name ?? "Reference photo"}
+              className="h-10 w-10 rounded-md object-cover"
+            />
+          </button>
+        ))}
+      </div>
+      {zoomed && (
+        <ImageLightbox
+          fileId={zoomed.fileId}
+          url={zoomed.url}
+          apiBase={MRF_MEDIA_BASE}
+          alt={zoomed.name ?? "Reference photo"}
+          downloadUrl={mrfImageDownloadUrl(zoomed)}
+          downloadName={zoomed.name ?? "photo.jpg"}
+          onClose={() => setZoomed(null)}
+        />
+      )}
+    </>
+  );
+}
+
+function ItemLines({ request }: { request: MrfRequest }) {
+  return (
+    <ul className="mt-2 space-y-2">
       {request.items.map((it) => {
         const avail =
           it.availability && it.availability !== "unreviewed"
             ? it.availability
             : null;
-        const tag = ITEM_STATUS_LABEL[it.status];
+        const approval = itemApprovalOf(it, request);
+        /* The manager's decision is the chip; this tag is only the store's
+           progress after it — "rejected" is said once, by the chip. */
+        const tag = it.status === "rejected" ? undefined : ITEM_STATUS_LABEL[it.status];
         const issuedQty = it.issuedQty ?? 0;
         const returnedQty = it.returnedQty ?? 0;
+        const withStore = approval.decision === "approved";
+        const by = decidedBy(it, request);
         return (
-          <li key={it.id} className="text-[13px]">
-            <div className="flex flex-wrap items-baseline gap-2">
+          <li key={it.id} className="text-[13px]" data-mrf-item={it.id}>
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
               <span className="text-ink">{it.name}</span>
               <span data-figure className="text-ink-muted">
-                {it.requestedQty} {it.unit}
+                {approval.requestedQty} {it.unit}
               </span>
               {it.isUnmatched && (
                 <span className="text-[11px] text-ink-faint">· not in catalogue</span>
               )}
+              <DecisionChip item={it} request={request} />
               {tag && (
                 <span
                   className={`text-[11px] ${
-                    it.status === "rejected" || it.status === "overdue"
+                    it.status === "overdue"
                       ? "text-[var(--state-rework-ink)]"
                       : "text-ink-faint"
                   }`}
@@ -218,8 +304,20 @@ function ItemLines({ request }: { request: MrfRequest }) {
                   · {tag}
                 </span>
               )}
+              {by && <span className="text-[11px] text-ink-faint">{by}</span>}
             </div>
-            {(avail || !!issuedQty || !!returnedQty) && (
+            {approval.reason && approval.decision !== "pending" && (
+              <p
+                className={`mt-0.5 text-[11px] ${
+                  approval.decision === "rejected"
+                    ? "text-[var(--state-rework-ink)]"
+                    : "text-ink-muted"
+                }`}
+              >
+                {approval.decision === "rejected" ? "Reason" : "Note"}: {approval.reason}
+              </p>
+            )}
+            {withStore && (avail || !!issuedQty || !!returnedQty) && (
               <div className="mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-ink-faint">
                 {avail && (
                   <span>
@@ -233,7 +331,8 @@ function ItemLines({ request }: { request: MrfRequest }) {
                     <span data-figure>{it.requestedQty}</span>
                   </span>
                 )}
-                {/* What the store still owes on this line — 0 once fully issued. */}
+                {/* What the store still owes on this line — 0 once fully issued.
+                    `requestedQty` is the APPROVED figure once a manager cut it. */}
                 {issuedQty < it.requestedQty &&
                   it.status !== "rejected" &&
                   it.status !== "unfulfilled" && (
@@ -257,40 +356,10 @@ function ItemLines({ request }: { request: MrfRequest }) {
                 )}
               </div>
             )}
-            {!!it.images?.length && (
-              <div className="mt-1 flex flex-wrap gap-1.5">
-                {it.images.map((im, k) => (
-                  <button
-                    key={k}
-                    type="button"
-                    aria-label={`View ${im.name ?? "reference photo"}`}
-                    onClick={() => setZoomed(im)}
-                    className="block"
-                  >
-                    <DriveImage
-                      fileId={im.fileId}
-                      url={im.url}
-                      alt={im.name ?? "Reference photo"}
-                      className="h-10 w-10 rounded-md object-cover"
-                    />
-                  </button>
-                ))}
-              </div>
-            )}
+            <ItemPhotos images={it.images} />
           </li>
         );
       })}
-      {zoomed && (
-        <ImageLightbox
-          fileId={zoomed.fileId}
-          url={zoomed.url}
-          apiBase={MRF_MEDIA_BASE}
-          alt={zoomed.name ?? "Reference photo"}
-          downloadUrl={mrfImageDownloadUrl(zoomed)}
-          downloadName={zoomed.name ?? "photo.jpg"}
-          onClose={() => setZoomed(null)}
-        />
-      )}
     </ul>
   );
 }
@@ -327,10 +396,19 @@ function MrfHistory({ request }: { request: MrfRequest }) {
   );
 }
 
+const TILE_COLS: Record<number, string> = {
+  4: "sm:grid-cols-4",
+  5: "sm:grid-cols-5",
+};
+
 function Tiles({ cells }: { cells: { label: string; value: number }[] }) {
   return (
     <Panel padded={false} className="mb-4">
-      <div className="grid grid-cols-2 divide-x divide-y divide-hairline sm:grid-cols-4 sm:divide-y-0">
+      <div
+        className={`grid grid-cols-2 divide-x divide-y divide-hairline sm:divide-y-0 ${
+          TILE_COLS[cells.length] ?? "sm:grid-cols-4"
+        }`}
+      >
         {cells.map((c) => (
           <div key={c.label} className="px-4 py-3">
             <p data-figure className="text-xl font-light text-ink">
@@ -382,8 +460,11 @@ function MyRequests() {
         <Tiles
           cells={[
             { label: "Total", value: data.stats.total },
+            /* Anything with an item still waiting — a request three of whose
+               five items already reached the store is still here. */
             { label: "Awaiting", value: data.stats.pending },
             { label: "Approved", value: data.stats.approved },
+            { label: "Partly approved", value: data.stats.partiallyApproved },
             { label: "Closed", value: data.stats.closed },
           ]}
         />
@@ -400,7 +481,7 @@ function MyRequests() {
 
       {creating && (
         <div className="mb-4">
-          <NewMrf
+          <NewMrfForm
             onDone={() => {
               setCreating(false);
               refetch();
@@ -424,7 +505,7 @@ function MyRequests() {
                 <span data-figure className="text-sm font-medium text-ink">
                   {m.mrfNumber}
                 </span>
-                <StatusChip status={m.status} />
+                <StatusChip request={m} />
                 <PriorityChip priority={m.priority} />
                 {m.autoForwarded && <Chip tone="neutral">Auto-sent</Chip>}
                 {isOverdue(m) && <Chip tone="overdue">Overdue</Chip>}
@@ -580,385 +661,10 @@ function WithdrawConfirm({
   );
 }
 
-/* ── New request ──────────────────────────────────────────────────────────── */
-
-interface DraftItem {
-  name: string;
-  requestedQty: string;
-  unit: string;
-  description: string;
-  /** True when chosen from the catalogue rather than typed free-hand. */
-  matched: boolean;
-  rawItemId: string | null;
-  variantId: string | null;
-  variantCombination: string[];
-  /** Units offered in the picker — base unit plus conversions. */
-  units: string[];
-  /** Stock on hand for the chosen line, for display. */
-  stock: number | null;
-  /** For a typed (new) item the store hasn't catalogued yet. */
-  category: string;
-  images: MrfImage[];
-}
-const emptyItem: DraftItem = {
-  name: "",
-  requestedQty: "",
-  unit: "",
-  description: "",
-  matched: false,
-  rawItemId: null,
-  variantId: null,
-  variantCombination: [],
-  units: [],
-  stock: null,
-  category: "",
-  images: [],
-};
-
-function NewMrf({ onDone }: { onDone: () => void }) {
-  const [requestType, setType] = useState<MrfRequestType>("uses_based");
-  const [priority, setPriority] = useState<MrfPriority>("normal");
-  const [reason, setReason] = useState("");
-  const [neededBy, setNeededBy] = useState("");
-  const [deadline, setDeadline] = useState("");
-  const [items, setItems] = useState<DraftItem[]>([]);
-  const [search, setSearch] = useState("");
-  const [q, setQ] = useState("");
-  const [expanded, setExpanded] = useState<string | null>(null);
-  // Adding a typed item is the common path — most requests aren't in the
-  // catalogue. Catalogue search is secondary, so it starts collapsed.
-  const [showSearch, setShowSearch] = useState(false);
-  const [create, state] = useAction((r, input: Parameters<typeof r.createMrf>[0]) =>
-    r.createMrf(input),
-  );
-
-  // Debounce the catalogue search, matching the old app's 300ms.
-  useEffect(() => {
-    const t = setTimeout(() => setQ(search.trim()), 300);
-    return () => clearTimeout(t);
-  }, [search]);
-  const results = useQuery((r) => r.searchMrfItems(q), [q]);
-
-  const setItem = (i: number, patch: Partial<DraftItem>) =>
-    setItems((xs) => xs.map((x, j) => (j === i ? { ...x, ...patch } : x)));
-
-  const addFromCatalogue = (
-    item: RawItemHit,
-    variant?: RawItemHit["variants"][number],
-  ) => {
-    setItems((xs) => [
-      ...xs,
-      {
-        name: variant
-          ? `${item.name} · ${variant.combination.join(" / ")}`
-          : item.name,
-        requestedQty: "",
-        unit: item.baseUnit,
-        description: "",
-        matched: true,
-        rawItemId: item.id,
-        variantId: variant?.id ?? null,
-        variantCombination: variant?.combination ?? [],
-        units: item.units.length ? item.units : [item.baseUnit],
-        stock: variant ? variant.quantity : item.quantity,
-        category: "",
-        images: [],
-      },
-    ]);
-    setSearch("");
-    setQ("");
-    setExpanded(null);
-  };
-
-  return (
-    <Panel>
-      <PanelHead title="New request" sub="It routes to your manager to approve." />
-      {state.error && (
-        <div className="mb-3">
-          <InlineError message={state.error} />
-        </div>
-      )}
-      <div className="grid gap-3 deck:grid-cols-2">
-        <Field label="Type">
-          <Select
-            value={requestType}
-            onChange={(e) => setType(e.target.value as MrfRequestType)}
-          >
-            <option value="uses_based">Consumed (used up)</option>
-            <option value="time_based">Borrowed (returned)</option>
-          </Select>
-        </Field>
-        <Field label="Priority">
-          <Select
-            value={priority}
-            onChange={(e) => setPriority(e.target.value as MrfPriority)}
-          >
-            <option value="normal">Normal</option>
-            <option value="urgent">Urgent</option>
-          </Select>
-        </Field>
-        <Field label="Reason" required className="deck:col-span-2">
-          <Input
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            placeholder="What it's for"
-          />
-        </Field>
-        <Field label="Needed by">
-          <Input type="date" value={neededBy} onChange={(e) => setNeededBy(e.target.value)} />
-        </Field>
-        {requestType === "time_based" && (
-          <Field label="Return by" required>
-            <Input type="date" value={deadline} onChange={(e) => setDeadline(e.target.value)} />
-          </Field>
-        )}
-      </div>
-
-      <p className="mt-4 text-[11px] tracking-[0.09em] text-ink-faint uppercase">
-        Items
-      </p>
-
-      {/* Adding a typed item is the primary action — most requests are for
-          something not in the catalogue. Catalogue search is optional and
-          collapsed behind a text button until asked for. */}
-      <div className="mt-1.5 flex flex-wrap items-center gap-2">
-        <Button
-          tone="primary"
-          size="sm"
-          onClick={() => setItems((xs) => [...xs, { ...emptyItem }])}
-        >
-          + Add a typed item
-        </Button>
-        <button
-          type="button"
-          onClick={() => {
-            setShowSearch((s) => !s);
-            if (showSearch) {
-              setSearch("");
-              setQ("");
-              setExpanded(null);
-            }
-          }}
-          className="text-xs text-ink-muted underline underline-offset-2 hover:text-ink"
-        >
-          {showSearch ? "Hide catalogue search" : "Search the catalogue instead"}
-        </button>
-      </div>
-
-      {/* Catalogue search — the real store items and their variants, with stock. */}
-      {showSearch && (
-      <div className="mt-1.5">
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search the store catalogue…"
-          autoFocus
-        />
-        {q && (results.data?.length ?? 0) > 0 && (
-          <div className="mt-1 max-h-[260px] overflow-y-auto rounded-inset border border-hairline scroll-slim">
-            {results.data!.map((item) => (
-              <div key={item.id} className="border-b border-hairline last:border-0">
-                <button
-                  type="button"
-                  onClick={() =>
-                    item.variants.length
-                      ? setExpanded((x) => (x === item.id ? null : item.id))
-                      : addFromCatalogue(item)
-                  }
-                  className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left hover:bg-[var(--surface-sunken)]"
-                >
-                  <span className="min-w-0">
-                    <span className="block truncate text-[13px] text-ink">
-                      {item.name}
-                    </span>
-                    <span className="block text-[11px] text-ink-faint">
-                      {item.sku ? `${item.sku} · ` : ""}
-                      {item.baseUnit}
-                      {item.variants.length
-                        ? ` · ${item.variants.length} variants`
-                        : ""}
-                    </span>
-                  </span>
-                  <span
-                    data-figure
-                    className="shrink-0 text-[11px] text-ink-muted"
-                  >
-                    {item.quantity} {item.baseUnit}
-                  </span>
-                </button>
-                {expanded === item.id && (
-                  <div className="bg-[var(--surface-sunken)] px-2 py-1.5">
-                    {item.variants.map((v) => (
-                      <button
-                        key={v.id}
-                        type="button"
-                        onClick={() => addFromCatalogue(item, v)}
-                        className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-[var(--control)]"
-                      >
-                        <span className="text-[13px] text-ink">
-                          {v.combination.join(" / ") || "Default"}
-                        </span>
-                        <span
-                          data-figure
-                          className={`shrink-0 text-[11px] ${
-                            v.quantity > 0
-                              ? "text-[var(--state-positive-ink)]"
-                              : "text-ink-faint"
-                          }`}
-                        >
-                          {v.quantity} {item.baseUnit}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {q && !results.isLoading && (results.data?.length ?? 0) === 0 && (
-          <p className="mt-1 text-[11px] text-ink-faint">
-            Nothing in the catalogue for &ldquo;{q}&rdquo;. Add it as a typed
-            item above.
-          </p>
-        )}
-      </div>
-      )}
-
-      {items.length > 0 && (
-        <div className="mt-3 space-y-2">
-          {items.map((it, i) => (
-            <div key={i} className="flex flex-wrap items-end gap-2">
-              <Field
-                label={it.matched ? "Item (catalogue)" : "Item"}
-                className="min-w-[160px] flex-1"
-              >
-                <Input
-                  value={it.name}
-                  readOnly={it.matched}
-                  onChange={(e) => setItem(i, { name: e.target.value })}
-                />
-              </Field>
-              <Field label="Qty" className="w-[80px]">
-                <Input
-                  type="number"
-                  min={0}
-                  value={it.requestedQty}
-                  onChange={(e) => setItem(i, { requestedQty: e.target.value })}
-                />
-              </Field>
-              <Field label="Unit" className="w-[110px]">
-                {it.units.length > 1 ? (
-                  <Select
-                    value={it.unit}
-                    onChange={(e) => setItem(i, { unit: e.target.value })}
-                  >
-                    {it.units.map((u) => (
-                      <option key={u} value={u}>
-                        {u}
-                      </option>
-                    ))}
-                  </Select>
-                ) : (
-                  <Input
-                    value={it.unit}
-                    onChange={(e) => setItem(i, { unit: e.target.value })}
-                  />
-                )}
-              </Field>
-              <button
-                type="button"
-                onClick={() => setItems((xs) => xs.filter((_, j) => j !== i))}
-                className="pb-2 text-xs text-ink-muted underline underline-offset-2 hover:text-ink"
-              >
-                Remove
-              </button>
-              {it.stock != null && (
-                <span className="w-full text-[11px] text-ink-faint">
-                  In stock: <span data-figure>{it.stock}</span>{" "}
-                  {it.matched ? it.units[0] ?? it.unit : it.unit}
-                </span>
-              )}
-              {/* A typed item is a new-product request: the store will match or
-                  register it. Give them a category, notes and a photo to help. */}
-              <div className="w-full space-y-1.5">
-                {!it.matched && (
-                  <div className="flex flex-wrap items-end gap-2">
-                    <Field label="Category" className="w-[140px]">
-                      <Input
-                        value={it.category}
-                        onChange={(e) => setItem(i, { category: e.target.value })}
-                        placeholder="e.g. Fabric"
-                      />
-                    </Field>
-                    <Field
-                      label="Notes for the store"
-                      className="min-w-[160px] flex-1"
-                    >
-                      <Input
-                        value={it.description}
-                        onChange={(e) =>
-                          setItem(i, { description: e.target.value })
-                        }
-                        placeholder="Anything that helps them find it"
-                      />
-                    </Field>
-                  </div>
-                )}
-                <MrfPhotoUploader
-                  images={it.images}
-                  onChange={(imgs) => setItem(i, { images: imgs })}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="mt-4 flex items-center gap-2 border-t border-hairline pt-3">
-        <Button loading={state.isPending}
-          tone="primary"
-          size="sm"
-          disabled={state.isPending}
-          onClick={async () => {
-            const res = await create({
-              requestType,
-              priority,
-              reason,
-              neededBy: neededBy || null,
-              deadline: requestType === "time_based" ? deadline || null : null,
-              items: items.map((it) => ({
-                name: it.name,
-                requestedQty: Number(it.requestedQty) || 0,
-                unit: it.unit,
-                description: it.description || null,
-                isUnmatched: !it.matched,
-                rawItemId: it.rawItemId,
-                variantId: it.variantId,
-                variantCombination: it.variantCombination,
-                images: it.images,
-                category: it.category || null,
-              })),
-            });
-            if (res.ok) onDone();
-          }}
-        >
-          {state.isPending ? "Sending…" : "Send request"}
-        </Button>
-        <Button tone="ghost" size="sm" onClick={onDone}>
-          Cancel
-        </Button>
-      </div>
-    </Panel>
-  );
-}
-
 /* ── Approvals ────────────────────────────────────────────────────────────── */
 
 function Approvals() {
-  const [status, setStatus] = useState<"pending" | "approved" | "rejected" | "all">(
-    "pending",
-  );
+  const [status, setStatus] = useState<MrfApprovalFilter>("pending");
   const approvals = useQuery((r) => r.listMrfApprovals(status), [status]);
   const { data, isLoading, refetch } = approvals;
 
@@ -978,6 +684,7 @@ function Approvals() {
           cells={[
             { label: "Awaiting you", value: data.stats.awaiting },
             { label: "Approved", value: data.stats.approved },
+            { label: "Partly approved", value: data.stats.partiallyApproved },
             { label: "Rejected", value: data.stats.rejected },
             { label: "Total", value: data.stats.total },
           ]}
@@ -987,11 +694,13 @@ function Approvals() {
         <h2 className="text-sm font-medium text-ink">Queue</h2>
         <Select
           value={status}
-          onChange={(e) => setStatus(e.target.value as typeof status)}
-          className="ml-auto w-[150px]"
+          onChange={(e) => setStatus(e.target.value as MrfApprovalFilter)}
+          className="ml-auto w-[170px]"
+          aria-label="Show requests"
         >
           <option value="pending">Awaiting</option>
           <option value="approved">Approved</option>
+          <option value="partially_approved">Partly approved</option>
           <option value="rejected">Rejected</option>
           <option value="all">All</option>
         </Select>
@@ -1014,6 +723,61 @@ function Approvals() {
   );
 }
 
+/* ── Deciding, item by item ───────────────────────────────────────────────── */
+
+/** One item's undecided choice on screen. `qty` blank = the full quantity. */
+interface Draft {
+  decision: "approved" | "rejected" | null;
+  qty: string;
+  reason: string;
+}
+const EMPTY_DRAFT: Draft = { decision: null, qty: "", reason: "" };
+
+/**
+ * Approve / Reject for one item. Two toggle buttons rather than a segmented
+ * control because "not decided yet" is a real, common state — an item left
+ * untouched stays in the queue for later — and a segmented control always has
+ * one option on. Pressing the chosen one again clears it.
+ */
+function DecisionToggle({
+  value,
+  onChange,
+  itemName,
+}: {
+  value: Draft["decision"];
+  onChange: (v: Draft["decision"]) => void;
+  itemName: string;
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={`Decision for ${itemName}`}
+      className="inline-flex shrink-0 gap-0.5 rounded-full bg-[var(--surface-sunken)] p-[3px]"
+    >
+      {(["approved", "rejected"] as const).map((v) => {
+        const on = value === v;
+        return (
+          <button
+            key={v}
+            type="button"
+            aria-pressed={on}
+            onClick={() => onChange(on ? null : v)}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors duration-[180ms] ${
+              on
+                ? v === "approved"
+                  ? "bg-[color-mix(in_srgb,var(--state-positive)_30%,transparent)] text-[var(--state-positive-ink)]"
+                  : "bg-[color-mix(in_srgb,var(--state-overdue)_26%,transparent)] text-[var(--state-overdue-ink)]"
+                : "text-ink-muted hover:text-ink"
+            }`}
+          >
+            {v === "approved" ? "Approve" : "Reject"}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function ApprovalCard({
   request,
   onDecided,
@@ -1022,30 +786,68 @@ function ApprovalCard({
   onDecided: () => void;
 }) {
   const viewerId = useViewerId();
-  const [decide, state] = useAction(
-    (
-      r,
-      d: {
-        approve: boolean;
-        note?: string;
-        itemDecisions?: Record<string, "approved" | "rejected">;
-      },
-    ) => r.decideMrf(request.id, d),
-  );
-  const [rejecting, setRejecting] = useState(false);
-  const [note, setNote] = useState("");
-  const [chatOpen, setChatOpen] = useState(false);
   const canDecide = canDecideMrf(request, viewerId ?? "");
-
-  // Per-item approve/skip, so a manager can approve part of a request. Defaults
-  // to approving every item; only shown when there is more than one.
-  const [itemOk, setItemOk] = useState<Record<string, boolean>>(() =>
-    Object.fromEntries(request.items.map((it) => [it.id, true])),
+  const waiting = awaitingItems(request);
+  const decided = decidedItems(request);
+  const [submit, state] = useAction(
+    (r, decisions: Parameters<typeof r.decideMrfItems>[1]) =>
+      r.decideMrfItems(request.id, decisions),
   );
-  const itemDecisions = (): Record<string, "approved" | "rejected"> =>
-    Object.fromEntries(
-      request.items.map((it) => [it.id, itemOk[it.id] ? "approved" : "rejected"]),
-    );
+  const [drafts, setDrafts] = useState<Record<string, Draft>>({});
+  /* "Reject all" asks for one reason that covers every rejected item without
+     its own — typing the same sentence five times is not a safeguard. */
+  const [sharedReason, setSharedReason] = useState("");
+  const [askShared, setAskShared] = useState(false);
+  /* Problems are shown once the approver has tried to submit, not while they
+     are still choosing — a red "give a reason" under an item they have only
+     just marked Reject is nagging, not help. */
+  const [tried, setTried] = useState(false);
+  const [showDecided, setShowDecided] = useState(false);
+  const [chatOpen, setChatOpen] = useState(false);
+
+  const draftOf = (id: string): Draft => drafts[id] ?? EMPTY_DRAFT;
+  const setDraft = (id: string, patch: Partial<Draft>) =>
+    setDrafts((d) => ({ ...d, [id]: { ...(d[id] ?? EMPTY_DRAFT), ...patch } }));
+  const markAll = (decision: "approved" | "rejected") =>
+    setDrafts((d) => {
+      const next = { ...d };
+      for (const it of waiting) next[it.id] = { ...(d[it.id] ?? EMPTY_DRAFT), decision };
+      return next;
+    });
+
+  const chosen: MrfItemDecisionDraft[] = waiting
+    .filter((it) => draftOf(it.id).decision)
+    .map((it) => {
+      const d = draftOf(it.id);
+      return {
+        itemId: it.id,
+        decision: d.decision!,
+        approvedQty:
+          d.decision === "approved" && d.qty.trim() !== "" ? Number(d.qty) : null,
+        reason: d.reason,
+      };
+    });
+  const check = validateItemDecisions(request, chosen, sharedReason);
+  const toApprove = chosen.filter((d) => d.decision === "approved").length;
+  const toReject = chosen.length - toApprove;
+  const leftOver = waiting.length - chosen.length;
+
+  const reset = () => {
+    setDrafts({});
+    setSharedReason("");
+    setAskShared(false);
+    setTried(false);
+  };
+
+  const onSubmit = async () => {
+    setTried(true);
+    if (!check.ok) return;
+    const res = await submit(check.decisions);
+    if (res.ok) {
+      reset();
+      onDecided();
+    }
+  };
 
   return (
     <Panel>
@@ -1053,7 +855,7 @@ function ApprovalCard({
         <span data-figure className="text-sm font-medium text-ink">
           {request.mrfNumber}
         </span>
-        <StatusChip status={request.status} />
+        <StatusChip request={request} />
         <PriorityChip priority={request.priority} />
         {isOverdue(request) && <Chip tone="overdue">Overdue</Chip>}
         <span className="ml-auto text-[11px] text-ink-faint">
@@ -1067,37 +869,161 @@ function ApprovalCard({
           Store note: {request.storeNote}
         </p>
       )}
-      {canDecide && request.items.length > 1 ? (
-        <ul className="mt-2 space-y-1">
-          {request.items.map((it) => (
-            <li key={it.id} className="flex items-center gap-2 text-[13px]">
+
+      {canDecide ? (
+        <>
+          <div className="mt-3 flex flex-wrap items-center gap-2">
+            <p className="text-[11px] tracking-[0.09em] text-ink-faint uppercase">
+              Awaiting your decision ·{" "}
+              <span data-figure>{waiting.length}</span>
+            </p>
+            {waiting.length > 1 && (
+              <span className="ml-auto flex gap-1">
+                <Button tone="ghost" size="sm" onClick={() => markAll("approved")}>
+                  Approve all
+                </Button>
+                <Button
+                  tone="ghost"
+                  size="sm"
+                  onClick={() => {
+                    markAll("rejected");
+                    setAskShared(true);
+                  }}
+                >
+                  Reject all
+                </Button>
+              </span>
+            )}
+          </div>
+
+          <ul className="mt-2 space-y-2">
+            {waiting.map((it) => {
+              const d = draftOf(it.id);
+              const asked = itemApprovalOf(it, request).requestedQty;
+              const qty = d.qty.trim() === "" ? asked : Number(d.qty);
+              const reduced = d.decision === "approved" && Number.isFinite(qty) && qty < asked;
+              const problem =
+                tried && !check.ok && check.itemId === it.id ? check.message : null;
+              return (
+                <li
+                  key={it.id}
+                  data-mrf-item={it.id}
+                  className={`rounded-inset border px-3 py-2.5 ${
+                    problem ? "border-[var(--state-rework-ink)]" : "border-hairline"
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
+                    <span className="min-w-0 flex-1 text-[13px]">
+                      <span className="text-ink">{it.name}</span>{" "}
+                      <span data-figure className="text-ink-muted">
+                        {asked} {it.unit}
+                      </span>
+                      {it.isUnmatched && (
+                        <span className="text-[11px] text-ink-faint"> · new item</span>
+                      )}
+                    </span>
+                    <DecisionToggle
+                      itemName={it.name}
+                      value={d.decision}
+                      onChange={(v) => setDraft(it.id, { decision: v })}
+                    />
+                  </div>
+                  {it.description && (
+                    <p className="mt-0.5 text-[11px] text-ink-faint">{it.description}</p>
+                  )}
+                  <ItemPhotos images={it.images} />
+
+                  {d.decision === "approved" && (
+                    <div className="mt-2 flex flex-wrap items-end gap-2">
+                      <Field label={`Approve (${it.unit})`} className="w-[130px]">
+                        <Input
+                          type="number"
+                          min={0}
+                          step="any"
+                          inputMode="decimal"
+                          value={d.qty}
+                          placeholder={String(asked)}
+                          aria-label={`Quantity of ${it.name} to approve`}
+                          onChange={(e) => setDraft(it.id, { qty: e.target.value })}
+                        />
+                      </Field>
+                      {reduced ? (
+                        <Field
+                          label={`Why only ${qty} of ${asked}?`}
+                          required
+                          className="min-w-[200px] flex-1"
+                        >
+                          <Input
+                            value={d.reason}
+                            placeholder="The requester sees this"
+                            onChange={(e) => setDraft(it.id, { reason: e.target.value })}
+                          />
+                        </Field>
+                      ) : (
+                        <span className="pb-2 text-[11px] text-ink-faint">
+                          Leave blank to approve all {asked} {it.unit}.
+                        </span>
+                      )}
+                    </div>
+                  )}
+                  {d.decision === "rejected" && (
+                    <Field label="Reason for rejecting" required className="mt-2">
+                      <Input
+                        value={d.reason}
+                        placeholder={
+                          sharedReason.trim()
+                            ? `Uses: “${sharedReason.trim()}”`
+                            : "The requester sees this"
+                        }
+                        onChange={(e) => setDraft(it.id, { reason: e.target.value })}
+                      />
+                    </Field>
+                  )}
+                  {problem && (
+                    <p className="mt-1.5 text-[11px] text-[var(--state-rework-ink)]">
+                      {problem}
+                    </p>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+
+          {askShared && (
+            <Field
+              label="Reason for rejecting — used for every rejected item without its own"
+              className="mt-2"
+            >
+              <Input
+                value={sharedReason}
+                autoFocus
+                onChange={(e) => setSharedReason(e.target.value)}
+                placeholder="The requester sees this"
+              />
+            </Field>
+          )}
+
+          {decided.length > 0 && (
+            <div className="mt-3">
               <button
                 type="button"
-                aria-pressed={itemOk[it.id]}
-                onClick={() =>
-                  setItemOk((m) => ({ ...m, [it.id]: !m[it.id] }))
-                }
-                className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
-                  itemOk[it.id]
-                    ? "bg-[var(--state-positive-surface,var(--control))] text-[var(--state-positive-ink)]"
-                    : "bg-[var(--control)] text-ink-faint line-through"
-                }`}
+                onClick={() => setShowDecided((v) => !v)}
+                className="text-[11px] text-ink-muted underline underline-offset-2 hover:text-ink"
               >
-                {itemOk[it.id] ? "Approve" : "Skip"}
+                {showDecided
+                  ? `Hide already decided (${decided.length})`
+                  : `Already decided (${decided.length})`}
               </button>
-              <span className="text-ink">{it.name}</span>
-              <span data-figure className="text-ink-muted">
-                {it.requestedQty} {it.unit}
-              </span>
-              {it.isUnmatched && (
-                <span className="text-[11px] text-ink-faint">· new item</span>
+              {showDecided && (
+                <ItemLines request={{ ...request, items: decided }} />
               )}
-            </li>
-          ))}
-        </ul>
+            </div>
+          )}
+        </>
       ) : (
         <ItemLines request={request} />
       )}
+
       <MrfHistory request={request} />
       <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-ink-faint">
         {request.neededBy && <span>Needed by {formatDate(request.neededBy)}</span>}
@@ -1113,56 +1039,47 @@ function ApprovalCard({
 
       {chatOpen && <MrfChat mrfId={request.id} />}
 
-      {state.error && (
-        <div className="mt-2">
-          <InlineError message={state.error} />
-        </div>
-      )}
-
       {canDecide && (
         <div className="mt-3 border-t border-hairline pt-3">
-          {rejecting ? (
-            <div className="flex flex-wrap items-end gap-2">
-              <Field label="Reason for rejecting" required className="min-w-[200px] flex-1">
-                <Input value={note} onChange={(e) => setNote(e.target.value)} />
-              </Field>
-              <Button loading={state.isPending}
-                tone="primary"
-                size="sm"
-                disabled={!note.trim() || state.isPending}
-                onClick={async () => {
-                  const res = await decide({ approve: false, note });
-                  if (res.ok) onDecided();
-                }}
-              >
-                Reject
-              </Button>
-              <Button tone="ghost" size="sm" onClick={() => setRejecting(false)}>
-                Back
-              </Button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <Button loading={state.isPending}
-                tone="primary"
-                size="sm"
-                disabled={state.isPending}
-                onClick={async () => {
-                  const res = await decide({
-                    approve: true,
-                    itemDecisions:
-                      request.items.length > 1 ? itemDecisions() : undefined,
-                  });
-                  if (res.ok) onDecided();
-                }}
-              >
-                Approve
-              </Button>
-              <Button tone="ghost" size="sm" onClick={() => setRejecting(true)}>
-                Reject
-              </Button>
+          {state.error && (
+            <div className="mb-2">
+              <InlineError message={state.error} />
             </div>
           )}
+          {tried && !check.ok && !check.itemId && chosen.length > 0 && (
+            <div className="mb-2">
+              <InlineError message={check.message} />
+            </div>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              loading={state.isPending}
+              tone="primary"
+              size="sm"
+              disabled={!chosen.length || state.isPending}
+              onClick={onSubmit}
+            >
+              {chosen.length
+                ? `Submit decisions (${chosen.length})`
+                : "Submit decisions"}
+            </Button>
+            {chosen.length > 0 && !state.isPending && (
+              <Button tone="ghost" size="sm" onClick={reset}>
+                Clear
+              </Button>
+            )}
+            <span className="text-[11px] text-ink-faint">
+              {chosen.length === 0
+                ? "Choose Approve or Reject for each item. Approved items go to the store as soon as you submit."
+                : [
+                    toApprove ? `${toApprove} to approve` : "",
+                    toReject ? `${toReject} to reject` : "",
+                    leftOver ? `${leftOver} left for later` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+            </span>
+          </div>
         </div>
       )}
     </Panel>

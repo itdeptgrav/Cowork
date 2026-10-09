@@ -81,5 +81,8 @@ test("the prototype counts the whole queue too, not the filtered slice", () => {
   );
   assert.notEqual(method, "", "listMrfApprovals not found in the mock repository");
   assert.match(method, /stats:\s*mrfApprovalStats\(mine\)/);
-  assert.match(method, /status === "all" \|\| m\.status === status/);
+  /* Narrowed by the same rule the queue filter means — an item still waiting,
+     not the request's store status (a request reaches the store as soon as one
+     of its items is approved). */
+  assert.match(method, /\.filter\(\(m\) => matchesApprovalFilter\(m, status\)\)/);
 });

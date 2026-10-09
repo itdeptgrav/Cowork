@@ -298,6 +298,36 @@ export const mrfRequests: MrfRequest[] = tenant<MrfRequest>([
     createdAt: iso(-30),
     updatedAt: iso(-28),
   },
+  /* Five items awaiting Maya — the case item-wise approval exists for: approve
+     some, reject some, leave the rest for later. */
+  {
+    id: "m-04",
+    mrfNumber: "MRF-2608-0004",
+    requesterId: "e-02",
+    requesterName: "Tobias Lund",
+    requesterDepartment: "Product",
+    requestType: "uses_based",
+    priority: "normal",
+    reason: "Trims for the sample run.",
+    neededBy: iso(96),
+    deadline: null,
+    status: "pending",
+    approvalStatus: "awaiting",
+    approverId: "e-01",
+    approverName: "Maya Ferreira",
+    autoForwarded: false,
+    rejectionNote: null,
+    items: [
+      { id: "mi-05", name: "Pearl button 12L", sku: "BT-12L", isUnmatched: false, requestedQty: 12, unit: "Pcs", description: null, status: "pending" },
+      { id: "mi-06", name: "Wash care label 40x25mm", sku: "LB-4025", isUnmatched: false, requestedQty: 33, unit: "Pcs", description: null, status: "pending" },
+      { id: "mi-07", name: "Polyester thread 40/2", sku: "TH-402", isUnmatched: false, requestedQty: 6, unit: "Cone", description: null, status: "pending" },
+      { id: "mi-08", name: "Interlining 90cm", sku: null, isUnmatched: true, requestedQty: 15, unit: "Mtr", description: "Fusible, white", status: "pending" },
+      { id: "mi-09", name: "Hang tag string", sku: "HT-01", isUnmatched: false, requestedQty: 200, unit: "Pcs", description: null, status: "pending" },
+    ],
+    history: [{ at: iso(-2), action: "created", actorName: "Tobias Lund", detail: null }],
+    createdAt: iso(-2),
+    updatedAt: iso(-2),
+  },
 ]);
 
 export const mrfChat: MrfChatMessage[] = [

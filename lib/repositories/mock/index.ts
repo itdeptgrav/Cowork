@@ -76,7 +76,6 @@ import type {
   AttendanceStatus,
   MrfRequest,
   MrfChatMessage,
-  MrfStatus,
   RawItemHit,
   Department,
   BlockedDate,
@@ -268,11 +267,17 @@ import {
 } from "@/lib/rules/scoring/timerSop";
 import { bucketWorkByDay, todayWindow } from "@/lib/rules/scoring/workTime";
 import {
+  approvalStatusOf,
+  awaitingItems,
   canCancelMrf,
   canDecideMrf,
+  matchesApprovalFilter,
   mrfApprovalStats,
   mrfStats,
+  validateItemDecisions,
   validateNewMrf,
+  type MrfApprovalFilter,
+  type MrfItemDecisionInput,
   type NewMrfInput,
 } from "@/lib/rules/mrf/lifecycle";
 import { closureOf, hasManager, unattachedEmployees } from "@/lib/auth/hierarchy";
@@ -7863,12 +7868,12 @@ export class MockRepository implements CoworkRepository {
   }
 
   async listMrfApprovals(
-    status: MrfStatus | "all" = "pending",
+    status: MrfApprovalFilter = "pending",
   ): Promise<{ requests: MrfRequest[]; stats: ReturnType<typeof mrfApprovalStats> }> {
     const meId = actingId();
     const mine = getStore().mrfs.filter((m) => m.approverId === meId);
     const requests = mine
-      .filter((m) => status === "all" || m.status === status)
+      .filter((m) => matchesApprovalFilter(m, status))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
     return delay({ requests, stats: mrfApprovalStats(mine) });
   }
@@ -7978,13 +7983,15 @@ export class MockRepository implements CoworkRepository {
     return delay(ok(m));
   }
 
-  async decideMrf(
+  /**
+   * Item-wise decisions — the same rules as the engine
+   * (services/mrfItemApproval.service.js): each waiting item decided once, an
+   * approved one with the store at once, a reduced quantity becoming what the
+   * store owes.
+   */
+  async decideMrfItems(
     id: string,
-    decision: {
-      approve: boolean;
-      note?: string;
-      itemDecisions?: Record<string, "approved" | "rejected">;
-    },
+    decisions: MrfItemDecisionInput[],
   ): Promise<ActionResult<MrfRequest>> {
     const g = guard();
     if (g) return g;
@@ -7994,43 +8001,86 @@ export class MockRepository implements CoworkRepository {
     if (!canDecideMrf(m, actingId()))
       return fail(
         "permission_denied",
-        "Only the assigned approver can decide, and only while it is pending.",
+        "Only the assigned approver can decide, and only while an item is still waiting.",
       );
-    if (!decision.approve && !decision.note?.trim())
-      return fail("validation_failed", "Give a reason when you reject.", "note");
+    const v = validateItemDecisions(m, decisions);
+    if (!v.ok) return fail("validation_failed", v.message, v.field);
 
     tick();
     const now = nowIso();
     const actor = this.#nameOf(actingId());
-
-    if (decision.approve) {
-      m.items = m.items.map((it) => ({
+    const byId = new Map(v.decisions.map((d) => [d.itemId, d]));
+    m.items = m.items.map((it) => {
+      const d = byId.get(it.id);
+      if (!d) return it;
+      const asked = it.approval?.requestedQty ?? it.requestedQty;
+      const approvedQty =
+        d.decision === "approved" ? (d.approvedQty ?? asked) : 0;
+      m.history.push({
+        at: now,
+        action: d.decision === "approved" ? "item_approved" : "item_rejected",
+        actorName: actor,
+        detail:
+          d.decision === "approved"
+            ? `${it.name}: ${approvedQty < asked ? `${approvedQty} of ${asked}` : approvedQty} ${it.unit} approved and sent to the store.${d.reason ? ` Note: ${d.reason}` : ""}`
+            : `${it.name}: rejected. Reason: ${d.reason}`,
+      });
+      return {
         ...it,
-        status:
-          decision.itemDecisions?.[it.id] === "rejected" ? "rejected" : "approved",
-      }));
-      const anyApproved = m.items.some((it) => it.status === "approved");
-      m.status = anyApproved ? "approved" : "rejected";
-      m.rejectionNote = anyApproved ? null : "No items were approved.";
-      m.history.push({
-        at: now,
-        action: anyApproved ? "approved" : "rejected",
-        actorName: actor,
-        detail: decision.note?.trim() || null,
-      });
-    } else {
-      m.items = m.items.map((it) => ({ ...it, status: "rejected" as const }));
+        status: d.decision === "approved" ? ("approved" as const) : ("rejected" as const),
+        requestedQty: d.decision === "approved" ? approvedQty : it.requestedQty,
+        approval: {
+          decision: d.decision,
+          requestedQty: asked,
+          approvedQty,
+          rejectedQty: d.decision === "approved" ? Math.max(0, asked - approvedQty) : asked,
+          reason: d.reason ?? null,
+          decidedByName: actor,
+          decidedById: actingId(),
+          decidedAt: now,
+          automatic: false,
+        },
+      };
+    });
+    m.approvalStatus = undefined;
+    m.approvalStatus = approvalStatusOf(m);
+    const anyApproved = m.items.some(
+      (it) => it.approval?.decision === "approved" || it.status === "approved",
+    );
+    if (anyApproved) m.status = "approved";
+    else if (!awaitingItems(m).length) {
       m.status = "rejected";
-      m.rejectionNote = decision.note!.trim();
-      m.history.push({
-        at: now,
-        action: "rejected",
-        actorName: actor,
-        detail: decision.note!.trim(),
-      });
+      m.rejectionNote = [...new Set(m.items.map((it) => it.approval?.reason).filter(Boolean))].join("; ") || null;
     }
     m.updatedAt = now;
     return delay(ok(m));
+  }
+
+  /** Approve all / Reject all — every item still waiting, as one submission. */
+  async decideMrf(
+    id: string,
+    decision: {
+      approve: boolean;
+      note?: string;
+      itemDecisions?: Record<string, "approved" | "rejected">;
+    },
+  ): Promise<ActionResult<MrfRequest>> {
+    const m = getStore().mrfs.find((x) => x.id === id);
+    if (!m) return fail("not_found", "That request no longer exists.");
+    if (!decision.approve && !decision.note?.trim())
+      return fail("validation_failed", "Give a reason when you reject.", "note");
+    return this.decideMrfItems(
+      id,
+      awaitingItems(m).map((it) =>
+        decision.approve && decision.itemDecisions?.[it.id] !== "rejected"
+          ? { itemId: it.id, decision: "approved" as const }
+          : {
+              itemId: it.id,
+              decision: "rejected" as const,
+              reason: decision.note?.trim() || "Not approved when the request was approved.",
+            },
+      ),
+    );
   }
 
   async listMrfChat(id: string): Promise<MrfChatMessage[]> {

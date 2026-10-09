@@ -1,11 +1,14 @@
 import type { AttendanceDay, ConductPolicy, ConductSeverity, Conversation, Employee, EmployeeId, TaskStatus, LinkPreview, Meeting, Message, MessageAttachment, MessageCard, MessageReply, MessageSearchHit, MonitoringSubject, MusicPreferences, MusicQueue, MusicResult, Notification, Role, ScoreOverview, ScoreUnit, Viewer } from "@/lib/domain";
 import type { MindMapExtras } from "@/lib/domain";
 import { MESSAGE_PAGE_SIZE } from "@/lib/domain/work";
-import type { MrfAvailability, MrfChatMessage, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
+import type { MrfApprovalStatus, MrfAvailability, MrfChatMessage, MrfItemApproval, MrfItemStatus, MrfRequest, MrfStatus, RawItemHit } from "@/lib/domain/mrf";
 import {
   mrfApprovalStats,
   mrfStats,
   readMrfApprovalStats,
+  readMrfStats,
+  type MrfApprovalFilter,
+  type MrfItemDecisionInput,
   type NewMrfInput,
 } from "@/lib/rules/mrf/lifecycle";
 import { ROLE_ADMIN, systemRoles } from "../../auth/systemRoles.ts";
@@ -14521,6 +14524,44 @@ export class LegacyRepository {
     const items = Array.isArray(raw.items) ? raw.items : [];
     const history = Array.isArray(raw.statusHistory) ? raw.statusHistory : [];
     const s = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    /* How far the manager has got, item by item — sent by a backend with
+       item-wise approval, absent from an older one (the lifecycle rules derive
+       it then, from the item statuses). */
+    const approvalStatus = ((): MrfApprovalStatus | undefined => {
+      switch (up(raw.approvalStatus)) {
+        case "AWAITING_APPROVAL": return "awaiting";
+        case "PARTIALLY_PROCESSED": return "partially_processed";
+        case "APPROVED": return "approved";
+        case "PARTIALLY_APPROVED": return "partially_approved";
+        case "REJECTED": return "rejected";
+        case "CANCELLED": return "cancelled";
+        default: return undefined;
+      }
+    })();
+    const itemApproval = (
+      v: unknown,
+      fallbackQty: number,
+    ): MrfItemApproval | undefined => {
+      if (typeof v !== "object" || v === null) return undefined;
+      const o = v as Record<string, unknown>;
+      const d = up(o.decision);
+      const decision =
+        d === "APPROVED" ? "approved" : d === "REJECTED" ? "rejected" : d === "PENDING" ? "pending" : null;
+      if (!decision) return undefined;
+      const n = (x: unknown, fb: number) =>
+        x === null || x === undefined || x === "" || !Number.isFinite(Number(x)) ? fb : Number(x);
+      return {
+        decision,
+        requestedQty: n(o.requestedQty, fallbackQty),
+        approvedQty: n(o.approvedQty, decision === "approved" ? fallbackQty : 0),
+        rejectedQty: n(o.rejectedQty, 0),
+        reason: s(o.reason),
+        decidedByName: s(o.decidedByName),
+        decidedById: s(o.decidedById),
+        decidedAt: s(o.decidedAt),
+        automatic: o.automatic === true,
+      };
+    };
     return {
       organisationId: "legacy",
       id: String(id),
@@ -14534,6 +14575,7 @@ export class LegacyRepository {
       neededBy: s(raw.neededBy),
       deadline: s(raw.deadline),
       status,
+      ...(approvalStatus ? { approvalStatus } : {}),
       approverId: s(raw.approverBiometricId),
       approverName: s(raw.approverName),
       autoForwarded: raw.autoForwarded === true,
@@ -14558,6 +14600,9 @@ export class LegacyRepository {
         variantCombination: Array.isArray(it.variantCombination)
           ? (it.variantCombination as unknown[]).map((x) => String(x))
           : [],
+        /* `requestedQty` above is what the store owes — the APPROVED figure
+           once a manager has approved less. What was asked is here. */
+        approval: itemApproval(it.approval, Number(it.requestedQty) || 0),
         images: (Array.isArray(it.images) ? it.images : [])
           .map((im) => {
             const o = (im ?? {}) as Record<string, unknown>;
@@ -14608,17 +14653,19 @@ export class LegacyRepository {
     const requests = (r.data.mrfs ?? [])
       .map((m) => this.#readMrf(m))
       .filter((m): m is MrfRequest => m !== null);
-    return { requests, stats: mrfStats(requests) };
+    /* The counts the server took over EVERY request this person raised — the
+       list is one page. An older backend counts by status (where "approved"
+       includes a request half of which still waits); counting the page is
+       closer to the truth then. */
+    const served = readMrfStats((r.data as { stats?: unknown }).stats);
+    return { requests, stats: served ?? mrfStats(requests) };
   }
 
-  async listMrfApprovals(status: MrfStatus | "all" = "pending") {
+  async listMrfApprovals(status: MrfApprovalFilter = "pending") {
     const token = await this.#token();
-    const legacyStatus =
-      status === "all"
-        ? "ALL"
-        : status === "pending"
-          ? "PENDING"
-          : status.toUpperCase();
+    /* "pending" is everything with an item still waiting on this approver —
+       including a request some of whose items already reached the store. */
+    const legacyStatus = status === "all" ? "ALL" : status.toUpperCase();
     const r = await legacyFetch<{
       mrfs?: Record<string, unknown>[];
       stats?: unknown;
@@ -14733,6 +14780,53 @@ export class LegacyRepository {
     return mrf
       ? { ok: true, data: mrf }
       : { ok: false, code: "not_found", message: "Request not found after cancel." };
+  }
+
+  /**
+   * Item-wise decisions: some or all of the items still waiting. Approved
+   * items reach the store at once; the server refuses a rejection without a
+   * reason and any item already decided, and says which.
+   */
+  async decideMrfItems(
+    id: string,
+    decisions: MrfItemDecisionInput[],
+  ): Promise<ActionResult<MrfRequest>> {
+    const token = await this.#token();
+    const r = await legacyFetch<{ mrf?: Record<string, unknown> }>({
+      path: `/api/cowork/mrf/${encodeURIComponent(id)}/item-decisions`,
+      method: "PATCH",
+      token,
+      idempotencyKey: this.#idempotencyKey(),
+      body: {
+        decisions: decisions.map((d) => ({
+          itemId: d.itemId,
+          decision: d.decision.toUpperCase(),
+          ...(d.approvedQty !== undefined ? { approvedQty: d.approvedQty } : {}),
+          ...(d.reason ? { reason: d.reason } : {}),
+        })),
+      },
+    });
+    if (!r.ok) {
+      const status = (r.error as { status?: number }).status ?? 0;
+      return {
+        ok: false,
+        code:
+          status === 400
+            ? "validation_failed"
+            : status === 403
+              ? "permission_denied"
+              : status === 404
+                ? "not_found"
+                : status === 409
+                  ? "conflict"
+                  : "offline",
+        message: r.error.message,
+      };
+    }
+    const mrf = r.data.mrf ? this.#readMrf(r.data.mrf) : await this.getMrf(id);
+    return mrf
+      ? { ok: true, data: mrf }
+      : { ok: false, code: "not_found", message: "Request not found after decision." };
   }
 
   async decideMrf(
