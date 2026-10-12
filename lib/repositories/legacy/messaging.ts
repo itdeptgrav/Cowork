@@ -131,8 +131,14 @@ export function readAttachment(a: unknown): MessageAttachment | null {
    * writing it — whereas `image`, `pdf`, `voice` and `video` were each decided
    * deliberately and are taken at their word.
    */
+  /* `audio` is what other writers call the same thing — a voice note from the
+     phone app, an uploaded clip — and it gets the same player. */
   const stated =
-    t === "image" || t === "pdf" || t === "voice" || t === "video" ? t : null;
+    t === "image" || t === "pdf" || t === "voice" || t === "video"
+      ? t
+      : t === "audio"
+        ? "voice"
+        : null;
   const kind: MessageAttachment["kind"] =
     stated ?? attachmentKind(name, null);
   const fileId =

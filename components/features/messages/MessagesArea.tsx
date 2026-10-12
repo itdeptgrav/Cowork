@@ -3697,7 +3697,10 @@ function MessageList({
                 {/* Always present, so every bubble in a run keeps one edge;
                     only the picture is conditional. Empty it has no height, so
                     `items-end` seats the avatar against the bubble's baseline. */}
-                <span className="w-7 shrink-0">
+                {/* Your own messages never show a picture, so on a phone the
+                    empty column is width the bubble needs; from `sm` up it
+                    stays, keeping the edges the desktop thread is drawn to. */}
+                <span className={`w-7 shrink-0 ${mine ? "hidden sm:block" : ""}`}>
                   {!mine && !sameRun && sender && (
                     <Avatar
                       initials={sender.initials}
@@ -3891,7 +3894,16 @@ function MessageList({
                 </span>
 
                 {!deleted && (
-                  <span className="flex shrink-0 items-center gap-1.5 self-center text-[11px] text-ink-faint opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                  /**
+                   * **Not on a phone, and not on a touch screen.** Invisible is
+                   * not absent: at `opacity-0` this strip still took ~150px of
+                   * the row, and the row is capped at 88% of a phone's width —
+                   * so every bubble on a phone was squeezed into what was left,
+                   * and a file card's name broke one letter per line (reported
+                   * 11 Oct 2026). Nothing can hover there anyway; a long press
+                   * opens the full menu and a swipe replies (onRowTouchStart).
+                   */
+                  <span className="hidden shrink-0 items-center gap-1.5 self-center text-[11px] text-ink-faint opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(min-width:40rem)_and_(hover:hover)]:flex">
                     {/* The keyboard path to the same actions the right-click
                         menu offers — `focus-within` reveals this row, and a
                         context menu cannot be reached by tabbing. Delete stays
@@ -3947,7 +3959,7 @@ function MessageList({
               {(endsRun || (mine && !deleted)) && (
                 <span
                   data-figure
-                  className={`mt-1 flex items-center text-[11px] text-ink-faint ${mine ? "pe-9" : "ps-9"}`}
+                  className={`mt-1 flex items-center text-[11px] text-ink-faint ${mine ? "sm:pe-9" : "ps-9"}`}
                 >
                   {endsRun && clock(m.createdAt)}
                   {endsRun && m.editedAt ? " · edited" : ""}

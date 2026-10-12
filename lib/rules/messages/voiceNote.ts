@@ -52,3 +52,44 @@ export function formatDuration(totalSeconds: number): string {
 export function voiceNoteFilename(mime: string, stamp: string): string {
   return `voice-note-${stamp}.${audioExtensionFor(mime)}`;
 }
+
+/* ── Playing one back ──────────────────────────────────────────────────────── */
+
+/**
+ * The clock beside the seek bar.
+ *
+ * Before anything has played it is just the length ("1:03"), because "0:00 /
+ * 1:03" over a note nobody has touched reads like a player that is stuck. Once
+ * started it is position and length. A length the browser could not measure
+ * (a recording with no duration in its header, served without range support)
+ * falls back to the length measured while recording, and with neither it says
+ * only where playback is — never "0:00", which would claim an empty note.
+ */
+export function audioClock(
+  currentSecs: number,
+  durationSecs: number | null,
+  started: boolean,
+): string {
+  const total =
+    durationSecs !== null && Number.isFinite(durationSecs) && durationSecs > 0
+      ? durationSecs
+      : null;
+  if (!started) return total !== null ? formatDuration(total) : "";
+  return total !== null
+    ? `${formatDuration(currentSecs)} / ${formatDuration(total)}`
+    : formatDuration(currentSecs);
+}
+
+/**
+ * What an audio card is called.
+ *
+ * A note recorded here is saved as `voice-note-<stamp>.<ext>` — a name for the
+ * file system, not for a person — so it reads "Voice note". Any other audio
+ * keeps the name it was sent with ("Site meeting.m4a"), because that name is
+ * how the people in the thread tell two recordings apart.
+ */
+export function audioTitle(name: string | null | undefined): string {
+  const n = (name ?? "").trim();
+  if (!n || /^voice-note-/i.test(n)) return "Voice note";
+  return n;
+}

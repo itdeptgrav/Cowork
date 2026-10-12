@@ -33,7 +33,7 @@ import {
   driveViewUrl,
 } from "@/lib/rules/media/driveUrls";
 import { dragCarriesFiles, dragDepth } from "@/lib/rules/messages/fileDrop";
-import { formatDuration } from "@/lib/rules/messages/voiceNote";
+import { audioClock, audioTitle } from "@/lib/rules/messages/voiceNote";
 import {
   uploadAriaLabel,
   uploadPercent,
@@ -384,7 +384,7 @@ function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
   return (
     <span className="block">
       <span
-        className={`flex w-full items-center gap-3 rounded-[10px] p-2.5 ${
+        className={`flex w-full items-center gap-2.5 rounded-[10px] p-2 sm:gap-3 sm:p-2.5 ${
           mine ? "bg-white/15" : "bg-[var(--control)]"
         }`}
       >
@@ -395,10 +395,13 @@ function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
           href={mediaOpenUrl(a)}
           target="_blank"
           rel="noopener noreferrer"
-          className="flex min-w-0 flex-1 items-center gap-3 rounded-[7px] hover:opacity-80"
+          className="flex min-w-0 flex-1 items-center gap-2.5 rounded-[7px] hover:opacity-80 sm:gap-3"
         >
+          {/* 36px on a phone, 44px from `sm`: the icon is a label, not a
+              target, so it gives the name the width; the download button
+              beside it keeps the full 44px a thumb needs. */}
           <span
-            className={`grid h-11 w-11 shrink-0 place-items-center rounded-[8px] ${
+            className={`grid h-9 w-9 shrink-0 place-items-center rounded-[8px] sm:h-11 sm:w-11 ${
               mine ? "bg-white/20" : "bg-[var(--surface-raised)]"
             }`}
           >
@@ -416,11 +419,12 @@ function FileRow({ a, mine }: { a: MessageAttachment; mine: boolean }) {
              * and `break-all` is what lets a long unbroken string wrap at all
              * rather than overflow its box.
              */}
-            <span className="block line-clamp-2 text-sm leading-snug break-all">
+            {/* Three lines on a phone, where the name runs narrower. */}
+            <span className="block line-clamp-3 text-sm leading-snug break-all sm:line-clamp-2">
               {name}
             </span>
             {a.sizeBytes ? (
-              <span className="mt-0.5 block text-[11px] opacity-60">
+              <span className="mt-0.5 block text-[11px] whitespace-nowrap opacity-60">
                 {formatBytes(a.sizeBytes)}
               </span>
             ) : null}
@@ -563,9 +567,9 @@ export function MessageAttachments({
         </span>
       )}
       {rest.map((a, i) => {
-        const src = mediaUrl(a);
+        /* Every audio file, not only a recorded note — see `AudioPlayer`. */
         if (a.kind === "voice")
-          return <VoicePlayer key={i} src={src} durationSecs={a.durationSecs} />;
+          return <AudioPlayer key={a.fileId ?? a.url ?? i} a={a} mine={mine} />;
         if (a.kind === "video") {
           /* A card that OPENS a player, not a player.
 
@@ -741,42 +745,68 @@ export function UploadProgressRow({
 }
 
 /**
- * Voice-note player.
+ * The one audio element playing in this tab. Starting a second note pauses the
+ * first — two voices talking over each other is never what anybody meant.
+ */
+let activeAudio: HTMLAudioElement | null = null;
+
+/**
+ * Audio player — a recorded voice note, or any audio file somebody sent.
+ *
+ * ## Why this is not the browser's own `<audio controls>`
+ *
+ * It was, and every audio message rendered as an EMPTY bubble (reported 11 Oct
+ * 2026: a blank white pill where a voice note should be). The native control
+ * has no width of its own here: it was `w-full` inside a bubble that sizes
+ * itself to its content, so the percentage resolved against a width the control
+ * was itself deciding, and Chrome collapsed it to a sliver with nothing drawn.
+ * A file card never showed the problem because its filename gives it width.
+ *
+ * This card carries a minimum width, its own controls and the same shape as the
+ * video and file cards beside it — play/pause, a seek bar, position and length,
+ * the file's name and size, and a download. A format the browser cannot play
+ * (`.wma`, `.amr`, some `.aiff`) falls back to the file row with a sentence
+ * saying why, rather than a player that silently does nothing.
+ *
+ * ## The duration of a recorded note
  *
  * A recording from `MediaRecorder` (webm/opus) carries no duration in its
- * header, so a native `<audio controls>` reports `duration` as `Infinity` and
- * shows "0:00 / 0:00" until playback happens to reach the end and force the
- * browser to measure it. The standard fix: once metadata has loaded, if the
- * duration is not a real number, seek to the far end — which makes the browser
- * resolve the true length — then snap straight back to the start. `duration`
- * then reads correctly and the control shows it BEFORE the first play.
- *
- * `preload="metadata"` (not "none") is what makes this run on render rather than
- * only after the reader presses play. `durationSecs` — the length measured while
- * recording — seeds the control's label via `aria-label` so the length is at
- * least announced even on a browser where the seek trick is refused.
+ * header, so the browser reports `Infinity` until playback reaches the end. The
+ * standard fix is kept: once metadata loads, seek far past the end — the browser
+ * clamps it and measures the real length — then snap back to the start. Until
+ * that resolves, the length measured while recording (`durationSecs`) is shown.
  */
-function VoicePlayer({
-  src,
-  durationSecs,
-}: {
-  src: string;
-  durationSecs: number | null;
-}) {
+function AudioPlayer({ a, mine }: { a: MessageAttachment; mine: boolean }) {
+  const src = mediaUrl(a);
+  const title = audioTitle(a.name);
   const ref = useRef<HTMLAudioElement>(null);
-  /* Guards the one-shot seek so a stray `timeupdate` cannot restart it. */
+  /* Guards the one-shot seek so a stray `timeupdate` cannot restart it, and so
+     the far-end seek is never shown on the bar as a jump to the end. */
   const measuring = useRef(false);
+  const [playing, setPlaying] = useState(false);
+  const [started, setStarted] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [length, setLength] = useState<number | null>(a.durationSecs ?? null);
+  const [failed, setFailed] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const finite = (n: number) => Number.isFinite(n) && n > 0;
 
   function resolveDuration() {
     const el = ref.current;
-    if (!el || measuring.current) return;
-    if (el.duration !== Infinity && !Number.isNaN(el.duration)) return;
+    if (!el) return;
+    if (finite(el.duration)) {
+      setLength(el.duration);
+      return;
+    }
+    if (measuring.current) return;
     measuring.current = true;
     const onProgress = () => {
-      if (el.duration === Infinity || Number.isNaN(el.duration)) return;
+      if (!finite(el.duration)) return;
       /* The real length is in now — undo the seek and stop listening. */
       el.removeEventListener("timeupdate", onProgress);
       el.removeEventListener("durationchange", onProgress);
+      setLength(el.duration);
       try {
         el.currentTime = 0;
       } catch {
@@ -795,17 +825,155 @@ function VoicePlayer({
     }
   }
 
+  async function toggle() {
+    const el = ref.current;
+    if (!el) return;
+    if (!el.paused) {
+      el.pause();
+      return;
+    }
+    try {
+      await el.play();
+    } catch (e) {
+      /* An interrupted play (paused again at once, or another note started) is
+         not a failure; a format the browser cannot decode is. */
+      if (e instanceof DOMException && e.name === "NotSupportedError") setFailed(true);
+    }
+  }
+
+  function seek(to: number) {
+    const el = ref.current;
+    if (!el || !Number.isFinite(to)) return;
+    try {
+      el.currentTime = to;
+      setCurrent(to);
+      setStarted(true);
+    } catch {
+      /* A stream the server cannot range over may refuse a seek; playback goes on. */
+    }
+  }
+
+  async function save() {
+    const stream = mediaDownloadUrl(a);
+    const fileName = a.name ?? `${title}.webm`;
+    if (stream) {
+      browserDownload(stream, fileName);
+      return;
+    }
+    setSaving(true);
+    try {
+      await downloadFile(mediaUrl(a), fileName, mediaProxyUrl(a));
+    } catch {
+      /* The row below offers the same file again; nothing else to say here. */
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (failed) {
+    return (
+      <span className="block">
+        <FileRow a={a} mine={mine} />
+        <span className="mt-1 block text-[11px] opacity-70">
+          This audio can&rsquo;t be played in the browser — download it to listen.
+        </span>
+      </span>
+    );
+  }
+
+  const max = length !== null && finite(length) ? length : 0;
+  const size = a.sizeBytes ? formatBytes(a.sizeBytes) : "";
+  const clock = audioClock(current, length, started);
+
   return (
-    <audio
-      ref={ref}
-      src={src}
-      controls
-      preload="metadata"
-      onLoadedMetadata={resolveDuration}
-      aria-label={
-        durationSecs ? `Voice note, ${formatDuration(durationSecs)}` : "Voice note"
-      }
-      className="w-full"
-    />
+    <span
+      data-audio-player
+      className={`flex w-full min-w-[14rem] items-center gap-2.5 rounded-[10px] p-2 ${
+        mine ? "bg-white/15" : "bg-[var(--control)]"
+      }`}
+    >
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={`${playing ? "Pause" : "Play"} ${title}`}
+        className={`grid h-9 w-9 shrink-0 place-items-center rounded-full transition-opacity hover:opacity-80 ${
+          mine ? "bg-white/25" : "bg-[var(--surface-raised)]"
+        }`}
+      >
+        {playing ? <Icon.pause className="h-4 w-4" /> : <Icon.play className="h-4 w-4" />}
+      </button>
+
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-xs" title={a.name ?? undefined}>
+          {title}
+        </span>
+        <input
+          type="range"
+          min={0}
+          max={max || 1}
+          step="any"
+          value={max ? Math.min(current, max) : 0}
+          disabled={!max}
+          onChange={(e) => seek(Number(e.target.value))}
+          aria-label={`Position in ${title}`}
+          aria-valuetext={clock || undefined}
+          className="mt-1 block h-1 w-full cursor-pointer accent-[currentColor] disabled:cursor-default disabled:opacity-40"
+        />
+        <span className="mt-1 flex items-center justify-between gap-2 text-[11px] opacity-60">
+          <span data-figure className="tabular-nums">
+            {clock || (playing ? "Playing…" : "Audio")}
+          </span>
+          {size && <span data-figure>{size}</span>}
+        </span>
+      </span>
+
+      <button
+        type="button"
+        onClick={save}
+        disabled={saving}
+        aria-label={`Download ${a.name ?? title}`}
+        className="grid h-8 w-8 shrink-0 place-items-center rounded-full opacity-70 transition-opacity hover:opacity-100 disabled:opacity-40"
+      >
+        <Icon.download className="h-4 w-4" />
+      </button>
+
+      <audio
+        ref={ref}
+        src={src}
+        preload="metadata"
+        className="hidden"
+        onLoadedMetadata={resolveDuration}
+        onDurationChange={() => {
+          const el = ref.current;
+          if (el && finite(el.duration) && !measuring.current) setLength(el.duration);
+        }}
+        onTimeUpdate={() => {
+          const el = ref.current;
+          if (el && !measuring.current) setCurrent(el.currentTime);
+        }}
+        onPlay={() => {
+          const el = ref.current;
+          if (activeAudio && activeAudio !== el) activeAudio.pause();
+          activeAudio = el;
+          setPlaying(true);
+          setStarted(true);
+        }}
+        onPause={() => setPlaying(false)}
+        onEnded={() => {
+          setPlaying(false);
+          setCurrent(0);
+          setStarted(false);
+          const el = ref.current;
+          if (el) {
+            try {
+              el.currentTime = 0;
+            } catch {
+              /* nothing to undo */
+            }
+          }
+        }}
+        onError={() => setFailed(true)}
+      />
+    </span>
   );
 }
