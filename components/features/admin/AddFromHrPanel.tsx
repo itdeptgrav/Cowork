@@ -20,6 +20,12 @@
  * remains after that is a record HR itself is short of — see `hrGaps` — and the
  * row says which field and where, rather than offering a button that the engine
  * refuses after the click.
+ *
+ * **People HR has made Inactive are not on it** (12 Oct 2026, owner). They have
+ * no Cowork access — the engine switches the login off and refuses every
+ * request — so the provisioning list is the people active in HR. "Inactive in
+ * HR" shows the others, read-only: their Cowork record is kept, and a row says
+ * so instead of offering Add, Send mail or Reset password.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -38,6 +44,11 @@ import {
 } from "@/components/ui/Primitives";
 import { Icon } from "@/components/ui/Icons";
 import { ResetPasswordDialog } from "./ResetPasswordDialog";
+import {
+  HR_INACTIVE_ROW_LABEL,
+  hrStatusQuery,
+  type HrStatusFilter,
+} from "@/lib/rules/auth/hrInactive";
 
 // ── Auth token ────────────────────────────────────────────────────────────────
 
@@ -91,6 +102,11 @@ function hrGaps(emp: HrEmployee): string[] {
   return emp.missingInHr ?? [];
 }
 
+/** HR has let this person go: no access, and nothing on this panel acts on them. */
+function isHrInactive(emp: HrEmployee): boolean {
+  return emp.hrStatus === "inactive";
+}
+
 /** `name, email and department` — the fields, in the words the row uses. */
 function listGaps(fields: string[]): string {
   if (fields.length <= 1) return fields[0] ?? "details";
@@ -107,6 +123,8 @@ export function AddFromHrPanel() {
 
   const [search, setSearch] = useState("");
   const [dept, setDept] = useState("all");
+  const [hrStatus, setHrStatus] = useState<HrStatusFilter>("active");
+  const [counts, setCounts] = useState<{ active?: number; inactive?: number }>({});
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [statuses, setStatuses] = useState<Map<string, ProvisionStatus>>(
@@ -127,15 +145,28 @@ export function AddFromHrPanel() {
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const load = useCallback(
-    async (q: string, d: string) => {
+    async (q: string, d: string, st: HrStatusFilter = "active") => {
       setLoading(true);
       setError(null);
       try {
         const token = await getToken();
-        const res = await listHrEmployees({ token, search: q || undefined, department: d });
+        const res = await listHrEmployees({
+          token,
+          search: q || undefined,
+          department: d,
+          status: hrStatusQuery(st),
+        });
         if (!res.ok) { setError(res.error.message); return; }
-        setEmployees(res.data?.employees ?? []);
+        /* An older engine ignores `status` and answers everybody; keep the
+           list to what was asked for wherever the row says which it is. */
+        const rows = res.data?.employees ?? [];
+        setEmployees(
+          st === "all"
+            ? rows
+            : rows.filter((e) => (st === "inactive" ? isHrInactive(e) : !isHrInactive(e))),
+        );
         setDepartments(res.data?.departments ?? []);
+        setCounts({ active: res.data?.activeCount, inactive: res.data?.inactiveCount });
       } catch (e) {
         setError(e instanceof Error ? e.message : "Could not load employees.");
       } finally {
@@ -153,17 +184,25 @@ export function AddFromHrPanel() {
   function onSearch(val: string) {
     setSearch(val);
     if (searchTimer.current) clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => void load(val, dept), 350);
+    searchTimer.current = setTimeout(() => void load(val, dept, hrStatus), 350);
   }
 
   function onDept(val: string) {
     setDept(val);
-    void load(search, val);
+    void load(search, val, hrStatus);
+  }
+
+  function onHrStatus(val: HrStatusFilter) {
+    setHrStatus(val);
+    setSelected(new Set());
+    void load(search, dept, val);
   }
 
   const visible = employees;
 
-  const withoutAccount = visible.filter((e) => !e.hasCoworkAccount);
+  /* Nobody HR has let go is offered an account — not in the count, not in
+     Select all, not in the bulk create. */
+  const withoutAccount = visible.filter((e) => !e.hasCoworkAccount && !isHrInactive(e));
   /**
    * The rows a Create can actually succeed on.
    *
@@ -283,7 +322,11 @@ export function AddFromHrPanel() {
   async function provisionSelected() {
     setBulkPending(true);
     const toProvision = employees.filter(
-      (e) => selected.has(e.hrId) && !e.hasCoworkAccount && hrGaps(e).length === 0,
+      (e) =>
+        selected.has(e.hrId) &&
+        !e.hasCoworkAccount &&
+        !isHrInactive(e) &&
+        hrGaps(e).length === 0,
     );
     await Promise.allSettled(toProvision.map(provision));
     setBulkPending(false);
@@ -292,7 +335,7 @@ export function AddFromHrPanel() {
 
   const provisionableCount = [...selected].filter((id) => {
     const emp = employees.find((e) => e.hrId === id);
-    return emp && !emp.hasCoworkAccount && hrGaps(emp).length === 0;
+    return emp && !emp.hasCoworkAccount && !isHrInactive(emp) && hrGaps(emp).length === 0;
   }).length;
 
   return (
@@ -323,6 +366,30 @@ export function AddFromHrPanel() {
           ))}
         </select>
 
+        {/* Active in HR is the provisioning list; Inactive in HR is a
+            read-only view of the people whose access HR has switched off. */}
+        <div
+          role="group"
+          aria-label="HR status"
+          data-hr-status-filter
+          className="inline-flex rounded-inset border border-hairline bg-[var(--surface-sunken)] p-0.5 text-[12px]"
+        >
+          {(["active", "inactive"] as const).map((st) => (
+            <button
+              key={st}
+              type="button"
+              aria-pressed={hrStatus === st}
+              onClick={() => onHrStatus(st)}
+              className={`rounded-[6px] px-2.5 py-1 transition-colors ${
+                hrStatus === st ? "bg-ink text-[var(--body-bg)]" : "text-ink-muted hover:text-ink"
+              }`}
+            >
+              {st === "active" ? "Active in HR" : "Inactive in HR"}
+              {typeof counts[st] === "number" ? ` (${counts[st]})` : ""}
+            </button>
+          ))}
+        </div>
+
         {provisionableCount > 0 && (
           <button
             type="button"
@@ -338,15 +405,37 @@ export function AddFromHrPanel() {
         )}
       </div>
 
+      {hrStatus === "inactive" ? (
+        <p className="text-[12px] text-ink-muted" data-hr-inactive-note>
+          These people are marked Inactive in HR. They cannot sign in to Cowork or use it, and
+          they are off every active list. Their Cowork record, tasks and messages are kept —
+          make them active in HR to give access back.
+        </p>
+      ) : (counts.inactive ?? 0) > 0 ? (
+        <p className="text-[11.5px] text-ink-faint">
+          {counts.inactive} {counts.inactive === 1 ? "person is" : "people are"} inactive in HR
+          and not listed here — they have no Cowork access.{" "}
+          <button
+            type="button"
+            onClick={() => onHrStatus("inactive")}
+            className="underline underline-offset-2 hover:text-ink"
+          >
+            Show them
+          </button>
+        </p>
+      ) : null}
+
       {/* List */}
-      {error && <InlineError message={error} onRetry={() => void load(search, dept)} />}
+      {error && (
+        <InlineError message={error} onRetry={() => void load(search, dept, hrStatus)} />
+      )}
 
       {loading ? (
         <SkeletonRows rows={6} />
       ) : visible.length === 0 ? (
         <Panel>
           <p className="py-4 text-center text-sm text-ink-muted">
-              No HR employees found.
+              {hrStatus === "inactive" ? "Nobody is inactive in HR." : "No HR employees found."}
           </p>
         </Panel>
       ) : (
@@ -391,6 +480,41 @@ export function AddFromHrPanel() {
                 : undefined;
               const pending = status.kind === "pending";
               const gaps = hrGaps(emp);
+
+              /* HR has let them go: a quiet, read-only row. No checkbox, no
+                 Add / Send mail / Reset password — access is HR's to give
+                 back, and the record here is kept, not removed. */
+              if (isHrInactive(emp)) {
+                return (
+                  <li
+                    key={emp.hrId}
+                    data-hr-inactive-row={emp.hrId}
+                    className="flex min-h-[52px] items-center gap-3 px-4 py-2.5"
+                  >
+                    <span aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-[13px] font-medium text-ink-muted">{emp.name}</p>
+                      <p className="truncate text-[11px] text-ink-faint">
+                        {emp.email || "No email in HR"}
+                        {emp.biometricId && <span className="ml-2">· {emp.biometricId}</span>}
+                      </p>
+                    </div>
+                    <div className="hidden shrink-0 sm:block">
+                      <span className="text-[11px] text-ink-faint">
+                        {emp.designation || emp.department}
+                      </span>
+                    </div>
+                    <div className="flex shrink-0 flex-col items-end gap-0.5">
+                      <Chip tone="neutral">{HR_INACTIVE_ROW_LABEL}</Chip>
+                      {emp.hasCoworkAccount && (
+                        <span className="text-[10px] text-ink-faint">
+                          Cowork record kept · sign-in off
+                        </span>
+                      )}
+                    </div>
+                  </li>
+                );
+              }
 
               return (
                 <li

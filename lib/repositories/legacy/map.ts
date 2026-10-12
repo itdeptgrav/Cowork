@@ -120,10 +120,20 @@ export function toEmployee(row: LegacyEmployee): Employee {
     timezone: "Asia/Kolkata",
     workCalendarId: "",
     joinedAt: "",
-    exitedAt: null,
+    /* **Inactive in HR is "exited" here** (12 Oct 2026). Every surface that
+       must not offer somebody who has left — new chat, add to group,
+       attendance, the reporting tree, admin's Inactive chip — already reads
+       `exitedAt`; this was a hard-coded null, so none of them ever fired.
+       The person stays in the directory, so their name still resolves on the
+       tasks and messages they were part of. When the engine has no date the
+       epoch stands in: `exitedAt` is read as "has left", never displayed. */
+    exitedAt: row.inactive ? row.inactiveSince || EXITED_DATE_UNKNOWN : null,
     isFounder: false,
   };
 }
+
+/** `exitedAt` for somebody HR has let go on a date the engine does not hold. */
+export const EXITED_DATE_UNKNOWN = "1970-01-01T00:00:00.000Z";
 
 /** A display name split for the fields the domain keeps separately. */
 export function splitName(name: string): {

@@ -12,6 +12,7 @@ import { AuthFrame, AuthSwitch } from "./AuthFrame";
 import { Button, Field, InlineError, Input } from "@/components/ui/Primitives";
 import { PasswordInput } from "@/components/ui/PasswordInput";
 import { QrSignInScanner } from "./QrSignInScanner";
+import { LOGIN_DISABLED_MESSAGE } from "@/lib/rules/auth/hrInactive";
 
 /**
  * Sign in.
@@ -301,8 +302,10 @@ function signInMessage(e: unknown): string {
     case "auth/wrong-password":
     case "auth/invalid-credential":
       return "Those details do not match an account. If you have not signed in before, your password may still be your mobile number.";
+    /* HR's Inactive switches the login off (12 Oct 2026), so that is what a
+       disabled account almost always means now. */
     case "auth/user-disabled":
-      return "That account has been disabled. Ask your CEO.";
+      return LOGIN_DISABLED_MESSAGE;
     case "auth/too-many-requests":
       return "Too many attempts. Try again in a few minutes.";
     case "auth/network-request-failed":

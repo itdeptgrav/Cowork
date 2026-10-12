@@ -112,9 +112,11 @@ test("a row HR cannot describe fully is not offered Add", () => {
     /hrGaps\(e\)\.length === 0 && statuses\.get\(e\.hrId\)\?\.kind !== "done"/,
     "Select all no longer excludes rows the engine cannot provision",
   );
+  /* …nor anybody HR has made Inactive (12 Oct 2026): they have no access to
+     give, and the engine refuses their create. */
   assert.match(
     panel,
-    /selected\.has\(e\.hrId\) && !e\.hasCoworkAccount && hrGaps\(e\)\.length === 0/,
+    /selected\.has\(e\.hrId\) &&\s*!e\.hasCoworkAccount &&\s*!isHrInactive\(e\) &&\s*hrGaps\(e\)\.length === 0/,
     "the bulk create no longer excludes rows the engine cannot provision",
   );
 
