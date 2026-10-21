@@ -48,7 +48,14 @@ import {
 } from "@/lib/auth/sessionCache";
 import { notifyRepositoryChanged } from "@/lib/repositories/events";
 import { settledWithin } from "@/lib/rules/tasks/writeTimeout";
-import { HR_INACTIVE_SIGN_IN_NOTICE, isHrInactiveRefusal } from "@/lib/rules/auth/hrInactive";
+import { HR_INACTIVE_SIGN_IN_NOTICE } from "@/lib/rules/auth/hrInactive";
+import {
+  MISCONFIGURED_SIGN_IN_NOTICE,
+  NOT_REGISTERED_SIGN_IN_NOTICE,
+  UNVERIFIED_SIGN_IN_NOTICE,
+  signInRefusal,
+  type SignInRefusal,
+} from "@/lib/rules/auth/signInRefusal";
 import type { RoleArchetype } from "@/lib/domain";
 
 /**
@@ -166,7 +173,7 @@ interface Payload {
    * sign-in form. Without this that round trip is silent, and it looks exactly
    * like the form ignoring them.
    */
-  reason?: "no-session" | "refused" | "inactive";
+  reason?: "no-session" | SignInRefusal;
   employeeId?: string;
   displayName?: string;
   email?: string;
@@ -437,12 +444,14 @@ export function SessionProvider({
          */
         /* Inactive in HR is its own sentence (12 Oct 2026): the person IS an
            employee here, HR has switched their access off, and "ask an
-           administrator to add it" would send them the wrong way. */
+           administrator to add it" would send them the wrong way. So is a
+           token the engine could not even verify (21 Oct 2026) — see
+           `signInRefusal.ts`; calling that "not registered" sent correctly
+           provisioned employees to be added again. */
         if (data.reason === "inactive") leaveSignInNotice(HR_INACTIVE_SIGN_IN_NOTICE);
-        else if (data.reason === "refused")
-          leaveSignInNotice(
-            "That account signed in, but it is not registered as an employee of this workspace. Ask an administrator to add it, or sign in with your work account.",
-          );
+        else if (data.reason === "refused") leaveSignInNotice(NOT_REGISTERED_SIGN_IN_NOTICE);
+        else if (data.reason === "misconfigured") leaveSignInNotice(MISCONFIGURED_SIGN_IN_NOTICE);
+        else if (data.reason === "unverified") leaveSignInNotice(UNVERIFIED_SIGN_IN_NOTICE);
         setState({
           status: "anonymous",
           employeeId: null,
@@ -1021,7 +1030,7 @@ async function readIdentityPayload(): Promise<Payload> {
        Cowork. A transport failure is not, and must not sign anybody out — so
        it throws, and `load`'s catch leaves the session in `loading`. */
     if (result.error.kind === "auth" || result.error.kind === "permission") {
-      return { authenticated: false, reason: isHrInactiveRefusal(result.error) ? "inactive" : "refused" };
+      return { authenticated: false, reason: signInRefusal(result.error) };
     }
     /* Tagged, so `load` can tell "we could not reach it" from "the saved
        sign-in is stale" — they need opposite advice. */

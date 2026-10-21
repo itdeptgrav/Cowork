@@ -70,8 +70,8 @@ test("an inactive directory row is exited — still in the directory, so names s
 
 test("the session tells an HR-inactive refusal apart and leaves its own sentence", () => {
   const s = src("components/features/auth/SessionProvider.tsx");
-  assert.match(s, /reason\?: "no-session" \| "refused" \| "inactive"/);
-  assert.match(s, /isHrInactiveRefusal\(result\.error\) \? "inactive" : "refused"/);
+  assert.match(s, /reason\?: "no-session" \| SignInRefusal/);
+  assert.match(s, /reason: signInRefusal\(result\.error\)/);
   assert.match(s, /if \(data\.reason === "inactive"\) leaveSignInNotice\(HR_INACTIVE_SIGN_IN_NOTICE\)/);
   assert.match(src("components/features/auth/SignInForm.tsx"), /case "auth\/user-disabled":\s*return LOGIN_DISABLED_MESSAGE;/);
 });

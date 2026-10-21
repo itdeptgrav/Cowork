@@ -13,6 +13,7 @@ import { Button, Field, InlineError, Input } from "@/components/ui/Primitives";
 import { PasswordInput } from "@/components/ui/PasswordInput";
 import { QrSignInScanner } from "./QrSignInScanner";
 import { LOGIN_DISABLED_MESSAGE } from "@/lib/rules/auth/hrInactive";
+import { INVALID_CREDENTIAL_MESSAGE } from "@/lib/rules/auth/signInRefusal";
 
 /**
  * Sign in.
@@ -285,8 +286,7 @@ function safeNext(raw: string | null): string | null {
  * The SDK's own messages read like `Firebase: Error (auth/invalid-credential).`
  * — precise and useless. These distinguish "wrong password" from "no such
  * account in this project", which point at very different problems while a
- * migration is in progress, and mention the mobile-number default because that
- * is what a legacy Cowork account starts with.
+ * migration is in progress.
  */
 function signInMessage(e: unknown): string {
   const code =
@@ -301,7 +301,7 @@ function signInMessage(e: unknown): string {
       return "No Cowork account exists with that email.";
     case "auth/wrong-password":
     case "auth/invalid-credential":
-      return "Those details do not match an account. If you have not signed in before, your password may still be your mobile number.";
+      return INVALID_CREDENTIAL_MESSAGE;
     /* HR's Inactive switches the login off (12 Oct 2026), so that is what a
        disabled account almost always means now. */
     case "auth/user-disabled":
