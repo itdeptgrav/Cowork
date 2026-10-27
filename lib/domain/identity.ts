@@ -78,6 +78,13 @@ export interface Employee {
    * directory before anybody decides they need to sign in.
    */
   email: string | null;
+  /**
+   * Phone and city as the employee record holds them (`cowork_employees.mobile`
+   * and `.city`). Optional because only the legacy backend carries them; shown
+   * on your own profile, and nowhere a colleague could read them.
+   */
+  mobile?: string | null;
+  city?: string | null;
   departmentId: string | null;
   departmentName: string | null;
   designation: string | null;

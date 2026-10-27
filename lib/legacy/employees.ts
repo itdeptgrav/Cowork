@@ -58,6 +58,8 @@ export interface LegacyEmployee {
   name: string;
   email: string | null;
   mobile: string | null;
+  /** `cowork_employees.city`. Optional so rows built elsewhere still type. */
+  city?: string | null;
   department: string | null;
   role: LegacyRole;
   avatarUrl: string | null;
@@ -96,6 +98,7 @@ export function readEmployee(doc: LegacyEmployeeDoc): LegacyEmployee | null {
     name: doc.name?.trim() || id,
     email: doc.email?.trim() || null,
     mobile: doc.mobile?.trim() || null,
+    city: doc.city?.trim() || null,
     department: doc.department?.trim() || null,
     role: readRole(doc.role),
     avatarUrl: doc.profilePicUrl || null,

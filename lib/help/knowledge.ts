@@ -3770,6 +3770,38 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "lib/rules/people/profilePicture.ts; lib/people/encodeProfilePicture.ts; LegacyRepository.setMyProfilePicture; cowork_employees.profilePicUrl; ZoomableAvatar in components/ui/Avatar.tsx renders a plain Avatar with no button when src is absent, and opens ImageLightbox without downloadUrl so no download control is drawn",
   },
   {
+    id: "general-profile-details",
+    category: "general",
+    title: "What your profile shows",
+    keywords: [
+      "my profile",
+      "profile details",
+      "employee code",
+      "employee id",
+      "my email",
+      "my mobile number",
+      "phone number",
+      "city",
+      "reports to",
+      "my manager",
+      "who is my manager",
+      "direct reports",
+      "wrong details on my profile",
+    ],
+    examples: [
+      "Where can I see my employee ID?",
+      "Where is my email address shown?",
+      "Who is my manager?",
+      "How many people report to me?",
+      "My mobile number on my profile is wrong.",
+    ],
+    answer:
+      "Profile shows your own record in three parts. **Details**: your employee code, email, mobile, department, designation, city, joining date and timezone. **Reporting**: who you report to, a second manager if HR names one (“Also reports to”), and how many people report directly to you — a manager Cowork can match to a colleague opens their profile, and one HR names but Cowork cannot match is shown by name. **Access**: your roles, and how many people are in your reporting line. A dash means the record has no value for that field. Your mobile and city appear only on your own profile; a colleague's profile does not show them. Nothing here can be edited from the page apart from your picture: the details come from your employee record and the reporting line from HR's manager fields, so if something is wrong, ask an administrator or HR to correct it at the source.",
+    related: ["general-profile-picture", "people-unplaced"],
+    source:
+      "ProfilePage and ReportingPanel in components/features/settings/UserAreas.tsx; mobile and city read by readEmployee in lib/legacy/employees.ts and carried by toEmployee in lib/repositories/legacy/map.ts; Reporting reads listReportingLines (ReportingNode in lib/legacy/hierarchy.ts, from HR primaryManager/secondaryManager); PersonProfile in components/features/team/TeamArea.tsx does not render mobile or city",
+  },
+  {
     id: "general-documents",
     category: "general",
     title: "Writing a document",

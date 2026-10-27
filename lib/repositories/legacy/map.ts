@@ -86,6 +86,8 @@ export function toEmployee(row: LegacyEmployee): Employee {
        dropped a value the document had. */
     profilePictureUrl: readProfilePicture(row.avatarUrl),
     email: row.email ?? "",
+    mobile: row.mobile ?? null,
+    city: row.city ?? null,
     /* **The department NAME, normalised, is the department id.**
      *
      * Legacy has no department entity — `cowork_employees.department` is a bare
