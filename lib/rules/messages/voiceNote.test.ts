@@ -5,6 +5,8 @@ import {
   audioExtensionFor,
   formatDuration,
   voiceNoteFilename,
+  audioClock,
+  audioTitle,
 } from "./voiceNote.ts";
 
 test("pickAudioMime prefers opus-in-webm, then falls back in order", () => {
@@ -35,4 +37,21 @@ test("formatDuration is m:ss, floored and zero-padded", () => {
 test("voiceNoteFilename is deterministic for a given stamp", () => {
   assert.equal(voiceNoteFilename("audio/mp4", "123"), "voice-note-123.m4a");
   assert.equal(voiceNoteFilename("audio/webm", "abc"), "voice-note-abc.webm");
+});
+
+test("the audio clock shows the length before playing, then position and length", () => {
+  assert.equal(audioClock(0, 63, false), "1:03");
+  assert.equal(audioClock(12.4, 63, true), "0:12 / 1:03");
+  /* A length nobody could measure is never shown as 0:00. */
+  assert.equal(audioClock(0, null, false), "");
+  assert.equal(audioClock(0, Number.POSITIVE_INFINITY, false), "");
+  assert.equal(audioClock(7, null, true), "0:07");
+});
+
+test("a recorded note reads as a voice note; any other audio keeps its name", () => {
+  assert.equal(audioTitle("voice-note-20261011-1408.webm"), "Voice note");
+  assert.equal(audioTitle(null), "Voice note");
+  assert.equal(audioTitle("  "), "Voice note");
+  assert.equal(audioTitle("Site meeting.m4a"), "Site meeting.m4a");
+  assert.equal(audioTitle("song.mp3"), "song.mp3");
 });

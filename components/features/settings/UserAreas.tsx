@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import Link from "next/link";
 import { ProfilePicture } from "./ProfilePicture";
 import { ShareDashboardDialog } from "@/components/features/auth/ShareDashboardDialog";
@@ -227,30 +227,38 @@ export function ProfilePage() {
           <h2 className="mb-3 text-sm font-medium text-ink">Details</h2>
           <dl className="space-y-2.5">
             <Row label="Employee code" value={p.employeeCode} />
+            <Row label="Email" value={p.email || "—"} />
+            <Row label="Mobile" value={p.mobile || "—"} />
             <Row label="Department" value={p.departmentName ?? "—"} />
             <Row label="Designation" value={p.designation ?? "—"} />
+            <Row label="City" value={p.city || "—"} />
             <Row label="Joined" value={formatDate(p.joinedAt)} />
             <Row label="Timezone" value={p.timezone} />
           </dl>
         </Panel>
-        <Panel>
-          <h2 className="mb-3 text-sm font-medium text-ink">Access</h2>
-          <div className="flex flex-wrap gap-1.5">
-            {p.roleIds.map((rid) => (
-              <Chip key={rid}>
-                {roles.data?.find((r) => r.id === rid)?.displayName ?? rid}
-              </Chip>
-            ))}
-          </div>
-          <p className="mt-3 border-t border-hairline pt-3 text-sm text-ink-muted">
-            You can see{" "}
-            <span data-figure className="text-ink">
-              {viewer.data?.hierarchyIds.length ?? 0}
-            </span>{" "}
-            people in your reporting line. Score visibility follows that
-            hierarchy — never sideways, never upward.
-          </p>
-        </Panel>
+        {/* Reporting and Access share the second column, so a short
+            reporting line does not leave a hole beside Details. */}
+        <div className="grid content-start gap-4">
+          <ReportingPanel employeeId={p.id} />
+          <Panel>
+            <h2 className="mb-3 text-sm font-medium text-ink">Access</h2>
+            <div className="flex flex-wrap gap-1.5">
+              {p.roleIds.map((rid) => (
+                <Chip key={rid}>
+                  {roles.data?.find((r) => r.id === rid)?.displayName ?? rid}
+                </Chip>
+              ))}
+            </div>
+            <p className="mt-3 border-t border-hairline pt-3 text-sm text-ink-muted">
+              You can see{" "}
+              <span data-figure className="text-ink">
+                {viewer.data?.hierarchyIds.length ?? 0}
+              </span>{" "}
+              people in your reporting line. Score visibility follows that
+              hierarchy — never sideways, never upward.
+            </p>
+          </Panel>
+        </div>
       </div>
     </>
   );
@@ -426,11 +434,62 @@ export function PrivacyPage() {
   );
 }
 
-function Row({ label, value }: { label: string; value: string }) {
+function Row({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center gap-3">
       <dt className="w-28 shrink-0 text-xs text-ink-faint">{label}</dt>
-      <dd className="min-w-0 flex-1 truncate text-sm text-ink">{value}</dd>
+      <dd
+        className="min-w-0 flex-1 truncate text-sm text-ink"
+        title={typeof value === "string" ? value : undefined}
+      >
+        {value}
+      </dd>
     </div>
+  );
+}
+
+/**
+ * Who you report to, and who reports to you — from HR's manager fields, the
+ * same tree that decides whose scores you can see. A manager the directory can
+ * link to opens their profile; one HR names but Cowork cannot match is shown
+ * by name alone rather than dropped.
+ */
+function ReportingPanel({ employeeId }: { employeeId: string }) {
+  const lines = useQuery((r) => r.listReportingLines(), []);
+  if (lines.isLoading) return null;
+  const me = lines.data?.find((n) => n.employeeId === employeeId);
+
+  const manager = (id: string | null, name: string | null) =>
+    id ? (
+      <Link
+        href={`/people/${encodeURIComponent(id)}`}
+        className="text-ink hover:underline"
+      >
+        {name ?? id}
+      </Link>
+    ) : (
+      (name ?? "—")
+    );
+
+  return (
+    <Panel>
+      <h2 className="mb-3 text-sm font-medium text-ink">Reporting</h2>
+      <dl className="space-y-2.5">
+        <Row
+          label="Reports to"
+          value={manager(me?.managerId ?? null, me?.managerName ?? null)}
+        />
+        {(me?.secondaryManagerId || me?.secondaryManagerName) && (
+          <Row
+            label="Also reports to"
+            value={manager(me.secondaryManagerId, me.secondaryManagerName)}
+          />
+        )}
+        <Row
+          label="Direct reports"
+          value={String(me?.directReportIds.length ?? 0)}
+        />
+      </dl>
+    </Panel>
   );
 }

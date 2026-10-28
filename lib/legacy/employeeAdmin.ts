@@ -38,6 +38,13 @@ export interface HrEmployee {
    * behaviour that came before this and not a new failure.
    */
   missingInHr?: string[];
+  /**
+   * HR's standing. `"inactive"` means HR has let this person go: they have no
+   * Cowork access and the panel offers nothing to add, mail or reset.
+   * Optional because an older engine does not send it — every row then reads
+   * active, which is what it showed before.
+   */
+  hrStatus?: "active" | "inactive";
 }
 
 export interface HrEmployeeList {
@@ -47,6 +54,11 @@ export interface HrEmployeeList {
   withAccount: number;
   /** How many listed people HR does not hold enough detail to provision. */
   missingDetails?: number;
+  /** Which HR status this list holds — `active` unless asked otherwise. */
+  status?: "active" | "inactive" | "all";
+  /** Matching HR people on each side, whichever side is listed. */
+  activeCount?: number;
+  inactiveCount?: number;
 }
 
 export interface ProvisionResult {
@@ -70,10 +82,13 @@ export async function listHrEmployees(input: {
   token: string;
   search?: string;
   department?: string;
+  /** `inactive` or `all`; omitted (the default) lists people active in HR. */
+  status?: "inactive" | "all";
 }): Promise<LegacyResult<HrEmployeeList>> {
   const query: Record<string, string> = {};
   if (input.search) query.search = input.search;
   if (input.department && input.department !== "all") query.department = input.department;
+  if (input.status) query.status = input.status;
   return legacyFetch({
     path: "/cowork/admin/hr-employees",
     token: input.token,

@@ -42,6 +42,15 @@ export interface LegacyEmployeeDoc {
   passwordChanged?: boolean;
   /** Stripped by the engine on list responses. Never render it. */
   tempPassword?: string;
+  /**
+   * `"inactive"` (with `isActive: false`) when HR has made this person Inactive
+   * — the engine marks the record and also answers it for anyone HR has let go
+   * whose record was not marked yet (services/coworkHrAccess.service.js).
+   */
+  status?: string;
+  isActive?: boolean;
+  /** When HR made them inactive, as an ISO string. */
+  deactivatedAt?: string;
 }
 
 export interface LegacyEmployee {
@@ -49,12 +58,27 @@ export interface LegacyEmployee {
   name: string;
   email: string | null;
   mobile: string | null;
+  /** `cowork_employees.city`. Optional so rows built elsewhere still type. */
+  city?: string | null;
   department: string | null;
   role: LegacyRole;
   avatarUrl: string | null;
   authUid: string | null;
   /** True while the person is still on the engine's temporary password. */
   pendingFirstSignIn: boolean;
+  /**
+   * Inactive in HR: no access to Cowork, off every active list and picker,
+   * still named on the work they did. Optional so a row built elsewhere (a
+   * test, a fixture) reads as active, which is what it always meant.
+   */
+  inactive?: boolean;
+  /** Since when, where the engine knows; null otherwise. */
+  inactiveSince?: string | null;
+}
+
+/** The directory row's own word for "HR has let them go". */
+export function isInactiveDoc(doc: LegacyEmployeeDoc): boolean {
+  return doc.isActive === false || doc.status?.trim().toLowerCase() === "inactive";
 }
 
 /**
@@ -74,11 +98,14 @@ export function readEmployee(doc: LegacyEmployeeDoc): LegacyEmployee | null {
     name: doc.name?.trim() || id,
     email: doc.email?.trim() || null,
     mobile: doc.mobile?.trim() || null,
+    city: doc.city?.trim() || null,
     department: doc.department?.trim() || null,
     role: readRole(doc.role),
     avatarUrl: doc.profilePicUrl || null,
     authUid: doc.authUid || null,
     pendingFirstSignIn: doc.passwordChanged === false,
+    inactive: isInactiveDoc(doc),
+    inactiveSince: isInactiveDoc(doc) ? doc.deactivatedAt?.trim() || null : null,
   };
 }
 

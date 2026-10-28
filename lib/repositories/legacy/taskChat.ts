@@ -95,7 +95,9 @@ export function readTaskChatAttachments(
       const positive =
         stored === "image" || stored === "pdf" || stored === "voice" || stored === "video"
           ? (stored as MessageAttachment["kind"])
-          : null;
+          : stored === "audio"
+            ? "voice"
+            : null;
       return {
         url: str(o.url) ?? "",
         kind: positive ?? attachmentKind(name, null),

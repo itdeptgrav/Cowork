@@ -29,6 +29,19 @@ export interface LegacyError {
    * time on an action that cannot succeed.
    */
   kind: "network" | "auth" | "permission" | "not_found" | "server" | "malformed";
+  /**
+   * The engine's own reason code, when it sent one — e.g. `EMPLOYEE_INACTIVE`
+   * on a 403 for somebody HR has made Inactive. Lets a caller tell two
+   * refusals with the same status apart without matching on wording.
+   */
+  code?: string;
+}
+
+/** The engine's `code` field, if the body carried a short one. */
+export function readErrorCode(body: unknown): string | undefined {
+  if (!isRecord(body)) return undefined;
+  const v = body.code;
+  return typeof v === "string" && /^[A-Z0-9_]{2,64}$/.test(v) ? v : undefined;
 }
 
 /**
@@ -134,6 +147,7 @@ export function failure(status: number, body: unknown): LegacyResult<never> {
       message: readErrorMessage(body) ?? defaultMessage(status, looksLikeMarkup(body)),
       status,
       kind: classify(status),
+      ...(readErrorCode(body) ? { code: readErrorCode(body) } : {}),
     },
   };
 }
