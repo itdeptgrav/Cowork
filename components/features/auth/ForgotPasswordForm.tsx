@@ -92,8 +92,13 @@ export function ForgotPasswordForm() {
       result._devOtp
         ? /* Development only — the backend omits this outside production. It is
              surfaced rather than hidden in a console because without a mail key
-             configured locally there is otherwise no way to walk this flow. */
-          `${result.message} Development code: ${result._devOtp}`
+             configured locally there is otherwise no way to walk this flow.
+             `mailProblem` rides with it when the code was issued but the mail
+             was not sent: the same backend answers that as a failed request in
+             production, so this is the one place the two are told apart. */
+          `${result.message} Development code: ${result._devOtp}${
+            result.mailProblem ? ` The email was NOT sent — ${result.mailProblem}` : ""
+          }`
         : (result.message ?? null),
     );
   }
