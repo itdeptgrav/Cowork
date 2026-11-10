@@ -3019,6 +3019,8 @@ export const HELP_ARTICLES: HelpArticle[] = [
       "password reset code",
       "otp",
       "4-digit code",
+      "could not send the email",
+      "reset email not sent",
       "code did not arrive",
       "locked out",
       "temporary password",

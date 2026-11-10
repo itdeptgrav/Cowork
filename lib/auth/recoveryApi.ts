@@ -29,6 +29,13 @@ export interface RecoveryResult {
   message?: string;
   /** Only ever present when the backend runs outside production. */
   _devOtp?: string;
+  /**
+   * Also development only: why no mail went, when a code was issued but the
+   * backend's mail sender refused or is not configured. In production the
+   * same situation is a failed request (`success: false`, HTTP 502) instead,
+   * so nobody is told a code is on its way that nobody attempted to send.
+   */
+  mailProblem?: string;
 }
 
 /**
