@@ -93,3 +93,17 @@ test("what arrived meanwhile is counted on the jump button, and cleared at the b
      people's messages after the point the reader scrolled away. */
   assert.match(SRC, /if \(list\[i\]\.senderId !== viewerId\) n \+= 1;/);
 });
+
+/* ── A thread opens on its newest message, even as things load around it ── */
+
+test("the stay-at-bottom observer watches the scroll port as well as the content", () => {
+  /* The task-chat tab bar arrives a moment after the thread and takes 55px
+     off the port. Watching only the messages missed that, and the thread
+     opened with its newest message below the fold. */
+  assert.match(SRC, /observer\.observe\(content\);\s*[^]*?observer\.observe\(el\);/);
+});
+
+test("the code's own pin landing is not mistaken for the reader scrolling away", () => {
+  assert.match(SRC, /if \(pinnedRef\.current && Date\.now\(\) < settlingUntilRef\.current\) return;/);
+  assert.match(SRC, /settlingUntilRef\.current = Date\.now\(\) \+ 600;\s*el\.scrollTop = el\.scrollHeight;/);
+});

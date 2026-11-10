@@ -1564,6 +1564,17 @@ function Thread({
    */
   const pinnedRef = useRef(true);
   /**
+   * Until when a scroll event is the CODE's own pin landing, not the reader.
+   *
+   * Setting `scrollTop` fires its scroll event a moment later, and content can
+   * grow in between — the last message's time-and-tick row, a reply preview, an
+   * image's height. The handler then measured "55px from the bottom", decided
+   * the reader had scrolled up, and stopped following: a thread opened just
+   * short of its newest message. Events inside this window keep the pin, and
+   * the resize observer finishes the job as the content settles.
+   */
+  const settlingUntilRef = useRef(0);
+  /**
    * Whether to offer the "jump to latest" button.
    *
    * Distinct from `pinnedRef` (48px, the auto-follow threshold): the button
@@ -1735,6 +1746,9 @@ function Thread({
        demanding an exact zero makes the pin feel like it randomly stops
        working. */
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    /* The code's own pin landing is not the reader leaving — see
+       `settlingUntilRef`. */
+    if (pinnedRef.current && Date.now() < settlingUntilRef.current) return;
     pinnedRef.current = distFromBottom < 48;
     /* Back at the bottom: whatever was counted has now been seen. Away from
        it: remember where, so what arrives after can be counted. */
@@ -1935,6 +1949,7 @@ function Thread({
     if (!firstPin && !pinnedRef.current && !(arrived && newest?.senderId === viewerId)) {
       return;
     }
+    settlingUntilRef.current = Date.now() + 600;
     el.scrollTop = el.scrollHeight;
     pinnedRef.current = true;
     /* `olderPages` as well as the live page, because those are now two separate
@@ -1979,9 +1994,15 @@ function Thread({
       /* Never while older history is being spliced in at the top — that pass
          owns the scroll position and is restoring the reader's place. */
       if (!pinnedRef.current || loadingOlderRef.current) return;
+      settlingUntilRef.current = Date.now() + 600;
       el.scrollTop = el.scrollHeight;
     });
     observer.observe(content);
+    /* The scroll port too (10 Nov 2026): it SHRINKS when something loads
+       above or below it — the task-chat tab bar arriving a moment after the
+       thread took 55px — and a shorter port with the same scrollTop leaves
+       the newest message below the fold. No scroll event fires for that. */
+    observer.observe(el);
     return () => observer.disconnect();
     /* `messages.data` as well as the thread, because on the first render there
        is no content element to observe — the pane is still showing its
