@@ -74,7 +74,10 @@ test("the merge is memoised on the data, not on a fresh array", () => {
   const src = code(AREA);
   const at = src.indexOf("mergeMessagePages([...olderPages");
   assert.match(src.slice(at, at + 140), /\[olderPages, live, seed\]/);
-  assert.match(src, /const seed = useMemo\(\(\) => recentThread\(c\.id\), \[c\.id\]\);/);
+  /* Since 10 Nov 2026 a state initialiser rather than a memo, so a prefetch
+     still in flight can fill it — still read ONCE per conversation, since
+     `Thread` remounts per conversation. */
+  assert.match(src, /useState<Message\[\] \| null>\(\(\) => recentThread\(c\.id\)\);/);
 });
 
 test("a thread that has been open before is not redrawn as placeholders", () => {

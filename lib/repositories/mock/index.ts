@@ -7859,12 +7859,16 @@ export class MockRepository implements CoworkRepository {
 
   /* ── Material Request Forms ─────────────────────────────────────────────── */
 
-  async listMyMrfs(): Promise<{ requests: MrfRequest[]; stats: ReturnType<typeof mrfStats> }> {
+  async listMyMrfs(opts?: {
+    status?: "cancelled";
+  }): Promise<{ requests: MrfRequest[]; stats: ReturnType<typeof mrfStats> }> {
     const meId = actingId();
-    const requests = getStore()
+    const all = getStore()
       .mrfs.filter((m) => m.requesterId === meId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return delay({ requests, stats: mrfStats(requests) });
+    /* Stats over every request, like the engine; the list narrowed. */
+    const requests = opts?.status ? all.filter((m) => m.status === opts.status) : all;
+    return delay({ requests, stats: mrfStats(all) });
   }
 
   async listMrfApprovals(

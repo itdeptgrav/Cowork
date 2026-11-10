@@ -14632,12 +14632,66 @@ export class LegacyRepository {
     };
   }
 
-  async listMyMrfs() {
+  /**
+   * Every page of an MRF list, not just the first (10 Nov 2026).
+   *
+   * Both MRF lists are paged by the engine — 20 rows unless told otherwise —
+   * and report the true total beside them. This app only ever read page one,
+   * so anybody with more than twenty requests saw their newest twenty while
+   * the tiles above counted all of them, and an approver's queue stopped at
+   * twenty: "some MRFs do not come". Pages of 50 are read until the engine's
+   * own total is reached (bounded, so a misbehaving count cannot loop).
+   *
+   * Answers in the shape a single read did, so the callers' error handling and
+   * stats reading are unchanged: the first page's `stats` (which the engine
+   * computes over everything), and every page's `mrfs`.
+   */
+  async #allMrfPages(
+    path: string,
+    token: string | null,
+    query: Record<string, string> = {},
+  ): Promise<LegacyResult<{ mrfs?: Record<string, unknown>[]; stats?: unknown }>> {
+    const PAGE = 50;
+    const MAX_PAGES = 40;
+    const all: Record<string, unknown>[] = [];
+    let stats: unknown;
+    for (let page = 1; page <= MAX_PAGES; page += 1) {
+      const r = await legacyFetch<{
+        mrfs?: Record<string, unknown>[];
+        stats?: unknown;
+        pagination?: { total?: number; totalPages?: number };
+      }>({
+        path,
+        query: { ...query, page: String(page), limit: String(PAGE) },
+        token,
+      });
+      if (!r.ok) {
+        /* A later page failing must not hide the earlier ones — but neither
+           may it pass for the whole list; the first page's failure is raised
+           as before, a later one keeps what was read. */
+        if (page === 1) return r;
+        break;
+      }
+      if (page === 1) stats = r.data.stats;
+      const rows = r.data.mrfs ?? [];
+      all.push(...rows);
+      const total = r.data.pagination?.total;
+      if (rows.length < PAGE) break;
+      if (typeof total === "number" && all.length >= total) break;
+    }
+    return { ok: true, data: { mrfs: all, stats } };
+  }
+
+  async listMyMrfs(opts?: { status?: "cancelled" }) {
     const token = await this.#token();
-    const r = await legacyFetch<{ mrfs?: Record<string, unknown>[] }>({
-      path: "/api/cowork/mrf/",
+    const withdrawn = opts?.status === "cancelled";
+    /* The engine's list already filters on `status` (10 Nov 2026: the
+       Withdrawn tab). Every page, not just the first — see `#allMrfPages`. */
+    const r = await this.#allMrfPages(
+      "/api/cowork/mrf/",
       token,
-    });
+      withdrawn ? { status: "CANCELLED" } : {},
+    );
     /**
      * **A failed read is RAISED, not turned into an empty list.**
      *
@@ -14654,7 +14708,10 @@ export class LegacyRepository {
     if (!r.ok) throw new Error(r.error.message);
     const requests = (r.data.mrfs ?? [])
       .map((m) => this.#readMrf(m))
-      .filter((m): m is MrfRequest => m !== null);
+      .filter((m): m is MrfRequest => m !== null)
+      /* Checked here too, so the Withdrawn tab can never show a live request
+         whatever the engine did with the filter. */
+      .filter((m) => !withdrawn || m.status === "cancelled");
     /* The counts the server took over EVERY request this person raised — the
        list is one page. An older backend counts by status (where "approved"
        includes a request half of which still waits); counting the page is
@@ -14668,20 +14725,21 @@ export class LegacyRepository {
     /* "pending" is everything with an item still waiting on this approver —
        including a request some of whose items already reached the store. */
     const legacyStatus = status === "all" ? "ALL" : status.toUpperCase();
-    const r = await legacyFetch<{
-      mrfs?: Record<string, unknown>[];
-      stats?: unknown;
-    }>({
-      path: "/api/cowork/mrf/approvals",
-      query: { status: legacyStatus },
-      token,
+    /* Every page — an approver's Approved and All lists outgrow twenty quickly,
+       and everything past the first page was simply missing. */
+    const r = await this.#allMrfPages("/api/cowork/mrf/approvals", token, {
+      status: legacyStatus,
     });
     /* Raised rather than emptied — see `listMyMrfs`. An approver shown an
        empty queue believes there is nothing waiting on them. */
     if (!r.ok) throw new Error(r.error.message);
     const requests = (r.data.mrfs ?? [])
       .map((m) => this.#readMrf(m))
-      .filter((m): m is MrfRequest => m !== null);
+      .filter((m): m is MrfRequest => m !== null)
+      /* "withdrawn" is the request's own status (see `MrfApprovalFilter`); an
+         engine older than its WITHDRAWN filter answers an empty list, never a
+         live request, and this keeps it that way. */
+      .filter((m) => status !== "withdrawn" || m.status === "cancelled");
     /* The counts come from the server, not from `requests`. That list is one
        page of the queue, already narrowed to `legacyStatus` — counting it
        would make the tiles and the tab badge describe the page rather than the
@@ -16560,6 +16618,13 @@ export class LegacyRepository {
         ),
         coll: GROUP_COLLECTION,
       });
+
+    /* Remember which collection each conversation lives in (10 Nov 2026).
+       This list just read both, so it knows; without this, the first open of
+       every chat asked Firestore again with a separate read and only then
+       requested its messages — two round trips one after the other. */
+    for (const { conv, coll } of base)
+      LegacyRepository.#conversationCollectionById.set(conv.id, coll);
 
     /* Unread and participants for every conversation in parallel — the list is
        one round-trip deep rather than N sequential reads. */

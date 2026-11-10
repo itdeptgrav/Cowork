@@ -60,7 +60,10 @@ test("the ?m target is read on the server and scrolled to once loaded", () => {
      avoids that hook (and its Suspense boundary); see the page comment. */
   assert.doesNotMatch(MSGS, /useSearchParams/);
   assert.match(MSGS, /jumpToMessageId\?: string;/);
-  assert.match(MSGS, /jumpTo=\{jumpToMessageId\}/);
+  /* Passed only to the conversation the page was loaded with — a chat switched
+     to in place (10 Nov 2026) must not go looking for that message. */
+  assert.match(MSGS, /conversationId === routedConversationId \? jumpToMessageId : undefined/);
+  assert.match(MSGS, /jumpTo=\{jumpTo\}/);
   assert.match(MSGS, /void jumpToMessage\(jumpTo\)/);
   /* The dynamic page reads ?m and passes it down. */
   assert.match(PAGE, /searchParams: Promise<\{ m\?: string \}>/);

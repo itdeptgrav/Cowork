@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Avatar, AvatarStack, ZoomableAvatar } from "@/components/ui/Avatar";
 import { Icon } from "@/components/ui/Icons";
@@ -30,6 +30,11 @@ import {
   type PairedTaskChat,
 } from "@/lib/rules/messages/taskChats";
 import { holdThreadsFor, recentThread, rememberThread } from "./recentThreads";
+import { pendingThread, prefetchThread } from "./prefetchThread";
+import {
+  conversationIdFromPath,
+  switchesInPlace,
+} from "@/lib/rules/messages/openConversation";
 import { TaskChatPicker } from "./TaskChatPicker";
 import { TaskChatBrief } from "./TaskChatBrief";
 import { VoiceRecorder } from "./VoiceRecorder";
@@ -133,7 +138,7 @@ import type {
 type ConversationView = Conversation & { participants: Employee[] };
 
 export function MessagesPage({
-  conversationId,
+  conversationId: routedConversationId,
   closed = false,
   jumpToMessageId,
 }: {
@@ -171,6 +176,16 @@ export function MessagesPage({
   jumpToMessageId?: string;
 }) {
   const router = useRouter();
+  /* The address bar, not the route's props, names the open conversation:
+     rows switch in place with `history.pushState`, and after that the props
+     still describe the page the browser first loaded (10 Nov 2026) — see
+     `conversationIdFromPath`. */
+  const pathname = usePathname();
+  const conversationId = conversationIdFromPath(pathname, routedConversationId);
+  /* `?m=` belongs to the conversation the page was LOADED with; a chat
+     switched to in place must not go looking for that message. */
+  const jumpTo =
+    conversationId === routedConversationId ? jumpToMessageId : undefined;
   const viewerId = useViewerId();
   /* One browser, two people: the threads held to smooth a switch are somebody's
      correspondence, and the second person must not be handed them even for the
@@ -204,6 +219,29 @@ export function MessagesPage({
     () => sortByRecency(conversations.data ?? []),
     [conversations.data],
   );
+
+  /* The conversations most likely to be opened next — the top of the list —
+     have their first page warmed once the browser is idle (10 Nov 2026), so
+     the usual first click draws at once. Three, not more: each is one read of
+     a page of messages, and the rest are warmed by the pointer reaching them
+     (see `ConversationRow`). Keyed on the ids, so a re-sort only warms the
+     newcomer — `prefetchThread` skips anything already held or in flight. */
+  const topIds = useMemo(
+    () => all.slice(0, 3).map((c) => c.id).join(","),
+    [all],
+  );
+  useEffect(() => {
+    if (!topIds) return;
+    const run = () => {
+      for (const id of topIds.split(",")) prefetchThread(repo, id);
+    };
+    if (typeof window !== "undefined" && "requestIdleCallback" in window) {
+      const handle = window.requestIdleCallback(run, { timeout: 2000 });
+      return () => window.cancelIdleCallback(handle);
+    }
+    const timer = setTimeout(run, 800);
+    return () => clearTimeout(timer);
+  }, [repo, topIds]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -510,7 +548,7 @@ export function MessagesPage({
                 conversation={activeConversation}
                 viewerId={viewerId}
                 opened={openedDeliberately}
-                jumpTo={jumpToMessageId}
+                jumpTo={jumpTo}
                 onRead={() => conversations.refetch()}
                 onSent={() => conversations.refetch()}
                 onForwarded={openForwarded}
@@ -822,11 +860,30 @@ function ConversationRow({
   const now = useNow();
   const others = c.participants.filter((p) => p.id !== viewerId);
   const unread = c.unreadCount > 0;
+  const repo = useRepo();
+  /* The pointer, a finger or the keyboard reaching a row means it is about to
+     be opened — start its first page now (see `prefetchThread`). */
+  const warm = () => {
+    if (!active) prefetchThread(repo, c.id);
+  };
 
   return (
     <Link
       href={`/messages/${c.id}`}
       aria-current={active ? "page" : undefined}
+      onPointerEnter={warm}
+      onTouchStart={warm}
+      onFocus={warm}
+      /* Switch in place — no server round trip for a new page; the address
+         bar still changes, so Back, refresh and a shared link all work. A
+         modified click still opens a new tab (see `switchesInPlace`). */
+      onClick={(e) => {
+        if (!switchesInPlace(e)) return;
+        e.preventDefault();
+        if (active) return;
+        prefetchThread(repo, c.id);
+        window.history.pushState(null, "", `/messages/${c.id}`);
+      }}
       /* A touch target, not a mouse one: 44px is the smallest thing a finger
          hits reliably, and these rows were 52px tall with 2.5 of padding —
          comfortable to click and tight to tap next to its neighbour. The
@@ -1633,7 +1690,22 @@ function Thread({
   /* Read once per conversation, not per render: `recentThread` hands back a
      copy, so calling it in the render body would build a new array every time
      and the memo below would re-merge the whole thread on every keystroke. */
-  const seed = useMemo(() => recentThread(c.id), [c.id]);
+  /* State rather than a memo (10 Nov 2026) so a prefetch still in flight when
+     the thread opens — the pointer reached the row, the click followed before
+     the read came back — can still draw the moment it lands, instead of the
+     thread waiting on a second, identical read. `Thread` remounts per
+     conversation, so the initialiser runs once per chat. */
+  const [seed, setSeed] = useState<Message[] | null>(() => recentThread(c.id));
+  useEffect(() => {
+    if (seed) return;
+    let cancelled = false;
+    void pendingThread(c.id)?.then((m) => {
+      if (!cancelled && m) setSeed(m);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [c.id, seed]);
   useEffect(() => {
     if (live) rememberThread(c.id, live);
   }, [c.id, live]);

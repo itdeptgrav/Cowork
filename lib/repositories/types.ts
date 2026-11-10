@@ -2325,7 +2325,11 @@ export interface CoworkRepository {
 
   /* Material Request Forms — request and approval (store issue/return is a
      separate app). */
-  listMyMrfs(): Promise<{ requests: MrfRequest[]; stats: MrfStats }>;
+  /** `status: "cancelled"` narrows to the requests the viewer withdrew — the
+   *  Withdrawn tab. Stats still describe ALL of their requests. */
+  listMyMrfs(opts?: {
+    status?: "cancelled";
+  }): Promise<{ requests: MrfRequest[]; stats: MrfStats }>;
   /** The approver's queue: requests routed to the acting viewer, filtered by
    * how far the approver has got ("pending" = an item still waiting). */
   listMrfApprovals(

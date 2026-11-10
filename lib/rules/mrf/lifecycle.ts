@@ -569,6 +569,10 @@ export type MrfApprovalFilter =
   | "approved"
   | "partially_approved"
   | "rejected"
+  /** Withdrawn by the requester — the request's own status, NOT the approval
+   *  roll-up: a request withdrawn after every item was decided still rolls up
+   *  as "approved", and is still withdrawn. Read-only (10 Nov 2026). */
+  | "withdrawn"
   | "all";
 
 /** Does a request belong under a queue filter? (The prototype filters with this.) */
@@ -577,6 +581,7 @@ export function matchesApprovalFilter(
   filter: MrfApprovalFilter,
 ): boolean {
   if (filter === "all") return true;
+  if (filter === "withdrawn") return request.status === "cancelled";
   if (filter === "pending") return isWaiting(request);
   return approvalStatusOf(request) === filter;
 }

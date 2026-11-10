@@ -50,7 +50,7 @@ import type {
  * approval only. Copy is kept short on purpose.
  */
 export function MrfArea() {
-  const [tab, setTab] = useState<"mine" | "approvals">("mine");
+  const [tab, setTab] = useState<"mine" | "approvals" | "withdrawn">("mine");
   // Fetched here (not just inside Approvals) so the pending count shows on the
   // tab pill even while "My requests" is the active tab — that's the point of
   // a badge: knowing before you switch.
@@ -68,6 +68,7 @@ export function MrfArea() {
               [
                 { id: "mine", label: "My requests" },
                 { id: "approvals", label: "Approvals" },
+                { id: "withdrawn", label: "Withdrawn" },
               ] as const
             ).map((t) => (
               <button
@@ -99,7 +100,13 @@ export function MrfArea() {
           </div>
         }
       />
-      {tab === "mine" ? <MyRequests /> : <Approvals />}
+      {tab === "mine" ? (
+        <MyRequests />
+      ) : tab === "approvals" ? (
+        <Approvals />
+      ) : (
+        <Withdrawn />
+      )}
     </>
   );
 }
@@ -720,6 +727,131 @@ function Approvals() {
         </div>
       )}
     </>
+  );
+}
+
+/* ── Withdrawn ────────────────────────────────────────────────────────────── */
+
+/**
+ * Requests that were withdrawn — the ones you withdrew, and the ones withdrawn
+ * from your approval queue (10 Nov 2026).
+ *
+ * **Read only, for everybody.** A withdrawal cannot be undone, so there is
+ * nothing for the requester to do here; and an approver has nothing left to
+ * decide on a request its owner withdrew. No Approve, Reject, Withdraw or chat
+ * — only the request as it stood, its items, and its history, which says who
+ * withdrew it and when.
+ *
+ * "Withdrawn" is the request's own status, not the approval roll-up: one
+ * withdrawn after every item was approved still rolls up as approved, and is
+ * still withdrawn — see `MrfApprovalFilter`.
+ */
+function Withdrawn() {
+  const mine = useQuery((r) => r.listMyMrfs({ status: "cancelled" }), []);
+  const routed = useQuery((r) => r.listMrfApprovals("withdrawn"), []);
+
+  if (mine.isLoading || routed.isLoading) return <SkeletonRows rows={5} />;
+  if (mine.error || routed.error)
+    return (
+      <QueryError
+        queries={[mine, routed]}
+        message="Withdrawn requests could not be loaded."
+      />
+    );
+
+  const own = mine.data?.requests ?? [];
+  const sentToMe = routed.data?.requests ?? [];
+
+  if (!own.length && !sentToMe.length)
+    return (
+      <Panel>
+        <EmptyState
+          title="Nothing withdrawn"
+          body="Requests you withdraw, and requests withdrawn from your approval queue, show here."
+        />
+      </Panel>
+    );
+
+  return (
+    <div className="space-y-6">
+      {own.length > 0 && (
+        <section>
+          <h2 className="mb-3 text-sm font-medium text-ink">
+            Withdrawn by you{" "}
+            <span data-figure className="text-ink-faint">
+              {own.length}
+            </span>
+          </h2>
+          <div className="space-y-3">
+            {own.map((m) => (
+              <WithdrawnCard key={m.id} request={m} side="requester" />
+            ))}
+          </div>
+        </section>
+      )}
+      {sentToMe.length > 0 && (
+        <section>
+          <h2 className="mb-1 text-sm font-medium text-ink">
+            Withdrawn from your approvals{" "}
+            <span data-figure className="text-ink-faint">
+              {sentToMe.length}
+            </span>
+          </h2>
+          <p className="mb-3 text-[12px] text-ink-faint">
+            For reference only — there is nothing to approve on a withdrawn request.
+          </p>
+          <div className="space-y-3">
+            {sentToMe.map((m) => (
+              <WithdrawnCard key={m.id} request={m} side="approver" />
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** One withdrawn request, shown and not acted on — see `Withdrawn`. */
+function WithdrawnCard({
+  request: m,
+  side,
+}: {
+  request: MrfRequest;
+  side: "requester" | "approver";
+}) {
+  /* The withdrawal is in the history with who and when; the newest one, in
+     case a record carries more than one. */
+  const event = [...m.history].reverse().find((h) => h.action === "cancelled");
+  return (
+    <Panel data-mrf-withdrawn={m.id}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span data-figure className="text-sm font-medium text-ink">
+          {m.mrfNumber}
+        </span>
+        <StatusChip request={m} />
+        <PriorityChip priority={m.priority} />
+        <span className="ml-auto text-[11px] text-ink-faint">
+          {side === "approver"
+            ? `${m.requesterName}${m.requesterDepartment ? ` · ${m.requesterDepartment}` : ""}`
+            : m.requestType === "time_based"
+              ? "Borrowed"
+              : "Consumed"}
+        </span>
+      </div>
+      <p className="mt-1.5 text-[13px] text-ink-muted">{m.reason}</p>
+      {event && (
+        <p className="mt-1 text-[12px] text-ink-faint">
+          Withdrawn{event.actorName ? ` by ${event.actorName}` : ""} · {formatDate(event.at)}
+          {event.detail ? ` — ${event.detail}` : ""}
+        </p>
+      )}
+      <ItemLines request={m} />
+      <div className="mt-2 flex flex-wrap items-center gap-3 text-[11px] text-ink-faint">
+        {m.neededBy && <span>Needed by {formatDate(m.neededBy)}</span>}
+        {side === "requester" && m.approverName && <span>Approver: {m.approverName}</span>}
+      </div>
+      <MrfHistory request={m} />
+    </Panel>
   );
 }
 
