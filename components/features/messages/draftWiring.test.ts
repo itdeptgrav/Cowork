@@ -65,14 +65,20 @@ test("saving is skipped while editing an existing message", () => {
   assert.match(effect, /if \(editing\) return;/);
 });
 
-test("the draft is cleared ONLY after a successful send", () => {
-  /* A failed send must leave the text and files exactly where they were, so a
-     retry is pressing the button again rather than typing it out twice. */
+test("a failed send is never lost: it stays on screen with Retry and Edit", () => {
+  /* Since 10 Nov 2026 a message is drawn the instant it is sent, so the box
+     clears at once — and the guarantee this test used to hold ("a failed send
+     leaves the text where it was") moved to the outbox. The message is taken
+     into it BEFORE the composer clears, a failure marks it rather than dropping
+     it, Retry resends it, and Edit puts the text and files back in the box. */
   const src = code(AREA);
   const at = src.indexOf("clearDraft(c.id)");
   assert.ok(at > 0, "clearDraft is never called");
-  const before = src.slice(src.lastIndexOf("const r = await send();", at), at);
-  assert.match(before, /if \(r\.ok\) \{/, "clearDraft is not inside the success branch");
+  const before = src.slice(src.lastIndexOf("async function submit()", at), at);
+  assert.match(before, /setOutbox\(\(o\) => \[\.\.\.o, outgoing\]\);/, "the message is not saved before the composer clears");
+  assert.match(src, /status: "failed", error: r\.message/);
+  assert.match(src, /onRetry=\{\(o\) => void deliver\(o\)\}/);
+  assert.match(src, /function editUnsent\(o: OutgoingMessage\) \{[^]*?setText\(o\.text\);[^]*?setPending\(o\.attachments\);/);
 });
 
 test("every storage call is guarded — none may throw", () => {

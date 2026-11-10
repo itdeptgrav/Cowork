@@ -478,3 +478,51 @@ export function debounce(
   };
   return run;
 }
+
+/**
+ * How many of a thread's newest messages the live listener watches.
+ *
+ * Covers the page on screen (`MESSAGE_PAGE_SIZE`) and several older pages: a
+ * new message, an edit, a reaction or a read receipt among these arrives live.
+ * The listener used to watch the whole subcollection, which downloaded the
+ * entire history of a long thread on every open.
+ */
+export const LIVE_THREAD_WINDOW = 200;
+
+/**
+ * A conversation document as the LIST sees it: everything except the fields
+ * that change without changing anything the list shows.
+ *
+ *  · `typing` — stamped every few seconds while anybody types;
+ *  · `delivery[viewer]` — the viewer's own "received" stamp, which tells
+ *    OTHER people their message arrived.
+ *
+ * Other people's delivery stamps are kept: they turn the viewer's ticks grey.
+ * Keys are sorted so two equal documents always give the same string.
+ */
+export function conversationSignature(
+  data: Record<string, unknown> | undefined,
+  viewerId: string,
+): string {
+  const rest: Record<string, unknown> = { ...(data ?? {}) };
+  delete rest.typing;
+  const delivery = rest.delivery;
+  if (delivery && typeof delivery === "object") {
+    const others = { ...(delivery as Record<string, unknown>) };
+    delete others[viewerId];
+    rest.delivery = others;
+  }
+  return stableJson(rest);
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const o = value as Record<string, unknown>;
+    return `{${Object.keys(o)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson(o[k])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}

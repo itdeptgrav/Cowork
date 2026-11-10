@@ -34,7 +34,7 @@ test("both send methods accept mentionIds, and the mock stores them", () => {
      param is present before the return type. */
   assert.match(
     TYPES,
-    /mentionIds\?: EmployeeId\[\],\s*card\?: MessageCard,\s*linkPreview\?: LinkPreview,\s*\): Promise<ActionResult<Message>>/,
+    /mentionIds\?: EmployeeId\[\],\s*(\/\*\*[^]*?\*\/\s*)?card\?: MessageCard,\s*(\/\*\*[^]*?\*\/\s*)?linkPreview\?: LinkPreview,\s*(\/\*\*[^]*?\*\/\s*)?clientId\?: string,\s*\): Promise<ActionResult<Message>>/,
   );
   assert.match(TYPES, /mentionIds\?: EmployeeId\[\],\s*card\?: MessageCard,\s*\): Promise<ActionResult<TaskChatMessage>>/);
   /* Mock stores it, minus the sender, only when there are any. */

@@ -188,7 +188,7 @@ test("loading older history never re-pins to the bottom", () => {
   const src = code();
   const at = src.indexOf("if (loadingOlderRef.current) {");
   assert.ok(at > 0, "the load-older branch was not found");
-  const branch = src.slice(at, at + 400);
+  const branch = src.slice(at, at + 2000);
   assert.match(branch, /el\.scrollTop = el\.scrollHeight - prevScrollHeightRef\.current/);
   assert.ok(
     branch.indexOf("return;") < branch.indexOf("el.scrollTop = el.scrollHeight;"),
@@ -246,25 +246,19 @@ test("opened is true only when the route names the conversation", () => {
   assert.match(code(), /opened=\{openedDeliberately\}/, "Thread is not told");
 });
 
-test("the layout's fallback to the first conversation is still there", () => {
-  /* The fix must not be "stop defaulting", which would leave a blank pane
-     beside a full list — the thing the default exists to prevent. */
-  /* `[^]` rather than `.` with the `s` flag, which this tsconfig target
-     refuses. */
-  assert.match(code(), /conversationId \?\? \([^]*?all\[0\]\.id/);
-  assert.match(code(), /!all\.length \? undefined/, "an empty list still has no default");
+test("opening Messages opens no conversation until one is clicked", () => {
+  /* Owner, 10 Nov 2026: Messages opened straight into the newest thread
+     (ARPITA DAS in the report) — `active` fell back to `all[0]`. The right
+     pane now stays on `NoThread` until a row is clicked, and the route is the
+     only thing that names what is open. */
+  assert.match(code(), /const active = conversationId;/);
+  assert.doesNotMatch(code(), /conversationId \?\? \([^]*?all\[0\]\.id/, "the first-conversation default is back");
+  assert.match(code(), /Select a conversation to start messaging/);
 });
 
-test("the default yields once the reader has closed a thread", () => {
-  /* The other half, and the bug it fixes: Escape navigated away correctly and
-     the default put the reader straight back into the thread they had just
-     closed — on a wide screen the newest conversation is both `all[0]` and,
-     usually, the one they were reading, so Escape looked broken.
-
-     `closed` must be part of the condition, and it must come from the URL: the
-     two routes are separate segments, so a `useState` flag is discarded on the
-     way out and cannot carry the intent across. */
-  assert.match(code(), /conversationId \?\? \(closed \|\| !all\.length \? undefined/);
+test("closing a thread still lands on the empty pane, not back in it", () => {
+  /* With no default there is nothing to put the reader back into, so Escape
+     needs no help — but the link it navigates to must keep resolving. */
   assert.match(
     code(),
     /router\.push\("\/messages\?closed=1"\)/,

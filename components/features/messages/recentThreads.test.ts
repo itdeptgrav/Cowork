@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { Message } from "@/lib/domain";
 import {
   forgetThreads,
+  holdThreadsFor,
   heldThreadCount,
   recentThread,
   rememberThread,
@@ -96,5 +97,27 @@ test("signing somebody else in leaves nothing behind", () => {
   rememberThread("C1", [msg("m1")]);
   forgetThreads();
   assert.equal(recentThread("C1"), null);
+  assert.equal(heldThreadCount(), 0);
+});
+
+/* ── Kept across switches, cleared across people (10 Nov 2026) ───────────── */
+
+test("the same person switching chats keeps what is held", () => {
+  /* Every conversation is its own route segment, so the page unmounts on each
+     switch. Clearing on unmount emptied this store on every click. */
+  forgetThreads();
+  holdThreadsFor("GR0108");
+  rememberThread("C1", [msg("m1")]);
+  holdThreadsFor("GR0108");
+  assert.deepEqual(recentThread("C1")?.map((m) => m.id), ["m1"]);
+});
+
+test("a different person signing in gets nothing of the last one's", () => {
+  forgetThreads();
+  holdThreadsFor("GR0108");
+  rememberThread("C1", [msg("m1")]);
+  holdThreadsFor("GR0069");
+  assert.equal(recentThread("C1"), null);
+  holdThreadsFor(null);
   assert.equal(heldThreadCount(), 0);
 });

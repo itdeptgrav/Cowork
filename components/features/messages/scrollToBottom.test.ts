@@ -57,9 +57,9 @@ test("the jump re-arms auto-follow, so a message mid-animation is not left behin
 });
 
 test("the button is a down-arrow that calls the jump, and is labelled", () => {
-  assert.match(SRC, /\{showJump && \(/);
+  assert.match(SRC, /\{\(showJump \|\| unseen > 0\) && \(/);
   assert.match(SRC, /onClick=\{scrollToBottom\}/);
-  assert.match(SRC, /aria-label="Scroll to latest messages"/);
+  assert.match(SRC, /: "Scroll to latest messages"/);
   assert.match(SRC, /<Icon\.chevronDown/);
 });
 
@@ -73,4 +73,23 @@ test("it floats above the composer, anchored to its top edge", () => {
     "the composer must be the positioning context",
   );
   assert.match(SRC, /absolute right-3 bottom-full/);
+});
+
+/* ── A reader up the history is not pulled down (10 Nov 2026) ─────────────── */
+
+test("an arriving message does not yank a reader who scrolled up", () => {
+  /* The pin effect set scrollTop to the bottom on every refresh. It now pins
+     only on first load, when already following, or on the reader's own send. */
+  assert.match(
+    SRC,
+    /if \(!firstPin && !pinnedRef\.current && !\(arrived && newest\?\.senderId === viewerId\)\) \{\s*return;/,
+  );
+});
+
+test("what arrived meanwhile is counted on the jump button, and cleared at the bottom", () => {
+  assert.match(SRC, /\{unseen > 99 \? "99\+" : unseen\}/);
+  assert.match(SRC, /if \(pinnedRef\.current\) setLeftAtId\(null\);/);
+  /* Counted from the messages themselves, so it cannot drift: only other
+     people's messages after the point the reader scrolled away. */
+  assert.match(SRC, /if \(list\[i\]\.senderId !== viewerId\) n \+= 1;/);
 });

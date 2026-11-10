@@ -2425,6 +2425,11 @@ export interface CoworkRepository {
      *  one) simply carries none, and still linkifies its URL as plain text.
      *  See `LinkPreview`. */
     linkPreview?: LinkPreview,
+    /** The id the sender's screen already shows this message under, when it
+     *  drew the message before the write landed. Used as the document id, so
+     *  the on-screen copy and the stored one are the same message and a retry
+     *  of a send that did land overwrites it rather than writing a duplicate. */
+    clientId?: string,
   ): Promise<ActionResult<Message>>;
   /**
    * Unfurl a URL for the composer's link-preview card — title, description,

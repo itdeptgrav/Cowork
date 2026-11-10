@@ -79,6 +79,30 @@ export function rememberThread(
  */
 export function forgetThreads(): void {
   threads.clear();
+  owner = null;
+}
+
+/** Whose threads are held — see `holdThreadsFor`. */
+let owner: string | null = null;
+
+/**
+ * Keep what is held only for the person it was held for.
+ *
+ * **Why this replaced forgetting on unmount (10 Nov 2026).** `MessagesPage`
+ * cleared the store in an effect cleanup, and that cleanup runs on UNMOUNT as
+ * well as on a change of viewer. `/messages` and `/messages/[id]` are separate
+ * route segments, and each id is its own segment instance, so every click on a
+ * conversation unmounted the page — and emptied the store before the next
+ * `Thread` could draw from it. The cache that exists to make switching instant
+ * was empty on every switch, so every chat opened onto placeholder rows.
+ *
+ * The protection that cleanup gave is kept, by asking the question directly:
+ * a different signed-in person clears everything; the same person keeps it.
+ */
+export function holdThreadsFor(viewerId: string | null): void {
+  if (viewerId === owner) return;
+  threads.clear();
+  owner = viewerId;
 }
 
 /** How many threads are held. For tests and for nothing else. */

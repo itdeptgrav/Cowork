@@ -29,7 +29,7 @@ import {
   taskChatLabel,
   type PairedTaskChat,
 } from "@/lib/rules/messages/taskChats";
-import { forgetThreads, recentThread, rememberThread } from "./recentThreads";
+import { holdThreadsFor, recentThread, rememberThread } from "./recentThreads";
 import { TaskChatPicker } from "./TaskChatPicker";
 import { TaskChatBrief } from "./TaskChatBrief";
 import { VoiceRecorder } from "./VoiceRecorder";
@@ -97,6 +97,7 @@ import {
 import type {
   Conversation,
   Employee,
+  EmployeeId,
   Message,
   MessageAttachment,
   MessageCard,
@@ -140,7 +141,12 @@ export function MessagesPage({
   /**
    * The reader deliberately LEFT a thread, rather than never opening one.
    *
-   * **Why this is in the URL and not in state.** The right pane defaults to the
+   * No longer changes anything (10 Nov 2026): the right pane stopped defaulting
+   * to the first conversation, so there is nothing for this flag to suppress.
+   * Kept so `/messages?closed=1` links still resolve. The history below is why
+   * it existed.
+   *
+   * **Why this is in the URL and not in state.** The right pane defaulted to the
    * first conversation because an empty pane beside a full list reads as a
    * loading failure — right on arrival, wrong afterwards. Escape navigated to
    * `/messages` correctly and the default then put the reader straight back
@@ -170,8 +176,11 @@ export function MessagesPage({
      correspondence, and the second person must not be handed them even for the
      moment before their own read lands. Signing out usually takes the whole tab
      with it; this covers the case where it does not. */
+  /* Cleared when the PERSON changes, not on unmount: each conversation is its
+     own route segment, so unmount happens on every switch and used to empty
+     the cache that makes switching instant — see `holdThreadsFor`. */
   useEffect(() => {
-    return () => forgetThreads();
+    holdThreadsFor(viewerId);
   }, [viewerId]);
   const conversations = useQuery((r) => r.listConversations(), []);
   const repo = useRepo();
@@ -309,11 +318,15 @@ export function MessagesPage({
     if (r.ok) openCreated(r.data.id);
   }
 
-  /* The route is the source of truth for what is open; the first conversation
-     is only a default, and only until the reader has said otherwise — see
-     `closed`. */
-  const active =
-    conversationId ?? (closed || !all.length ? undefined : all[0].id);
+  /* The route is the ONLY source of truth for what is open (10 Nov 2026).
+     It used to fall back to `all[0]`, so opening Messages dropped the reader
+     into whichever thread was newest — a conversation they had not chosen,
+     loaded and listened to on every visit, and remounted as a different
+     thread whenever a new message re-sorted the list. Nothing opens now until
+     a row is clicked; the right pane says so (`NoThread`). `closed` is kept so
+     the links that carry it still resolve, but it no longer changes anything. */
+  void closed;
+  const active = conversationId;
   const activeConversation = all.find((c) => c.id === active) ?? null;
 
   /**
@@ -344,12 +357,9 @@ export function MessagesPage({
     void repo.markConversationsDelivered(need).catch(() => {});
   }, [repo, all, viewerId]);
   /**
-   * Whether the reader ASKED for this thread, or the layout picked it.
-   *
-   * `active` falls back to `all[0]` so the wide layout does not show an empty
-   * right pane. That default is a presentation choice and must not count as
-   * reading — see `Thread`'s `opened` prop, which is the whole of the fix for a
-   * badge that cleared itself.
+   * Whether the reader ASKED for this thread. Now always true when a thread is
+   * mounted — the layout no longer picks one — but kept as the guard `Thread`'s
+   * `opened` prop reads, so marking read can never again follow from a default.
    */
   const openedDeliberately = Boolean(conversationId);
   const unreadTotal = all.reduce((s, c) => s + c.unreadCount, 0);
@@ -1125,15 +1135,22 @@ function NoThread({
   return (
     <Panel label="No conversation open" className="h-full overflow-y-auto">
       <div className="mx-auto flex h-full max-w-[46ch] flex-col justify-center px-6 py-10">
+        {/* Opening Messages no longer opens a thread for you (10 Nov 2026), so
+            this is what everybody sees on arrival: say what to do first, then
+            who is waiting. */}
+        <span
+          aria-hidden="true"
+          className="mb-5 grid h-14 w-14 place-items-center rounded-full bg-[var(--surface-sunken)] text-ink-faint"
+        >
+          <Icon.chat className="h-6 w-6" />
+        </span>
         <p className="text-[17px] leading-tight font-medium tracking-[-0.02em] text-ink">
-          {waiting.length
-            ? `${unreadTotal} message${unreadTotal === 1 ? "" : "s"} waiting on you`
-            : "You are up to date"}
+          Select a conversation to start messaging
         </p>
         <p className="mt-2 text-sm leading-relaxed text-ink-muted">
           {waiting.length
-            ? `Across ${waiting.length} conversation${waiting.length === 1 ? "" : "s"}. Nothing else is unanswered.`
-            : "Nothing unread. Pick up where you left off, or start something new."}
+            ? `${unreadTotal} message${unreadTotal === 1 ? "" : "s"} waiting on you, across ${waiting.length} conversation${waiting.length === 1 ? "" : "s"}.`
+            : "You are up to date — nothing unread. Pick up where you left off, or start something new."}
         </p>
 
         <ul className="mt-4 space-y-0.5 border-t border-hairline pt-3">
@@ -1515,17 +1532,16 @@ function Thread({
   /** True once a page came back adding nothing — the top of the conversation. */
   const [exhausted, setExhausted] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
-  const [send, state] = useAction((r) =>
-    r.sendMessage(
-      c.id,
-      text,
-      pending.length ? pending : undefined,
-      replyingTo,
-      mentions.mentionIds(),
-      undefined,
-      linkPreview ?? undefined,
-    ),
-  );
+  /**
+   * **Messages on their way (10 Nov 2026).** A send used to wait for the
+   * write, then for a re-read of the thread, before anything appeared — the
+   * box sat full with a spinner while the round trips ran. Now the message is
+   * drawn the instant it is sent, under the id it will be stored with, and
+   * the stored copy simply replaces it when it arrives. A send that fails
+   * stays on screen marked "Not sent" with Retry, and a retry reuses the same
+   * id, so one that had in fact landed is overwritten rather than doubled.
+   */
+  const [outbox, setOutbox] = useState<OutgoingMessage[]>([]);
   const [saveEdit, editState] = useAction((r) =>
     r.editMessage(c.id, editingId ?? "", text),
   );
@@ -1556,6 +1572,14 @@ function Thread({
    * stray pixel of scroll. State rather than a ref, because it is rendered.
    */
   const [showJump, setShowJump] = useState(false);
+  /* The newest message when the reader scrolled away from the bottom — set
+     by the scroll handler, cleared on returning. Everything from someone else
+     after it is "new" and counted on the jump button; derived in render, so
+     there is no counter to keep in step. */
+  const [leftAtId, setLeftAtId] = useState<string | null>(null);
+  /* The newest message last pinned to, so a refresh can tell "a message
+     arrived" from "the same thread was re-read". */
+  const newestIdRef = useRef<string | null>(null);
 
   const others = c.participants.filter((p) => p.id !== viewerId);
   /**
@@ -1712,6 +1736,11 @@ function Thread({
        working. */
     const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
     pinnedRef.current = distFromBottom < 48;
+    /* Back at the bottom: whatever was counted has now been seen. Away from
+       it: remember where, so what arrives after can be counted. */
+    if (pinnedRef.current) setLeftAtId(null);
+    else if (leftAtId === null)
+      setLeftAtId(listRef.current[listRef.current.length - 1]?.id ?? null);
     /* The jump button rides a larger threshold than the pin so it does not
        appear the instant you nudge off the bottom. `setState` to the same value
        is a no-op in React, so this is free while sitting still. */
@@ -1779,8 +1808,10 @@ function Thread({
     /**
      * **A thread the layout chose is not a thread anybody read.**
      *
-     * `active` falls back to `all[0]` — the most recently active conversation —
-     * so the wide layout never shows an empty right pane. Two consequences, and
+     * `active` USED to fall back to `all[0]` — the most recently active
+     * conversation — so the wide layout never showed an empty right pane. That
+     * default is gone (10 Nov 2026); this guard stays so it cannot return
+     * through another path. Two consequences it had, and
      * between them they are the whole of "the badge clears itself":
      *
      *  · On `/messages` with nothing selected, the newest conversation is
@@ -1890,6 +1921,20 @@ function Thread({
       prevScrollHeightRef.current = null;
       return;
     }
+    /* **Never pull a reader out of the history (10 Nov 2026).** This pinned
+       on every refresh, so a message arriving — or anything else that
+       re-read the thread — threw somebody reading older messages back to the
+       bottom mid-sentence. Now it follows only a reader already at the bottom,
+       on first load, and on the reader's OWN send (what every messaging app
+       does: you sent it, you want to see it). Anyone else's message while
+       you are up the history is counted on the jump button instead. */
+    const newest = listRef.current[listRef.current.length - 1] ?? null;
+    const firstPin = newestIdRef.current === null;
+    const arrived = !firstPin && !!newest && newest.id !== newestIdRef.current;
+    newestIdRef.current = newest?.id ?? null;
+    if (!firstPin && !pinnedRef.current && !(arrived && newest?.senderId === viewerId)) {
+      return;
+    }
     el.scrollTop = el.scrollHeight;
     pinnedRef.current = true;
     /* `olderPages` as well as the live page, because those are now two separate
@@ -1946,7 +1991,7 @@ function Thread({
   }, [c.id, messages.data]);
 
   async function submit() {
-    if (uploading || state.isPending || editState.isPending) return;
+    if (uploading || editState.isPending) return;
     /* Editing reuses the composer: the same box, the same Enter-to-commit, but
        it saves the change to an existing message rather than writing a new one. */
     if (editing) {
@@ -1960,32 +2005,94 @@ function Thread({
       return;
     }
     if (!text.trim() && pending.length === 0) return;
-    const r = await send();
+    /* Everything the message carries is taken NOW, before the composer is
+       cleared — the send below must not read state that has moved on. */
+    const outgoing: OutgoingMessage = {
+      id: newClientMessageId(),
+      text,
+      attachments: pending,
+      replyTo: replyingTo,
+      mentionIds: mentions.mentionIds(),
+      linkPreview: linkPreview ?? undefined,
+      status: "sending",
+      error: null,
+    };
+    setOutbox((o) => [...o, outgoing]);
+    /* Cleared at once — the message is safe in the outbox, and a failure
+       keeps it there with Retry and Edit rather than losing it. Clearing on
+       send is also what stops a double Enter sending it twice: the second
+       press finds an empty box. */
+    clearDraft(c.id);
+    setText("");
+    setPending([]);
+    setReplyingTo(null);
+    setUploadError(null);
+    setLinkPreview(null);
+    setLinkPreviewLoading(false);
+    setLinkPreviewRemovedFor(null);
+    mentions.reset();
+    /* The message has gone. Files that never uploaded were never part of it,
+       so holding a retry offer for them beside an empty composer would invite
+       somebody to attach them to nothing. */
+    setFailedUploads([]);
+    typingSentRef.current = 0;
+    void repo.setTyping?.(c.id, false);
+    /* You sent it, so you see it — wherever you were in the history. */
+    pinnedRef.current = true;
+    await deliver(outgoing);
+  }
+
+  /** Write one outgoing message; on failure it stays, marked, with Retry. */
+  async function deliver(o: OutgoingMessage) {
+    setOutbox((list) =>
+      list.map((x) => (x.id === o.id ? { ...x, status: "sending", error: null } : x)),
+    );
+    const r = await repo.sendMessage(
+      c.id,
+      o.text,
+      o.attachments.length ? o.attachments : undefined,
+      o.replyTo,
+      o.mentionIds,
+      undefined,
+      o.linkPreview,
+      o.id,
+    );
     if (r.ok) {
-      /* **Only on success**, and only here. A send that fails leaves the text
-         and the files exactly where they were, on screen and on disk, so the
-         retry is pressing the button again rather than typing it out a second
-         time. Clearing before the result came back would lose a message to a
-         dropped connection. */
-      clearDraft(c.id);
-      setText("");
-      setPending([]);
-      setReplyingTo(null);
-      setUploadError(null);
-      setLinkPreview(null);
-      setLinkPreviewLoading(false);
-      setLinkPreviewRemovedFor(null);
-      mentions.reset();
-      /* The message has gone. Files that never uploaded were never part of it,
-         so holding a retry offer for them beside an empty composer would invite
-         somebody to attach them to nothing. */
-      setFailedUploads([]);
-      typingSentRef.current = 0;
-      void repo.setTyping?.(c.id, false);
       messages.refetch();
       onSent();
+      return;
     }
+    setOutbox((list) =>
+      list.map((x) => (x.id === o.id ? { ...x, status: "failed", error: r.message } : x)),
+    );
   }
+
+  /** Take a failed message back into the composer to change it. */
+  function editUnsent(o: OutgoingMessage) {
+    setOutbox((list) => list.filter((x) => x.id !== o.id));
+    setText(o.text);
+    setPending(o.attachments);
+    setReplyingTo(o.replyTo);
+    composerRef.current?.focus();
+  }
+
+  /* An outgoing message stops being drawn the moment the stored copy is in
+     the thread — matched by id, so it can never show twice. */
+  const shownOutbox = useMemo(() => {
+    if (!outbox.length) return outbox;
+    const stored = new Set(list.map((m) => m.id));
+    return outbox.filter((o) => !stored.has(o.id));
+  }, [outbox, list]);
+
+  /* Messages from others since the reader scrolled away — see `leftAtId`. */
+  const unseen = useMemo(() => {
+    if (leftAtId === null) return 0;
+    const at = list.findIndex((m) => m.id === leftAtId);
+    if (at < 0) return 0;
+    let n = 0;
+    for (let i = at + 1; i < list.length; i += 1) if (list[i].senderId !== viewerId) n += 1;
+    return n;
+  }, [leftAtId, list, viewerId]);
 
   function startReply(m: Message) {
     setEditingId(null);
@@ -2369,6 +2476,12 @@ function Thread({
     if (v && now - typingSentRef.current > 3500) {
       typingSentRef.current = now;
       void repo.setTyping?.(c.id, true);
+    } else if (!v.trim() && typingSentRef.current) {
+      /* Cleared the box without sending: stop the ellipsis now rather than
+         leaving it up for the stamp's remaining seconds (10 Nov 2026). One
+         write, and only if a "typing" was actually sent. */
+      typingSentRef.current = 0;
+      void repo.setTyping?.(c.id, false);
     }
   }
 
@@ -2957,6 +3070,11 @@ function Thread({
               canReact={typeof repo.toggleMessageReaction === "function"}
               canVote={typeof repo.voteMessagePoll === "function"}
             />
+            <OutboxBubbles
+              items={shownOutbox}
+              onRetry={(o) => void deliver(o)}
+              onEdit={editUnsent}
+            />
           </div>
         )}
       </div>
@@ -2971,15 +3089,28 @@ function Thread({
             height (a reply preview, attachment chips), over the bottom of the
             thread — where every chat app puts it. Shown only once the reader is
             well up the history (`showJump`). */}
-        {showJump && (
+        {(showJump || unseen > 0) && (
           <button
             type="button"
             onClick={scrollToBottom}
-            aria-label="Scroll to latest messages"
+            aria-label={
+              unseen > 0
+                ? `${unseen} new message${unseen === 1 ? "" : "s"} — scroll to latest`
+                : "Scroll to latest messages"
+            }
             title="Jump to latest"
             className="absolute right-3 bottom-full z-10 mb-2 grid h-9 w-9 place-items-center rounded-full border border-hairline bg-[var(--surface-raised)] text-ink-muted shadow-lg transition-colors hover:text-ink sm:right-4"
           >
             <Icon.chevronDown className="h-5 w-5" />
+            {/* New messages that arrived while you were reading history. */}
+            {unseen > 0 && (
+              <span
+                data-figure
+                className="absolute -top-1.5 -right-1.5 grid h-[18px] min-w-[18px] place-items-center rounded-full bg-ink px-1 text-[10px] leading-none font-medium text-[var(--surface-raised)]"
+              >
+                {unseen > 99 ? "99+" : unseen}
+              </span>
+            )}
           </button>
         )}
         {typingLabel && (
@@ -2992,12 +3123,14 @@ function Thread({
             {typingLabel}
           </div>
         )}
-        {(state.error || editState.error) && (
+        {/* A failed SEND is shown on its own bubble, with Retry; this line is
+            for a failed edit. */}
+        {editState.error && (
           <div className="mb-2">
             <InlineError
               compact
-              message={(state.error ?? editState.error) as string}
-              code={state.errorCode ?? editState.errorCode}
+              message={editState.error as string}
+              code={editState.errorCode}
             />
           </div>
         )}
@@ -3184,7 +3317,7 @@ function Thread({
             onCard={(card) => void sendCard(card)}
             onPickFiles={() => fileRef.current?.click()}
             canPickFiles={canUpload}
-            disabled={uploading || state.isPending || editing}
+            disabled={uploading || editing}
           />
           {/* **The separate paperclip is gone.** It opened the file picker,
               which is the first row of the menu beside it — two buttons a pixel
@@ -3196,7 +3329,7 @@ function Thread({
           {canUpload && (
             <VoiceRecorder
               onRecorded={(f) => void handleFiles([f])}
-              disabled={uploading || state.isPending || editing}
+              disabled={uploading || editing}
             />
           )}
 
@@ -3267,7 +3400,6 @@ function Thread({
             type="button"
             onClick={submit}
             disabled={
-              state.isPending ||
               editState.isPending ||
               uploading ||
               (editing
@@ -3350,6 +3482,114 @@ function Thread({
  * tick is a difference of quantity, which the eye counts; adding a second
  * colour for "delivered" would make the reader learn a palette instead.
  */
+/** A message the viewer sent that the stored thread does not show yet. */
+interface OutgoingMessage {
+  /** Also the id it is stored under — see `clientId` on `sendMessage`. */
+  id: string;
+  text: string;
+  attachments: MessageAttachment[];
+  replyTo: MessageReply | null;
+  mentionIds: EmployeeId[];
+  linkPreview?: LinkPreview;
+  status: "sending" | "failed";
+  error: string | null;
+}
+
+/** An id the client can choose and Firestore will accept as a document id. */
+function newClientMessageId(): string {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * The viewer's messages on their way, drawn as their own bubbles below the
+ * thread until the stored copy replaces them.
+ *
+ * A clock while sending; "Not sent" with Retry and Edit if the write failed.
+ * They carry none of the message actions — reply, react, forward and the rest
+ * need a stored message to act on — which is also what WhatsApp does with a
+ * message that has not left the phone.
+ */
+function OutboxBubbles({
+  items,
+  onRetry,
+  onEdit,
+}: {
+  items: OutgoingMessage[];
+  onRetry: (o: OutgoingMessage) => void;
+  onEdit: (o: OutgoingMessage) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <ul className="mt-1 space-y-1" aria-label="Messages being sent">
+      {items.map((o) => {
+        const files = o.attachments.length;
+        return (
+          <li key={o.id} className="flex flex-col items-end">
+            {/* The same bubble an own message gets, a touch faded while it is
+                on its way, and outlined in the overdue colour if it failed. */}
+            <div
+              className={`max-w-[min(88%,60ch)] rounded-inset px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap [overflow-wrap:anywhere] sm:max-w-[min(78%,60ch)] ${
+                o.status === "failed"
+                  ? "bg-[var(--surface-raised)] text-ink shadow-[inset_0_0_0_1px_var(--state-overdue)]"
+                  : "bg-ink text-[var(--body-bg)] opacity-75"
+              }`}
+            >
+              {o.replyTo && (
+                <p className="mb-1 truncate border-l-2 border-current/40 pl-2 text-xs opacity-70">
+                  {o.replyTo.senderName}: {o.replyTo.text}
+                </p>
+              )}
+              {o.text.trim() && <span>{o.text.trim()}</span>}
+              {files > 0 && (
+                <p className="mt-0.5 text-xs opacity-75">
+                  {files} attachment{files === 1 ? "" : "s"}
+                </p>
+              )}
+            </div>
+            <p
+              className="mt-0.5 flex items-center gap-2 text-[11px] text-ink-faint"
+              role={o.status === "failed" ? "alert" : "status"}
+            >
+              {o.status === "sending" ? (
+                <span className="inline-flex items-center gap-1">
+                  {/* A clock, the way every messaging app draws "not yet sent". */}
+                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden>
+                    <circle cx="6" cy="6" r="4.8" />
+                    <path d="M6 3.4V6l1.8 1.1" strokeLinecap="round" />
+                  </svg>
+                  Sending…
+                </span>
+              ) : (
+                <>
+                  <span className="text-[var(--state-overdue)]" title={o.error ?? undefined}>
+                    Not sent
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => onRetry(o)}
+                    className="font-medium text-ink underline decoration-hairline underline-offset-2 hover:decoration-current"
+                  >
+                    Retry
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onEdit(o)}
+                    className="text-ink-muted underline decoration-hairline underline-offset-2 hover:text-ink"
+                  >
+                    Edit
+                  </button>
+                </>
+              )}
+            </p>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function MessageTicks({ status }: { status: MessageStatus }) {
   const read = status === "read";
   const double = status !== "sent";

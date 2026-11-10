@@ -197,8 +197,12 @@ test("failed uploads are dropped once the message is sent", () => {
   /* Holding a retry offer beside an empty composer invites attaching them to
      nothing. */
   const src = code(AREA);
-  const at = src.indexOf("const r = await send();");
-  const body = src.slice(at, at + 700);
+  /* Since 10 Nov 2026 the composer clears the moment a message is sent (it
+     is drawn at once, see the outbox), so this sits in `submit` right after
+     the message is taken into the outbox. */
+  const at = src.indexOf("setOutbox((o) => [...o, outgoing]);");
+  assert.ok(at > 0, "the send path was not found");
+  const body = src.slice(at, at + 1400);
   assert.match(body, /setFailedUploads\(\[\]\)/);
 });
 

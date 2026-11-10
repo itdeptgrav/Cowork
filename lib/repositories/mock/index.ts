@@ -8214,6 +8214,7 @@ export class MockRepository implements CoworkRepository {
     mentionIds?: EmployeeId[],
     card?: MessageCard,
     linkPreview?: LinkPreview,
+    clientId?: string,
   ): Promise<ActionResult<Message>> {
     const g = guard();
     if (g) return g;
@@ -8226,8 +8227,11 @@ export class MockRepository implements CoworkRepository {
     const s = getStore();
     const me = s.employees.find((e) => e.id === actingId())!;
     const mentions = [...new Set(mentionIds ?? [])].filter((id) => id !== actingId());
+    /* A retry under the same client id replaces, never duplicates — the
+       same promise the real store keeps (see `clientId`). */
+    if (clientId) s.messages = s.messages.filter((x) => x.id !== clientId);
     const m: Message = {
-      id: nextId("mg"),
+      id: clientId ?? nextId("mg"),
       conversationId,
       senderId: actingId(),
       senderName: me.displayName,

@@ -228,6 +228,8 @@ import {
   DM_COLLECTION,
   GROUP_COLLECTION,
   attachmentPreview,
+  conversationSignature,
+  LIVE_THREAD_WINDOW,
   debounce,
   directDocId,
   driveFileId,
@@ -16796,6 +16798,7 @@ export class LegacyRepository {
     mentionIds?: EmployeeId[],
     card?: MessageCard,
     linkPreview?: LinkPreview,
+    clientId?: string,
   ): Promise<ActionResult<Message>> {
     const me = this.#ctx.employeeId ? String(this.#ctx.employeeId) : "";
     if (!me)
@@ -16821,10 +16824,14 @@ export class LegacyRepository {
     const coll = await this.#conversationCollection(conversationId);
     const directory = await this.#employeesById();
     const senderName = directory.get(me)?.displayName ?? me;
+    /* The sender's own id when it already drew the message (10 Nov 2026) —
+       see `clientId` on the interface. Limited to an id Firestore accepts. */
     const messageId =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `m_${me}_${Date.now()}`;
+      clientId && /^[A-Za-z0-9_-]{8,64}$/.test(clientId)
+        ? clientId
+        : typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `m_${me}_${Date.now()}`;
 
     try {
       await setDoc(doc(legacyDb(), coll, conversationId, "messages", messageId), {
@@ -17984,17 +17991,38 @@ export class LegacyRepository {
         const bump = debounce(() => notifyRepositoryChanged("listConversations"), 250);
         const attach = (name: string, field: string) => {
           let first = true;
+          /* What each conversation looked like last time, minus the fields
+             that change without changing anything the list shows. */
+          const seen = new Map<string, string>();
           return onSnapshot(
             query(
               collection(legacyDb(), name),
               where(field, "array-contains", me),
             ),
-            () => {
+            (snap) => {
+              /* **Only a change the list can show refetches it (10 Nov 2026).**
+                 Typing is a stamp on this same document, written every few
+                 seconds while anyone types — and each one re-ran
+                 listConversations, the open thread's page and every other
+                 live query on screen. My own delivery stamp is the same: it
+                 tells OTHER people their message arrived. Other people's
+                 delivery stamps still count — they turn my ticks grey. */
+              let changed = false;
+              for (const ch of snap.docChanges()) {
+                if (ch.type === "removed") {
+                  seen.delete(ch.doc.id);
+                  changed = true;
+                  continue;
+                }
+                const signature = conversationSignature(ch.doc.data(), me);
+                if (seen.get(ch.doc.id) !== signature) changed = true;
+                seen.set(ch.doc.id, signature);
+              }
               if (first) {
                 first = false;
                 return;
               }
-              bump();
+              if (changed) bump();
             },
             () => {
               /* A listener that errors (rules, connectivity) simply goes quiet;
@@ -18026,14 +18054,27 @@ export class LegacyRepository {
     let disposed = false;
     void (async () => {
       try {
-        const { collection, onSnapshot } = await import("firebase/firestore");
+        const { collection, limit, onSnapshot, orderBy, query } = await import(
+          "firebase/firestore"
+        );
         const { legacyDb } = await import("../../legacy/firebase.ts");
         const coll = await this.#conversationCollection(conversationId);
         if (disposed) return;
         const bump = debounce(() => notifyRepositoryChanged("listConversations"), 200);
         let first = true;
+        /* **The newest messages, not the whole history (10 Nov 2026).** The
+           listener's first snapshot downloaded EVERY message in the thread on
+           every open, only to be skipped below — a long thread paid for its
+           entire history to learn "something may change". The window covers
+           the page on screen and several older pages, so a new message, an
+           edit, a reaction or a read receipt there still arrives live; a change
+           to something older than that shows on the next refresh. */
         const un = onSnapshot(
-          collection(legacyDb(), coll, conversationId, "messages"),
+          query(
+            collection(legacyDb(), coll, conversationId, "messages"),
+            orderBy("createdAt", "desc"),
+            limit(LIVE_THREAD_WINDOW),
+          ),
           () => {
             if (first) {
               first = false;
@@ -18161,27 +18202,42 @@ export class LegacyRepository {
         const { legacyDb } = await import("../../legacy/firebase.ts");
         const coll = await this.#conversationCollection(conversationId);
         if (disposed) return;
-        cleanup = onSnapshot(
+        /* **Expiry is checked on a clock, not only when the document changes
+           (10 Nov 2026).** A stamp is live for six seconds, but it was judged
+           only when a snapshot arrived — so somebody who closed their tab
+           mid-sentence stayed "typing…" until anything else touched the
+           conversation. The last stamps are re-judged every second, and the
+           caller hears only when the answer changes, so this costs no renders. */
+        let stamps: Record<string, unknown> = {};
+        let last = "";
+        const emit = () => {
+          const now = Date.now();
+          const ids = Object.entries(stamps)
+            .filter(
+              ([id, ts]) => id !== me && typeof ts === "number" && now - ts < 6000,
+            )
+            .map(([id]) => id)
+            .sort();
+          const key = ids.join(",");
+          if (key === last) return;
+          last = key;
+          onChange(ids);
+        };
+        const tick = setInterval(emit, 1000);
+        const un = onSnapshot(
           doc(legacyDb(), coll, conversationId),
           (snap) => {
-            const typing = (snap.data()?.typing ?? {}) as Record<
-              string,
-              unknown
-            >;
-            const now = Date.now();
-            onChange(
-              Object.entries(typing)
-                .filter(
-                  ([id, ts]) =>
-                    id !== me && typeof ts === "number" && now - ts < 6000,
-                )
-                .map(([id]) => id),
-            );
+            stamps = (snap.data()?.typing ?? {}) as Record<string, unknown>;
+            emit();
           },
           () => {
             /* Quietly stop; the thread still works without the indicator. */
           },
         );
+        cleanup = () => {
+          clearInterval(tick);
+          un();
+        };
       } catch {
         /* No live typing — the thread still works. */
       }
@@ -18209,6 +18265,10 @@ export class LegacyRepository {
         for (const id of ids) {
           if (disposed) return;
           const ref = await this.#dutyDoc(id);
+          /* Checked again AFTER the await: the cleanup can run while the doc
+             reference is being resolved, and a listener attached after it
+             was never unsubscribed — one leaked per fast switch in a group. */
+          if (disposed) return;
           unsubs.push(
             onSnapshot(
               ref,
