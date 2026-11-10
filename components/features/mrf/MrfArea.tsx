@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { arrangeApprovalQueue, type MrfQueueSort } from "@/lib/rules/mrf/queueOrder";
 import { WorkspaceHead } from "@/components/ui/Workspace";
 import { DriveImage } from "@/components/ui/DriveImage";
 import { ImageLightbox } from "@/components/ui/ImageLightbox";
@@ -674,6 +675,14 @@ function Approvals() {
   const [status, setStatus] = useState<MrfApprovalFilter>("pending");
   const approvals = useQuery((r) => r.listMrfApprovals(status), [status]);
   const { data, isLoading, refetch } = approvals;
+  /* Newest first by default, so a request just raised is at the top rather
+     than under every older urgent one — see `arrangeApprovalQueue`. */
+  const [sort, setSort] = useState<MrfQueueSort>("newest");
+  const [query, setQuery] = useState("");
+  const shown = useMemo(
+    () => arrangeApprovalQueue(data?.requests ?? [], { sort, query }),
+    [data, sort, query],
+  );
 
   /* An approver shown an empty queue believes nothing is waiting on them. */
   if (approvals.error)
@@ -697,12 +706,29 @@ function Approvals() {
           ]}
         />
       )}
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
         <h2 className="text-sm font-medium text-ink">Queue</h2>
+        <Input
+          type="search"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Search MRF no., person, item…"
+          aria-label="Search the queue"
+          className="ml-auto w-full sm:w-[240px]"
+        />
+        <Select
+          value={sort}
+          onChange={(e) => setSort(e.target.value as MrfQueueSort)}
+          className="w-[150px]"
+          aria-label="Order"
+        >
+          <option value="newest">Newest first</option>
+          <option value="urgent">Urgent first</option>
+        </Select>
         <Select
           value={status}
           onChange={(e) => setStatus(e.target.value as MrfApprovalFilter)}
-          className="ml-auto w-[170px]"
+          className="w-[170px]"
           aria-label="Show requests"
         >
           <option value="pending">Awaiting</option>
@@ -715,13 +741,20 @@ function Approvals() {
 
       {isLoading ? (
         <SkeletonRows rows={5} />
-      ) : !data?.requests.length ? (
+      ) : !shown.length ? (
         <Panel>
-          <EmptyState title="Nothing here" body="No requests match this filter." />
+          <EmptyState
+            title="Nothing here"
+            body={
+              query.trim()
+                ? `No request in this list matches “${query.trim()}”.`
+                : "No requests match this filter."
+            }
+          />
         </Panel>
       ) : (
         <div className="space-y-3">
-          {data.requests.map((m) => (
+          {shown.map((m) => (
             <ApprovalCard key={m.id} request={m} onDecided={refetch} />
           ))}
         </div>
