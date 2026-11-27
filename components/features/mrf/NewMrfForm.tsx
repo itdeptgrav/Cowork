@@ -104,6 +104,9 @@ export function NewMrfForm({ onDone }: { onDone: () => void }) {
   const [neededBy, setNeededBy] = useState("");
   const [deadline, setDeadline] = useState("");
   const [items, setItems] = useState<DraftItem[]>([]);
+  /* Photos still uploading, across every line — Send waits for them (27 Nov
+     2026: a request sent mid-upload reached the Store with no photo). */
+  const [uploading, setUploading] = useState(0);
   const [search, setSearch] = useState("");
   const [q, setQ] = useState("");
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -180,6 +183,7 @@ export function NewMrfForm({ onDone }: { onDone: () => void }) {
   };
 
   const send = async () => {
+    if (uploading > 0) return;
     const input = {
       requestType,
       priority,
@@ -321,6 +325,7 @@ export function NewMrfForm({ onDone }: { onDone: () => void }) {
                     item={it}
                     onChange={(patch) => setItem(i, patch)}
                     onRemove={() => setItems((xs) => xs.filter((_, j) => j !== i))}
+                    onUploading={(busy) => setUploading((n) => Math.max(0, n + (busy ? 1 : -1)))}
                   />
                 ))}
               </ol>
@@ -443,12 +448,17 @@ export function NewMrfForm({ onDone }: { onDone: () => void }) {
               <Button
                 tone="primary"
                 loading={state.isPending}
-                disabled={state.isPending}
+                disabled={state.isPending || uploading > 0}
                 onClick={send}
                 className="w-full"
               >
-                <Icon.send /> {state.isPending ? "Sending…" : "Send request"}
+                <Icon.send /> {state.isPending ? "Sending…" : uploading > 0 ? "Photos uploading…" : "Send request"}
               </Button>
+              {uploading > 0 && (
+                <p className="text-[11px] text-ink-muted" aria-live="polite" data-mrf-photos-uploading>
+                  Wait for the photos to finish uploading, then send.
+                </p>
+              )}
               <Button tone="ghost" onClick={onDone} className="w-full">
                 Cancel
               </Button>
@@ -561,11 +571,13 @@ function ItemCard({
   item: it,
   onChange,
   onRemove,
+  onUploading,
 }: {
   index: number;
   item: DraftItem;
   onChange: (patch: Partial<DraftItem>) => void;
   onRemove: () => void;
+  onUploading?: (busy: boolean) => void;
 }) {
   const problem = draftItemProblem(it);
   const label = it.name.trim() || `Item ${index + 1}`;
@@ -656,7 +668,7 @@ function ItemCard({
               <Icon.attach className="h-3.5 w-3.5" /> Photos
               <span className="font-normal text-ink-faint">· optional, up to 5</span>
             </span>
-            <MrfPhotoUploader images={it.images} onChange={(imgs) => onChange({ images: imgs })} />
+            <MrfPhotoUploader images={it.images} onChange={(imgs) => onChange({ images: imgs })} onBusyChange={onUploading} />
           </div>
 
           <p

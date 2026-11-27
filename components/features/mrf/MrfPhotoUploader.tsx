@@ -75,9 +75,13 @@ async function uploadMrfImage(file: File): Promise<MrfImage> {
 export function MrfPhotoUploader({
   images,
   onChange,
+  onBusyChange,
 }: {
   images: MrfImage[];
   onChange: (next: MrfImage[]) => void;
+  /* Told when an upload starts and ends, so the form can hold Send until the
+     photos are in (27 Nov 2026: a request sent mid-upload went without them). */
+  onBusyChange?: (busy: boolean) => void;
   /* `folder` is gone with Cloudinary. Drive files land in the folder the
      backend's upload service is configured with, so a per-call folder name had
      nowhere to go and would have read as a setting that did nothing. */
@@ -97,6 +101,7 @@ export function MrfPhotoUploader({
       return;
     }
     setBusy(true);
+    onBusyChange?.(true);
     const uploaded: MrfImage[] = [];
     const failed: string[] = [];
     // One at a time, so a single failure never discards the others.
@@ -120,6 +125,7 @@ export function MrfPhotoUploader({
     if (uploaded.length) onChange([...images, ...uploaded]);
     if (failed.length) setError(`Could not add: ${failed.join(", ")}`);
     setBusy(false);
+    onBusyChange?.(false);
     if (inputRef.current) inputRef.current.value = "";
   };
 
